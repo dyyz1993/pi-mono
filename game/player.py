@@ -1,4 +1,6 @@
-# Player module
+# Player module - Enhanced with difficulty levels
+
+import random
 
 class Player:
     def __init__(self, symbol):
@@ -19,33 +21,36 @@ class HumanPlayer(Player):
                 print("Please enter a number.")
 
 class AIPlayer(Player):
-    """AI Player with minimax algorithm for unbeatable gameplay"""
+    """AI Player with multiple difficulty levels"""
+    
+    def __init__(self, symbol, difficulty="medium"):
+        super().__init__(symbol)
+        self.difficulty = difficulty
     
     def get_move(self, board):
-        # First try to win or block
-        move = self.find_best_move(board, self.symbol)
-        if move is not None:
-            return move
-        
-        # Take center if available
-        if 4 in board.get_available_moves():
-            return 4
-        
-        # Take corners
-        corners = [0, 2, 6, 8]
-        available_corners = [c for c in corners if c in board.get_available_moves()]
-        if available_corners:
-            import random
-            return random.choice(available_corners)
-        
-        # Take any available edge
-        edges = [1, 3, 5, 7]
-        available_edges = [e for e in edges if e in board.get_available_moves()]
-        if available_edges:
-            import random
-            return random.choice(available_edges)
-        
-        return board.get_available_moves()[0]
+        if self.difficulty == "easy":
+            return self.easy_move(board)
+        elif self.difficulty == "medium":
+            return self.medium_move(board)
+        else:  # hard
+            return self.hard_move(board)
+    
+    def easy_move(self, board):
+        """Random moves - very easy to beat"""
+        moves = board.get_available_moves()
+        return random.choice(moves)
+    
+    def medium_move(self, board):
+        """50% chance of optimal move, 50% random"""
+        if random.random() < 0.5:
+            best = self.find_best_move(board, self.symbol)
+            if best is not None:
+                return best
+        return random.choice(board.get_available_moves())
+    
+    def hard_move(self, board):
+        """Unbeatable AI using minimax"""
+        return self.minimax(board, self.symbol)[0]
     
     def find_best_move(self, board, symbol):
         """Find winning move or blocking move"""
@@ -68,3 +73,38 @@ class AIPlayer(Player):
             board.cells[move] = " "
         
         return None
+    
+    def minimax(self, board, player):
+        """Minimax algorithm for unbeatable AI"""
+        opponent = "O" if player == "X" else "X"
+        available = board.get_available_moves()
+        
+        if board.check_winner(self.symbol):
+            return None, 10
+        if board.check_winner(opponent):
+            return None, -10
+        if not available:
+            return None, 0
+        
+        if player == self.symbol:
+            best_score = -float('inf')
+            best_move = available[0]
+            for move in available:
+                board.cells[move] = player
+                score = self.minimax(board, opponent)[1]
+                board.cells[move] = " "
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+            return best_move, best_score
+        else:
+            best_score = float('inf')
+            best_move = available[0]
+            for move in available:
+                board.cells[move] = player
+                score = self.minimax(board, opponent)[1]
+                board.cells[move] = " "
+                if score < best_score:
+                    best_score = score
+                    best_move = move
+            return best_move, best_score
