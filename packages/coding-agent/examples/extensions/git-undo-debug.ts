@@ -122,6 +122,45 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				}
 			}
 
+			// Binary file extensions to skip
+			const binaryExtensions = [
+				".pyc",
+				".pyo",
+				".so",
+				".dll",
+				".dylib",
+				".png",
+				".jpg",
+				".jpeg",
+				".gif",
+				".ico",
+				".svg",
+				".pdf",
+				".doc",
+				".docx",
+				".xls",
+				".xlsx",
+				".zip",
+				".tar",
+				".gz",
+				".rar",
+				".7z",
+				".mp3",
+				".mp4",
+				".avi",
+				".mov",
+				".wav",
+				".woff",
+				".woff2",
+				".ttf",
+				".eot",
+			];
+
+			const isBinaryFile = (path: string): boolean => {
+				const ext = path.toLowerCase().match(/\.[^.]+$/)?.[0] || "";
+				return binaryExtensions.includes(ext);
+			};
+
 			for (const line of statusLines) {
 				const parts = line.split(/\s+/);
 				if (parts.length >= 2) {
@@ -130,6 +169,12 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 					if (path.includes(" => ")) {
 						path = path.split(" => ")[1];
+					}
+
+					// Skip binary files
+					if (isBinaryFile(path)) {
+						console.log(`[git-undo] Skipping binary file: ${path}`);
+						continue;
 					}
 
 					let status: FileChangeInfo["status"] = "modified";
@@ -159,13 +204,36 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const getUserMessagePreview = async (entryId: string): Promise<string> => {
+	const getFileDiff = async (fromCommit: string, toCommit: string, filePath: string): Promise<string> => {
+		try {
+			// Check if binary file
+			const binaryExtensions = [".pyc", ".pyo", ".so", ".dll", ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"];
+			const ext = filePath.toLowerCase().match(/\.[^.]+$/)?.[0] || "";
+			if (binaryExtensions.includes(ext)) {
+				return `(Binary file: ${filePath})`;
+			}
+
+			const diffResult = await pi.exec("git", ["diff", fromCommit, toCommit, "--", filePath], {
+				cwd: pi.cwd,
+				timeout: 10000,
+			});
+			return diffResult.stdout || "No diff available";
+		} catch {
+			return "Unable to get diff";
+		}
+	};
+
+	const getTurnDescription = async (entryId: string): Promise<string> => {
 		try {
 			const entries = (pi as any).sessionManager?.getEntries?.() || [];
 			const entryIndex = entries.findIndex((e: any) => e.id === entryId);
-			if (entryIndex <= 0) return `Entry: ${entryId.slice(0, 8)}`;
+			if (entryIndex <= 0) return `Turn ${entryId.slice(0, 8)}`;
 
-			for (let i = entryIndex - 1; i >= 0; i--) {
+			// Collect context from surrounding entries
+			const context: string[] = [];
+
+			// Look for user message before this entry
+			for (let i = entryIndex - 1; i >= Math.max(0, entryIndex - 5); i--) {
 				const prevEntry = entries[i];
 				if (prevEntry.type === "message" && prevEntry.message?.role === "user") {
 					const content = prevEntry.message.content;
@@ -180,27 +248,48 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 								: "";
 
 					if (text) {
-						const preview = text.length > 40 ? text.slice(0, 37) + "..." : text;
-						return `User: ${preview}`;
+						const preview = text.length > 60 ? text.slice(0, 57) + "..." : text;
+						context.push(`User: ${preview}`);
+						break;
 					}
 				}
 			}
 
-			return `Entry: ${entryId.slice(0, 8)}`;
-		} catch {
-			return `Entry: ${entryId.slice(0, 8)}`;
-		}
-	};
+			// Look for tool calls in this turn
+			const tools: string[] = [];
+			for (let i = entryIndex; i < Math.min(entries.length, entryIndex + 5); i++) {
+				const currEntry = entries[i];
+				if (currEntry.type === "message" && currEntry.message?.role === "assistant") {
+					const content = currEntry.message.content;
+					if (Array.isArray(content)) {
+						for (const block of content) {
+							if (block.type === "toolCall") {
+								const toolName = block.name;
+								const args = block.arguments as any;
+								const path = args?.path || args?.filename || "";
+								if (path) {
+									const fileName = path.split("/").pop() || path;
+									tools.push(`${toolName}: ${fileName}`);
+								}
+							}
+						}
+					}
+				}
+			}
 
-	const getFileDiff = async (fromCommit: string, toCommit: string, filePath: string): Promise<string> => {
-		try {
-			const diffResult = await pi.exec("git", ["diff", fromCommit, toCommit, "--", filePath], {
-				cwd: pi.cwd,
-				timeout: 10000,
-			});
-			return diffResult.stdout || "No diff available";
-		} catch {
-			return "Unable to get diff";
+			// Build description
+			const parts = [...context];
+			if (tools.length > 0) {
+				parts.push(`Tools: ${tools.join(", ")}`);
+			}
+
+			if (parts.length > 0) {
+				return parts.join(" | ");
+			}
+
+			return `Turn ${entryId.slice(0, 8)}`;
+		} catch (error) {
+			return `Turn ${entryId.slice(0, 8)}`;
 		}
 	};
 
@@ -287,6 +376,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				return {
 					index: i,
 					label: `│ │ ${c.gitCommit.slice(0, 8)} | ${time} | ${filesText}${fileSummary}${marker}`,
+					description: c.entryId, // Store entryId for lookup
 					commit: c,
 				};
 			});
@@ -316,7 +406,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 			const changes = await getFileChanges(target.gitCommit, state.commits[state.currentIndex].gitCommit);
 
 			const time = new Date(target.timestamp).toLocaleString();
-			const userPreview = await getUserMessagePreview(target.entryId);
+			const turnDesc = await getTurnDescription(target.entryId);
 
 			let fileList = ``;
 
@@ -352,7 +442,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			const summary = `${userPreview}\nTime: ${time}\n\n${fileList}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTotal: ${changes.length} file(s)`;
+			const summary = `${turnDesc}\nTime: ${time}\n\n${fileList}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTotal: ${changes.length} file(s)`;
 
 			// Ask for action
 			const action = await ctx.ui.select("What would you like to do?", [
@@ -393,8 +483,18 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 					ctx.ui.notify(`Diff for ${file.path}:\n\n${diff}`, "info");
 				}
 
-				// Go back to restore menu (recursive call)
-				return await this.handler(args, ctx);
+				// Re-show the restore menu
+				const retryAction = await ctx.ui.select("What would you like to do?", [
+					"✅ Confirm Restore",
+					"👁️ View File Diffs",
+					"❌ Cancel",
+				]);
+
+				if (!retryAction || retryAction.includes("Cancel")) {
+					return;
+				}
+
+				// Continue to restore
 			}
 
 			// Confirm restore
