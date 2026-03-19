@@ -1,7 +1,5 @@
 /**
  * Git Undo/Redo - Debug Version
- *
- * Simplified version for testing - logs everything to console
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -35,7 +33,6 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 	let isGitRepo = false;
 
-	// Check git
 	const checkGit = async (): Promise<boolean> => {
 		try {
 			await pi.exec("git", ["rev-parse", "--git-dir"], { cwd: pi.cwd, timeout: 5000 });
@@ -49,7 +46,6 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	// Get file changes between two commits
 	const getFileChanges = async (fromCommit: string, toCommit: string): Promise<FileChangeInfo[]> => {
 		try {
 			const diffResult = await pi.exec("git", ["diff", "--numstat", fromCommit, toCommit], {
@@ -92,7 +88,39 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	// Create checkpoint
+	const getUserMessagePreview = async (entryId: string): Promise<string> => {
+		try {
+			const entries = (pi as any).sessionManager?.getEntries?.() || [];
+			const entryIndex = entries.findIndex((e: any) => e.id === entryId);
+			if (entryIndex <= 0) return `Entry: ${entryId.slice(0, 8)}`;
+
+			for (let i = entryIndex - 1; i >= 0; i--) {
+				const prevEntry = entries[i];
+				if (prevEntry.type === "message" && prevEntry.message?.role === "user") {
+					const content = prevEntry.message.content;
+					const text =
+						typeof content === "string"
+							? content
+							: Array.isArray(content)
+								? content
+										.filter((c: any) => c.type === "text")
+										.map((c: any) => c.text)
+										.join(" ")
+								: "";
+
+					if (text) {
+						const preview = text.length > 40 ? text.slice(0, 37) + "..." : text;
+						return `User: ${preview}`;
+					}
+				}
+			}
+
+			return `Entry: ${entryId.slice(0, 8)}`;
+		} catch {
+			return `Entry: ${entryId.slice(0, 8)}`;
+		}
+	};
+
 	const createCheckpoint = async (entryId: string) => {
 		if (!isGitRepo) return;
 
@@ -132,7 +160,6 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	// Register /gundo command
 	pi.registerCommand("gundo", {
 		description: "Git undo - select checkpoint to restore",
 		handler: async (args, ctx) => {
@@ -156,13 +183,16 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 			const selected = await ctx.ui.select(
 				"Select checkpoint to restore:",
-				checkpoints.map((c) => {
-					const time = new Date(c.info.timestamp).toLocaleTimeString();
-					const marker = c.isCurrent ? " ← CURRENT" : "";
-					const fileCount = c.info.changes.length;
-					const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
-					return `${c.info.gitCommit.slice(0, 8)} | ${time} | Entry: ${c.info.entryId} | ${filesText}${marker}`;
-				}),
+				await Promise.all(
+					checkpoints.map(async (c) => {
+						const time = new Date(c.info.timestamp).toLocaleTimeString();
+						const marker = c.isCurrent ? " ← CURRENT" : "";
+						const fileCount = c.info.changes.length;
+						const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
+						const userPreview = await getUserMessagePreview(c.info.entryId);
+						return `${c.info.gitCommit.slice(0, 8)} | ${time} | ${userPreview} | ${filesText}${marker}`;
+					}),
+				),
 			);
 
 			if (!selected) {
@@ -172,7 +202,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 			const selectedIndex = checkpoints.findIndex(
 				(c) =>
-					`${c.info.gitCommit.slice(0, 8)} | ${new Date(c.info.timestamp).toLocaleTimeString()} | Entry: ${c.info.entryId} | ${c.info.changes.length} file(s)${c.isCurrent ? " ← CURRENT" : ""}` ===
+					`${c.info.gitCommit.slice(0, 8)} | ${new Date(c.info.timestamp).toLocaleTimeString()} | ${await getUserMessagePreview(c.info.entryId)} | ${c.info.changes.length} file(s)${c.isCurrent ? " ← CURRENT" : ""}` ===
 					selected,
 			);
 
@@ -181,43 +211,47 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const current = state.commits[state.currentIndex];
 			const target = state.commits[selectedIndex];
-			const changes = await getFileChanges(target.gitCommit, current.gitCommit);
+			const changes = await getFileChanges(target.gitCommit, state.commits[state.currentIndex].gitCommit);
 
-			let summary = `Entry: ${target.entryId}\nTime: ${new Date(target.timestamp).toLocaleString()}\n\n`;
+			const time = new Date(target.timestamp).toLocaleString();
+			const userPreview = await getUserMessagePreview(target.entryId);
+
+			let fileList = ``;
 
 			if (changes.length === 0) {
-				summary += "No file changes";
+				fileList = `  No file changes`;
 			} else {
 				const added = changes.filter((c) => c.status === "added");
 				const modified = changes.filter((c) => c.status === "modified");
 				const deleted = changes.filter((c) => c.status === "deleted");
 
 				if (added.length > 0) {
-					summary += `📁 Added (${added.length}):\n`;
-					for (const f of added.slice(0, 10)) {
-						summary += `  + ${f.path}\n`;
+					fileList += `🟢 Added (${added.length}):\n`;
+					for (const f of added) {
+						const pathDisplay = f.path.length > 50 ? `...${f.path.slice(-47)}` : f.path;
+						fileList += `   + ${pathDisplay}\n`;
 					}
-					if (added.length > 10) summary += `  ... and ${added.length - 10} more\n`;
 				}
 
 				if (modified.length > 0) {
-					summary += `✏️ Modified (${modified.length}):\n`;
-					for (const f of modified.slice(0, 10)) {
-						summary += `  ~ ${f.path} (+${f.additions}/-${f.deletions})\n`;
+					fileList += `🟡 Modified (${modified.length}):\n`;
+					for (const f of modified) {
+						const pathDisplay = f.path.length > 45 ? `...${f.path.slice(-42)}` : f.path;
+						fileList += `   ~ ${pathDisplay} (+${f.additions}/-${f.deletions})\n`;
 					}
-					if (modified.length > 10) summary += `  ... and ${modified.length - 10} more\n`;
 				}
 
 				if (deleted.length > 0) {
-					summary += `🗑️ Deleted (${deleted.length}):\n`;
-					for (const f of deleted.slice(0, 10)) {
-						summary += `  - ${f.path}\n`;
+					fileList += `🔴 Deleted (${deleted.length}):\n`;
+					for (const f of deleted) {
+						const pathDisplay = f.path.length > 50 ? `...${f.path.slice(-47)}` : f.path;
+						fileList += `   - ${pathDisplay}\n`;
 					}
-					if (deleted.length > 10) summary += `  ... and ${deleted.length - 10} more\n`;
 				}
 			}
+
+			const summary = `${userPreview}\nTime: ${time}\n\n${fileList}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTotal: ${changes.length} file(s)`;
 
 			const mode = await ctx.ui.select("Restore mode:", [
 				"🔄 Files + Context (restore files and conversation)",
@@ -267,7 +301,6 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// Register /glog command
 	pi.registerCommand("glog", {
 		description: "Git undo log - debug version",
 		handler: async (args, ctx) => {
@@ -284,7 +317,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				const marker = i === state.currentIndex ? " ← CURRENT" : "";
 				const fileCount = c.changes.length;
 				const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
-				msg += `${i}: ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()} | Entry: ${c.entryId} | ${filesText}${marker}\n`;
+				msg += `${i}: ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()} | ${filesText}${marker}\n`;
 			}
 
 			ctx.ui.notify(msg, "info");
@@ -292,7 +325,6 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// Auto-capture on turn_end
 	pi.on("turn_end", async (event, ctx) => {
 		console.log("[git-undo] turn_end event");
 		await checkGit();
@@ -304,7 +336,6 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// Load state on start
 	pi.on("session_start", async (event, ctx) => {
 		console.log("[git-undo] session_start");
 		await checkGit();
