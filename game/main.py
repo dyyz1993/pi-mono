@@ -1,4 +1,4 @@
-# Tic-Tac-Toe Game - Enhanced with Score Tracking
+# Tic-Tac-Toe Game - Enhanced with Score Tracking and Difficulty
 # Main entry point
 
 from board import Board
@@ -8,31 +8,33 @@ from score import ScoreBoard
 def print_menu():
     print("\n=== Tic-Tac-Toe ===")
     print("1. PvP (Player vs Player)")
-    print("2. PvE (Player vs AI)")
-    print("3. View Scores")
-    print("4. Reset Scores")
-    print("5. Exit")
+    print("2. PvE Easy")
+    print("3. PvE Medium")
+    print("4. PvE Hard (Unbeatable)")
+    print("5. View Scores")
+    print("6. Reset Scores")
+    print("7. Exit")
 
 def main():
     scoreboard = ScoreBoard()
     
     while True:
         print_menu()
-        choice = input("\nSelect option (1-5): ").strip()
+        choice = input("\nSelect option (1-7): ").strip()
         
-        if choice == "5":
+        if choice == "7":
             print("Thanks for playing!")
             break
         
-        if choice == "3":
+        if choice == "5":
             scoreboard.print_scores()
             continue
         
-        if choice == "4":
+        if choice == "6":
             scoreboard.reset()
             continue
         
-        if choice not in ("1", "2"):
+        if choice not in ("1", "2", "3", "4"):
             print("Invalid option!")
             continue
         
@@ -41,10 +43,18 @@ def main():
             player1 = HumanPlayer("X")
             player2 = HumanPlayer("O")
             game_mode = "PvP"
+        elif choice == "2":
+            player1 = HumanPlayer("X")
+            player2 = AIPlayer("O", "easy")
+            game_mode = "PvE Easy"
+        elif choice == "3":
+            player1 = HumanPlayer("X")
+            player2 = AIPlayer("O", "medium")
+            game_mode = "PvE Medium"
         else:
             player1 = HumanPlayer("X")
-            player2 = AIPlayer("O")
-            game_mode = "PvE"
+            player2 = AIPlayer("O", "hard")
+            game_mode = "PvE Hard"
         
         # Play game
         board = Board()
@@ -61,7 +71,11 @@ def main():
                 board.print_board()
                 
                 if board.check_winner(current_player.symbol):
-                    print(f"Player {current_player.symbol} wins!")
+                    if choice != "1":  # PvE
+                        winner = "You" if current_player.symbol == "X" else "AI"
+                        print(f"{winner} wins!")
+                    else:
+                        print(f"Player {current_player.symbol} wins!")
                     scoreboard.add_win(current_player.symbol)
                     break
                 
