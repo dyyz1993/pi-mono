@@ -519,6 +519,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 			try {
 				console.log(`[git-undo] Resetting to ${target.gitCommit}`);
 
+				// 1. Reset git files
 				await pi.exec("git", ["reset", "--hard", target.gitCommit], {
 					cwd: pi.cwd,
 					timeout: 10000,
@@ -529,9 +530,26 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 					timeout: 10000,
 				});
 
+				// 2. Navigate to the checkpoint entry in session tree
+				const sessionManager = (pi as any).sessionManager;
+				const agent = (pi as any).agent;
+
+				if (sessionManager && agent) {
+					// Change leaf pointer to target entry
+					sessionManager.branch(target.entryId);
+
+					// Rebuild messages from new leaf
+					const sessionContext = sessionManager.buildSessionContext();
+					agent.replaceMessages(sessionContext.messages);
+
+					console.log(`[git-undo] ✅ Navigated to entry ${target.entryId}`);
+				}
+
+				// 3. Update state
 				state.currentIndex = selectedIndex;
 				pi.appendEntry(STATE_KEY, state);
 
+				// 4. Show result
 				const totalFiles = changes.length;
 				const resultMsg = mode.includes("Files + Context")
 					? `✅ Restored ${totalFiles} file(s) + conversation`
