@@ -33,6 +33,43 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 	let isGitRepo = false;
 
+	// Load state immediately when extension loads
+	const loadStateFromSession = async () => {
+		try {
+			const sessionManager = (pi as any).sessionManager;
+			if (!sessionManager) {
+				console.log("[git-undo] No sessionManager available");
+				return;
+			}
+
+			const entries = sessionManager.getEntries();
+			console.log(`[git-undo] Extension loaded - Session has ${entries.length} entries`);
+
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const entry = entries[i];
+				if (entry.type === "custom" && entry.customType === STATE_KEY) {
+					const loadedState = entry.data as DebugState;
+					state.commits = loadedState.commits || [];
+					state.currentIndex = loadedState.currentIndex || -1;
+					console.log(
+						`[git-undo] ✅ Loaded: ${state.commits.length} checkpoints, currentIndex=${state.currentIndex}`,
+					);
+					if (state.commits.length > 0) {
+						console.log(`[git-undo] Latest: ${state.commits[state.commits.length - 1].entryId}`);
+					}
+					return;
+				}
+			}
+
+			console.log("[git-undo] ⚠️ No checkpoints found");
+		} catch (error) {
+			console.error("[git-undo] Failed to load state:", error);
+		}
+	};
+
+	// Load state immediately
+	loadStateFromSession();
+
 	const checkGit = async (): Promise<boolean> => {
 		try {
 			await pi.exec("git", ["rev-parse", "--git-dir"], { cwd: pi.cwd, timeout: 5000 });
