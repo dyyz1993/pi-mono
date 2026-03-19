@@ -46,16 +46,33 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		try {
 			console.log(`[git-undo] Creating checkpoint for ${entryId}`);
 
-			// Add all changes
-			await pi.exec("git", ["add", "-A"], { cwd: pi.cwd, timeout: 10000 });
-
-			// Check if there are changes
+			// First check if there are any changes
 			const status = await pi.exec("git", ["status", "--porcelain"], { cwd: pi.cwd, timeout: 5000 });
+			const hasChanges = status.stdout.trim() !== "";
 
-			if (!status.stdout.trim()) {
-				console.log("[git-undo] No changes to commit");
+			if (!hasChanges) {
+				// No changes, but still save the current state for consistency
+				const hashResult = await pi.exec("git", ["rev-parse", "HEAD"], { cwd: pi.cwd, timeout: 5000 });
+				const hash = hashResult.stdout.trim();
+				console.log(`[git-undo] ℹ️ No changes, recording current: ${hash.slice(0, 8)}`);
+
+				// Check if we already have this commit
+				const alreadyExists = state.commits.some((c) => c.entryId === entryId);
+				if (!alreadyExists) {
+					state.commits.push({
+						entryId,
+						gitCommit: hash,
+						timestamp: Date.now(),
+					});
+					state.currentIndex = state.commits.length - 1;
+					pi.appendEntry(STATE_KEY, state);
+				}
 				return;
 			}
+
+			// Has changes - add and commit
+			console.log("[git-undo] Changes detected, creating commit...");
+			await pi.exec("git", ["add", "-A"], { cwd: pi.cwd, timeout: 10000 });
 
 			// Commit
 			const msg = `Undo checkpoint ${entryId.slice(0, 8)}`;
