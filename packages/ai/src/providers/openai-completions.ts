@@ -110,6 +110,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			stream.push({ type: "start", partial: output });
 
 			let currentBlock: TextContent | ThinkingContent | (ToolCall & { partialArgs?: string }) | null = null;
+			const activeToolCalls = new Map<string, ToolCall & { partialArgs?: string }>();
 			const blocks = output.content;
 			const blockIndex = () => blocks.length - 1;
 			const finishCurrentBlock = (block?: typeof currentBlock) => {
@@ -243,31 +244,37 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 
 					if (choice?.delta?.tool_calls) {
 						for (const toolCall of choice.delta.tool_calls) {
-							if (
-								!currentBlock ||
-								currentBlock.type !== "toolCall" ||
-								(toolCall.id && currentBlock.id !== toolCall.id)
-							) {
+							// Check if we already have this toolCall (by ID)
+							let block = toolCall.id ? activeToolCalls.get(toolCall.id) : undefined;
+							if (!block) {
+								// New toolCall - create block
 								finishCurrentBlock(currentBlock);
-								currentBlock = {
+								block = {
 									type: "toolCall",
 									id: toolCall.id || "",
 									name: toolCall.function?.name || "",
 									arguments: {},
 									partialArgs: "",
 								};
-								output.content.push(currentBlock);
+								output.content.push(block);
+								if (toolCall.id) {
+									activeToolCalls.set(toolCall.id, block);
+								}
 								stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
+								currentBlock = block;
+							} else {
+								// Existing toolCall - update block
+								currentBlock = block;
 							}
 
-							if (currentBlock.type === "toolCall") {
-								if (toolCall.id) currentBlock.id = toolCall.id;
-								if (toolCall.function?.name) currentBlock.name = toolCall.function.name;
+							if (block.type === "toolCall") {
+								if (toolCall.id) block.id = toolCall.id;
+								if (toolCall.function?.name) block.name = toolCall.function.name;
 								let delta = "";
 								if (toolCall.function?.arguments) {
 									delta = toolCall.function.arguments;
-									currentBlock.partialArgs += toolCall.function.arguments;
-									currentBlock.arguments = parseStreamingJson(currentBlock.partialArgs);
+									block.partialArgs += toolCall.function.arguments;
+									block.arguments = parseStreamingJson(block.partialArgs);
 								}
 								stream.push({
 									type: "toolcall_delta",
@@ -296,6 +303,11 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			}
 
 			finishCurrentBlock(currentBlock);
+			// Finish all active toolCalls
+			for (const block of activeToolCalls.values()) {
+				finishCurrentBlock(block);
+			}
+			activeToolCalls.clear();
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
