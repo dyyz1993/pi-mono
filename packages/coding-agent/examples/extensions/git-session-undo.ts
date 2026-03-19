@@ -285,7 +285,10 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			if (!ctx.hasUI) return;
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Rollback not available in this mode", "error");
+				return;
+			}
 
 			const confirm = await ctx.ui.confirm(
 				"Rollback to this point?",
@@ -298,13 +301,12 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 			if (success) {
 				ctx.ui.notify(`Rolled back to ${entryId}`, "info");
 
-				// Note: Navigation to entry is not directly available in commands
-				// User can use /tree command manually if needed
-
 				// Update state
 				state.currentIndex = state.commits.findIndex((c) => c.entryId === entryId);
 				state.undoStack = [];
 				pi.appendEntry(STATE_KEY, state);
+
+				ctx.ui.notify("Tip: Use /tree to navigate to the conversation point", "info");
 			} else {
 				ctx.ui.notify("Rollback failed", "error");
 			}
