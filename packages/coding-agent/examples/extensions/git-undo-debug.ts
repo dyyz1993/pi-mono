@@ -48,37 +48,71 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 	const getFileChanges = async (fromCommit: string, toCommit: string): Promise<FileChangeInfo[]> => {
 		try {
-			const diffResult = await pi.exec("git", ["diff", "--numstat", fromCommit, toCommit], {
+			// Get diff with status (A=added, M=modified, D=deleted)
+			const statusResult = await pi.exec("git", ["diff", "--name-status", fromCommit, toCommit], {
+				cwd: pi.cwd,
+				timeout: 10000,
+			});
+
+			// Get numstat for line counts
+			const numstatResult = await pi.exec("git", ["diff", "--numstat", fromCommit, toCommit], {
 				cwd: pi.cwd,
 				timeout: 10000,
 			});
 
 			const changes: FileChangeInfo[] = [];
-			const lines = diffResult.stdout
+			const statusLines = statusResult.stdout
+				.trim()
+				.split("\n")
+				.filter((l) => l);
+			const numstatLines = numstatResult.stdout
 				.trim()
 				.split("\n")
 				.filter((l) => l);
 
-			for (const line of lines) {
+			// Build numstat map
+			const numstatMap = new Map<string, { additions: number; deletions: number }>();
+			for (const line of numstatLines) {
 				const parts = line.split(/\s+/);
 				if (parts.length >= 3) {
 					const additions = parseInt(parts[0]) || 0;
 					const deletions = parseInt(parts[1]) || 0;
 					let path = parts[2];
+					if (path.includes(" => ")) {
+						path = path.split(" => ")[1];
+					}
+					numstatMap.set(path, { additions, deletions });
+				}
+			}
+
+			for (const line of statusLines) {
+				const parts = line.split(/\s+/);
+				if (parts.length >= 2) {
+					const statusChar = parts[0];
+					let path = parts[1];
 
 					if (path.includes(" => ")) {
 						path = path.split(" => ")[1];
 					}
 
 					let status: FileChangeInfo["status"] = "modified";
-					if (additions > 0 && deletions === 0 && path.startsWith("/dev/null")) {
+					if (statusChar === "A") {
 						status = "added";
-					} else if (additions === 0 && deletions > 0 && path.endsWith("/dev/null")) {
+					} else if (statusChar === "D") {
 						status = "deleted";
-						path = path.replace("/dev/null", "");
+					} else if (statusChar === "R") {
+						// Renamed file - treat as deleted + added
+						status = "added";
 					}
 
-					changes.push({ path, status, additions, deletions });
+					const numstat = numstatMap.get(path) || { additions: 0, deletions: 0 };
+
+					changes.push({
+						path,
+						status,
+						additions: numstat.additions,
+						deletions: numstat.deletions,
+					});
 				}
 			}
 
@@ -118,6 +152,18 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 			return `Entry: ${entryId.slice(0, 8)}`;
 		} catch {
 			return `Entry: ${entryId.slice(0, 8)}`;
+		}
+	};
+
+	const getFileDiff = async (fromCommit: string, toCommit: string, filePath: string): Promise<string> => {
+		try {
+			const diffResult = await pi.exec("git", ["diff", fromCommit, toCommit, "--", filePath], {
+				cwd: pi.cwd,
+				timeout: 10000,
+			});
+			return diffResult.stdout || "No diff available";
+		} catch {
+			return "Unable to get diff";
 		}
 	};
 
@@ -164,6 +210,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		description: "Git undo - select checkpoint to restore",
 		handler: async (args, ctx) => {
 			console.log("[git-undo] /gundo called");
+			console.log(`[git-undo] State: ${state.commits.length} checkpoints, currentIndex=${state.currentIndex}`);
 
 			if (!(await checkGit())) {
 				ctx.ui.notify("Not a git repo", "error");
@@ -171,28 +218,46 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 			}
 
 			if (state.commits.length === 0) {
-				ctx.ui.notify("Nothing to undo", "warning");
+				console.log("[git-undo] No checkpoints available");
+				ctx.ui.notify("Nothing to undo - no checkpoints captured yet. Make some file changes first!", "warning");
 				return;
 			}
 
-			const checkpoints = state.commits.map((c, i) => ({
-				info: c,
-				index: i,
-				isCurrent: i === state.currentIndex,
-			}));
+			// Get current leaf to verify path
+			const currentLeaf = ctx.sessionManager.getLeafId();
+			console.log(`[git-undo] Current leaf: ${currentLeaf}`);
 
+			// Build tree-like display (similar to /tree)
+			const checkpointItems = state.commits.map((c, i) => {
+				const time = new Date(c.timestamp).toLocaleTimeString();
+				const fileCount = c.changes.length;
+				const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
+				const marker = i === state.currentIndex ? " ← CURRENT" : "";
+
+				// Build file summary
+				let fileSummary = "";
+				if (fileCount > 0) {
+					const added = c.changes.filter((ch) => ch.status === "added").length;
+					const modified = c.changes.filter((ch) => ch.status === "modified").length;
+					const deleted = c.changes.filter((ch) => ch.status === "deleted").length;
+					const parts = [];
+					if (added > 0) parts.push(`🟢+${added}`);
+					if (modified > 0) parts.push(`🟡~${modified}`);
+					if (deleted > 0) parts.push(`🔴-${deleted}`);
+					fileSummary = ` | ${parts.join(" ")}`;
+				}
+
+				return {
+					index: i,
+					label: `│ │ ${c.gitCommit.slice(0, 8)} | ${time} | ${filesText}${fileSummary}${marker}`,
+					commit: c,
+				};
+			});
+
+			// Show tree-like selector
 			const selected = await ctx.ui.select(
-				"Select checkpoint to restore:",
-				await Promise.all(
-					checkpoints.map(async (c) => {
-						const time = new Date(c.info.timestamp).toLocaleTimeString();
-						const marker = c.isCurrent ? " ← CURRENT" : "";
-						const fileCount = c.info.changes.length;
-						const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
-						const userPreview = await getUserMessagePreview(c.info.entryId);
-						return `${c.info.gitCommit.slice(0, 8)} | ${time} | ${userPreview} | ${filesText}${marker}`;
-					}),
-				),
+				"Git Undo - Select checkpoint to restore:",
+				checkpointItems.map((item) => item.label),
 			);
 
 			if (!selected) {
@@ -200,11 +265,12 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			// Find selected checkpoint by matching the hash
-			const selectedHash = selected.split(" | ")[0];
-			const selectedIndex = checkpoints.findIndex((c) => c.info.gitCommit.slice(0, 8) === selectedHash);
+			// Find selected checkpoint
+			const selectedItem = checkpointItems.find((item) => item.label === selected);
+			if (!selectedItem) return;
 
-			if (selectedIndex === -1 || selectedIndex === state.currentIndex) {
+			const selectedIndex = selectedItem.index;
+			if (selectedIndex === state.currentIndex) {
 				ctx.ui.notify("Already at selected checkpoint", "info");
 				return;
 			}
@@ -251,20 +317,64 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 			const summary = `${userPreview}\nTime: ${time}\n\n${fileList}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTotal: ${changes.length} file(s)`;
 
-			const mode = await ctx.ui.select("Restore mode:", [
-				"🔄 Files + Context (restore files and conversation)",
-				"📄 Files Only (restore files, keep conversation)",
+			// Ask for action
+			const action = await ctx.ui.select("What would you like to do?", [
+				"✅ Confirm Restore",
+				"👁️ View File Diffs",
 				"❌ Cancel",
 			]);
 
-			if (!mode || mode.includes("Cancel")) {
+			if (!action || action.includes("Cancel")) {
 				console.log("[git-undo] Restore cancelled");
 				return;
 			}
 
+			// View diffs
+			if (action.includes("View")) {
+				if (changes.length === 0) {
+					ctx.ui.notify("No file changes to view", "info");
+					return;
+				}
+
+				// Let user select which file to view
+				const fileOptions = changes.map((c) => {
+					const icon = c.status === "added" ? "🟢" : c.status === "deleted" ? "🔴" : "🟡";
+					const changesText = c.status === "modified" ? `(+${c.additions}/-${c.deletions})` : "";
+					return `${icon} ${c.path} ${changesText}`;
+				});
+
+				const selectedFile = await ctx.ui.select("Select file to view diff:", fileOptions);
+
+				if (!selectedFile) return;
+
+				const fileIndex = fileOptions.indexOf(selectedFile);
+				if (fileIndex >= 0) {
+					const file = changes[fileIndex];
+					const diff = await getFileDiff(target.gitCommit, state.commits[state.currentIndex].gitCommit, file.path);
+
+					// Show diff in a scrollable view
+					ctx.ui.notify(`Diff for ${file.path}:\n\n${diff}`, "info");
+				}
+
+				// Go back to restore menu (recursive call)
+				return await this.handler(args, ctx);
+			}
+
+			// Confirm restore
 			const confirm = await ctx.ui.confirm(`Restore to ${target.gitCommit.slice(0, 8)}?`, summary);
 
 			if (!confirm) {
+				console.log("[git-undo] Restore cancelled");
+				return;
+			}
+
+			// Ask for restore mode
+			const mode = await ctx.ui.select("Restore mode:", [
+				"🔄 Files + Context (restore files and conversation)",
+				"📄 Files Only (restore files, keep conversation)",
+			]);
+
+			if (!mode) {
 				console.log("[git-undo] Restore cancelled");
 				return;
 			}
@@ -299,53 +409,139 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("glog", {
-		description: "Git undo log - debug version",
-		handler: async (args, ctx) => {
-			await checkGit();
+	const selectedFile = await ctx.ui.select("Select file to view diff:", fileOptions);
 
-			if (state.commits.length === 0) {
-				ctx.ui.notify("No checkpoints", "info");
-				return;
-			}
+	if (!selectedFile) return;
 
-			let msg = `Checkpoints (${state.commits.length}):\n\n`;
-			for (let i = 0; i < state.commits.length; i++) {
-				const c = state.commits[i];
-				const marker = i === state.currentIndex ? " ← CURRENT" : "";
-				const fileCount = c.changes.length;
-				const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
-				msg += `${i}: ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()} | ${filesText}${marker}\n`;
-			}
+	const fileIndex = fileOptions.indexOf(selectedFile);
+	if (fileIndex >= 0) {
+		const file = changes[fileIndex];
+		const diff = await getFileDiff(target.gitCommit, state.commits[state.currentIndex].gitCommit, file.path);
 
-			ctx.ui.notify(msg, "info");
-			console.log("[git-undo] /glog:", msg);
-		},
+		// Show diff in a scrollable view
+		ctx.ui.notify(`Diff for ${file.path}:\n\n${diff}`, "info");
+	}
+
+	// Go back to restore menu
+	return await this.handler(args, ctx);
+}
+
+// Confirm restore
+const confirm = await ctx.ui.confirm(`Restore to ${target.gitCommit.slice(0, 8)}?`, summary);
+
+if (!confirm) {
+	console.log("[git-undo] Restore cancelled");
+	return;
+}
+
+try {
+	console.log(`[git-undo] Resetting to ${target.gitCommit}`);
+
+	await pi.exec("git", ["reset", "--hard", target.gitCommit], {
+		cwd: pi.cwd,
+		timeout: 10000,
 	});
 
-	pi.on("turn_end", async (event, ctx) => {
-		console.log("[git-undo] turn_end event");
+	await pi.exec("git", ["clean", "-fd"], {
+		cwd: pi.cwd,
+		timeout: 10000,
+	});
+
+	state.currentIndex = selectedIndex;
+	pi.appendEntry(STATE_KEY, state);
+
+	const totalFiles = changes.length;
+	const resultMsg = mode.includes("Files + Context")
+		? `✅ Restored ${totalFiles} file(s) + conversation`
+		: `✅ Restored ${totalFiles} file(s)`;
+
+	ctx.ui.notify(resultMsg, "success");
+	console.log(`[git-undo] ✅ Restore successful: ${totalFiles} file(s)`);
+} catch (error) {
+	ctx.ui.notify("Restore failed", "error");
+	console.error("[git-undo] ❌ Restore failed:", error);
+}
+},
+	})
+
+pi.registerCommand("glog", {
+	description: "Git undo log - debug version",
+	handler: async (args, ctx) => {
 		await checkGit();
 
-		const leaf = ctx.sessionManager.getLeafEntry();
-		if (leaf) {
-			console.log(`[git-undo] Leaf: ${leaf.id}`);
-			await createCheckpoint(leaf.id);
+		if (state.commits.length === 0) {
+			ctx.ui.notify("No checkpoints", "info");
+			return;
 		}
-	});
 
-	pi.on("session_start", async (event, ctx) => {
-		console.log("[git-undo] session_start");
-		await checkGit();
-
-		const entries = ctx.sessionManager.getEntries();
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
-			if (entry.type === "custom" && entry.customType === STATE_KEY) {
-				state = entry.data as DebugState;
-				console.log(`[git-undo] Loaded state: ${state.commits.length} commits`);
-				break;
-			}
+		let msg = `Checkpoints (${state.commits.length}):\n\n`;
+		for (let i = 0; i < state.commits.length; i++) {
+			const c = state.commits[i];
+			const marker = i === state.currentIndex ? " ← CURRENT" : "";
+			const fileCount = c.changes.length;
+			const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
+			msg += `${i}: ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()} | ${filesText}${marker}\n`;
 		}
-	});
+
+		ctx.ui.notify(msg, "info");
+		console.log("[git-undo] /glog:", msg);
+	},
+});
+
+pi.on("turn_end", async (event, ctx) => {
+	console.log("[git-undo] turn_end event");
+	await checkGit();
+
+	const leaf = ctx.sessionManager.getLeafEntry();
+	if (leaf) {
+		console.log(`[git-undo] Leaf: ${leaf.id}`);
+		await createCheckpoint(leaf.id);
+	}
+});
+
+// Update checkpoints when navigating tree
+pi.on("session_tree", async (event, ctx) => {
+	console.log("[git-undo] session_tree event - navigation detected");
+
+	// Filter checkpoints to only include those on current path
+	const currentLeaf = ctx.sessionManager.getLeafId();
+	if (!currentLeaf) return;
+
+	// Get all entries on current path
+	const pathEntries = ctx.sessionManager.getBranch(currentLeaf);
+	const pathEntryIds = new Set(pathEntries.map((e: any) => e.id));
+
+	// Filter checkpoints to only include those on current path
+	const filteredCommits = state.commits.filter((c) => pathEntryIds.has(c.entryId));
+
+	if (filteredCommits.length !== state.commits.length) {
+		console.log(`[git-undo] Filtered checkpoints: ${state.commits.length} → ${filteredCommits.length}`);
+		state.commits = filteredCommits;
+		state.currentIndex = filteredCommits.length - 1;
+		pi.appendEntry(STATE_KEY, state);
+	}
+});
+
+pi.on("session_start", async (event, ctx) => {
+	console.log("[git-undo] session_start");
+	await checkGit();
+
+	const entries = ctx.sessionManager.getEntries();
+	console.log(`[git-undo] Session has ${entries.length} entries`);
+
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type === "custom" && entry.customType === STATE_KEY) {
+			state = entry.data as DebugState;
+			console.log(
+				`[git-undo] ✅ Loaded state: ${state.commits.length} checkpoints, currentIndex=${state.currentIndex}`,
+			);
+			break;
+		}
+	}
+
+	if (state.commits.length === 0) {
+		console.log("[git-undo] ⚠️ No checkpoints loaded");
+	}
+});
 }
