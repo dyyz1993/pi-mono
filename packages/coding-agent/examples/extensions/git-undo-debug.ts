@@ -409,139 +409,84 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	const selectedFile = await ctx.ui.select("Select file to view diff:", fileOptions);
+	pi.registerCommand("glog", {
+		description: "Git undo log - debug version",
+		handler: async (args, ctx) => {
+			await checkGit();
 
-	if (!selectedFile) return;
+			if (state.commits.length === 0) {
+				ctx.ui.notify("No checkpoints", "info");
+				return;
+			}
 
-	const fileIndex = fileOptions.indexOf(selectedFile);
-	if (fileIndex >= 0) {
-		const file = changes[fileIndex];
-		const diff = await getFileDiff(target.gitCommit, state.commits[state.currentIndex].gitCommit, file.path);
+			let msg = `Checkpoints (${state.commits.length}):\n\n`;
+			for (let i = 0; i < state.commits.length; i++) {
+				const c = state.commits[i];
+				const marker = i === state.currentIndex ? " ← CURRENT" : "";
+				const fileCount = c.changes.length;
+				const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
+				msg += `${i}: ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()} | ${filesText}${marker}\n`;
+			}
 
-		// Show diff in a scrollable view
-		ctx.ui.notify(`Diff for ${file.path}:\n\n${diff}`, "info");
-	}
-
-	// Go back to restore menu
-	return await this.handler(args, ctx);
-}
-
-// Confirm restore
-const confirm = await ctx.ui.confirm(`Restore to ${target.gitCommit.slice(0, 8)}?`, summary);
-
-if (!confirm) {
-	console.log("[git-undo] Restore cancelled");
-	return;
-}
-
-try {
-	console.log(`[git-undo] Resetting to ${target.gitCommit}`);
-
-	await pi.exec("git", ["reset", "--hard", target.gitCommit], {
-		cwd: pi.cwd,
-		timeout: 10000,
+			ctx.ui.notify(msg, "info");
+			console.log("[git-undo] /glog:", msg);
+		},
 	});
 
-	await pi.exec("git", ["clean", "-fd"], {
-		cwd: pi.cwd,
-		timeout: 10000,
-	});
-
-	state.currentIndex = selectedIndex;
-	pi.appendEntry(STATE_KEY, state);
-
-	const totalFiles = changes.length;
-	const resultMsg = mode.includes("Files + Context")
-		? `✅ Restored ${totalFiles} file(s) + conversation`
-		: `✅ Restored ${totalFiles} file(s)`;
-
-	ctx.ui.notify(resultMsg, "success");
-	console.log(`[git-undo] ✅ Restore successful: ${totalFiles} file(s)`);
-} catch (error) {
-	ctx.ui.notify("Restore failed", "error");
-	console.error("[git-undo] ❌ Restore failed:", error);
-}
-},
-	})
-
-pi.registerCommand("glog", {
-	description: "Git undo log - debug version",
-	handler: async (args, ctx) => {
+	pi.on("turn_end", async (event, ctx) => {
+		console.log("[git-undo] turn_end event");
 		await checkGit();
 
+		const leaf = ctx.sessionManager.getLeafEntry();
+		if (leaf) {
+			console.log(`[git-undo] Leaf: ${leaf.id}`);
+			await createCheckpoint(leaf.id);
+		}
+	});
+
+	// Update checkpoints when navigating tree
+	pi.on("session_tree", async (event, ctx) => {
+		console.log("[git-undo] session_tree event - navigation detected");
+
+		// Filter checkpoints to only include those on current path
+		const currentLeaf = ctx.sessionManager.getLeafId();
+		if (!currentLeaf) return;
+
+		// Get all entries on current path
+		const pathEntries = ctx.sessionManager.getBranch(currentLeaf);
+		const pathEntryIds = new Set(pathEntries.map((e: any) => e.id));
+
+		// Filter checkpoints to only include those on current path
+		const filteredCommits = state.commits.filter((c) => pathEntryIds.has(c.entryId));
+
+		if (filteredCommits.length !== state.commits.length) {
+			console.log(`[git-undo] Filtered checkpoints: ${state.commits.length} → ${filteredCommits.length}`);
+			state.commits = filteredCommits;
+			state.currentIndex = filteredCommits.length - 1;
+			pi.appendEntry(STATE_KEY, state);
+		}
+	});
+
+	pi.on("session_start", async (event, ctx) => {
+		console.log("[git-undo] session_start");
+		await checkGit();
+
+		const entries = ctx.sessionManager.getEntries();
+		console.log(`[git-undo] Session has ${entries.length} entries`);
+
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "custom" && entry.customType === STATE_KEY) {
+				state = entry.data as DebugState;
+				console.log(
+					`[git-undo] ✅ Loaded state: ${state.commits.length} checkpoints, currentIndex=${state.currentIndex}`,
+				);
+				break;
+			}
+		}
+
 		if (state.commits.length === 0) {
-			ctx.ui.notify("No checkpoints", "info");
-			return;
+			console.log("[git-undo] ⚠️ No checkpoints loaded");
 		}
-
-		let msg = `Checkpoints (${state.commits.length}):\n\n`;
-		for (let i = 0; i < state.commits.length; i++) {
-			const c = state.commits[i];
-			const marker = i === state.currentIndex ? " ← CURRENT" : "";
-			const fileCount = c.changes.length;
-			const filesText = fileCount === 0 ? "no changes" : `${fileCount} file(s)`;
-			msg += `${i}: ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()} | ${filesText}${marker}\n`;
-		}
-
-		ctx.ui.notify(msg, "info");
-		console.log("[git-undo] /glog:", msg);
-	},
-});
-
-pi.on("turn_end", async (event, ctx) => {
-	console.log("[git-undo] turn_end event");
-	await checkGit();
-
-	const leaf = ctx.sessionManager.getLeafEntry();
-	if (leaf) {
-		console.log(`[git-undo] Leaf: ${leaf.id}`);
-		await createCheckpoint(leaf.id);
-	}
-});
-
-// Update checkpoints when navigating tree
-pi.on("session_tree", async (event, ctx) => {
-	console.log("[git-undo] session_tree event - navigation detected");
-
-	// Filter checkpoints to only include those on current path
-	const currentLeaf = ctx.sessionManager.getLeafId();
-	if (!currentLeaf) return;
-
-	// Get all entries on current path
-	const pathEntries = ctx.sessionManager.getBranch(currentLeaf);
-	const pathEntryIds = new Set(pathEntries.map((e: any) => e.id));
-
-	// Filter checkpoints to only include those on current path
-	const filteredCommits = state.commits.filter((c) => pathEntryIds.has(c.entryId));
-
-	if (filteredCommits.length !== state.commits.length) {
-		console.log(`[git-undo] Filtered checkpoints: ${state.commits.length} → ${filteredCommits.length}`);
-		state.commits = filteredCommits;
-		state.currentIndex = filteredCommits.length - 1;
-		pi.appendEntry(STATE_KEY, state);
-	}
-});
-
-pi.on("session_start", async (event, ctx) => {
-	console.log("[git-undo] session_start");
-	await checkGit();
-
-	const entries = ctx.sessionManager.getEntries();
-	console.log(`[git-undo] Session has ${entries.length} entries`);
-
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i];
-		if (entry.type === "custom" && entry.customType === STATE_KEY) {
-			state = entry.data as DebugState;
-			console.log(
-				`[git-undo] ✅ Loaded state: ${state.commits.length} checkpoints, currentIndex=${state.currentIndex}`,
-			);
-			break;
-		}
-	}
-
-	if (state.commits.length === 0) {
-		console.log("[git-undo] ⚠️ No checkpoints loaded");
-	}
-});
+	});
 }
