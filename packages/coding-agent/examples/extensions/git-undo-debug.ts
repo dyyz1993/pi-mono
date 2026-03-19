@@ -18,7 +18,7 @@ interface DebugState {
 }
 
 export default function gitUndoDebugExtension(pi: ExtensionAPI) {
-	let state: DebugState = {
+	const state: DebugState = {
 		commits: [],
 		currentIndex: -1,
 	};
@@ -97,9 +97,9 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	// Register /gundo (git undo)
+	// Register /gundo (git undo) - with selector like /tree
 	pi.registerCommand("gundo", {
-		description: "Git undo - debug version",
+		description: "Git undo - select checkpoint to restore",
 		handler: async (args, ctx) => {
 			console.log("[git-undo] /gundo called");
 
@@ -108,34 +108,65 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			if (state.currentIndex < 0) {
+			if (state.commits.length === 0) {
 				ctx.ui.notify("Nothing to undo", "warning");
 				console.log("[git-undo] Nothing to undo");
 				return;
 			}
 
-			const current = state.commits[state.currentIndex];
-			console.log(`[git-undo] Current: ${current.entryId} @ ${current.gitCommit.slice(0, 8)}`);
+			// Build checkpoint list for selection
+			const checkpoints = state.commits.map((c, i) => ({
+				id: c.entryId,
+				hash: c.gitCommit,
+				timestamp: c.timestamp,
+				index: i,
+				isCurrent: i === state.currentIndex,
+			}));
 
-			if (state.currentIndex === 0) {
-				ctx.ui.notify("Already at first checkpoint", "warning");
+			// Show selector (like /tree)
+			const selected = await ctx.ui.select(
+				"Select checkpoint to restore:",
+				checkpoints.map((c) => {
+					const time = new Date(c.timestamp).toLocaleTimeString();
+					const marker = c.isCurrent ? " ← CURRENT" : "";
+					return `${c.hash.slice(0, 8)} | ${time} | Entry: ${c.id}${marker}`;
+				}),
+			);
+
+			if (!selected) {
+				console.log("[git-undo] Selection cancelled");
 				return;
 			}
 
-			const prev = state.commits[state.currentIndex - 1];
-			console.log(`[git-undo] Previous: ${prev.entryId} @ ${prev.gitCommit.slice(0, 8)}`);
+			// Find selected checkpoint
+			const selectedIndex = checkpoints.findIndex(
+				(c) =>
+					`${c.hash.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()} | Entry: ${c.id}${c.isCurrent ? " ← CURRENT" : ""}` ===
+					selected,
+			);
 
-			const confirm = await ctx.ui.confirm("Undo?", `Revert to ${prev.gitCommit.slice(0, 8)}?`);
+			if (selectedIndex === -1 || selectedIndex === state.currentIndex) {
+				ctx.ui.notify("Already at selected checkpoint", "info");
+				return;
+			}
+
+			const target = state.commits[selectedIndex];
+			console.log(`[git-undo] Restoring to ${target.gitCommit.slice(0, 8)}`);
+
+			const confirm = await ctx.ui.confirm(
+				`Restore to ${target.gitCommit.slice(0, 8)}?`,
+				`Entry: ${target.entryId}\nTime: ${new Date(target.timestamp).toLocaleString()}`,
+			);
 
 			if (!confirm) {
-				console.log("[git-undo] Cancelled");
+				console.log("[git-undo] Restore cancelled");
 				return;
 			}
 
 			try {
-				console.log(`[git-undo] Resetting to ${prev.gitCommit}`);
+				console.log(`[git-undo] Resetting to ${target.gitCommit}`);
 
-				await pi.exec("git", ["reset", "--hard", prev.gitCommit], {
+				await pi.exec("git", ["reset", "--hard", target.gitCommit], {
 					cwd: pi.cwd,
 					timeout: 10000,
 				});
@@ -145,66 +176,85 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 					timeout: 10000,
 				});
 
-				state.currentIndex--;
+				state.currentIndex = selectedIndex;
 				pi.appendEntry(STATE_KEY, state);
 
-				ctx.ui.notify(`✅ Undone to ${prev.gitCommit.slice(0, 8)}`, "success");
-				console.log("[git-undo] ✅ Undo successful");
+				ctx.ui.notify(`✅ Restored to ${target.gitCommit.slice(0, 8)}`, "success");
+				console.log("[git-undo] ✅ Restore successful");
 			} catch (error) {
-				ctx.ui.notify("Undo failed", "error");
-				console.error("[git-undo] ❌ Undo failed:", error);
+				ctx.ui.notify("Restore failed", "error");
+				console.error("[git-undo] ❌ Restore failed:", error);
 			}
 		},
 	});
 
-	// Register /glog (git log)
-	pi.registerCommand("glog", {
-		description: "Git undo log - debug version",
-		handler: async (args, ctx) => {
-			await checkGit();
+	await pi.exec("git", ["clean", "-fd"], {
+					cwd: pi.cwd,
+					timeout: 10000,
+				});
 
-			if (state.commits.length === 0) {
-				ctx.ui.notify("No checkpoints", "info");
-				return;
-			}
+	state.currentIndex--;
+	pi.appendEntry(STATE_KEY, state);
 
-			let msg = `Checkpoints (${state.commits.length}):\n\n`;
-			for (let i = 0; i < state.commits.length; i++) {
-				const c = state.commits[i];
-				const marker = i === state.currentIndex ? " ← CURRENT" : "";
-				msg += `${i}: ${c.entryId} | ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()}${marker}\n`;
-			}
+	ctx.ui.notify(`✅ Undone to ${prev.gitCommit.slice(0, 8)}`, "success");
+	console.log("[git-undo] ✅ Undo successful");
+}
+catch (error)
+{
+	ctx.ui.notify("Undo failed", "error");
+	console.error("[git-undo] ❌ Undo failed:", error);
+}
+},
+	})
 
-			ctx.ui.notify(msg, "info");
-			console.log("[git-undo] /glog:", msg);
-		},
-	});
-
-	// Auto-capture on turn_end
-	pi.on("turn_end", async (event, ctx) => {
-		console.log("[git-undo] turn_end event");
+// Register /glog (git log)
+pi.registerCommand("glog", {
+	description: "Git undo log - debug version",
+	handler: async (args, ctx) => {
 		await checkGit();
 
-		const leaf = ctx.sessionManager.getLeafEntry();
-		if (leaf) {
-			console.log(`[git-undo] Leaf: ${leaf.id}`);
-			await createCheckpoint(leaf.id);
+		if (state.commits.length === 0) {
+			ctx.ui.notify("No checkpoints", "info");
+			return;
 		}
-	});
 
-	// Load state on start
-	pi.on("session_start", async (event, ctx) => {
-		console.log("[git-undo] session_start");
-		await checkGit();
-
-		const entries = ctx.sessionManager.getEntries();
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
-			if (entry.type === "custom" && entry.customType === STATE_KEY) {
-				state = entry.data as DebugState;
-				console.log(`[git-undo] Loaded state: ${state.commits.length} commits`);
-				break;
-			}
+		let msg = `Checkpoints (${state.commits.length}):\n\n`;
+		for (let i = 0; i < state.commits.length; i++) {
+			const c = state.commits[i];
+			const marker = i === state.currentIndex ? " ← CURRENT" : "";
+			msg += `${i}: ${c.entryId} | ${c.gitCommit.slice(0, 8)} | ${new Date(c.timestamp).toLocaleTimeString()}${marker}\n`;
 		}
-	});
+
+		ctx.ui.notify(msg, "info");
+		console.log("[git-undo] /glog:", msg);
+	},
+});
+
+// Auto-capture on turn_end
+pi.on("turn_end", async (event, ctx) => {
+	console.log("[git-undo] turn_end event");
+	await checkGit();
+
+	const leaf = ctx.sessionManager.getLeafEntry();
+	if (leaf) {
+		console.log(`[git-undo] Leaf: ${leaf.id}`);
+		await createCheckpoint(leaf.id);
+	}
+});
+
+// Load state on start
+pi.on("session_start", async (event, ctx) => {
+	console.log("[git-undo] session_start");
+	await checkGit();
+
+	const entries = ctx.sessionManager.getEntries();
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type === "custom" && entry.customType === STATE_KEY) {
+			state = entry.data as DebugState;
+			console.log(`[git-undo] Loaded state: ${state.commits.length} commits`);
+			break;
+		}
+	}
+});
 }
