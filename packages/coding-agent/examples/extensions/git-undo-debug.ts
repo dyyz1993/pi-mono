@@ -200,11 +200,9 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const selectedIndex = checkpoints.findIndex(
-				(c) =>
-					`${c.info.gitCommit.slice(0, 8)} | ${new Date(c.info.timestamp).toLocaleTimeString()} | ${await getUserMessagePreview(c.info.entryId)} | ${c.info.changes.length} file(s)${c.isCurrent ? " ← CURRENT" : ""}` ===
-					selected,
-			);
+			// Find selected checkpoint by matching the hash
+			const selectedHash = selected.split(" | ")[0];
+			const selectedIndex = checkpoints.findIndex((c) => c.info.gitCommit.slice(0, 8) === selectedHash);
 
 			if (selectedIndex === -1 || selectedIndex === state.currentIndex) {
 				ctx.ui.notify("Already at selected checkpoint", "info");
