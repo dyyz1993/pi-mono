@@ -56,7 +56,12 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			const subcommand = parts[0] || "list";
 			const bashCount = manager.getAll().length;
 			
-			ctx.ui.notify(`subcommand=${subcommand}, count=${bashCount}, hasUI=${ctx.hasUI}`, "info");
+			// 无论有没有 UI 都尝试 notify
+			try {
+				ctx.ui.notify(`subcommand=${subcommand}, count=${bashCount}, hasUI=${ctx.hasUI}`, "info");
+			} catch (e) {
+				console.log(`[bash] notify failed: ${e}`);
+			}
 		},
 	});
 
