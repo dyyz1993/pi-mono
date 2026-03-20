@@ -16,17 +16,12 @@
 
 import type {
 	ExtensionAPI,
-	ExtensionCommandContext,
 	ToolCallEvent,
-	UserBashEvent,
 } from "../../src/core/extensions/index.js";
 import type { BashInfo } from "../../src/core/bash-manager.js";
 import { BashManager, getGlobalBashManager } from "../../src/core/bash-manager.js";
 import { matchesKey, truncateToWidth, type Component } from "@mariozechner/pi-tui";
 import type { Theme } from "../../src/modes/interactive/theme/theme.js";
-import type { TUI } from "@mariozechner/pi-tui";
-import type { KeybindingsManager } from "../../src/core/keybindings.js";
-import type { OverlayHandle } from "@mariozechner/pi-tui";
 
 /** UI Component for displaying bash list */
 class BashListComponent implements Component {
@@ -53,7 +48,6 @@ class BashListComponent implements Component {
 			this.selectedIndex = Math.min(this.bashes.length - 1, this.selectedIndex + 1);
 			this.invalidate();
 		} else if (matchesKey(data, "enter")) {
-			// Could open details or perform action
 			this.onClose();
 		}
 	}
@@ -71,7 +65,6 @@ class BashListComponent implements Component {
 		const lines: string[] = [];
 		const th = this.theme;
 
-		// Header
 		lines.push("");
 		const title = th.fg("accent" as any, " Bash Processes ");
 		const headerLine =
@@ -84,12 +77,10 @@ class BashListComponent implements Component {
 		if (this.bashes.length === 0) {
 			lines.push(truncateToWidth(`  ${th.fg("dim" as any, "No bash processes")}`, width));
 		} else {
-			// Table header
 			const header = `  ${th.fg("muted" as any, "ID".padEnd(12))} ${th.fg("muted" as any, "Agent".padEnd(15))} ${th.fg("muted" as any, "Status".padEnd(10))} ${th.fg("muted" as any, "Runtime")}`;
 			lines.push(truncateToWidth(header, width));
 			lines.push("");
 
-			// Rows
 			this.bashes.forEach((bash, index) => {
 				const isSelected = index === this.selectedIndex;
 				const prefix = isSelected ? th.fg("accent" as any, "▶ ") : "  ";
@@ -159,7 +150,6 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 
 			// Check if UI is available
 			if (!ctx.hasUI) {
-				// Fallback to notify for non-interactive mode
 				switch (subcommand) {
 					case "list":
 					case "active": {
@@ -193,11 +183,14 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 						return;
 					}
 
-					// Show in custom overlay
-					const component = new BashListComponent(bashes, (ctx as any).theme, () => {
-						// Close will be handled by custom()
-					});
+					// Get theme from session manager or use default
+					const theme = (ctx as any).theme;
+					if (!theme) {
+						ctx.ui.notify("Theme not available", "error");
+						return;
+					}
 
+					// Show in custom overlay
 					try {
 						await ctx.ui.custom(
 							(tui, theme, _keybindings, done) => {
@@ -212,7 +205,7 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 								},
 							},
 						);
-					} catch (e) {
+					} catch {
 						// User closed or error
 					}
 					break;
@@ -247,18 +240,6 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// Subscribe to user_bash events to track bash executions
-	pi.on("user_bash", async (event: UserBashEvent) => {
-		console.log("[bash-manager] user bash:", event.command);
-	});
-
-	// Subscribe to tool_execution for bash tool
-	pi.on("tool_execution_start", async (event: ToolCallEvent) => {
-		if (event.toolName === "Bash" || event.toolName === "bash") {
-			console.log("[bash-manager] bash tool started:", event.toolCallId);
-		}
-	});
-
 	// Register a tool to interact with bash manager
 	pi.registerTool({
 		name: "bash_manager",
@@ -280,7 +261,7 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			required: ["action"],
 		} as any,
 
-		async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(toolCallId, params) {
 			const { action, bashId } = params as { action: string; bashId?: string };
 
 			switch (action) {
