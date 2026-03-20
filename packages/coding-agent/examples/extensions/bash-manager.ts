@@ -145,12 +145,15 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
 		},
 		handler: async (args, ctx) => {
-			console.log(`[bash-manager] /bash called with args: "${args}", hasUI: ${ctx.hasUI}`);
+			console.log(`[bash] /bash args="${args}", hasUI=${ctx.hasUI}`);
+			
+			// 强制使用 notify 模式便于调试
 			const parts = args.trim().split(/\s+/);
 			const subcommand = parts[0] || "list";
-
-			// Check if UI is available
-			if (!ctx.hasUI) {
+			const bashCount = manager.getAll().length;
+			
+			ctx.ui.notify(`[debug] subcommand=${subcommand}, count=${bashCount}, hasUI=${ctx.hasUI}`, "info");
+			return;
 				switch (subcommand) {
 					case "list":
 					case "active": {
