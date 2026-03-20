@@ -153,25 +153,6 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			const bashCount = manager.getAll().length;
 			
 			ctx.ui.notify(`[debug] subcommand=${subcommand}, count=${bashCount}, hasUI=${ctx.hasUI}`, "info");
-			return;
-				switch (subcommand) {
-					case "list":
-					case "active": {
-						const bashes = subcommand === "active"
-							? manager.getActive()
-							: manager.getAll();
-						ctx.ui.notify(`Bash: ${bashes.length} processes`, "info");
-						break;
-					}
-					case "clear": {
-						const count = manager.getAll().filter((b) => b.status !== "running").length;
-						manager.clearStopped();
-						ctx.ui.notify(`Cleared ${count} processes`, "info");
-						break;
-					}
-					default:
-						ctx.ui.notify(`Unknown: ${subcommand}`, "error");
-				}
 				return;
 			}
 
