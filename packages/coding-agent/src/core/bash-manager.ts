@@ -112,7 +112,7 @@ export class BashManager {
 		const { shell, args } = getShellConfig();
 		const cwd = options.cwd || process.cwd();
 
-		const abortController = new AbortSignal();
+		const abortController = new AbortController().signal;
 
 		const child: ChildProcess = spawn(shell, [...args, options.command], {
 			detached: false,
