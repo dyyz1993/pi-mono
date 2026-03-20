@@ -17,11 +17,11 @@
 import type {
 	ExtensionAPI,
 	ToolCallEvent,
-} from "../../src/core/extensions/index.js";
-import type { BashInfo } from "../../src/core/bash-manager.js";
-import { BashManager, getGlobalBashManager } from "../../src/core/bash-manager.js";
+} from "@mariozechner/pi-coding-agent";
+import type { BashInfo } from "@mariozechner/pi-coding-agent";
+import { BashManager, getGlobalBashManager } from "@mariozechner/pi-coding-agent";
 import { matchesKey, truncateToWidth, type Component } from "@mariozechner/pi-tui";
-import type { Theme } from "../../src/modes/interactive/theme/theme.js";
+import type { Theme } from "@mariozechner/pi-coding-agent";
 
 /** UI Component for displaying bash list */
 class BashListComponent implements Component {
