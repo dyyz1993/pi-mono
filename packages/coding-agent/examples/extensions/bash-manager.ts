@@ -50,18 +50,20 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
 		},
 		handler: async (args, ctx) => {
-			console.log(`[bash] /bash args="${args}", hasUI=${ctx.hasUI}`);
-			
 			const parts = args.trim().split(/\s+/);
 			const subcommand = parts[0] || "list";
-			const bashCount = manager.getAll().length;
 			
-			// 无论有没有 UI 都尝试 notify
-			try {
-				ctx.ui.notify(`subcommand=${subcommand}, count=${bashCount}, hasUI=${ctx.hasUI}`, "info");
-			} catch (e) {
-				console.log(`[bash] notify failed: ${e}`);
+			// 使用 console.log 输出到终端
+			const bashes = manager.getAll();
+			const active = manager.getActive();
+			
+			console.log("");
+			console.log("=== Bash Processes ===");
+			console.log(`Total: ${bashes.length}, Active: ${active.length}`);
+			for (const bash of bashes) {
+				console.log(`  ${bash.id}: ${bash.status} (${bash.agentId}) - ${bash.command.slice(0, 40)}`);
 			}
+			console.log("======================");
 		},
 	});
 
