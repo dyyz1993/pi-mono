@@ -8,7 +8,11 @@
  * - Kill processes
  */
 
-import { BashManager, getGlobalBashManager, type BashManagerEvent } from "../src/core/bash-manager.js";
+import {
+	BashManager,
+	getGlobalBashManager,
+	type BashManagerEvent,
+} from "../src/core/bash-manager.js";
 
 // Create a new BashManager instance
 const manager = new BashManager();
@@ -20,9 +24,11 @@ const globalManager = getGlobalBashManager();
 const unsubscribe = manager.subscribe((event: BashManagerEvent) => {
 	switch (event.type) {
 		case "bash_start":
-			console.log(`[BashManager] Process started: ${event.bash.id} (agent: ${event.bash.agentId})`);
+			console.log(
+				`[BashManager] Process started: ${event.bash.id} (agent: ${event.bash.agentId})`,
+			);
 			break;
-		case "bash_update":
+		case "bash_update": {
 			const runtime = manager.getRuntime(event.bash.id);
 			const countdown = manager.getCountdownRemaining(event.bash.id);
 			console.log(
@@ -30,6 +36,7 @@ const unsubscribe = manager.subscribe((event: BashManagerEvent) => {
 					(countdown !== undefined ? `, countdown: ${countdown}s` : ""),
 			);
 			break;
+		}
 		case "bash_end":
 			console.log(
 				`[BashManager] Process ended: ${event.bash.id}, exitCode: ${event.bash.exitCode}`,
@@ -39,7 +46,9 @@ const unsubscribe = manager.subscribe((event: BashManagerEvent) => {
 			console.log(`[BashManager] Process killed: ${event.bash.id}`);
 			break;
 		case "bash_error":
-			console.log(`[BashManager] Process error: ${event.bash.id}, error: ${event.error.message}`);
+			console.log(
+				`[BashManager] Process error: ${event.bash.id}, error: ${event.error.message}`,
+			);
 			break;
 	}
 });
@@ -49,10 +58,10 @@ const bashId = manager.execute({
 	agentId: "agent-001",
 	command: "echo 'Hello from bash!' && sleep 2 && echo 'Done'",
 	countdown: 30, // 30 second timeout
-	onChunk: (chunk) => {
+	onChunk: (chunk: string) => {
 		process.stdout.write(chunk);
 	},
-	onExit: (exitCode) => {
+	onExit: (exitCode: number | undefined) => {
 		console.log(`\nProcess exited with code: ${exitCode}`);
 	},
 });
