@@ -82,4 +82,5 @@ setTimeout(() => {
 	// Clean up
 	unsubscribe();
 	manager.destroy();
+	process.exit(0);
 }, 5000);
