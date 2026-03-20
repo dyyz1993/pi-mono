@@ -154,7 +154,7 @@ export class BashManager {
 				info.endTime = Date.now();
 				info.exitCode = code ?? undefined;
 				info.child = undefined;
-				info.abortController = undefined;
+				info.abortSignal = undefined;
 				this.emit({ type: "bash_end", bash: info });
 			}
 			options.onExit?.(code ?? undefined);
