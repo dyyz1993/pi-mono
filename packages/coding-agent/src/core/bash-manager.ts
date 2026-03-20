@@ -30,8 +30,8 @@ export interface BashInfo {
 	exitCode?: number;
 	/** Countdown in seconds (optional, for timed runs) */
 	countdown?: number;
-	/** AbortController for cancellation */
-	abortController?: AbortController;
+	/** AbortSignal for cancellation */
+	abortSignal?: AbortSignal;
 	/** Child process reference */
 	child?: ChildProcess;
 }
