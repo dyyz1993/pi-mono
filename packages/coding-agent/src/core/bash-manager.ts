@@ -282,6 +282,7 @@ export class BashManager {
 	destroy(): void {
 		if (this.updateInterval) {
 			clearInterval(this.updateInterval);
+			this.updateInterval = undefined;
 		}
 		// Kill all running processes
 		for (const bash of this.getActive()) {
