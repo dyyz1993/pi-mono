@@ -130,7 +130,7 @@ export class BashManager {
 			status: "running",
 			startTime: Date.now(),
 			countdown: options.countdown,
-			abortController,
+			abortSignal,
 			child,
 		};
 
