@@ -4,7 +4,6 @@
  * Features:
  * - Tracks all bash executions with agent association
  * - Provides commands to list, kill bash processes
- * - Shows real-time status via /bash command
  * - Provides bash_manager tool for LLM
  *
  * Usage:
@@ -14,13 +13,230 @@
  * - /bash active - Show only active processes
  */
 
-import type {
-	ExtensionAPI,
-} from "@mariozechner/pi-coding-agent";
-import type { BashInfo } from "@mariozechner/pi-coding-agent";
-import { getGlobalBashManager } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, type Component } from "@mariozechner/pi-tui";
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import { randomBytes } from "node:crypto";
+import { type ChildProcess, spawn } from "node:child_process";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+
+// ============================================================================
+// Types
+// ============================================================================
+
+type BashId = string;
+type BashStatus = "running" | "stopped" | "killed" | "timeout";
+
+interface BashInfo {
+	id: BashId;
+	agentId: string;
+	command: string;
+	cwd: string;
+	status: BashStatus;
+	startTime: number;
+	endTime?: number;
+	exitCode?: number;
+	countdown?: number;
+	child?: ChildProcess;
+}
+
+type BashExecuteOptions = {
+	agentId: string;
+	command: string;
+	cwd?: string;
+	countdown?: number;
+	onChunk?: (chunk: string) => void;
+	onExit?: (exitCode: number | undefined) => void;
+};
+
+// ============================================================================
+// Bash Manager (Inline Implementation)
+// ============================================================================
+
+class BashManager {
+	private processes = new Map<BashId, BashInfo>();
+	private listeners = new Set<(e: any) => void>();
+	private updateInterval?: NodeJS.Timeout;
+
+	constructor() {
+		this.updateInterval = setInterval(() => {
+			this.tick();
+		}, 1000);
+	}
+
+	subscribe(fn: (e: any) => void): () => void {
+		this.listeners.add(fn);
+		return () => this.listeners.delete(fn);
+	}
+
+	private emit(event: any): void {
+		for (const listener of this.listeners) {
+			listener(event);
+		}
+	}
+
+	private generateId(): BashId {
+		return randomBytes(8).toString("hex");
+	}
+
+	execute(options: BashExecuteOptions): BashId {
+		const id = this.generateId();
+		const shell = "/bin/zsh";
+		const args = ["-c", options.command];
+		const cwd = options.cwd || process.cwd();
+
+		const child: ChildProcess = spawn(shell, args, {
+			detached: false,
+			cwd,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+
+		const bashInfo: BashInfo = {
+			id,
+			agentId: options.agentId,
+			command: options.command,
+			cwd,
+			status: "running",
+			startTime: Date.now(),
+			countdown: options.countdown,
+			child,
+		};
+
+		this.processes.set(id, bashInfo);
+		this.emit({ type: "bash_start", bash: bashInfo });
+
+		child.stdout?.on("data", (data: Buffer) => {
+			options.onChunk?.(data.toString());
+		});
+
+		child.stderr?.on("data", (data: Buffer) => {
+			options.onChunk?.(data.toString());
+		});
+
+		child.on("close", (code) => {
+			const info = this.processes.get(id);
+			if (info) {
+				info.status = code === 0 ? "stopped" : "stopped";
+				info.endTime = Date.now();
+				info.exitCode = code ?? undefined;
+				info.child = undefined;
+				this.emit({ type: "bash_end", bash: info });
+			}
+			options.onExit?.(code ?? undefined);
+		});
+
+		child.on("error", (err: Error) => {
+			const info = this.processes.get(id);
+			if (info) {
+				info.status = "killed";
+				info.endTime = Date.now();
+				this.emit({ type: "bash_error", bash: info, error: err });
+			}
+		});
+
+		// Countdown timeout
+		if (options.countdown && options.countdown > 0) {
+			setTimeout(() => {
+				const info = this.processes.get(id);
+				if (info && info.status === "running") {
+					this.kill(id);
+				}
+			}, options.countdown * 1000);
+		}
+
+		return id;
+	}
+
+	kill(id: BashId): boolean {
+		const info = this.processes.get(id);
+		if (!info || info.status !== "running") {
+			return false;
+		}
+
+		if (info.child?.pid) {
+			process.kill(info.child.pid, "SIGTERM");
+		}
+
+		info.status = "killed";
+		info.endTime = Date.now();
+		this.emit({ type: "bash_killed", bash: info });
+		return true;
+	}
+
+	get(id: BashId): BashInfo | undefined {
+		return this.processes.get(id);
+	}
+
+	getAll(): BashInfo[] {
+		return Array.from(this.processes.values());
+	}
+
+	getByAgent(agentId: string): BashInfo[] {
+		return this.getAll().filter((b) => b.agentId === agentId);
+	}
+
+	getActive(): BashInfo[] {
+		return this.getAll().filter((b) => b.status === "running");
+	}
+
+	getRuntime(id: BashId): number {
+		const info = this.processes.get(id);
+		if (!info) return 0;
+		const end = info.endTime || Date.now();
+		return Math.floor((end - info.startTime) / 1000);
+	}
+
+	getCountdownRemaining(id: BashId): number | undefined {
+		const info = this.processes.get(id);
+		if (!info || !info.countdown) return undefined;
+		const elapsed = this.getRuntime(id);
+		return Math.max(0, info.countdown - elapsed);
+	}
+
+	remove(id: BashId): boolean {
+		return this.processes.delete(id);
+	}
+
+	clearStopped(): void {
+		for (const [id, info] of this.processes) {
+			if (info.status !== "running") {
+				this.processes.delete(id);
+			}
+		}
+	}
+
+	private tick(): void {
+		for (const bash of this.getActive()) {
+			this.emit({ type: "bash_update", bash });
+		}
+	}
+
+	destroy(): void {
+		if (this.updateInterval) {
+			clearInterval(this.updateInterval);
+			this.updateInterval = undefined;
+		}
+		for (const bash of this.getActive()) {
+			this.kill(bash.id);
+		}
+		this.processes.clear();
+		this.listeners.clear();
+	}
+}
+
+// ============================================================================
+// Global Manager
+// ============================================================================
+
+let globalManager: BashManager | undefined;
+
+function getGlobalBashManager(): BashManager {
+	if (!globalManager) {
+		globalManager = new BashManager();
+	}
+	return globalManager;
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 function getRuntimeStr(bash: BashInfo): string {
 	const now = Date.now();
@@ -32,12 +248,14 @@ function getRuntimeStr(bash: BashInfo): string {
 	return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+// ============================================================================
+// Extension Entry Point
+// ============================================================================
+
 export default function bashManagerExtension(pi: ExtensionAPI) {
-	// Get or create global bash manager
 	const manager = getGlobalBashManager();
 
-	// Subscribe to bash events
-	manager.subscribe((event) => {
+	manager.subscribe((event: any) => {
 		console.log(`[bash-manager] ${event.type}:`, event.bash?.id);
 	});
 
@@ -49,21 +267,40 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			const filtered = commands.filter((c) => c.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
 		},
-		handler: async (args, ctx) => {
+		handler: async (args) => {
 			const parts = args.trim().split(/\s+/);
 			const subcommand = parts[0] || "list";
 			
-			// 使用 console.log 输出到终端
 			const bashes = manager.getAll();
 			const active = manager.getActive();
 			
 			console.log("");
 			console.log("=== Bash Processes ===");
 			console.log(`Total: ${bashes.length}, Active: ${active.length}`);
-			for (const bash of bashes) {
-				console.log(`  ${bash.id}: ${bash.status} (${bash.agentId}) - ${bash.command.slice(0, 40)}`);
+			
+			if (bashes.length === 0) {
+				console.log("  (no processes)");
+			} else {
+				for (const bash of bashes) {
+					const runtime = getRuntimeStr(bash);
+					console.log(`  ${bash.id.slice(0, 8)}: ${bash.status.padEnd(8)} [${runtime}] ${bash.command.slice(0, 35)}`);
+				}
 			}
 			console.log("======================");
+			
+			// Handle kill command
+			if (subcommand === "kill" && parts[1]) {
+				const bashId = parts[1];
+				const success = manager.kill(bashId);
+				console.log(success ? `Killed: ${bashId}` : `Not found or stopped: ${bashId}`);
+			}
+			
+			// Handle clear command
+			if (subcommand === "clear") {
+				const count = bashes.filter((b) => b.status !== "running").length;
+				manager.clearStopped();
+				console.log(`Cleared ${count} stopped processes`);
+			}
 		},
 	});
 
@@ -88,7 +325,7 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			required: ["action"],
 		} as any,
 
-		async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(toolCallId, params) {
 			const { action, bashId } = params as { action: string; bashId?: string };
 
 			switch (action) {
