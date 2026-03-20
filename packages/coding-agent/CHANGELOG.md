@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `BashManager` plugin for tracking and managing bash processes. Provides:
+  - Process tracking with associated agent IDs
+  - Status monitoring (running/stopped/killed)
+  - Runtime and countdown tracking
+  - Event subscription system (`bash_start`, `bash_update`, `bash_end`, `bash_killed`, `bash_error`)
+  - Kill support for terminating processes
+  - Global singleton via `getGlobalBashManager()`
+
 ## [0.52.10] - 2026-02-12
 
 ### New Features
