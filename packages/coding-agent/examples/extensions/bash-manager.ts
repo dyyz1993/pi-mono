@@ -145,6 +145,7 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
 		},
 		handler: async (args, ctx) => {
+			console.log(`[bash-manager] /bash called with args: "${args}", hasUI: ${ctx.hasUI}`);
 			const parts = args.trim().split(/\s+/);
 			const subcommand = parts[0] || "list";
 
