@@ -261,7 +261,7 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			required: ["action"],
 		} as any,
 
-		async execute(toolCallId, params) {
+		async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
 			const { action, bashId } = params as { action: string; bashId?: string };
 
 			switch (action) {
