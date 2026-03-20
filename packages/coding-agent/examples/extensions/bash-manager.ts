@@ -4,41 +4,32 @@
  * Features:
  * - Tracks all bash executions with agent association
  * - Provides commands to list, kill bash processes
- * - Shows real-time status in footer or via /bash command
- * - Event subscription for bash lifecycle
+ * - Shows real-time status via /bash command
+ * - Provides bash_manager tool for LLM
  *
  * Usage:
  * - /bash list - Show all bash processes
  * - /bash kill <id> - Kill a bash process
  * - /bash clear - Clear stopped processes
+ * - /bash active - Show only active processes
  */
 
 import type {
 	ExtensionAPI,
-	ExtensionContext,
+	ExtensionCommandContext,
 	ToolCallEvent,
 	UserBashEvent,
-	UserBashEventResult,
 } from "../../src/core/extensions/index.js";
-import type { BashInfo, BashManagerEvent } from "../../src/core/bash-manager.js";
+import type { BashInfo } from "../../src/core/bash-manager.js";
 import { BashManager, getGlobalBashManager } from "../../src/core/bash-manager.js";
-import { matchesKey, Text, truncateToWidth, Box } from "@mariozechner/pi-tui";
-import { Theme } from "../../src/modes/interactive/theme/theme.js";
+import { matchesKey, truncateToWidth, type Component } from "@mariozechner/pi-tui";
+import type { Theme } from "../../src/modes/interactive/theme/theme.js";
+import type { TUI } from "@mariozechner/pi-tui";
+import type { KeybindingsManager } from "../../src/core/keybindings.js";
+import type { OverlayHandle } from "@mariozechner/pi-tui";
 
-/** Store bash processes in session for persistence across branches */
-function getStoredBashes(ctx: ExtensionContext): Map<string, BashInfo> {
-	let stored = ctx.session.getCustomData("bash-manager") as Map<string, BashInfo> | undefined;
-	if (!stored) {
-		stored = new Map();
-		ctx.session.setCustomData("bash-manager", stored);
-	}
-	return stored;
-}
-
-/**
- * UI Component for displaying bash list
- */
-class BashListComponent {
+/** UI Component for displaying bash list */
+class BashListComponent implements Component {
 	private bashes: BashInfo[];
 	private selectedIndex: number = 0;
 	private theme: Theme;
@@ -82,52 +73,52 @@ class BashListComponent {
 
 		// Header
 		lines.push("");
-		const title = th.fg("accent", " Bash Processes ");
+		const title = th.fg("accent" as any, " Bash Processes ");
 		const headerLine =
-			th.fg("borderMuted", "─".repeat(3)) +
+			th.fg("borderMuted" as any, "─".repeat(3)) +
 			title +
-			th.fg("borderMuted", "─".repeat(Math.max(0, width - 21)));
+			th.fg("borderMuted" as any, "─".repeat(Math.max(0, width - 21)));
 		lines.push(truncateToWidth(headerLine, width));
 		lines.push("");
 
 		if (this.bashes.length === 0) {
-			lines.push(truncateToWidth(`  ${th.fg("dim", "No bash processes")}`, width));
+			lines.push(truncateToWidth(`  ${th.fg("dim" as any, "No bash processes")}`, width));
 		} else {
 			// Table header
-			const header = `  ${th.fg("muted", "ID".padEnd(12))} ${th.fg("muted", "Agent".padEnd(15))} ${th.fg("muted", "Status".padEnd(10))} ${th.fg("muted", "Runtime")}`;
+			const header = `  ${th.fg("muted" as any, "ID".padEnd(12))} ${th.fg("muted" as any, "Agent".padEnd(15))} ${th.fg("muted" as any, "Status".padEnd(10))} ${th.fg("muted" as any, "Runtime")}`;
 			lines.push(truncateToWidth(header, width));
 			lines.push("");
 
 			// Rows
 			this.bashes.forEach((bash, index) => {
 				const isSelected = index === this.selectedIndex;
-				const prefix = isSelected ? th.fg("accent", "▶ ") : "  ";
+				const prefix = isSelected ? th.fg("accent" as any, "▶ ") : "  ";
 				const id = bash.id.slice(0, 10);
 				const agentId = bash.agentId.slice(0, 13);
 				const status = bash.status.padEnd(8);
 				const runtime = getRuntimeStr(bash);
 
-				let statusColor = "muted";
+				let statusColor: any = "muted";
 				if (bash.status === "running") statusColor = "green";
 				else if (bash.status === "killed") statusColor = "red";
 				else if (bash.status === "stopped") statusColor = "yellow";
 
 				const line =
 					prefix +
-					th.fg("white", id.padEnd(12)) +
+					th.fg("white" as any, id.padEnd(12)) +
 					" " +
-					th.fg("white", agentId.padEnd(15)) +
+					th.fg("white" as any, agentId.padEnd(15)) +
 					" " +
-					th.fg(statusColor as any, status.padEnd(10)) +
+					th.fg(statusColor, status.padEnd(10)) +
 					" " +
-					th.fg("muted", runtime);
+					th.fg("muted" as any, runtime);
 
 				lines.push(truncateToWidth(line, width));
 			});
 		}
 
 		lines.push("");
-		lines.push(truncateToWidth(th.fg("dim", "  ↑↓ navigate  enter details  esc close"), width));
+		lines.push(truncateToWidth(th.fg("dim" as any, "  ↑↓ navigate  enter details  esc close"), width));
 
 		this.cachedWidth = width;
 		this.cachedLines = lines;
@@ -149,9 +140,8 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 	// Get or create global bash manager
 	const manager = getGlobalBashManager();
 
-	// Subscribe to bash events and sync with session storage
-	manager.subscribe((event: BashManagerEvent) => {
-		// Could emit to extension system or update UI
+	// Subscribe to bash events
+	manager.subscribe((event) => {
 		console.log(`[bash-manager] ${event.type}:`, event.bash?.id);
 	});
 
@@ -167,6 +157,30 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			const parts = args.trim().split(/\s+/);
 			const subcommand = parts[0] || "list";
 
+			// Check if UI is available
+			if (!ctx.hasUI) {
+				// Fallback to notify for non-interactive mode
+				switch (subcommand) {
+					case "list":
+					case "active": {
+						const bashes = subcommand === "active"
+							? manager.getActive()
+							: manager.getAll();
+						ctx.ui.notify(`Bash: ${bashes.length} processes`, "info");
+						break;
+					}
+					case "clear": {
+						const count = manager.getAll().filter((b) => b.status !== "running").length;
+						manager.clearStopped();
+						ctx.ui.notify(`Cleared ${count} processes`, "info");
+						break;
+					}
+					default:
+						ctx.ui.notify(`Unknown: ${subcommand}`, "error");
+				}
+				return;
+			}
+
 			switch (subcommand) {
 				case "list":
 				case "active": {
@@ -179,11 +193,28 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 						return;
 					}
 
-					// Show in overlay
-					const component = new BashListComponent(bashes, ctx.theme, () => {
-						ctx.ui.closeOverlay();
+					// Show in custom overlay
+					const component = new BashListComponent(bashes, (ctx as any).theme, () => {
+						// Close will be handled by custom()
 					});
-					ctx.ui.showOverlay(component);
+
+					try {
+						await ctx.ui.custom(
+							(tui, theme, _keybindings, done) => {
+								const comp = new BashListComponent(bashes, theme, () => done(undefined));
+								return comp;
+							},
+							{
+								overlay: true,
+								overlayOptions: {
+									width: 60,
+									maxHeight: 20,
+								},
+							},
+						);
+					} catch (e) {
+						// User closed or error
+					}
 					break;
 				}
 
@@ -196,9 +227,9 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 
 					const success = manager.kill(bashId);
 					if (success) {
-						ctx.ui.notify(`Killed bash process: ${bashId}`, "info");
+						ctx.ui.notify(`Killed: ${bashId}`, "info");
 					} else {
-						ctx.ui.notify(`Bash process not found or already stopped: ${bashId}`, "error");
+						ctx.ui.notify(`Not found or stopped: ${bashId}`, "error");
 					}
 					break;
 				}
@@ -211,22 +242,19 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 				}
 
 				default:
-					ctx.ui.notify(`Unknown subcommand: ${subcommand}`, "error");
+					ctx.ui.notify(`Unknown: ${subcommand}`, "error");
 			}
 		},
 	});
 
 	// Subscribe to user_bash events to track bash executions
 	pi.on("user_bash", async (event: UserBashEvent) => {
-		// This event fires when user runs a bash command
-		// We can track it here
 		console.log("[bash-manager] user bash:", event.command);
 	});
 
 	// Subscribe to tool_execution for bash tool
 	pi.on("tool_execution_start", async (event: ToolCallEvent) => {
 		if (event.toolName === "Bash" || event.toolName === "bash") {
-			// Could track bash tool executions
 			console.log("[bash-manager] bash tool started:", event.toolCallId);
 		}
 	});
