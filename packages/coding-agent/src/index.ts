@@ -321,3 +321,16 @@ export { copyToClipboard } from "./utils/clipboard.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";
 // Shell utilities
 export { getShellConfig } from "./utils/shell.js";
+
+// Bash Manager Plugin
+export {
+	BashManager,
+	getGlobalBashManager,
+	setGlobalBashManager,
+	type BashExecuteOptions,
+	type BashExecuteResult,
+	type BashId,
+	type BashInfo,
+	type BashManagerEvent,
+	type BashStatus,
+} from "./core/bash-manager.js";
