@@ -7,6 +7,8 @@
  * @module lossless-memory
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DAGManager } from "./dag-manager.js";
 import { MemoryDatabase } from "./database.js";
@@ -14,6 +16,8 @@ import { ExpandTool } from "./expand-tool.js";
 import { SearchTool, StatsTool } from "./search-tool.js";
 import { SummaryGenerator } from "./summary-generator.js";
 import type { LosslessMemoryConfig, MemoryNode } from "./types.js";
+
+const TRACE_FILE = "/tmp/lossless-context-trace.jsonl";
 
 // ============================================================================
 // Default Configuration
@@ -135,6 +139,13 @@ export default function (pi: ExtensionAPI) {
 
 			state.initialized = true;
 
+			// Clear trace file
+			try {
+				if (fs.existsSync(TRACE_FILE)) {
+					fs.unlinkSync(TRACE_FILE);
+				}
+			} catch {}
+
 			pi.on("session_start", async (_event, ctx) => {
 				await onSessionStart(ctx);
 			});
@@ -143,7 +154,28 @@ export default function (pi: ExtensionAPI) {
 				return await onSessionBeforeCompact(event, ctx);
 			});
 
+			// Context event with tracing
+			let traceTurn = 0;
 			pi.on("context", async (event, ctx) => {
+				traceTurn++;
+
+				// Trace context for debugging
+				const totalTokens = event.messages.reduce((sum, m) => {
+					const text = typeof m.content === "string" ? m.content : m.content?.[0]?.text || "";
+					return sum + Math.ceil(text.length / 4);
+				}, 0);
+
+				const trace = {
+					turn: traceTurn,
+					timestamp: new Date().toISOString(),
+					messages: event.messages.length,
+					totalTokens,
+					modelContextWindow: ctx.model?.contextWindow || 200000,
+				};
+
+				fs.appendFileSync(TRACE_FILE, JSON.stringify(trace) + "\n");
+				console.log(`[LosslessMemory] Turn ${traceTurn}: ${event.messages.length} msgs, ${totalTokens} tokens`);
+
 				return await onContext(event, ctx);
 			});
 
@@ -278,6 +310,52 @@ export default function (pi: ExtensionAPI) {
 		const modelContextWindow = ctx.model?.contextWindow ?? 100000;
 
 		// Estimate current token usage
+		const currentTokens = messages.reduce((sum: number, m: any) => {
+			const text = typeof m.content === "string" ? m.content : m.content?.[0]?.text || "";
+			return sum + Math.ceil(text.length / 4);
+		}, 0);
+
+		// TEST MODE: Use 0.005% threshold for testing (normally 80% = 0.8)
+		// This will trigger context modification very early
+		const TEST_THRESHOLD = 0.00005; // 0.005%
+		const NORMAL_THRESHOLD = 0.8; // 80%
+		const threshold = TEST_THRESHOLD; // Change to NORMAL_THRESHOLD for production
+
+		// If we're approaching the limit, use summaries
+		if (currentTokens > modelContextWindow * threshold) {
+			console.log(`[LosslessMemory] 触发上下文修改！${currentTokens} > ${modelContextWindow * threshold}`);
+			try {
+				// Get root summaries (highest level)
+				const rootNodes = state.dag.getRootNodes();
+
+				if (rootNodes.length > 0) {
+					// Keep recent messages, replace old ones with summaries
+					const recentMessages = messages.slice(-15); // Keep last 15 messages
+
+					// Prepend summaries
+					const summaryMessages = rootNodes.map((node: MemoryNode) => ({
+						role: "system" as const,
+						content: [{ type: "text" as const, text: `历史摘要：${node.content}` }],
+					}));
+
+					console.log(`[LosslessMemory] 修改前：${messages.length} 条，修改后：${summaryMessages.length + recentMessages.length} 条`);
+					
+					return {
+						messages: [...summaryMessages, ...recentMessages],
+					};
+				}
+			} catch (error) {
+				console.error("[LosslessMemory] 上下文装配失败:", error);
+			}
+		}
+
+		return { messages };
+	}
+
+		const messages = event.messages;
+		const modelContextWindow = ctx.model?.contextWindow ?? 100000;
+
+		// Estimate current token usage
 		const currentTokens = messages.reduce((sum: number, m: any) => sum + estimateMessageTokens(m), 0);
 
 		// If we're approaching the limit, use summaries
@@ -390,6 +468,48 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				ctx.ui.notify(output, "info");
+			},
+		});
+
+		// Context trace command
+		pi.registerCommand("context-trace", {
+			description: "查看上下文跟踪记录",
+			handler: async (_args, ctx) => {
+				if (!fs.existsSync(TRACE_FILE)) {
+					ctx.ui.notify("暂无跟踪记录，先进行对话", "info");
+					return;
+				}
+
+				const lines = fs.readFileSync(TRACE_FILE, "utf-8").trim().split("\n");
+				if (lines.length === 0) {
+					ctx.ui.notify("暂无跟踪记录", "info");
+					return;
+				}
+
+				let output = `上下文跟踪 (${lines.length} 轮):\n\n`;
+
+				// Show last 5 turns
+				const lastTurns = lines.slice(-5).map((l) => JSON.parse(l));
+				for (const trace of lastTurns) {
+					output += `第 ${trace.turn} 轮：${trace.messages} 条消息，${trace.totalTokens} tokens (${((trace.totalTokens / trace.modelContextWindow) * 100).toFixed(1)}%)\n`;
+				}
+
+				output += `\n完整记录：${TRACE_FILE}`;
+				ctx.ui.notify(output, "info");
+			},
+		});
+
+		// Context export command
+		pi.registerCommand("context-export", {
+			description: "导出完整上下文跟踪",
+			handler: async (_args, ctx) => {
+				if (!fs.existsSync(TRACE_FILE)) {
+					ctx.ui.notify("暂无跟踪记录", "info");
+					return;
+				}
+
+				const content = fs.readFileSync(TRACE_FILE, "utf-8");
+				ctx.ui.notify(`跟踪数据：${TRACE_FILE}\n\n${content}`, "info");
 			},
 		});
 
