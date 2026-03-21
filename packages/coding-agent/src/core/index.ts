@@ -13,15 +13,15 @@ export {
 } from "./agent-session.js";
 export { type BashExecutorOptions, type BashResult, executeBash, executeBashWithOperations } from "./bash-executor.js";
 export {
-	BashManager,
-	getGlobalBashManager,
-	setGlobalBashManager,
 	type BashExecuteOptions,
 	type BashExecuteResult,
 	type BashId,
 	type BashInfo,
+	BashManager,
 	type BashManagerEvent,
 	type BashStatus,
+	getGlobalBashManager,
+	setGlobalBashManager,
 } from "./bash-manager.js";
 export type { CompactionResult } from "./compaction/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.js";

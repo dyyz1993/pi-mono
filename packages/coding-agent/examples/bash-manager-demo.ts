@@ -8,11 +8,7 @@
  * - Kill processes
  */
 
-import {
-	BashManager,
-	getGlobalBashManager,
-	type BashManagerEvent,
-} from "../src/core/bash-manager.js";
+import { BashManager, type BashManagerEvent, getGlobalBashManager } from "../src/core/bash-manager.js";
 
 // Create a new BashManager instance
 const manager = new BashManager();
@@ -24,9 +20,7 @@ const globalManager = getGlobalBashManager();
 const unsubscribe = manager.subscribe((event: BashManagerEvent) => {
 	switch (event.type) {
 		case "bash_start":
-			console.log(
-				`[BashManager] Process started: ${event.bash.id} (agent: ${event.bash.agentId})`,
-			);
+			console.log(`[BashManager] Process started: ${event.bash.id} (agent: ${event.bash.agentId})`);
 			break;
 		case "bash_update": {
 			const runtime = manager.getRuntime(event.bash.id);
@@ -38,17 +32,13 @@ const unsubscribe = manager.subscribe((event: BashManagerEvent) => {
 			break;
 		}
 		case "bash_end":
-			console.log(
-				`[BashManager] Process ended: ${event.bash.id}, exitCode: ${event.bash.exitCode}`,
-			);
+			console.log(`[BashManager] Process ended: ${event.bash.id}, exitCode: ${event.bash.exitCode}`);
 			break;
 		case "bash_killed":
 			console.log(`[BashManager] Process killed: ${event.bash.id}`);
 			break;
 		case "bash_error":
-			console.log(
-				`[BashManager] Process error: ${event.bash.id}, error: ${event.error.message}`,
-			);
+			console.log(`[BashManager] Process error: ${event.bash.id}, error: ${event.error.message}`);
 			break;
 	}
 });
@@ -77,7 +67,10 @@ setTimeout(() => {
 	console.log("\nActive processes:", manager.getActive().length);
 
 	// Get all processes
-	console.log("All processes:", manager.getAll().map((b) => b.id));
+	console.log(
+		"All processes:",
+		manager.getAll().map((b) => b.id),
+	);
 
 	// Clean up
 	unsubscribe();

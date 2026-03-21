@@ -8,8 +8,8 @@
  * - Kill support
  */
 
-import { randomBytes } from "node:crypto";
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { getShellConfig, getShellEnv, killProcessTree } from "../utils/shell.js";
 
 /** Unique identifier for a bash process */
@@ -113,7 +113,7 @@ export class BashManager {
 		const cwd = options.cwd || process.cwd();
 
 		const abortController = new AbortController();
-	const abortSignal = abortController.signal;
+		const abortSignal = abortController.signal;
 
 		const child: ChildProcess = spawn(shell, [...args, options.command], {
 			detached: false,

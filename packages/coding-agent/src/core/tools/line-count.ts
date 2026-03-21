@@ -1,6 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { TextContent } from "@mariozechner/pi-ai";
-import { Type, type Static } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 import { readFile as fsReadFile, stat } from "fs/promises";
 import { resolve as pathResolve } from "path";
 
@@ -20,20 +20,13 @@ export interface LineCountToolOptions {
 	encoding?: BufferEncoding;
 }
 
-export function createLineCountTool(
-	cwd: string,
-	options?: LineCountToolOptions,
-): AgentTool<typeof lineCountSchema> {
+export function createLineCountTool(cwd: string, options?: LineCountToolOptions): AgentTool<typeof lineCountSchema> {
 	return {
 		name: "line_count",
 		label: "Line Count",
 		description: "Count the number of lines in a text file. Returns the total line count and file size.",
 		parameters: lineCountSchema,
-		execute: async (
-			_toolCallId: string,
-			{ path }: LineCountToolInput,
-			_signal?: AbortSignal,
-		) => {
+		execute: async (_toolCallId: string, { path }: LineCountToolInput, _signal?: AbortSignal) => {
 			const absolutePath = pathResolve(cwd, path);
 			const encoding = options?.encoding ?? "utf-8";
 

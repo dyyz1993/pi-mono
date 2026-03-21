@@ -33,6 +33,13 @@ export {
 	grepTool,
 } from "./grep.js";
 export {
+	createLineCountTool,
+	type LineCountToolDetails,
+	type LineCountToolInput,
+	type LineCountToolOptions,
+	lineCountTool,
+} from "./line-count.js";
+export {
 	createLsTool,
 	type LsOperations,
 	type LsToolDetails,
@@ -65,23 +72,16 @@ export {
 	type WriteToolOptions,
 	writeTool,
 } from "./write.js";
-export {
-	createLineCountTool,
-	type LineCountToolDetails,
-	type LineCountToolInput,
-	type LineCountToolOptions,
-	lineCountTool,
-} from "./line-count.js";
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type BashToolOptions, bashTool, createBashTool } from "./bash.js";
 import { createEditTool, editTool } from "./edit.js";
 import { createFindTool, findTool } from "./find.js";
 import { createGrepTool, grepTool } from "./grep.js";
+import { createLineCountTool, lineCountTool } from "./line-count.js";
 import { createLsTool, lsTool } from "./ls.js";
 import { createReadTool, type ReadToolOptions, readTool } from "./read.js";
 import { createWriteTool, writeTool } from "./write.js";
-import { createLineCountTool, lineCountTool } from "./line-count.js";
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any>;

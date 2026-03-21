@@ -13,8 +13,8 @@
  * - /bash active - Show only active processes
  */
 
-import { randomBytes } from "node:crypto";
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ============================================================================
@@ -270,31 +270,33 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 		handler: async (args) => {
 			const parts = args.trim().split(/\s+/);
 			const subcommand = parts[0] || "list";
-			
+
 			const bashes = manager.getAll();
 			const active = manager.getActive();
-			
+
 			console.log("");
 			console.log("=== Bash Processes ===");
 			console.log(`Total: ${bashes.length}, Active: ${active.length}`);
-			
+
 			if (bashes.length === 0) {
 				console.log("  (no processes)");
 			} else {
 				for (const bash of bashes) {
 					const runtime = getRuntimeStr(bash);
-					console.log(`  ${bash.id.slice(0, 8)}: ${bash.status.padEnd(8)} [${runtime}] ${bash.command.slice(0, 35)}`);
+					console.log(
+						`  ${bash.id.slice(0, 8)}: ${bash.status.padEnd(8)} [${runtime}] ${bash.command.slice(0, 35)}`,
+					);
 				}
 			}
 			console.log("======================");
-			
+
 			// Handle kill command
 			if (subcommand === "kill" && parts[1]) {
 				const bashId = parts[1];
 				const success = manager.kill(bashId);
 				console.log(success ? `Killed: ${bashId}` : `Not found or stopped: ${bashId}`);
 			}
-			
+
 			// Handle clear command
 			if (subcommand === "clear") {
 				const count = bashes.filter((b) => b.status !== "running").length;
@@ -332,7 +334,12 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 				case "list": {
 					const all = manager.getAll();
 					return {
-						content: [{ type: "text", text: `Total bash processes: ${all.length}\n${all.map((b) => `${b.id}: ${b.status} (${b.agentId})`).join("\n")}` }],
+						content: [
+							{
+								type: "text",
+								text: `Total bash processes: ${all.length}\n${all.map((b) => `${b.id}: ${b.status} (${b.agentId})`).join("\n")}`,
+							},
+						],
 						details: { count: all.length, bashes: all },
 					};
 				}
@@ -340,7 +347,12 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 				case "active": {
 					const active = manager.getActive();
 					return {
-						content: [{ type: "text", text: `Active bash processes: ${active.length}\n${active.map((b) => `${b.id}: ${b.command.slice(0, 50)}`).join("\n")}` }],
+						content: [
+							{
+								type: "text",
+								text: `Active bash processes: ${active.length}\n${active.map((b) => `${b.id}: ${b.command.slice(0, 50)}`).join("\n")}`,
+							},
+						],
 						details: { count: active.length, bashes: active },
 					};
 				}
@@ -360,10 +372,12 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 						};
 					}
 					return {
-						content: [{
-							type: "text",
-							text: `ID: ${info.id}\nAgent: ${info.agentId}\nCommand: ${info.command}\nCWD: ${info.cwd}\nStatus: ${info.status}\nRuntime: ${getRuntimeStr(info)}\nExit Code: ${info.exitCode ?? "running"}`,
-						}],
+						content: [
+							{
+								type: "text",
+								text: `ID: ${info.id}\nAgent: ${info.agentId}\nCommand: ${info.command}\nCWD: ${info.cwd}\nStatus: ${info.status}\nRuntime: ${getRuntimeStr(info)}\nExit Code: ${info.exitCode ?? "running"}`,
+							},
+						],
 						details: info,
 					};
 				}

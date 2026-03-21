@@ -15,6 +15,18 @@ export {
 } from "./core/agent-session.js";
 // Auth and model registry
 export { type ApiKeyCredential, type AuthCredential, AuthStorage, type OAuthCredential } from "./core/auth-storage.js";
+// Bash Manager Plugin
+export {
+	type BashExecuteOptions,
+	type BashExecuteResult,
+	type BashId,
+	type BashInfo,
+	BashManager,
+	type BashManagerEvent,
+	type BashStatus,
+	getGlobalBashManager,
+	setGlobalBashManager,
+} from "./core/bash-manager.js";
 // Compaction
 export {
 	type BranchPreparation,
@@ -321,16 +333,3 @@ export { copyToClipboard } from "./utils/clipboard.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";
 // Shell utilities
 export { getShellConfig } from "./utils/shell.js";
-
-// Bash Manager Plugin
-export {
-	BashManager,
-	getGlobalBashManager,
-	setGlobalBashManager,
-	type BashExecuteOptions,
-	type BashExecuteResult,
-	type BashId,
-	type BashInfo,
-	type BashManagerEvent,
-	type BashStatus,
-} from "./core/bash-manager.js";
