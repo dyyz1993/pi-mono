@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Production
+dist/
+dist-ssr/
+
+# Database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+
+# Cache
+.cache/
+.parcel-cache/
+
+# Build artifacts
+*.tsbuildinfo

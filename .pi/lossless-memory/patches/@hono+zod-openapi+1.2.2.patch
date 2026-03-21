@@ -1,0 +1,67 @@
+diff --git a/node_modules/@hono/zod-openapi/dist/index.d.ts b/node_modules/@hono/zod-openapi/dist/index.d.ts
+index 7355946..9e2bb70 100644
+--- a/node_modules/@hono/zod-openapi/dist/index.d.ts
++++ b/node_modules/@hono/zod-openapi/dist/index.d.ts
+@@ -23,7 +23,7 @@ type RequestTypes = {
+ };
+ type IsJson<T$1> = T$1 extends string ? T$1 extends `application/${infer Start}json${infer _End}` ? Start extends "" | `${string}+` | `vnd.${string}+` ? "json" : never : never : never;
+ type IsForm<T$1> = T$1 extends string ? T$1 extends `multipart/form-data${infer _Rest}` | `application/x-www-form-urlencoded${infer _Rest}` ? "form" : never : never;
+-type ReturnJsonOrTextOrResponse<ContentType, Content$1, Status$1 extends keyof StatusCodeRangeDefinitions | StatusCode> = ContentType extends string ? ContentType extends `application/${infer Start}json${infer _End}` ? Start extends "" | `${string}+` | `vnd.${string}+` ? TypedResponse<JSONParsed<Content$1>, ExtractStatusCode<Status$1>, "json"> : never : ContentType extends `text/plain${infer _Rest}` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "text"> : Response : never;
++type ReturnJsonOrTextOrResponse<ContentType, Content$1, Status$1 extends keyof StatusCodeRangeDefinitions | StatusCode> = ContentType extends string ? ContentType extends `application/${infer Start}json${infer _End}` ? Start extends "" | `${string}+` | `vnd.${string}+` ? TypedResponse<JSONParsed<Content$1>, ExtractStatusCode<Status$1>, "json"> : never : ContentType extends `text/plain${infer _Rest}` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "text"> : ContentType extends `text/event-stream` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "sse"> : ContentType extends `websocket` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "ws"> : ContentType extends `image/svg+xml${infer _Rest}` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "svg"> : ContentType extends `image/${infer _Type}` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "image"> : ContentType extends `multipart/form-data${infer _Rest}` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "form"> : ContentType extends `application/${infer _Rest}` ? TypedResponse<Content$1, ExtractStatusCode<Status$1>, "file"> : Response : never;
+ type RequestPart<R$1 extends RouteConfig, Part extends string> = Part extends keyof R$1["request"] ? R$1["request"][Part] : {};
+ type HasUndefined<T$1> = undefined extends T$1 ? true : false;
+ type InputTypeBase<R$1 extends RouteConfig, Part extends string, Type extends keyof ValidationTargets> = R$1["request"] extends RequestTypes ? RequestPart<R$1, Part> extends ZodType ? {
+@@ -63,9 +63,9 @@ type ExtractStatusCode<T$1 extends RouteConfigStatusCode> = T$1 extends keyof St
+ type DefinedStatusCodes<R$1 extends RouteConfig> = keyof R$1["responses"] & RouteConfigStatusCode;
+ type RouteConfigToTypedResponse<R$1 extends RouteConfig> = { [Status in DefinedStatusCodes<R$1>]: R$1["responses"][Status] extends {
+   content: infer Content;
+-} ? undefined extends Content ? never : ReturnJsonOrTextOrResponse<keyof R$1["responses"][Status]["content"], ExtractContent<R$1["responses"][Status]["content"]>, Status> : TypedResponse<{}, ExtractStatusCode<Status>, string> }[DefinedStatusCodes<R$1>] | ("default" extends keyof R$1["responses"] ? R$1["responses"]["default"] extends {
++} ? undefined extends Content ? never : ReturnJsonOrTextOrResponse<keyof R$1["responses"][Status]["content"], ExtractContent<R$1["responses"][Status]["content"]>, Status> : TypedResponse<{}, ExtractStatusCode<Status>, "json"> }[DefinedStatusCodes<R$1>] | ("default" extends keyof R$1["responses"] ? R$1["responses"]["default"] extends {
+   content: infer Content;
+-} ? undefined extends Content ? never : ReturnJsonOrTextOrResponse<keyof Content, ExtractContent<Content>, Exclude<StatusCode, ExtractStatusCode<DefinedStatusCodes<R$1>>>> : TypedResponse<{}, Exclude<StatusCode, ExtractStatusCode<DefinedStatusCodes<R$1>>>, string> : never);
++} ? undefined extends Content ? never : ReturnJsonOrTextOrResponse<keyof Content, ExtractContent<Content>, Exclude<StatusCode, ExtractStatusCode<DefinedStatusCodes<R$1>>>> : TypedResponse<{}, Exclude<StatusCode, ExtractStatusCode<DefinedStatusCodes<R$1>>>, "json"> : never);
+ type Hook<T$1, E$1 extends Env, P$1 extends string, R$1> = (result: {
+   target: keyof ValidationTargets;
+ } & ({
+@@ -104,15 +104,7 @@ type OfHandlerType<T$1 extends MiddlewareHandler> = T$1 extends MiddlewareHandle
+ type MiddlewareToHandlerType<M extends MiddlewareHandler<any, any, any>[]> = M extends [infer First, infer Second, ...infer Rest] ? First extends MiddlewareHandler<any, any, any> ? Second extends MiddlewareHandler<any, any, any> ? Rest extends MiddlewareHandler<any, any, any>[] ? MiddlewareToHandlerType<[MiddlewareHandler<DeepSimplify<OfHandlerType<First>["env"] & OfHandlerType<Second>["env"]>, OfHandlerType<First>["path"], OfHandlerType<First>["input"]>, ...Rest]> : never : never : never : M extends [infer Last] ? Last : MiddlewareHandler<Env>;
+ type RouteMiddlewareParams<R$1 extends RouteConfig> = OfHandlerType<MiddlewareToHandlerType<AsArray<R$1["middleware"]>>>;
+ type RouteConfigToEnv<R$1 extends RouteConfig> = RouteMiddlewareParams<R$1> extends never ? Env : RouteMiddlewareParams<R$1>["env"];
+-type RouteHandler<R$1 extends RouteConfig, E$1 extends Env = RouteConfigToEnv<R$1>, I$1 extends Input = InputTypeParam<R$1> & InputTypeQuery<R$1> & InputTypeHeader<R$1> & InputTypeCookie<R$1> & InputTypeForm<R$1> & InputTypeJson<R$1>, P$1 extends string = ConvertPathType<R$1["path"]>> = Handler<E$1, P$1, I$1, R$1 extends {
+-  responses: {
+-    [statusCode: number]: {
+-      content: {
+-        [mediaType: string]: ZodMediaTypeObject;
+-      };
+-    };
+-  };
+-} ? MaybePromise<RouteConfigToTypedResponse<R$1>> : MaybePromise<RouteConfigToTypedResponse<R$1>> | MaybePromise<Response>>;
++type RouteHandler<R$1 extends RouteConfig, E$1 extends Env = RouteConfigToEnv<R$1>, I$1 extends Input = InputTypeParam<R$1> & InputTypeQuery<R$1> & InputTypeHeader<R$1> & InputTypeCookie<R$1> & InputTypeForm<R$1> & InputTypeJson<R$1>, P$1 extends string = ConvertPathType<R$1["path"]>> = Handler<E$1, P$1, I$1, MaybePromise<TypedResponse<any, StatusCode, "json" | "sse" | "ws"> | Response>>;
+ type RouteHook<R$1 extends RouteConfig, E$1 extends Env = RouteConfigToEnv<R$1>, I$1 extends Input = InputTypeParam<R$1> & InputTypeQuery<R$1> & InputTypeHeader<R$1> & InputTypeCookie<R$1> & InputTypeForm<R$1> & InputTypeJson<R$1>, P$1 extends string = ConvertPathType<R$1["path"]>> = Hook<I$1, E$1, P$1, RouteConfigToTypedResponse<R$1> | Response | Promise<Response> | void | Promise<void>>;
+ type OpenAPIObjectConfig = Parameters<InstanceType<typeof OpenApiGeneratorV3>["generateDocument"]>[0];
+ type OpenAPIObjectConfigure<E$1 extends Env, P$1 extends string> = OpenAPIObjectConfig | ((context: Context<E$1, P$1>) => OpenAPIObjectConfig);
+@@ -181,23 +173,7 @@ declare class OpenAPIHono<E$1 extends Env = Env, S$1 extends Schema = {}, BasePa
+     middleware: routeMiddleware,
+     hide,
+     ...route
+-  }: R, handler: Handler<R["middleware"] extends MiddlewareHandler[] | MiddlewareHandler ? RouteMiddlewareParams<R>["env"] & E$1 : E$1, P, I, R extends {
+-    responses: {
+-      [statusCode: number]: {
+-        content: {
+-          [mediaType: string]: ZodMediaTypeObject;
+-        };
+-      };
+-    };
+-  } ? MaybePromise<RouteConfigToTypedResponse<R>> : MaybePromise<RouteConfigToTypedResponse<R>> | MaybePromise<Response>>, hook?: Hook<I, E$1, P, R extends {
+-    responses: {
+-      [statusCode: number]: {
+-        content: {
+-          [mediaType: string]: ZodMediaTypeObject;
+-        };
+-      };
+-    };
+-  } ? MaybePromise<RouteConfigToTypedResponse<R>> | undefined : MaybePromise<RouteConfigToTypedResponse<R>> | MaybePromise<Response> | undefined> | undefined) => OpenAPIHono<E$1, S$1 & ToSchema<R["method"], MergePath<BasePath, P>, I, RouteConfigToTypedResponse<R>>, BasePath>;
++  }: R, handler: Handler<R["middleware"] extends MiddlewareHandler[] | MiddlewareHandler ? RouteMiddlewareParams<R>["env"] & E$1 : E$1, P, I, MaybePromise<Response | TypedResponse<any, StatusCode, "json" | "sse" | "ws">>>, hook?: Hook<I, E$1, P, MaybePromise<TypedResponse<any, StatusCode, "json" | "sse" | "ws"> | Response | void>> | undefined) => OpenAPIHono<E$1, S$1 & ToSchema<R["method"], MergePath<BasePath, P>, I, RouteConfigToTypedResponse<R>>, BasePath>;
+   getOpenAPIDocument: (objectConfig: OpenAPIObjectConfig, generatorConfig?: OpenAPIGeneratorOptions) => OpenAPIObject;
+   getOpenAPI31Document: (objectConfig: OpenAPIObjectConfig, generatorConfig?: OpenAPIGeneratorOptions) => OpenAPIObject$1;
+   doc: <P extends string>(path: P, configureObject: OpenAPIObjectConfigure<E$1, P>, configureGenerator?: OpenAPIGeneratorConfigure<E$1, P>) => OpenAPIHono<E$1, S$1 & ToSchema<"get", MergePath<BasePath, P>, {}, {}>, BasePath>;

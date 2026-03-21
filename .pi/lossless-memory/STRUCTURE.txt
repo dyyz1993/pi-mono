@@ -1,0 +1,81 @@
+COMPLETE PROJECT STRUCTURE
+==========================
+
+template/
+├── .claude/
+│   └── rules/
+│       └── project-rules.md              # Development guidelines
+│
+├── .husky/
+│   ├── pre-commit                        # Git pre-commit hook
+│   └── _/
+│       └── husky.sh                      # Husky utilities
+│
+├── .vscode/
+│   └── extensions.json                   # VS Code recommendations
+│
+├── scripts/
+│   └── validate-all.ts                   # Pre-commit validation script
+│
+├── src/
+│   ├── client/                           # React Frontend
+│   │   ├── components/
+│   │   │   └── __tests__/
+│   │   │       └── App.test.tsx          # Component tests
+│   │   ├── stores/
+│   │   │   ├── todoStore.ts              # Zustand store
+│   │   │   └── __tests__/
+│   │   │       └── todoStore.test.ts     # Store tests
+│   │   ├── services/
+│   │   │   └── apiClient.ts              # Hono RPC client
+│   │   ├── test/
+│   │   │   ├── setup.ts                  # Vitest setup
+│   │   │   └── cleanup.ts                # Test utilities
+│   │   ├── App.tsx                       # Main Todo List component
+│   │   ├── main.tsx                      # React entry point
+│   │   └── index.css                     # Global styles
+│   │
+│   ├── server/                           # Hono Backend
+│   │   ├── module-todos/                 # Todo feature module
+│   │   │   ├── routes/
+│   │   │   │   └── todos-routes.ts       # API endpoints (Hono RPC)
+│   │   │   ├── services/
+│   │   │   │   └── todo-service.ts       # Business logic
+│   │   │   └── __tests__/
+│   │   │       └── todo-service.test.ts  # Service unit tests
+│   │   ├── shared/
+│   │   │   ├── db.ts                     # Database connection
+│   │   │   └── schema.ts                 # Drizzle ORM schema
+│   │   ├── integration/
+│   │   │   └── todos-api.test.ts         # API integration tests
+│   │   └── index.ts                      # Server entry point
+│   │
+│   ├── shared/                           # Shared Types
+│   │   ├── types.ts                      # TypeScript interfaces
+│   │   └── schemas.ts                    # Zod validation schemas
+│   │
+│   └── vite-env.d.ts                     # Vite type declarations
+│
+├── Configuration Files
+│   ├── package.json                      # Dependencies and scripts
+│   ├── vite.config.ts                    # Vite + Hono dev server
+│   ├── tsconfig.json                     # TypeScript config
+│   ├── vitest.config.ts                  # Unit test config
+│   ├── vitest.integration.config.ts      # Integration test config
+│   ├── eslint.config.js                  # ESLint rules
+│   ├── .prettierrc                       # Prettier config
+│   ├── .prettierignore                   # Prettier ignore
+│   ├── .gitignore                        # Git ignore patterns
+│   ├── .env.example                      # Environment variables template
+│   └── index.html                        # HTML entry point
+│
+└── Documentation
+    ├── README.md                          # User documentation
+    ├── QUICKSTART.md                      # Quick start guide
+    ├── DESIGN.md                          # Architecture documentation
+    ├── PROJECT_SUMMARY.md                 # Project summary
+    ├── CLAUDE.md                          # Claude Code guidelines
+    └── STRUCTURE.txt                      # This file
+
+TOTAL FILES: 40+
+================================================================================

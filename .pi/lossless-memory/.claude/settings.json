@@ -1,0 +1,32 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": {
+        "tools": ["*"]
+      },
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash .claude/scripts/pre-tool-use-check.sh"
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": {
+        "tools": ["Write", "Edit"]
+      },
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash .claude/scripts/post-edit-check.sh"
+        },
+        {
+          "type": "command",
+          "command": "npx tsx .claude/scripts/check-duplicate-types.ts"
+        }
+      ]
+    }
+  ]
+}

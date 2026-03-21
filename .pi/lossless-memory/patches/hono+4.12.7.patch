@@ -1,0 +1,233 @@
+diff --git a/node_modules/hono/dist/cjs/client/client.js b/node_modules/hono/dist/cjs/client/client.js
+index 3c87c3b..615acdc 100644
+--- a/node_modules/hono/dist/cjs/client/client.js
++++ b/node_modules/hono/dist/cjs/client/client.js
+@@ -179,6 +179,46 @@ const hc = (baseUrl, options) => createProxy(function proxyCallback(opts) {
+     };
+     return establishWebSocket(targetUrl.toString());
+   }
++  if (method === "sse") {
++    const sseUrl = (0, import_utils.replaceUrlProtocol)(
++      opts.args[0] && opts.args[0].param ? (0, import_utils.replaceUrlParam)(url, opts.args[0].param) : url,
++      "http"
++    );
++    const targetUrl = new URL(sseUrl);
++    const queryParams = opts.args[0]?.query;
++    if (queryParams) {
++      Object.entries(queryParams).forEach(([key, value]) => {
++        if (Array.isArray(value)) {
++          value.forEach((item) => targetUrl.searchParams.append(key, item));
++        } else {
++          targetUrl.searchParams.set(key, value);
++        }
++      });
++    }
++    const establishSSE = options?.sse || ((u) => new EventSource(u));
++    return establishSSE(targetUrl.toString());
++  }
++  if (method === "image" || method === "svg") {
++    const req2 = new ClientRequestImpl(url, "get", {
++      buildSearchParams: buildSearchParamsOption
++    });
++    options ??= {};
++    const args = (0, import_utils.deepMerge)(options, { ...opts.args[1] });
++    return req2.fetch(opts.args[0], args).then((res) => {
++      if (method === "svg") {
++        return res.text();
++      }
++      return res.blob();
++    });
++  }
++  if (method === "download") {
++    const req2 = new ClientRequestImpl(url, "get", {
++      buildSearchParams: buildSearchParamsOption
++    });
++    options ??= {};
++    const args = (0, import_utils.deepMerge)(options, { ...opts.args[1] });
++    return req2.fetch(opts.args[0], args).then((res) => res.blob());
++  }
+   const req = new ClientRequestImpl(url, method, {
+     buildSearchParams: buildSearchParamsOption
+   });
+diff --git a/node_modules/hono/dist/client/client.js b/node_modules/hono/dist/client/client.js
+index 5bbbe00..b391357 100644
+--- a/node_modules/hono/dist/client/client.js
++++ b/node_modules/hono/dist/client/client.js
+@@ -165,6 +165,46 @@ var hc = (baseUrl, options) => createProxy(function proxyCallback(opts) {
+     };
+     return establishWebSocket(targetUrl.toString());
+   }
++  if (method === "sse") {
++    const sseUrl = replaceUrlProtocol(
++      opts.args[0] && opts.args[0].param ? replaceUrlParam(url, opts.args[0].param) : url,
++      "http"
++    );
++    const targetUrl = new URL(sseUrl);
++    const queryParams = opts.args[0]?.query;
++    if (queryParams) {
++      Object.entries(queryParams).forEach(([key, value]) => {
++        if (Array.isArray(value)) {
++          value.forEach((item) => targetUrl.searchParams.append(key, item));
++        } else {
++          targetUrl.searchParams.set(key, value);
++        }
++      });
++    }
++    const establishSSE = options?.sse || ((u) => new EventSource(u));
++    return establishSSE(targetUrl.toString());
++  }
++  if (method === "image" || method === "svg") {
++    const req2 = new ClientRequestImpl(url, "get", {
++      buildSearchParams: buildSearchParamsOption
++    });
++    options ??= {};
++    const args = deepMerge(options, { ...opts.args[1] });
++    return req2.fetch(opts.args[0], args).then((res) => {
++      if (method === "svg") {
++        return res.text();
++      }
++      return res.blob();
++    });
++  }
++  if (method === "download") {
++    const req2 = new ClientRequestImpl(url, "get", {
++      buildSearchParams: buildSearchParamsOption
++    });
++    options ??= {};
++    const args = deepMerge(options, opts.args?.[1] || {});
++    return req2.fetch(opts.args?.[0], args).then((res) => res.blob());
++  }
+   const req = new ClientRequestImpl(url, method, {
+     buildSearchParams: buildSearchParamsOption
+   });
+diff --git a/node_modules/hono/dist/types/client/types.d.ts b/node_modules/hono/dist/types/client/types.d.ts
+index 779df12..ef86e1e 100644
+--- a/node_modules/hono/dist/types/client/types.d.ts
++++ b/node_modules/hono/dist/types/client/types.d.ts
+@@ -4,6 +4,7 @@ import type { METHODS, METHOD_NAME_ALL_LOWERCASE } from '../router';
+ import type { Endpoint, ExtractSchema, KnownResponseFormat, ResponseFormat, Schema } from '../types';
+ import type { StatusCode, SuccessStatusCode } from '../utils/http-status';
+ import type { HasRequiredKeys } from '../utils/types';
++import type { WSClient, SSEClient, SSEClientFromOutput } from './ws-client';
+ /**
+  * Type representing the '$all' method name
+  */
+@@ -26,6 +27,7 @@ export type BuildSearchParamsFn = (query: Record<string, string | string[]>) =>
+ export type ClientRequestOptions<T = unknown> = {
+     fetch?: typeof fetch | HonoRequest;
+     webSocket?: (...args: ConstructorParameters<typeof WebSocket>) => WebSocket;
++    sse?: (url: string) => unknown;
+     /**
+      * Standard `RequestInit`, caution that this take highest priority
+      * and could be used to overwrite things that Hono sets for you, like `body | method | headers`.
+@@ -91,12 +93,41 @@ export type ClientRequest<Prefix extends string, Path extends string, S extends
+         query: Q;
+     } : {} : {}) | undefined = undefined>(arg?: Arg) => BuildPath<Path, Arg>;
+ } & (S['$get'] extends {
+-    outputFormat: 'ws';
+-} ? S['$get'] extends {
++    outputFormat: infer F;
++    output: infer O;
++} ? 'sse' extends F ? S['$get'] extends {
++    input: infer I;
++} ? {
++    $sse: (args?: I) => SSEClientFromOutput<O>;
++} : {} : {} : {}) & (S['$get'] extends {
++    outputFormat: infer F;
++    output: infer O;
++} ? 'ws' extends F ? S['$get'] extends {
++    input: infer I;
++} ? {
++    $ws: (args?: I) => WSClient<O>;
++} : {} : {} : {}) & (S['$get'] extends {
++    outputFormat: infer F;
++    output: infer O;
++} ? 'image' extends F ? S['$get'] extends {
++    input: infer I;
++} ? {
++    $image: (args?: I) => Promise<Blob>;
++} : {} : {} : {}) & (S['$get'] extends {
++    outputFormat: infer F;
++    output: infer O;
++} ? 'svg' extends F ? S['$get'] extends {
++    input: infer I;
++} ? {
++    $svg: (args?: I) => Promise<string>;
++} : {} : {} : {}) & (S['$get'] extends {
++    outputFormat: infer F;
++    output: infer O;
++} ? 'file' extends F ? S['$get'] extends {
+     input: infer I;
+ } ? {
+-    $ws: (args?: I) => WebSocket;
+-} : {} : {});
++    $download: (args?: I) => Promise<Blob>;
++} : {} : {} : {});
+ type ClientResponseOfEndpoint<T extends Endpoint = Endpoint> = T extends {
+     output: infer O;
+     outputFormat: infer F;
+diff --git a/node_modules/hono/dist/types/client/ws-client.d.ts b/node_modules/hono/dist/types/client/ws-client.d.ts
+new file mode 100644
+index 0000000..2cb2bd1
+--- /dev/null
++++ b/node_modules/hono/dist/types/client/ws-client.d.ts
+@@ -0,0 +1,46 @@
++export type WSStatus = 'connecting' | 'open' | 'closed' | 'reconnecting'
++
++export interface WSProtocol {
++  rpc: Record<string, { in: unknown; out: unknown }>
++  events: Record<string, unknown>
++}
++
++export interface SSEProtocol {
++  events: Record<string, unknown>
++}
++
++export interface WSClient<T = WSProtocol> {
++  readonly status: WSStatus
++  getSocket(): WebSocket | null
++
++  call<K extends keyof T['rpc']>(
++    method: K,
++    params: T['rpc'][K] extends { in: infer I } ? I : never,
++    timeout?: number
++  ): Promise<T['rpc'][K] extends { out: infer O } ? O : never>
++
++  emit<K extends keyof T['events']>(type: K, payload: T['events'][K]): void
++
++  on<K extends keyof T['events']>(type: K, handler: (payload: T['events'][K]) => void): () => void
++
++  onStatusChange(handler: (status: WSStatus) => void): () => void
++
++  close(): void
++}
++
++export interface SSEClient<T = SSEProtocol> {
++  readonly status: 'connecting' | 'open' | 'closed'
++
++  on<K extends keyof T['events']>(type: K, handler: (payload: T['events'][K]) => void): () => void
++
++  onStatusChange(handler: (status: 'connecting' | 'open' | 'closed') => void): () => void
++  onError(handler: (error: Error) => void): () => void
++
++  abort(): void
++}
++
++export type SSEClientFromOutput<O> = SSEClient<{ events: UnionToIntersection<ExtractEvents<O>> }>
++
++type ExtractEvents<O> = O extends { events: infer E } ? E : {}
++
++type UnionToIntersection<U> = (U extends any ? (k: U) => void : never) extends ((k: infer I) => void) ? I : never
+diff --git a/node_modules/hono/dist/types/types.d.ts b/node_modules/hono/dist/types/types.d.ts
+index 18ac8e2..8311396 100644
+--- a/node_modules/hono/dist/types/types.d.ts
++++ b/node_modules/hono/dist/types/types.d.ts
+@@ -524,7 +524,7 @@ export type AddParam<I, P extends string> = ParamKeys<P> extends never ? I : I e
+ };
+ type AddDollar<T extends string> = `$${Lowercase<T>}`;
+ export type MergePath<A extends string, B extends string> = B extends '' ? MergePath<A, '/'> : A extends '' ? B : A extends '/' ? B : A extends `${infer P}/` ? B extends `/${infer Q}` ? `${P}/${Q}` : `${P}/${B}` : B extends `/${infer Q}` ? Q extends '' ? A : `${A}/${Q}` : `${A}/${B}`;
+-export type KnownResponseFormat = 'json' | 'text' | 'redirect';
++export type KnownResponseFormat = 'json' | 'text' | 'redirect' | 'ws' | 'sse' | 'image' | 'svg' | 'file' | 'form';
+ export type ResponseFormat = KnownResponseFormat | string;
+ export type TypedResponse<T = unknown, U extends StatusCode = StatusCode, F extends ResponseFormat = T extends string ? 'text' : T extends JSONValue ? 'json' : ResponseFormat> = {
+     _data: T;

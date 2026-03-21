@@ -1,0 +1,33 @@
+name = "lossless-memory"
+main = "dist/cloudflare/cloudflare.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lossless-memory-db"
+database_id = ""  # TODO: Run 'wrangler d1 create lossless-memory-db' and paste the ID here
+
+[[durable_objects.bindings]]
+name = "REALTIME_DO"
+class_name = "RealtimeDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NotificationDurableObject"]
+
+[[migrations]]
+tag = "v2"
+renamed_classes = [{ from = "NotificationDurableObject", to = "RealtimeDurableObject" }]
+
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[dev]
+port = 8787
+local_protocol = "http"

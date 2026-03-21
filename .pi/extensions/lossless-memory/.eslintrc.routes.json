@@ -1,0 +1,39 @@
+{
+  "plugins": ["./lint-scripts/eslint-routes-permission.js", "./lint-scripts/eslint-route-auth.js"],
+  "rules": {
+    "eslint-routes-permission": [
+      "error",
+      {
+        "publicRoutes": [
+          { "path": "/api/admin/login", "method": "POST" },
+          { "path": "/api/admin/register", "method": "POST" },
+          { "path": "/api/permissions", "method": "GET" },
+          { "path": "/api/permissions/roles", "method": "GET" },
+          { "path": "/api/permissions/categories", "method": "GET" },
+          { "path": "/api/permissions/role-labels", "method": "GET" },
+          { "path": "/api/permissions/permission-labels", "method": "GET" },
+          { "path": "/api/permissions/menu-config", "method": "GET" },
+          { "path": "/api/permissions/page-permissions", "method": "GET" },
+          { "path": "/health", "method": "GET" }
+        ]
+      }
+    ],
+    "eslint-route-auth": [
+      "error",
+      {
+        "publicRoutes": [
+          { "path": "/api/admin/login", "method": "POST" },
+          { "path": "/api/admin/register", "method": "POST" },
+          { "path": "/api/permissions", "method": "GET" },
+          { "path": "/api/permissions/roles", "method": "GET" },
+          { "path": "/api/permissions/categories", "method": "GET" },
+          { "path": "/api/permissions/role-labels", "method": "GET" },
+          { "path": "/api/permissions/permission-labels", "method": "GET" },
+          { "path": "/api/permissions/menu-config", "method": "GET" },
+          { "path": "/api/permissions/page-permissions", "method": "GET" },
+          { "path": "/health", "method": "GET" }
+        ]
+      }
+    ]
+  }
+}

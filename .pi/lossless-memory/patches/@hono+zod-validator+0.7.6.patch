@@ -1,0 +1,13 @@
+diff --git a/node_modules/@hono/zod-validator/dist/index.d.ts b/node_modules/@hono/zod-validator/dist/index.d.ts
+index 0cbb442..8f29d1f 100644
+--- a/node_modules/@hono/zod-validator/dist/index.d.ts
++++ b/node_modules/@hono/zod-validator/dist/index.d.ts
+@@ -49,7 +49,7 @@ type Hook<T$1, E extends Env, P extends string, Target extends keyof ValidationT
+ type HasUndefined<T$1> = undefined extends T$1 ? true : false;
+ type ExtractValidationResponse<VF> = VF extends ((value: any, c: any) => infer R) ? R extends Promise<infer PR> ? PR extends TypedResponse<infer T, infer S, infer F> ? TypedResponse<T, S, F> : PR extends Response ? PR : PR extends undefined ? never : never : R extends TypedResponse<infer T, infer S, infer F> ? TypedResponse<T, S, F> : R extends Response ? R : R extends undefined ? never : never : never;
+ type DefaultInput<Target extends keyof ValidationTargets, In, Out> = {
+-  in: HasUndefined<In> extends true ? { [K in Target]?: [In] extends [ValidationTargets[K]] ? In : InferInput<In, K> } : { [K in Target]: [In] extends [ValidationTargets[K]] ? In : InferInput<In, K> };
++  in: { [K in Target]: [In] extends [ValidationTargets[K]] ? In : InferInput<In, K> };
+   out: { [K in Target]: Out };
+ };
+ declare function zValidatorFunction<T$1 extends ZodSchema, Target extends keyof ValidationTargets, E extends Env, P extends string, In = zInput<T$1>, Out = zOutput<T$1>, I extends Input = DefaultInput<Target, In, Out>, V extends I = I>(target: Target, schema: T$1): MiddlewareHandler<E, P, V>;

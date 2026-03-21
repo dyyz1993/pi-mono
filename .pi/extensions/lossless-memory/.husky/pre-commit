@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+echo "Running TypeScript type check..."
+npm run typecheck
+
+echo "Running all validators..."
+npm run validate:all
+
+echo "Checking MD file references..."
+npm run check:refs
+
+echo "Checking framework modifications..."
+npm run framework:check
+
+npx lint-staged
+
+echo "Running smart tests for changed files..."
+npm run test:smart:staged
