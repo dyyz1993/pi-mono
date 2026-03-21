@@ -338,8 +338,10 @@ export default function (pi: ExtensionAPI) {
 						content: [{ type: "text" as const, text: `历史摘要：${node.content}` }],
 					}));
 
-					console.log(`[LosslessMemory] 修改前：${messages.length} 条，修改后：${summaryMessages.length + recentMessages.length} 条`);
-					
+					console.log(
+						`[LosslessMemory] 修改前：${messages.length} 条，修改后：${summaryMessages.length + recentMessages.length} 条`,
+					);
+
 					return {
 						messages: [...summaryMessages, ...recentMessages],
 					};
@@ -352,12 +354,14 @@ export default function (pi: ExtensionAPI) {
 		return { messages };
 	}
 
-		const messages = event.messages;
-		const modelContextWindow = ctx.model?.contextWindow ?? 100000;
+	// ============================================================================
+	// Session Shutdown Handler
+	// ============================================================================
 
-		// Estimate current token usage
-		const currentTokens = messages.reduce((sum: number, m: any) => sum + estimateMessageTokens(m), 0);
-
+	/**
+	 * Handle session shutdown event
+	 */
+	async function onSessionShutdown(ctx: any): Promise<void> {
 		// If we're approaching the limit, use summaries
 		if (currentTokens > modelContextWindow * 0.8) {
 			try {
