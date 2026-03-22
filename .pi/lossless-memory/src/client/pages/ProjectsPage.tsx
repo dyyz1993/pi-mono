@@ -1,40 +1,101 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useGetProjects, useGetStats } from '@shared/hooks/useLosslessRPC'
-import type { Project, OverviewStats } from '@shared/modules/lossless-memory'
+
+interface Session {
+  path: string
+  sessionCount: number
+  messageCount: number
+  lastActive: number
+}
+
+interface ProjectGroup {
+  name: string
+  path: string
+  sessions: number
+  messageCount: number
+  lastActive: number
+}
+
+interface OverviewStats {
+  totalProjects: number
+  totalSessions: number
+  totalNodes: number
+  totalMessages: number
+  totalTokens: number
+}
+
+function extractProjectName(path: string): string {
+  const match = path.match(/\/sessions\/--Users-([^/]+)-Project-([^/]+)--/i)
+  if (match) {
+    const user = decodeURIComponent(match[1])
+    const project = decodeURIComponent(match[2])
+    return `${user}/${project}`
+  }
+  const parts = path.split('/')
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i]
+    if (part && !part.endsWith('.jsonl')) {
+      return decodeURIComponent(part.replace(/-/g, ' ')).split('_')[0]
+    }
+  }
+  return '未知项目'
+}
 
 export default function ProjectsPage() {
   const navigate = useNavigate()
-  const { data: projects, loading: projectsLoading, error: projectsError, refresh: refreshProjects } = useGetProjects()
-  const { data: stats, loading: statsLoading, error: statsError } = useGetStats()
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [stats, setStats] = useState<OverviewStats | null>(null)
+  const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
 
-  const filteredProjects = (projects || []).filter((p: Project) => 
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.path.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  useState(() => {
+    loadData()
+    const interval = setInterval(loadData, 5000)
+    return () => clearInterval(interval)
+  })
+
+  async function loadData() {
+    try {
+      const [sessionsRes, statsRes] = await Promise.all([
+        fetch('/api/lossless/sessions').then(r => r.json()),
+        fetch('/api/lossless/stats').then(r => r.json())
+      ])
+      
+      if (sessionsRes.data) setSessions(sessionsRes.data)
+      if (statsRes.data) setStats(statsRes.data)
+      setLoading(false)
+    } catch (err) {
+      console.error('[ProjectsPage] 加载数据失败:', err)
+      setLoading(false)
+    }
+  }
+
+  const projectGroups = sessions.reduce((acc, session) => {
+    const projectName = extractProjectName(session.path)
+    if (!acc[projectName]) {
+      acc[projectName] = { name: projectName, path: session.path, sessions: 0, messageCount: 0, lastActive: 0 }
+    }
+    acc[projectName].sessions += 1
+    acc[projectName].messageCount += session.messageCount || 0
+    acc[projectName].lastActive = Math.max(acc[projectName].lastActive, session.lastActive)
+    return acc
+  }, {} as Record<string, ProjectGroup>)
+
+  const projects = Object.values(projectGroups)
+  const filteredProjects = projects.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()))
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 flex flex-col">
-      {/* Header */}
       <div className="flex-shrink-0 bg-gradient-to-r from-cyan-500/20 to-purple-500/20 backdrop-blur-sm px-6 py-4 border-b border-cyan-500/30">
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold text-cyan-400">🧠 Lossless Memory</h1>
-            <p className="text-xs text-gray-400 mt-1">
-              项目列表 · 
-              <button 
-                onClick={() => navigate('/stats')} 
-                className="text-cyan-400 hover:text-cyan-300 ml-1"
-              >
-                📊 API 统计
-              </button>
-            </p>
+            <p className="text-xs text-gray-400 mt-1">项目维度 · DAG 可视化</p>
           </div>
           {stats && (
             <div className="flex gap-4 text-sm text-gray-400">
               <div className="text-center">
-                <div className="text-xl font-bold text-cyan-400">{stats.totalProjects}</div>
+                <div className="text-xl font-bold text-cyan-400">{projects.length}</div>
                 <div>项目</div>
               </div>
               <div className="text-center">
@@ -54,9 +115,7 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="flex-1 overflow-hidden p-6">
-        {/* Search Bar */}
         <div className="mb-6">
           <input
             type="text"
@@ -67,57 +126,51 @@ export default function ProjectsPage() {
           />
         </div>
 
-        {/* Projects Grid */}
         <div className="h-full overflow-y-auto">
-          {projectsLoading ? (
+          {loading ? (
             <div className="text-center text-gray-400 py-20">加载中...</div>
-          ) : projectsError ? (
-            <div className="text-center text-red-400 py-20">
-              <div className="text-5xl mb-4">❌</div>
-              <p>加载失败：{projectsError}</p>
-            </div>
           ) : filteredProjects.length === 0 ? (
             <div className="text-center text-gray-500 py-20">
-              <div className="text-5xl mb-4">🔍</div>
-              <p>没有找到匹配的项目</p>
+              <div className="text-5xl mb-4">📭</div>
+              <p>还没有项目</p>
+              <p className="text-sm mt-2 text-gray-400">启动 pi 创建第一个会话</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredProjects.map((project: Project) => (
+              {filteredProjects.map(project => (
                 <div
-                  key={project.path}
+                  key={project.name}
                   onClick={() => navigate(`/project/${encodeURIComponent(project.path)}`)}
-                  className="p-6 rounded-xl border bg-gray-800/50 border-gray-700 cursor-pointer hover:border-cyan-500/50 hover:bg-gray-800/70 transition-all group"
+                  className="p-6 rounded-xl border bg-gray-800/50 border-gray-700 cursor-pointer hover:border-cyan-500/50 hover:bg-gray-800/70 transition-all"
                 >
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex-1">
-                      <h3 className="text-lg font-bold text-cyan-400 group-hover:text-cyan-300 transition-colors">
-                        📂 {project.name}
-                      </h3>
-                      <p className="text-xs text-gray-500 mt-1 truncate">{project.path}</p>
-                    </div>
-                    <span className="text-xs bg-cyan-500/20 text-cyan-400 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                      查看详情 →
-                    </span>
+                  <div className="mb-4">
+                    <h3 className="text-lg font-bold text-cyan-400">📂 {project.name}</h3>
+                    <p className="text-xs text-gray-500 mt-1 truncate">
+                      {project.path.split('/').pop()?.slice(0, 50)}
+                    </p>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 gap-3">
                     <div className="text-center p-3 bg-gray-900/50 rounded-lg">
-                      <div className="text-2xl font-bold text-cyan-400">{project.sessionCount}</div>
+                      <div className="text-2xl font-bold text-pink-400">{project.sessions}</div>
                       <div className="text-xs text-gray-500 mt-1">会话</div>
                     </div>
                     <div className="text-center p-3 bg-gray-900/50 rounded-lg">
-                      <div className="text-2xl font-bold text-pink-400">{project.messageCount}</div>
+                      <div className="text-2xl font-bold text-purple-400">{project.messageCount}</div>
                       <div className="text-xs text-gray-500 mt-1">消息</div>
                     </div>
                     <div className="text-center p-3 bg-gray-900/50 rounded-lg">
-                      <div className="text-lg font-bold text-purple-400">
+                      <div className="text-lg font-bold text-green-400">
                         {Date.now() - project.lastActive < 86400000 ? '今天' : 
                          Date.now() - project.lastActive < 172800000 ? '昨天' : 
                          new Date(project.lastActive).toLocaleDateString()}
                       </div>
                       <div className="text-xs text-gray-500 mt-1">活跃</div>
                     </div>
+                  </div>
+                  
+                  <div className="mt-4 text-center text-xs text-cyan-400">
+                    点击查看详情 →
                   </div>
                 </div>
               ))}

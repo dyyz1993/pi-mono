@@ -5,16 +5,14 @@
 import { Hono } from 'hono'
 import * as LosslessService from './module-lossless-memory/services/lossless-service'
 
-// ============================================================================
-// 创建 App
-// ============================================================================
-
 export function createApp() {
   const app = new Hono()
   
-  // ============================================================================
-  // Lossless Memory Routes
-  // ============================================================================
+  // GET /api/lossless/sessions
+  app.get('/api/lossless/sessions', async c => {
+    const sessions = await LosslessService.getSessions()
+    return c.json({ data: sessions, timestamp: Date.now() })
+  })
   
   // GET /api/lossless/projects
   app.get('/api/lossless/projects', async c => {
@@ -28,22 +26,20 @@ export function createApp() {
     return c.json({ data: stats, timestamp: Date.now() })
   })
   
-  // GET /api/lossless/sessions
-  app.get('/api/lossless/sessions', async c => {
-    const projectPath = c.req.query('projectPath')
-    const sessions = await LosslessService.getSessions(projectPath)
-    return c.json({ data: sessions, timestamp: Date.now() })
-  })
-  
   // GET /api/lossless/nodes
   app.get('/api/lossless/nodes', async c => {
-    const sessionId = c.req.query('sessionId')
-    const level = c.req.query('level')
-    const nodes = await LosslessService.getNodes(
-      sessionId,
-      level !== undefined ? parseInt(level) : undefined
-    )
+    const nodes = await LosslessService.getNodes()
     return c.json({ data: nodes, timestamp: Date.now() })
+  })
+  
+  // GET /api/lossless/messages
+  app.get('/api/lossless/messages', async c => {
+    const sessionPath = c.req.query('path')
+    if (!sessionPath) {
+      return c.json({ data: [], timestamp: Date.now() })
+    }
+    const messages = await LosslessService.getMessages(sessionPath)
+    return c.json({ data: messages, timestamp: Date.now() })
   })
   
   return app

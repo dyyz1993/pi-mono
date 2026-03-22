@@ -1,0 +1,9 @@
+{
+  "name": "safe-kill-extension",
+  "version": "1.0.0",
+  "description": "Blocks dangerous pkill/killall commands, requires PID-based process killing",
+  "keywords": ["pi-package", "pi-extension", "safety"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
