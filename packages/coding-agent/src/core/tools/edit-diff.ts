@@ -525,47 +525,43 @@ export function applyQuoteStyle(text: string, style: "single" | "double" | "temp
 
 /**
  * Clean up empty lines after deletion.
- * Removes all consecutive blank lines, including at deletion boundaries.
- * This is more aggressive than normal cleanup to avoid leaving awkward gaps.
+ * Strategy:
+ * 1. Remove all trailing empty lines at the end
+ * 2. Collapse multiple consecutive empty lines to one
+ * 3. Preserve single empty lines that separate logical blocks
  */
 export function smartCleanupEmptyLines(content: string): string {
 	const lines = content.split("\n");
 	const result: string[] = [];
-	let consecutiveEmptyCount = 0;
-	let lastNonEmptyIndex = -1;
+	let i = 0;
 
-	// First pass: identify all empty line sequences and non-empty lines
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
-		const isEmpty = line.trim() === "";
-		
-		if (isEmpty) {
-			consecutiveEmptyCount++;
-		} else {
-			// If we had consecutive empty lines before this non-empty line,
-			// and we have content after it, keep one blank line for readability
-			if (consecutiveEmptyCount > 0 && result.length > 0) {
-				// Check if this is likely a structural boundary (indentation changed)
-				const prevLine = result[result.length - 1] || "";
-				const prevIndent = prevLine.match(/^\s*/)?.[0].length || 0;
-				const currIndent = line.match(/^\s*/)?.[0].length || 0;
-				
-				// Only keep blank line if:
-				// 1. It's not at the start of a block (indentation increased)
-				// 2. It's between two lines at the same indentation level
-				if (currIndent === prevIndent && currIndent > 0) {
-					result.push("");
-				}
-			}
-			consecutiveEmptyCount = 0;
-			result.push(line);
-			lastNonEmptyIndex = result.length - 1;
-		}
+	// Skip leading empty lines
+	while (i < lines.length && lines[i].trim() === "") {
+		i++;
 	}
 
-	// Remove trailing empty lines (keep only if there's content after)
-	while (result.length > 0 && result[result.length - 1].trim() === "") {
-		result.pop();
+	// Process rest of lines
+	while (i < lines.length) {
+		const line = lines[i];
+		const isEmpty = line.trim() === "";
+
+		if (!isEmpty) {
+			result.push(line);
+			i++;
+		} else {
+			// Count consecutive empty lines
+			let emptyCount = 0;
+			while (i < lines.length && lines[i].trim() === "") {
+				emptyCount++;
+				i++;
+			}
+
+			// If there are more lines after, keep one empty line
+			if (i < lines.length) {
+				result.push("");
+			}
+			// Otherwise, skip trailing empty lines
+		}
 	}
 
 	return result.join("\n");
