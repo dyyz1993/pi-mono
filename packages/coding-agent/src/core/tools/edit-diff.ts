@@ -621,19 +621,6 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 		let processedOldText = sanitize ? sanitizeText(oldText) : oldText;
 		let processedNewText = sanitize ? sanitizeText(newText) : newText;
 
-		// Find all matches
-		const matches = findAllMatches(content, processedOldText, enableFuzzyMatch);
-
-		if (matches.length === 0) {
-			return {
-				success: false,
-				error: `Text not found in ${filePath}${enableFuzzyMatch ? " (even with fuzzy matching)" : ""}`,
-			};
-		}
-
-		// Determine which matches to replace
-		const matchesToReplace = replaceAll ? matches : [matches[0]];
-
 		// Detect quote style if needed
 		let quoteStyle: "single" | "double" | "template" | "none" = "none";
 		if (preserveQuoteStyle) {
@@ -643,17 +630,86 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			}
 		}
 
-		// Apply replacements in reverse order to maintain correct offsets
-		let newContent = enableFuzzyMatch ? normalizeForFuzzyMatch(content) : content;
+		let newContent: string;
+		let matchCount = 0;
 
-		// Sort matches in reverse order
-		const sortedMatches = [...matchesToReplace].sort((a, b) => b.index - a.index);
+		if (enableFuzzyMatch) {
+			// For fuzzy matching, normalize both content and pattern
+			const normalizedContent = normalizeForFuzzyMatch(content);
+			const normalizedPattern = normalizeForFuzzyMatch(processedOldText);
 
-		for (const match of sortedMatches) {
-			newContent =
-				newContent.substring(0, match.index) +
-				processedNewText +
-				newContent.substring(match.index + match.length);
+			// Find all matches in normalized space
+			const matches: Array<{ index: number; length: number }> = [];
+			let searchPos = 0;
+			while (searchPos < normalizedContent.length) {
+				const idx = normalizedContent.indexOf(normalizedPattern, searchPos);
+				if (idx === -1) break;
+				matches.push({
+					index: idx,
+					length: normalizedPattern.length,
+				});
+				searchPos = idx + normalizedPattern.length;
+			}
+
+			if (matches.length === 0) {
+				return {
+					success: false,
+					error: `Text not found in ${filePath} (even with fuzzy matching)`,
+				};
+			}
+
+			// Determine which matches to replace
+			const matchesToReplace = replaceAll ? matches : [matches[0]];
+			matchCount = matchesToReplace.length;
+
+			// Apply replacements in reverse order to maintain correct offsets
+			// Work in normalized space
+			let normalizedResult = normalizedContent;
+			const sortedMatches = [...matchesToReplace].sort((a, b) => b.index - a.index);
+
+			for (const match of sortedMatches) {
+				normalizedResult =
+					normalizedResult.substring(0, match.index) +
+					processedNewText +
+					normalizedResult.substring(match.index + match.length);
+			}
+
+			newContent = normalizedResult;
+		} else {
+			// Exact matching
+			const matches: Array<{ index: number; length: number }> = [];
+			let searchPos = 0;
+			while (searchPos < content.length) {
+				const idx = content.indexOf(processedOldText, searchPos);
+				if (idx === -1) break;
+				matches.push({
+					index: idx,
+					length: processedOldText.length,
+				});
+				searchPos = idx + processedOldText.length;
+			}
+
+			if (matches.length === 0) {
+				return {
+					success: false,
+					error: `Text not found in ${filePath}`,
+				};
+			}
+
+			// Determine which matches to replace
+			const matchesToReplace = replaceAll ? matches : [matches[0]];
+			matchCount = matchesToReplace.length;
+
+			// Apply replacements in reverse order to maintain correct offsets
+			newContent = content;
+			const sortedMatches = [...matchesToReplace].sort((a, b) => b.index - a.index);
+
+			for (const match of sortedMatches) {
+				newContent =
+					newContent.substring(0, match.index) +
+					processedNewText +
+					newContent.substring(match.index + match.length);
+			}
 		}
 
 		// Apply smart deletion cleanup if requested
@@ -666,7 +722,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 
 		return {
 			success: true,
-			count: matchesToReplace.length,
+			count: matchCount,
 		};
 	} catch (error) {
 		return {
