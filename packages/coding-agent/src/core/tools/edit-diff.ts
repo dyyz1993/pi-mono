@@ -649,22 +649,39 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			}
 
 			// Find all matches by comparing normalized versions
-			// We'll search through the content and find where normalized patterns match
+			// We need to find where in the original content the pattern matches when normalized
 			const matches: Array<{ index: number; length: number }> = [];
 			
-			// For each position in the original content, check if the normalized substring matches
-			for (let i = 0; i <= content.length - processedOldText.length; i++) {
-				// Extract a substring from original content and normalize it
-				const originalSubstring = content.substring(i, i + processedOldText.length);
-				const normalizedSubstring = normalizeForFuzzyMatch(originalSubstring);
+			// Helper: try to match at a given position in original content
+			// Returns the actual length of the match in original content, or -1 if no match
+			const tryMatch = (startPos: number): number => {
+				// Try different lengths in original content
+				// The match in original content could be different length than processedOldText
+				// due to different quote characters or whitespace
+				const maxLen = Math.min(content.length - startPos, processedOldText.length + 10);
+				const minLen = Math.max(1, processedOldText.length - 10);
 				
-				if (normalizedSubstring === normalizedPattern) {
+				for (let len = minLen; len <= maxLen; len++) {
+					const originalSubstring = content.substring(startPos, startPos + len);
+					const normalizedSubstring = normalizeForFuzzyMatch(originalSubstring);
+					
+					if (normalizedSubstring === normalizedPattern) {
+						return len;
+					}
+				}
+				return -1;
+			};
+			
+			// Search through the content
+			for (let i = 0; i < content.length; i++) {
+				const matchLen = tryMatch(i);
+				if (matchLen > 0) {
 					matches.push({
 						index: i,
-						length: processedOldText.length,
+						length: matchLen,
 					});
 					// Skip ahead to avoid overlapping matches
-					i += processedOldText.length - 1;
+					i += matchLen - 1;
 				}
 			}
 
