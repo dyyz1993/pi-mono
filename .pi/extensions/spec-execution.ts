@@ -190,9 +190,16 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("spec-generate", {
 		description: "Generate spec files from current task description",
-		handler: async (_args, ctx) => {
-			const editorText = ctx.ui.getEditorText();
-			if (!editorText.trim()) {
+		handler: async (args, ctx) => {
+			let taskDescription = "";
+			
+			if (args && args.trim()) {
+				taskDescription = args.trim();
+			} else if (ctx.hasUI) {
+				taskDescription = ctx.ui.getEditorText();
+			}
+			
+			if (!taskDescription.trim()) {
 				ctx.ui.notify("Please enter a task description first", "warning");
 				return;
 			}
@@ -204,7 +211,7 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 			const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
 			const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
 
-			fs.writeFileSync(specPath, generateSpecTemplate(editorText), "utf-8");
+			fs.writeFileSync(specPath, generateSpecTemplate(taskDescription), "utf-8");
 			fs.writeFileSync(tasksPath, generateTasksTemplate(), "utf-8");
 			fs.writeFileSync(checklistPath, generateChecklistTemplate(), "utf-8");
 
