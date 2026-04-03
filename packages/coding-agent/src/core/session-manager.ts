@@ -36,6 +36,7 @@ export interface SessionHeader {
 }
 
 export interface NewSessionOptions {
+	id?: string;
 	parentSession?: string;
 }
 
@@ -153,6 +154,8 @@ export interface SessionTreeNode {
 	children: SessionTreeNode[];
 	/** Resolved label for this entry, if any */
 	label?: string;
+	/** Timestamp of the latest label change for this entry, if any */
+	labelTimestamp?: string;
 }
 
 export interface SessionContext {
@@ -417,9 +420,9 @@ export function buildSessionContext(
  * Compute the default session directory for a cwd.
  * Encodes cwd into a safe directory name under ~/.pi/agent/sessions/.
  */
-function getDefaultSessionDir(cwd: string): string {
+export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
 	const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-	const sessionDir = join(getDefaultAgentDir(), "sessions", safePath);
+	const sessionDir = join(agentDir, "sessions", safePath);
 	if (!existsSync(sessionDir)) {
 		mkdirSync(sessionDir, { recursive: true });
 	}
@@ -564,12 +567,10 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let name: string | undefined;
 
 		for (const entry of entries) {
-			// Extract session name (use latest)
+			// Extract session name (use latest, including explicit clears)
 			if (entry.type === "session_info") {
 				const infoEntry = entry as SessionInfoEntry;
-				if (infoEntry.name) {
-					name = infoEntry.name.trim();
-				}
+				name = infoEntry.name?.trim() || undefined;
 			}
 
 			if (entry.type !== "message") continue;
@@ -670,6 +671,7 @@ export class SessionManager {
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
+	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 
 	private constructor(cwd: string, sessionDir: string, sessionFile: string | undefined, persist: boolean) {
@@ -721,7 +723,7 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
-		this.sessionId = randomUUID();
+		this.sessionId = options?.id ?? randomUUID();
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
 			type: "session",
@@ -747,6 +749,7 @@ export class SessionManager {
 	private _buildIndex(): void {
 		this.byId.clear();
 		this.labelsById.clear();
+		this.labelTimestampsById.clear();
 		this.leafId = null;
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
@@ -755,8 +758,10 @@ export class SessionManager {
 			if (entry.type === "label") {
 				if (entry.label) {
 					this.labelsById.set(entry.targetId, entry.label);
+					this.labelTimestampsById.set(entry.targetId, entry.timestamp);
 				} else {
 					this.labelsById.delete(entry.targetId);
+					this.labelTimestampsById.delete(entry.targetId);
 				}
 			}
 		}
@@ -912,12 +917,13 @@ export class SessionManager {
 
 	/** Get the current session name from the latest session_info entry, if any. */
 	getSessionName(): string | undefined {
-		// Walk entries in reverse to find the latest session_info with a name
+		// Walk entries in reverse to find the latest session_info entry.
+		// Empty names explicitly clear the session title.
 		const entries = this.getEntries();
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];
-			if (entry.type === "session_info" && entry.name) {
-				return entry.name;
+			if (entry.type === "session_info") {
+				return entry.name?.trim() || undefined;
 			}
 		}
 		return undefined;
@@ -1007,8 +1013,10 @@ export class SessionManager {
 		this._appendEntry(entry);
 		if (label) {
 			this.labelsById.set(targetId, label);
+			this.labelTimestampsById.set(targetId, entry.timestamp);
 		} else {
 			this.labelsById.delete(targetId);
+			this.labelTimestampsById.delete(targetId);
 		}
 		return entry.id;
 	}
@@ -1067,7 +1075,8 @@ export class SessionManager {
 		// Create nodes with resolved labels
 		for (const entry of entries) {
 			const label = this.labelsById.get(entry.id);
-			nodeMap.set(entry.id, { entry, children: [], label });
+			const labelTimestamp = this.labelTimestampsById.get(entry.id);
+			nodeMap.set(entry.id, { entry, children: [], label, labelTimestamp });
 		}
 
 		// Build tree
@@ -1179,53 +1188,62 @@ export class SessionManager {
 
 		// Collect labels for entries in the path
 		const pathEntryIds = new Set(pathWithoutLabels.map((e) => e.id));
-		const labelsToWrite: Array<{ targetId: string; label: string }> = [];
+		const labelsToWrite: Array<{ targetId: string; label: string; timestamp: string }> = [];
 		for (const [targetId, label] of this.labelsById) {
 			if (pathEntryIds.has(targetId)) {
-				labelsToWrite.push({ targetId, label });
+				labelsToWrite.push({ targetId, label, timestamp: this.labelTimestampsById.get(targetId)! });
 			}
 		}
 
 		if (this.persist) {
-			appendFileSync(newSessionFile, `${JSON.stringify(header)}\n`);
-			for (const entry of pathWithoutLabels) {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
-			}
-			// Write fresh label entries at the end
+			// Build label entries
 			const lastEntryId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
 			let parentId = lastEntryId;
 			const labelEntries: LabelEntry[] = [];
-			for (const { targetId, label } of labelsToWrite) {
+			for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
 				const labelEntry: LabelEntry = {
 					type: "label",
 					id: generateId(new Set(pathEntryIds)),
 					parentId,
-					timestamp: new Date().toISOString(),
+					timestamp: labelTimestamp,
 					targetId,
 					label,
 				};
-				appendFileSync(newSessionFile, `${JSON.stringify(labelEntry)}\n`);
 				pathEntryIds.add(labelEntry.id);
 				labelEntries.push(labelEntry);
 				parentId = labelEntry.id;
 			}
+
 			this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
 			this.sessionId = newSessionId;
 			this.sessionFile = newSessionFile;
-			this.flushed = true;
 			this._buildIndex();
+
+			// Only write the file now if it contains an assistant message.
+			// Otherwise defer to _persist(), which creates the file on the
+			// first assistant response, matching the newSession() contract
+			// and avoiding the duplicate-header bug when _persist()'s
+			// no-assistant guard later resets flushed to false.
+			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
+			if (hasAssistant) {
+				this._rewriteFile();
+				this.flushed = true;
+			} else {
+				this.flushed = false;
+			}
+
 			return newSessionFile;
 		}
 
 		// In-memory mode: replace current session with the path + labels
 		const labelEntries: LabelEntry[] = [];
 		let parentId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
-		for (const { targetId, label } of labelsToWrite) {
+		for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
 			const labelEntry: LabelEntry = {
 				type: "label",
 				id: generateId(new Set([...pathEntryIds, ...labelEntries.map((e) => e.id)])),
 				parentId,
-				timestamp: new Date().toISOString(),
+				timestamp: labelTimestamp,
 				targetId,
 				label,
 			};

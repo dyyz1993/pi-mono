@@ -377,10 +377,10 @@ describe("totalTokens field", () => {
 
 	describe.skipIf(!process.env.MINIMAX_API_KEY)("MiniMax", () => {
 		it(
-			"MiniMax-M2.1 - should return totalTokens equal to sum of components",
+			"MiniMax-M2.7 - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("minimax", "MiniMax-M2.1");
+				const llm = getModel("minimax", "MiniMax-M2.7");
 
 				console.log(`\nMiniMax / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.MINIMAX_API_KEY });
@@ -480,10 +480,10 @@ describe("totalTokens field", () => {
 		);
 
 		it(
-			"mistralai/mistral-small-3.1-24b-instruct - should return totalTokens equal to sum of components",
+			"mistralai/mistral-small-3.2-24b-instruct - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("openrouter", "mistralai/mistral-small-3.1-24b-instruct");
+				const llm = getModel("openrouter", "mistralai/mistral-small-3.2-24b-instruct");
 
 				console.log(`\nOpenRouter / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });

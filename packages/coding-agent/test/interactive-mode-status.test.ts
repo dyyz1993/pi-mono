@@ -60,6 +60,54 @@ describe("InteractiveMode.showStatus", () => {
 	});
 });
 
+describe("InteractiveMode.createExtensionUIContext setTheme", () => {
+	test("persists theme changes to settings manager", () => {
+		initTheme("dark");
+
+		let currentTheme = "dark";
+		const settingsManager = {
+			getTheme: vi.fn(() => currentTheme),
+			setTheme: vi.fn((theme: string) => {
+				currentTheme = theme;
+			}),
+		};
+		const fakeThis: any = {
+			session: { settingsManager },
+			settingsManager,
+			ui: { requestRender: vi.fn() },
+		};
+
+		const uiContext = (InteractiveMode as any).prototype.createExtensionUIContext.call(fakeThis);
+		const result = uiContext.setTheme("light");
+
+		expect(result.success).toBe(true);
+		expect(settingsManager.setTheme).toHaveBeenCalledWith("light");
+		expect(currentTheme).toBe("light");
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not persist invalid theme names", () => {
+		initTheme("dark");
+
+		const settingsManager = {
+			getTheme: vi.fn(() => "dark"),
+			setTheme: vi.fn(),
+		};
+		const fakeThis: any = {
+			session: { settingsManager },
+			settingsManager,
+			ui: { requestRender: vi.fn() },
+		};
+
+		const uiContext = (InteractiveMode as any).prototype.createExtensionUIContext.call(fakeThis);
+		const result = uiContext.setTheme("__missing_theme__");
+
+		expect(result.success).toBe(false);
+		expect(settingsManager.setTheme).not.toHaveBeenCalled();
+		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
+	});
+});
+
 describe("InteractiveMode.showLoadedResources", () => {
 	beforeAll(() => {
 		initTheme("dark");
@@ -88,7 +136,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 						diagnostics: options.skillDiagnostics ?? [],
 					}),
 					getPrompts: () => ({ prompts: [], diagnostics: [] }),
-					getExtensions: () => ({ errors: [] }),
+					getExtensions: () => ({ extensions: [], errors: [], runtime: {} }),
 					getThemes: () => ({ themes: [], diagnostics: [] }),
 				},
 			},
@@ -97,6 +145,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			formatScopeGroups: () => "resource-list",
 			getShortPath: (p: string) => p,
 			formatDiagnostics: () => "diagnostics",
+			getBuiltInCommandConflictDiagnostics: () => [],
 		};
 
 		return fakeThis;
@@ -109,7 +158,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
-			extensionPaths: ["/tmp/ext/index.ts"],
+			extensions: [{ path: "/tmp/ext/index.ts" }],
 			force: false,
 			showDiagnosticsWhenQuiet: true,
 		});
