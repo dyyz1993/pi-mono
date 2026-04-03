@@ -1,24 +1,11 @@
 /**
  * Spec-Driven Execution Extension
- *
- * A workflow that enforces strict spec-based execution:
- * 1. User triggers with shortcut + task description
- * 2. Generates spec.md / tasks.md / checklist.md
- * 3. User confirms to execute
- * 4. Agent strictly follows the 3 files
- * 5. Auto-validates completion against checklist
- *
- * Usage:
- * - Ctrl+Shift+S: Start spec-driven workflow (enters task description mode)
- * - Extension automatically enforces completion
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Key, matchesKey } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Key } from "@mariozechner/pi-tui";
 
 interface TaskItem {
 	checked: boolean;
@@ -28,7 +15,6 @@ interface TaskItem {
 interface ChecklistItem {
 	passed: boolean;
 	description: string;
-	evidence?: string;
 }
 
 interface SpecExecutionState {
@@ -52,109 +38,13 @@ function ensureSpecDir(cwd: string): string {
 	return specDir;
 }
 
-function escapeMarkdown(text: string): string {
-	return text
-		.replace(/[*_`#\\]/g, "\\$&")
-		.replace(/\n/g, "\\n");
-}
-
-function generateSpecTemplate(taskDescription: string): string {
-	const title = taskDescription.replace(/^#\s*/, "").split("\n")[0].trim();
-	return `# ${title} Specification
-
-## Why
-<!-- Why this feature is needed. What problem does it solve? -->
-
-## What Changes
-<!-- What exactly changes in this implementation -->
-
-## Impact
-<!-- Side effects, breaking changes, performance implications -->
-
-## ADDED Requirements
-
-### Scenario 1: When-Then
-- [ ] 
-
-## MODIFIED Requirements (if any)
-- [ ]
-
-## Data Structures
-\`\`\`typescript
-// Define TypeScript interfaces here
-\`\`\`
-
-## Architecture
-<!-- Architecture data flow, module relationships -->
-
-## Implementation Files
-<!-- File list to be created/modified:
-- src/...
-- test/...
--->
-
-## Verification Criteria
-- [ ] Unit tests pass
-- [ ] Integration tests pass
-- [ ] Manual verification steps
-`;
-}
-
-function generateTasksTemplate(): string {
-	return `# Tasks - Implementation
-
-## Task List (in coding order, with file paths)
-- [ ] 1. 
-- [ ] 2. 
-
-## Task Dependencies
-<!-- Dependencies:
-Task 1 → Task 2 → Task 3
--->
-
-## Verification Steps
-### Task 1
-1. 
-
-### Task 2
-1. 
-`;
-}
-
-function generateChecklistTemplate(): string {
-	return `# Checklist - Implementation
-
-## Code Implementation Checklist (per task)
-- [ ] Task 1: Code written
-- [ ] Task 1: Types defined
-- [ ] Task 1: Error handling added
-- [ ] Task 2: Code written
-- [ ] Task 2: Types defined
-- [ ] Task 2: Error handling added
-
-## Build and Verification Checklist
-- [ ] TypeScript compiles without errors
-- [ ] Lint passes (\`npm run check\`)
-- [ ] No new TypeScript errors introduced
-
-## Functional Verification Checklist
-- [ ] Feature works as specified in spec.md
-- [ ] Edge cases handled
-- [ ] Error messages are user-friendly
-- [ ] Performance acceptable
-`;
-}
-
 function parseTasksFile(content: string): TaskItem[] {
 	const tasks: TaskItem[] = [];
 	const lines = content.split("\n");
 	for (const line of lines) {
 		const match = line.match(/- \[([ x])\] \d+\. (.+)/);
 		if (match) {
-			tasks.push({
-				checked: match[1] === "x",
-				description: match[2].trim(),
-			});
+			tasks.push({ checked: match[1] === "x", description: match[2].trim() });
 		}
 	}
 	return tasks;
@@ -166,10 +56,7 @@ function parseChecklistFile(content: string): ChecklistItem[] {
 	for (const line of lines) {
 		const match = line.match(/- \[([ x])\] (.+)/);
 		if (match) {
-			items.push({
-				passed: match[1] === "x",
-				description: match[2].trim(),
-			});
+			items.push({ passed: match[1] === "x", description: match[2].trim() });
 		}
 	}
 	return items;
@@ -180,7 +67,6 @@ function generateValidationReport(state: SpecExecutionState): string {
 	const completedTasks = state.tasks.filter((t) => t.checked).length;
 	const totalChecklist = state.checklist.length;
 	const passedChecklist = state.checklist.filter((c) => c.passed).length;
-
 	const tasksPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 	const checklistPercent = totalChecklist > 0 ? Math.round((passedChecklist / totalChecklist) * 100) : 0;
 
@@ -201,13 +87,11 @@ function generateValidationReport(state: SpecExecutionState): string {
 			report += `- Checklist failed: ${failed}\n`;
 		}
 	}
-
 	return report;
 }
 
 export default function specExecutionExtension(pi: ExtensionAPI): void {
 	let executionState: SpecExecutionState | null = null;
-	let inputMode: "none" | "task-description" | "confirmation" = "none";
 
 	pi.registerFlag("spec-exec", {
 		description: "Enable spec-driven execution mode",
@@ -216,30 +100,19 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("spec", {
-		description: "Start spec-driven execution workflow",
+		description: "Start spec-driven workflow",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("Spec execution requires UI mode", "error");
-				return;
-			}
-			inputMode = "task-description";
-			ctx.ui.notify("Enter task description. Use Ctrl+G to generate spec files.", "info");
+			ctx.ui.notify("Use /spec-generate <task> to generate spec files with AI", "info");
 		},
 	});
 
 	pi.registerCommand("spec-generate", {
-		description: "Generate spec files with AI from task description",
+		description: "Generate spec files with AI",
 		handler: async (args, ctx) => {
-			let taskDescription = "";
-			
-			if (args && args.trim()) {
-				taskDescription = args.trim();
-			} else if (ctx.hasUI) {
-				taskDescription = ctx.ui.getEditorText();
-			}
+			let taskDescription = args && args.trim() ? args.trim() : (ctx.hasUI ? ctx.ui.getEditorText() : "");
 			
 			if (!taskDescription.trim()) {
-				ctx.ui.notify("Please enter a task description first", "warning");
+				ctx.ui.notify("Usage: /spec-generate <task description>", "warning");
 				return;
 			}
 
@@ -247,68 +120,58 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 
 			const prompt = `Generate 3 complete Markdown documents for this task: "${taskDescription}"
 
-Output ONLY the 3 documents, separated by "---SPEC---", "---TASKS---", "---CHECKLIST---" markers, NO other text.
+Output ONLY the 3 documents, separated by "---SPEC---", "---TASKS---", "---CHECKLIST---" markers.
 
----
+## SPEC.md:
+# ${taskDescription} Specification
+## Why
+## What Changes  
+## Impact
+## ADDED Requirements (at least 3 items with checkboxes)
+## Data Structures (TypeScript interfaces)
+## Architecture
+## Implementation Files
+## Verification Criteria
 
-## SPEC.md (must include):
-# [Module Name] Specification
-## Why - Why this feature is needed
-## What Changes - What changes
-## Impact - Side effects
-## ADDED Requirements (at least 3 concrete items with checkboxes)
-## Data Structures - TypeScript interfaces
-## Architecture - Data flow description
-## Implementation Files - Specific file paths
-## Verification Criteria (at least 3 items)
-
----
-
-## TASKS.md (must include):
+## TASKS.md:
 # Tasks - Implementation
-## Task List (at least 4 concrete tasks with file paths)
+## Task List (at least 4 tasks with file paths)
 ## Task Dependencies
 ## Verification Steps
 
----
-
-## CHECKLIST.md (must include):
-# Checklist - Implementation  
+## CHECKLIST.md:
+# Checklist - Implementation
 ## Code Implementation Checklist (at least 6 items)
 ## Build and Verification Checklist
 ## Functional Verification Checklist
 
----
+Now generate:`;
 
-Now generate the 3 documents:`;
-
-			pi.sendMessage(
-				{
-					customType: "spec-generator",
-					content: prompt,
-					display: false,
-				},
-				{ triggerTurn: true },
-			);
-
-			ctx.ui.notify("AI is generating spec files... (this may take a moment)", "info");
+			pi.sendMessage({ customType: "spec-generator", content: prompt, display: false }, { triggerTurn: true });
+			ctx.ui.notify("AI is generating spec files... (wait for message with files)", "info");
 		},
 	});
 
 	pi.registerCommand("spec-confirm", {
-		description: "Confirm and start execution after spec files are ready",
+		description: "Confirm and start execution",
 		handler: async (_args, ctx) => {
 			if (!executionState || !executionState.specGenerated) {
-				ctx.ui.notify("No spec generated. Use /spec first.", "warning");
+				ctx.ui.notify("No spec generated. Use /spec-generate first.", "warning");
 				return;
 			}
 
-			const specContent = fs.readFileSync(executionState.specPath, "utf-8");
-			const tasksContent = fs.readFileSync(executionState.tasksPath, "utf-8");
-			const checklistContent = fs.readFileSync(executionState.checklistPath, "utf-8");
+			let specContent = "", tasksContent = "", checklistContent = "";
+			try {
+				specContent = fs.readFileSync(executionState.specPath, "utf-8");
+				tasksContent = fs.readFileSync(executionState.tasksPath, "utf-8");
+				checklistContent = fs.readFileSync(executionState.checklistPath, "utf-8");
+			} catch {
+				ctx.ui.notify("Spec files not found. Use /spec-generate first.", "error");
+				return;
+			}
 
-			if (specContent.trim().length < 100 || tasksContent.trim().length < 50) {
-				ctx.ui.notify("Spec files are empty. Use /spec-generate first to generate them with AI.", "warning");
+			if (specContent.trim().length < 100) {
+				ctx.ui.notify("Spec files are empty. Use /spec-generate first.", "warning");
 				return;
 			}
 
@@ -316,200 +179,117 @@ Now generate the 3 documents:`;
 			executionState.checklist = parseChecklistFile(checklistContent);
 			executionState.userConfirmed = true;
 
-			ctx.ui.notify(
-				`Execution started!\n\nTasks: ${executionState.tasks.length}\nChecklist: ${executionState.checklist.length}\n\nStrict mode enabled.`,
-				"info",
-			);
+			ctx.ui.notify(`Execution started! Tasks: ${executionState.tasks.length}, Checklist: ${executionState.checklist.length}. Strict mode enabled.`, "info");
 
-			inputMode = "none";
+			pi.sendMessage({
+				customType: "spec-execution-start",
+				content: `## [SPEC EXECUTION MODE - STRICT]
 
-			pi.sendMessage(
-				{
-					customType: "spec-execution-start",
-					content: `## [SPEC EXECUTION MODE - STRICT]
+You must follow these 3 files exactly:
+- \`${executionState.specPath}\`
+- \`${executionState.tasksPath}\` 
+- \`${executionState.checklistPath}\`
 
-You must execute this task by strictly following these 3 files:
-- \`${executionState.specPath}\` - Requirements, boundaries, acceptance criteria
-- \`${executionState.tasksPath}\` - Ordered task list, MUST complete ALL items
-- \`${executionState.checklistPath}\` - Validation checklist, ALL items must pass
-
-### Execution Rules
-
-1. **READ FILES**: Read all 3 spec files at the start. Understand the requirements.
-
-2. **TASKS**: Execute items in tasks.md in order. After completing task N, output \`[DONE:N]\` in your response.
-
-3. **PROGRESS**: After each tool execution, report: "Task N: done. Remaining: X tasks."
-
-4. **BLOCKING**: If you cannot proceed (missing info, environment issue, unclear requirement), output exactly:
-   \`【阻塞】具体原因\`
-   Do NOT skip or guess. Wait for human clarification.
-
-5. **VALIDATION**: Before completing, verify against checklist.md. Update the file with \`[x]\` for passed items.
-
-6. **FILES**: You MUST read and write to the 3 spec files to track progress. Do NOT assume what's in them.
-
-7. **COMPLETION**: When ALL tasks are checked AND ALL checklist items pass, output:
-   \`【任务已完成】\`
-   With a summary of: total tasks, completed tasks, checklist pass rate.
-
-### Forbidden
-- Do NOT add new requirements not in spec.md
-- Do NOT skip tasks in tasks.md
-- Do NOT mark tasks as done without actual execution
-- Do NOT finish without validation report
+RULES:
+1. Read all 3 spec files at the start
+2. Execute tasks in order. Output [DONE:N] after completing task N
+3. Report progress after each task
+4. If blocked, output: 【阻塞】原因
+5. When ALL tasks done AND ALL checklist pass, output: 【任务已完成】
 
 Begin execution now.`,
-					display: false,
-				},
-				{ triggerTurn: true },
-			);
+				display: false,
+			}, { triggerTurn: true });
 		},
 	});
 
 	pi.registerCommand("spec-status", {
-		description: "Show current execution status",
+		description: "Show execution status",
 		handler: async (_args, ctx) => {
 			if (!executionState) {
-				ctx.ui.notify("No active spec execution", "info");
+				ctx.ui.notify("No active spec execution. Use /spec-generate first.", "info");
 				return;
 			}
-
 			const totalTasks = executionState.tasks.length;
 			const completedTasks = executionState.tasks.filter((t) => t.checked).length;
 			const totalChecklist = executionState.checklist.length;
 			const passedChecklist = executionState.checklist.filter((c) => c.passed).length;
-
 			const tasksPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 			const checklistPercent = totalChecklist > 0 ? Math.round((passedChecklist / totalChecklist) * 100) : 0;
-
-			let status = `**Spec Execution Status**\n\n`;
-			status += `Tasks: ${completedTasks}/${totalTasks} (${tasksPercent}%)\n`;
-			status += `Checklist: ${passedChecklist}/${totalChecklist} (${checklistPercent}%)\n\n`;
-
-			if (executionState.userConfirmed) {
-				status += `**Mode**: Strict enforcement enabled\n`;
-				status += `**Files**: \n  - ${path.basename(executionState.specPath)}\n  - ${path.basename(executionState.tasksPath)}\n  - ${path.basename(executionState.checklistPath)}\n`;
-			} else {
-				status += `**Status**: Waiting for confirmation (/spec-confirm)`;
-			}
-
-			ctx.ui.notify(status, "info");
-		},
-	});
-
-	pi.registerCommand("spec-complete", {
-		description: "Mark current task as complete and validate",
-		handler: async (_args, ctx) => {
-			if (!executionState || !executionState.userConfirmed) {
-				ctx.ui.notify("No active execution. Use /spec first.", "warning");
-				return;
-			}
-
-			const currentIndex = executionState.currentTaskIndex;
-			if (currentIndex >= executionState.tasks.length) {
-				ctx.ui.notify("All tasks completed!", "info");
-				return;
-			}
-
-			executionState.tasks[currentIndex].checked = true;
-			executionState.currentTaskIndex++;
-
-			fs.writeFileSync(
-				executionState.tasksPath,
-				"# Tasks\n\n## Execution Order\n" +
-					executionState.tasks
-						.map((t, i) => `- [${t.checked ? "x" : " "}] ${i + 1}. ${t.description}`)
-						.join("\n"),
-				"utf-8",
-			);
-
-			const remaining = executionState.tasks.filter((t) => !t.checked).length;
-			ctx.ui.notify(
-				`Task ${currentIndex + 1} complete. ${remaining} tasks remaining.`,
-				"info",
-			);
+			ctx.ui.notify(`Tasks: ${completedTasks}/${totalTasks} (${tasksPercent}%)\nChecklist: ${passedChecklist}/${totalChecklist} (${checklistPercent}%)\n${executionState.userConfirmed ? "Mode: Strict" : "Status: Waiting for /spec-confirm"}`, "info");
 		},
 	});
 
 	pi.registerCommand("spec-validate", {
-		description: "Validate current execution state against checklist",
+		description: "Validate against checklist",
 		handler: async (_args, ctx) => {
 			if (!executionState || !executionState.userConfirmed) {
-				ctx.ui.notify("No active execution. Use /spec first.", "warning");
+				ctx.ui.notify("No active execution.", "warning");
 				return;
 			}
-
-			const report = generateValidationReport(executionState);
-			ctx.ui.notify(report, "info");
+			ctx.ui.notify(generateValidationReport(executionState), "info");
 		},
 	});
 
 	pi.registerShortcut(Key.ctrlShift("s"), {
-		description: "Start spec-driven execution workflow",
+		description: "Start spec workflow",
 		handler: async (ctx) => {
 			if (!ctx.hasUI) return;
-			ctx.ui.setEditorText("/spec\n");
+			ctx.ui.setEditorText("/spec-generate ");
 		},
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
-		const msg = event.message;
+		const msgAny = event.message as any;
+		if (!msgAny) return;
 		
-		if (msg.role === "assistant" && typeof msg.content === "string") {
-			const msgAny = msg as unknown as { customType?: string; content?: unknown };
+		const content = typeof msgAny.content === "string" ? msgAny.content : "";
+		if (!content) return;
+
+		// Check if AI generated spec files
+		if (content.includes("---SPEC---") && content.includes("---TASKS---") && content.includes("---CHECKLIST---")) {
+			const parts = content.split("---");
+			let specContent = "", tasksContent = "", checklistContent = "";
 			
-			if (msgAny.customType === "spec-generator") {
-				const rawContent = msgAny.content;
-				if (typeof rawContent !== "string") return;
+			for (const part of parts) {
+				const p = part.trim();
+				if (p.startsWith("SPEC")) specContent = p.replace(/^SPEC[A-Z-]*/, "").trim();
+				else if (p.startsWith("TASKS")) tasksContent = p.replace(/^TASKS[A-Z-]*/, "").trim();
+				else if (p.startsWith("CHECKLIST")) checklistContent = p.replace(/^CHECKLIST[A-Z-]*/, "").trim();
+			}
+			
+			if (specContent && tasksContent && checklistContent) {
+				const specDir = ensureSpecDir(ctx.cwd);
+				const timestamp = Date.now();
+				const specPath = path.join(specDir, `spec-${timestamp}.md`);
+				const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
+				const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
 				
-				const parts = rawContent.split("---");
+				fs.writeFileSync(specPath, specContent, "utf-8");
+				fs.writeFileSync(tasksPath, tasksContent, "utf-8");
+				fs.writeFileSync(checklistPath, checklistContent, "utf-8");
 				
-				let specContent = "", tasksContent = "", checklistContent = "";
+				executionState = {
+					specGenerated: true,
+					userConfirmed: false,
+					tasks: [],
+					checklist: [],
+					currentTaskIndex: 0,
+					specPath,
+					tasksPath,
+					checklistPath,
+				};
 				
-				for (let i = 0; i < parts.length; i++) {
-					if (parts[i].startsWith("SPEC---")) specContent = parts[i].replace("SPEC---", "").trim();
-					else if (parts[i].startsWith("TASKS---")) tasksContent = parts[i].replace("TASKS---", "").trim();
-					else if (parts[i].startsWith("CHECKLIST---")) checklistContent = parts[i].replace("CHECKLIST---", "").trim();
-				}
-				
-				if (specContent && tasksContent && checklistContent) {
-					const specDir = ensureSpecDir(ctx.cwd);
-					const timestamp = Date.now();
-					const specPath = path.join(specDir, `spec-${timestamp}.md`);
-					const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
-					const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
-					
-					fs.writeFileSync(specPath, specContent, "utf-8");
-					fs.writeFileSync(tasksPath, tasksContent, "utf-8");
-					fs.writeFileSync(checklistPath, checklistContent, "utf-8");
-					
-					executionState = {
-						specGenerated: true,
-						userConfirmed: false,
-						tasks: [],
-						checklist: [],
-						currentTaskIndex: 0,
-						specPath,
-						tasksPath,
-						checklistPath,
-					};
-					
-					ctx.ui.notify(
-						`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`,
-						"info",
-					);
-					return;
-				}
+				ctx.ui.notify(`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
+				return;
 			}
 		}
 		
 		if (!executionState || !executionState.userConfirmed) return;
+		if (msgAny.role !== "assistant") return;
 
-		if (msg.role !== "assistant") return;
-
-		const content = typeof msg.content === "string" ? msg.content : "";
-		const doneMatches = content.match(/\[DONE:(\d+)\]/g);
+		const msgContent = typeof msgAny.content === "string" ? msgAny.content : "";
+		const doneMatches = msgContent.match(/\[DONE:(\d+)\]/g);
 		if (doneMatches) {
 			for (const match of doneMatches) {
 				const taskNum = parseInt(match.match(/\[DONE:(\d+)\]/)?.[1] || "0", 10);
@@ -517,15 +297,7 @@ Begin execution now.`,
 					executionState.tasks[taskNum - 1].checked = true;
 				}
 			}
-
-			fs.writeFileSync(
-				executionState.tasksPath,
-				"# Tasks\n\n## Execution Order\n" +
-					executionState.tasks
-						.map((t, i) => `- [${t.checked ? "x" : " "}] ${i + 1}. ${t.description}`)
-						.join("\n"),
-				"utf-8",
-			);
+			fs.writeFileSync(executionState.tasksPath, "# Tasks\n\n## Task List\n" + executionState.tasks.map((t, i) => `- [${t.checked ? "x" : " "}] ${i + 1}. ${t.description}`).join("\n"), "utf-8");
 		}
 
 		const totalTasks = executionState.tasks.length;
@@ -535,29 +307,20 @@ Begin execution now.`,
 		}
 	});
 
-	pi.on("agent_end", async (event, ctx) => {
+	pi.on("agent_end", async (_event, ctx) => {
 		if (!executionState || !executionState.userConfirmed) return;
 
 		const report = generateValidationReport(executionState);
 		const totalTasks = executionState.tasks.length;
 		const completedTasks = executionState.tasks.filter((t) => t.checked).length;
-		const checklistPercent =
-			executionState.checklist.length > 0
-				? Math.round(
-						(executionState.checklist.filter((c) => c.passed).length / executionState.checklist.length) * 100,
-					)
-				: 0;
-
+		const checklistPercent = executionState.checklist.length > 0 ? Math.round((executionState.checklist.filter((c) => c.passed).length / executionState.checklist.length) * 100) : 0;
 		const isComplete = completedTasks === totalTasks && checklistPercent === 100;
 
-		pi.sendMessage(
-			{
-				customType: "spec-execution-complete",
-				content: report + (isComplete ? "\n\n### 🎉 Task complete!" : "\n\n### ⚠️ Validation failed. Complete remaining items."),
-				display: true,
-			},
-			{ triggerTurn: false },
-		);
+		pi.sendMessage({
+			customType: "spec-execution-complete",
+			content: report + (isComplete ? "\n\n### 🎉 Task complete!" : "\n\n### ⚠️ Validation failed."),
+			display: true,
+		}, { triggerTurn: false });
 
 		executionState = null;
 	});
