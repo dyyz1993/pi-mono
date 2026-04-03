@@ -842,7 +842,32 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 
 		// Apply smart deletion cleanup if requested
 		if (smartDeletion && processedNewText === "") {
-			newContent = smartCleanupEmptyLines(newContent);
+			// Find the line number where deletion occurred
+			// We need to find this before replacement
+			const beforeLines = processedContent.split("\n");
+			const deletePosition = processedContent.indexOf(processedOldText);
+			
+			if (deletePosition !== -1) {
+				// Calculate line number (0-based)
+				let lineNumber = 0;
+				let pos = 0;
+				for (let i = 0; i < beforeLines.length; i++) {
+					if (pos + beforeLines[i].length >= deletePosition) {
+						lineNumber = i;
+						break;
+					}
+					pos += beforeLines[i].length + 1; // +1 for newline
+				}
+				
+				const deletedLines = processedOldText.split("\n").length;
+				
+				newContent = smartCleanupEmptyLines(newContent, {
+					deletionLine: lineNumber,
+					deletedLines,
+				});
+			} else {
+				newContent = smartCleanupEmptyLines(newContent);
+			}
 		}
 
 		// Write the result
