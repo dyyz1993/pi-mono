@@ -626,7 +626,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 		// Detect quote style if needed
 		let quoteStyle: "single" | "double" | "template" | "none" = "none";
 		if (preserveQuoteStyle) {
-			quoteStyle = detectQuoteStyle(content);
+			quoteStyle = detectQuoteStyle(processedContent);
 			if (quoteStyle !== "none") {
 				processedNewText = applyQuoteStyle(processedNewText, quoteStyle);
 			}
