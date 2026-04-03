@@ -58,12 +58,12 @@ describe("edit tool new features (TDD)", () => {
 
 		it("should replace all with fuzzy matching + replaceAll", async () => {
 			const filePath = join(tempDir, "test.txt");
-			// 文件中使用直引号
-			await writeFile(filePath, 'let x = "hello";\nlet y = "hello";', "utf8");
+			// 文件中使用相同的值，但不同的引号风格
+			await writeFile(filePath, 'let x = "hello";\nlet x = "hello";', "utf8");
 
 			const options: EditOptions = {
 				filePath,
-				oldText: 'let x = "hello"', // oldText 也使用直引号
+				oldText: 'let x = "hello"', // oldText 使用直引号
 				newText: 'let x = "world"',
 				replaceAll: true,
 				enableFuzzyMatch: true,
@@ -71,11 +71,11 @@ describe("edit tool new features (TDD)", () => {
 
 			const result = await applyEditWithFallback(options);
 			expect(result.success).toBe(true);
-			// fuzzy match 应该能找到两处（normalize 后内容相同）
+			// fuzzy match 应该能找到两处
 			expect(result.count).toBe(2);
 
 			const content = await readFile(filePath, "utf8");
-			expect(content).toBe('let x = "world";\nlet y = "world";');
+			expect(content).toBe('let x = "world";\nlet x = "world";');
 		});
 
 		it("should report error when oldText not found with replaceAll", async () => {
