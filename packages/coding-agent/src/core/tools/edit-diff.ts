@@ -530,16 +530,22 @@ export function applyQuoteStyle(text: string, style: "single" | "double" | "temp
 export function smartCleanupEmptyLines(content: string): string {
 	const lines = content.split("\n");
 	const result: string[] = [];
-	let prevWasEmpty = false;
+	let consecutiveEmptyCount = 0;
 
-	for (const line of lines) {
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
 		const isEmpty = line.trim() === "";
-		if (isEmpty && prevWasEmpty) {
-			// Skip consecutive empty lines
-			continue;
+		
+		if (isEmpty) {
+			consecutiveEmptyCount++;
+			// Only keep one empty line in a sequence
+			if (consecutiveEmptyCount === 1) {
+				result.push(line);
+			}
+		} else {
+			consecutiveEmptyCount = 0;
+			result.push(line);
 		}
-		result.push(line);
-		prevWasEmpty = isEmpty;
 	}
 
 	return result.join("\n");
