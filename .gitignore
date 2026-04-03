@@ -35,3 +35,7 @@ out.html
 packages/coding-agent/binaries/
 todo.md
 plans/
+
+# Tencent Cloud EdgeOne
+.edgeone/*
+.tef_dist/*

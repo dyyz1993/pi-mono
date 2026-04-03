@@ -14,7 +14,7 @@ import { BashManager, type BashManagerEvent, getGlobalBashManager } from "../src
 const manager = new BashManager();
 
 // Or use the global singleton
-const globalManager = getGlobalBashManager();
+const _globalManager = getGlobalBashManager();
 
 // Subscribe to events
 const unsubscribe = manager.subscribe((event: BashManagerEvent) => {

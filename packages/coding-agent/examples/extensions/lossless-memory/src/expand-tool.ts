@@ -8,7 +8,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { DAGManager } from "./dag-manager.js";
 import type { MemoryDatabase } from "./database.js";
-import type { ExpandToolInput, ExpandToolOutput, MemoryNode } from "./types.js";
+import type { ExpandToolInput, ExpandToolOutput } from "./types.js";
 
 // ============================================================================
 // Constants
@@ -23,7 +23,6 @@ const DEFAULT_MAX_DEPTH = 5;
 
 export class ExpandTool {
 	private pi: ExtensionAPI;
-	private db: MemoryDatabase;
 	private dag: DAGManager;
 
 	constructor(pi: ExtensionAPI, db: MemoryDatabase, dag: DAGManager) {
@@ -102,10 +101,10 @@ export class ExpandTool {
 	 * Execute the expand tool
 	 */
 	async execute(
-		toolCallId: string,
+		_toolCallId: string,
 		params: ExpandToolInput,
-		signal: AbortSignal | undefined,
-		onUpdate: any,
+		_signal: AbortSignal | undefined,
+		_onUpdate: any,
 		_ctx: any,
 	): Promise<any> {
 		const { nodeId, maxDepth = DEFAULT_MAX_DEPTH, maxTokens = DEFAULT_MAX_TOKENS } = params;

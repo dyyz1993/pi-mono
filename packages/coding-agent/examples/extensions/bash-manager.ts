@@ -327,7 +327,7 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 			required: ["action"],
 		} as any,
 
-		async execute(toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const { action, bashId } = params as { action: string; bashId?: string };
 
 			switch (action) {
@@ -361,14 +361,14 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 					if (!bashId) {
 						return {
 							content: [{ type: "text", text: "bashId required for info action" }],
-							details: { error: "bashId required" },
+							details: { error: "bashId required", count: 0, bashes: [] },
 						};
 					}
 					const info = manager.get(bashId);
 					if (!info) {
 						return {
 							content: [{ type: "text", text: `Bash process not found: ${bashId}` }],
-							details: { error: "not found" },
+							details: { error: "not found", count: 0, bashes: [] },
 						};
 					}
 					return {
@@ -378,7 +378,7 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 								text: `ID: ${info.id}\nAgent: ${info.agentId}\nCommand: ${info.command}\nCWD: ${info.cwd}\nStatus: ${info.status}\nRuntime: ${getRuntimeStr(info)}\nExit Code: ${info.exitCode ?? "running"}`,
 							},
 						],
-						details: info,
+						details: { count: 1, bashes: [info], bashId: info.id },
 					};
 				}
 
@@ -386,20 +386,20 @@ export default function bashManagerExtension(pi: ExtensionAPI) {
 					if (!bashId) {
 						return {
 							content: [{ type: "text", text: "bashId required for kill action" }],
-							details: { error: "bashId required" },
+							details: { error: "bashId required", count: 0, bashes: [] },
 						};
 					}
 					const success = manager.kill(bashId);
 					return {
 						content: [{ type: "text", text: success ? `Killed: ${bashId}` : `Failed to kill: ${bashId}` }],
-						details: { success, bashId },
+						details: { success, count: 0, bashes: [], bashId },
 					};
 				}
 
 				default:
 					return {
 						content: [{ type: "text", text: `Unknown action: ${action}` }],
-						details: { error: "unknown action" },
+						details: { error: "unknown action", count: 0, bashes: [] },
 					};
 			}
 		},

@@ -574,7 +574,7 @@ export class MemoryDatabase {
 			combined.sort((a, b) => b.score.combined - a.score.combined);
 
 			return combined.slice(0, options.limit || 10);
-		} catch (error) {
+		} catch (_error) {
 			// Fall back to keyword-only search on error
 			return keywordResults;
 		}

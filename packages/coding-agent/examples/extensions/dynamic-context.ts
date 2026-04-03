@@ -50,10 +50,10 @@ export default function dynamicContextExtension(pi: ExtensionAPI) {
 				contextData.timestamp = Date.now();
 				lastUpdateTime = new Date().toLocaleTimeString();
 
-				if (pi.hasUI()) {
+				if (pi.hasUI) {
 					pi.ui.setStatus("dynamic-context", `Context: ${lastUpdateTime}`);
 				}
-			} catch (error) {
+			} catch (_error) {
 				// Silently ignore errors in background updates
 			}
 		}, 30000); // Update every 30 seconds
@@ -74,7 +74,7 @@ export default function dynamicContextExtension(pi: ExtensionAPI) {
 			const commands = ["show", "add", "clear", "start", "stop"];
 			return commands
 				.filter((c) => c.startsWith(prefix.toLowerCase()))
-				.map((c) => ({ label: c, description: `/${c}` }));
+				.map((c) => ({ value: c, label: c, description: `/${c}` }));
 		},
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/);
@@ -120,7 +120,7 @@ export default function dynamicContextExtension(pi: ExtensionAPI) {
 	});
 
 	// Inject dynamic context before each LLM call
-	pi.on("context", async (event, ctx) => {
+	pi.on("context", async (event, _ctx) => {
 		// Add context message with current data
 		const contextMessage = {
 			role: "system" as const,
@@ -146,7 +146,7 @@ This context is updated every 30 seconds and injected before each LLM call.`,
 
 	// Show status on agent start
 	pi.on("agent_start", async (_event, ctx) => {
-		if (ctx.hasUI()) {
+		if (ctx.hasUI) {
 			ctx.ui.setStatus("dynamic-context", `Context: ${lastUpdateTime}`);
 		}
 	});
@@ -154,7 +154,7 @@ This context is updated every 30 seconds and injected before each LLM call.`,
 	// Clean up on shutdown
 	pi.on("session_shutdown", async (_event, ctx) => {
 		stopUpdates();
-		if (ctx.hasUI()) {
+		if (ctx.hasUI) {
 			ctx.ui.setStatus("dynamic-context", undefined);
 		}
 	});

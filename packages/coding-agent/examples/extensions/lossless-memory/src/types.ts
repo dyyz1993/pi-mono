@@ -5,8 +5,6 @@
  * Implements lossless context compression using hierarchical summaries.
  */
 
-import type { Static, TSchema } from "@sinclair/typebox";
-
 // ============================================================================
 // DAG Node Types
 // ============================================================================

@@ -90,14 +90,26 @@ export {
 } from "./write.js";
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { type BashToolOptions, bashTool, createBashTool } from "./bash.js";
-import { createEditTool, editTool } from "./edit.js";
-import { createFindTool, findTool } from "./find.js";
-import { createGrepTool, grepTool } from "./grep.js";
-import { createLineCountTool, lineCountTool } from "./line-count.js";
-import { createLsTool, lsTool } from "./ls.js";
-import { createReadTool, type ReadToolOptions, readTool } from "./read.js";
-import { createWriteTool, writeTool } from "./write.js";
+import type { ToolDefinition } from "../extensions/types.js";
+import {
+	type BashToolOptions,
+	bashTool,
+	bashToolDefinition,
+	createBashTool,
+	createBashToolDefinition,
+} from "./bash.js";
+import { createEditTool, createEditToolDefinition, editTool, editToolDefinition } from "./edit.js";
+import { createFindTool, createFindToolDefinition, findTool, findToolDefinition } from "./find.js";
+import { createGrepTool, createGrepToolDefinition, grepTool, grepToolDefinition } from "./grep.js";
+import { createLsTool, createLsToolDefinition, lsTool, lsToolDefinition } from "./ls.js";
+import {
+	createReadTool,
+	createReadToolDefinition,
+	type ReadToolOptions,
+	readTool,
+	readToolDefinition,
+} from "./read.js";
+import { createWriteTool, createWriteToolDefinition, writeTool, writeToolDefinition } from "./write.js";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
@@ -113,7 +125,6 @@ export const allTools = {
 	grep: grepTool,
 	find: findTool,
 	ls: lsTool,
-	line_count: lineCountTool,
 };
 
 export const allToolDefinitions = {
@@ -185,6 +196,5 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		grep: createGrepTool(cwd),
 		find: createFindTool(cwd),
 		ls: createLsTool(cwd),
-		line_count: createLineCountTool(cwd),
 	};
 }

@@ -54,7 +54,7 @@ export default function fileWatcherExtension(pi: ExtensionAPI) {
 				const content = readFileSync(configPath, "utf-8");
 				const loaded = JSON.parse(content);
 				Object.assign(config, loaded);
-			} catch (error) {
+			} catch (_error) {
 				// Use defaults if config invalid
 			}
 		}
@@ -68,7 +68,7 @@ export default function fileWatcherExtension(pi: ExtensionAPI) {
 
 			const content = readFileSync(absPath, "utf-8");
 			const maxLen = config.maxContentLength || 2000;
-			return content.length > maxLen ? content.slice(0, maxLen) + "... (truncated)" : content;
+			return content.length > maxLen ? `${content.slice(0, maxLen)}... (truncated)` : content;
 		} catch {
 			return "";
 		}
@@ -98,14 +98,14 @@ export default function fileWatcherExtension(pi: ExtensionAPI) {
 						cached.lastModified = Date.now();
 
 						// Notify user of change
-						if (pi.hasUI()) {
+						if (pi.hasUI) {
 							pi.ui.notify(`File changed: ${filePath}`, "info");
 						}
 					}
 				}
 			});
 			watchers.set(filePath, watcher);
-		} catch (error) {
+		} catch (_error) {
 			// File may not exist yet, will retry on next check
 		}
 	};
@@ -164,7 +164,7 @@ export default function fileWatcherExtension(pi: ExtensionAPI) {
 			const commands = ["status", "add", "remove", "reload", "enable", "disable"];
 			return commands
 				.filter((c) => c.startsWith(prefix.toLowerCase()))
-				.map((c) => ({ label: c, description: `/${c}` }));
+				.map((c) => ({ value: c, label: c, description: `/${c}` }));
 		},
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/);
@@ -230,7 +230,7 @@ export default function fileWatcherExtension(pi: ExtensionAPI) {
 	});
 
 	// Inject watched file content into context
-	pi.on("context", async (event, ctx) => {
+	pi.on("context", async (event, _ctx) => {
 		const contextContent = buildContextContent();
 		if (!contextContent) return;
 
@@ -253,7 +253,7 @@ export default function fileWatcherExtension(pi: ExtensionAPI) {
 
 	// Update status on agent start
 	pi.on("agent_start", async (_event, ctx) => {
-		if (ctx.hasUI() && enabled) {
+		if (ctx.hasUI && enabled) {
 			ctx.ui.setStatus("file-watcher", `Watching: ${watchedFiles.size} files`);
 		}
 	});
@@ -266,7 +266,7 @@ export default function fileWatcherExtension(pi: ExtensionAPI) {
 		watchers.clear();
 		watchedFiles.clear();
 
-		if (ctx.hasUI()) {
+		if (ctx.hasUI) {
 			ctx.ui.setStatus("file-watcher", undefined);
 		}
 	});

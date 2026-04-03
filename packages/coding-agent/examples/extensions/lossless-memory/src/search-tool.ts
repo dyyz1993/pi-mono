@@ -17,8 +17,6 @@ import type { LosslessMemoryConfig, SearchToolInput, SearchToolOutput } from "./
 export class SearchTool {
 	private pi: ExtensionAPI;
 	private db: MemoryDatabase;
-	private dag: DAGManager;
-	private config: LosslessMemoryConfig;
 
 	constructor(pi: ExtensionAPI, db: MemoryDatabase, dag: DAGManager, config: LosslessMemoryConfig) {
 		this.pi = pi;
@@ -91,10 +89,10 @@ export class SearchTool {
 	 * Execute the search tool
 	 */
 	async execute(
-		toolCallId: string,
+		_toolCallId: string,
 		params: SearchToolInput,
-		signal: AbortSignal | undefined,
-		onUpdate: any,
+		_signal: AbortSignal | undefined,
+		_onUpdate: any,
 		ctx: any,
 	): Promise<any> {
 		const { query, maxResults = 5, minLevel = 0, sessionId } = params;
@@ -203,7 +201,7 @@ export class SearchTool {
 				.map((r) => `[L${r.node.level}] ${r.node.content.slice(0, 100)}${r.node.content.length > 100 ? "..." : ""}`)
 				.join("\n");
 		} catch (error) {
-			return "搜索出错：" + (error instanceof Error ? error.message : String(error));
+			return `搜索出错：${error instanceof Error ? error.message : String(error)}`;
 		}
 	}
 }
@@ -229,18 +227,18 @@ export class StatsTool {
 			label: "记忆统计",
 			description: "查看当前会话的记忆 DAG 统计信息",
 			parameters: Type.Object({}),
-			renderCall: (args, theme) => {
+			renderCall: (_args, theme) => {
 				const { Text } = require("@mariozechner/pi-tui") as typeof import("@mariozechner/pi-tui");
 				return new Text(theme.fg("toolTitle", theme.bold("pi_memory_stats")), 0, 0);
 			},
-			renderResult: (result, { expanded, isPartial }, theme) => {
+			renderResult: (_result, { isPartial }, theme) => {
 				const { Text } = require("@mariozechner/pi-tui") as typeof import("@mariozechner/pi-tui");
 
 				if (isPartial) {
 					return new Text(theme.fg("warning", "加载中..."), 0, 0);
 				}
 
-				const details = result.details as any;
+				const details = _result.details as any;
 				if (!details) {
 					return new Text(theme.fg("error", "获取统计失败"), 0, 0);
 				}
@@ -258,7 +256,7 @@ export class StatsTool {
 	}
 
 	async execute(
-		toolCallId: string,
+		_toolCallId: string,
 		_params: any,
 		_signal: AbortSignal | undefined,
 		_onUpdate: any,
@@ -270,7 +268,7 @@ export class StatsTool {
 			const dbStats = this.db.getStats();
 
 			const rootNodes = this.dag.getRootNodes();
-			const rootSummary = rootNodes.length > 0 ? rootNodes[0].content.slice(0, 100) + "..." : "无";
+			const rootSummary = rootNodes.length > 0 ? `${rootNodes[0].content.slice(0, 100)}...` : "无";
 
 			const output = {
 				sessionId,

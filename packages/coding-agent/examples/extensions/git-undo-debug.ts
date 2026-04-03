@@ -26,7 +26,7 @@ interface DebugState {
 }
 
 export default function gitUndoDebugExtension(pi: ExtensionAPI) {
-	const state: DebugState = {
+	let state: DebugState = {
 		commits: [],
 		currentIndex: -1,
 	};
@@ -112,8 +112,8 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 			for (const line of numstatLines) {
 				const parts = line.split(/\s+/);
 				if (parts.length >= 3) {
-					const additions = parseInt(parts[0]) || 0;
-					const deletions = parseInt(parts[1]) || 0;
+					const additions = parseInt(parts[0], 10) || 0;
+					const deletions = parseInt(parts[1], 10) || 0;
 					let path = parts[2];
 					if (path.includes(" => ")) {
 						path = path.split(" => ")[1];
@@ -248,7 +248,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 								: "";
 
 					if (text) {
-						const preview = text.length > 60 ? text.slice(0, 57) + "..." : text;
+						const preview = text.length > 60 ? `${text.slice(0, 57)}...` : text;
 						context.push(`User: ${preview}`);
 						break;
 					}
@@ -288,7 +288,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 			}
 
 			return `Turn ${entryId.slice(0, 8)}`;
-		} catch (error) {
+		} catch (_error) {
 			return `Turn ${entryId.slice(0, 8)}`;
 		}
 	};
@@ -334,7 +334,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("gundo", {
 		description: "Git undo - select checkpoint to restore",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			console.log("[git-undo] /gundo called");
 			console.log(`[git-undo] State: ${state.commits.length} checkpoints, currentIndex=${state.currentIndex}`);
 
@@ -555,7 +555,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 					? `✅ Restored ${totalFiles} file(s) + conversation`
 					: `✅ Restored ${totalFiles} file(s)`;
 
-				ctx.ui.notify(resultMsg, "success");
+				ctx.ui.notify(resultMsg, "info");
 				console.log(`[git-undo] ✅ Restore successful: ${totalFiles} file(s)`);
 			} catch (error) {
 				ctx.ui.notify("Restore failed", "error");
@@ -566,7 +566,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("glog", {
 		description: "Git undo log - debug version",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			await checkGit();
 
 			if (state.commits.length === 0) {
@@ -588,7 +588,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("turn_end", async (event, ctx) => {
+	pi.on("turn_end", async (_event, ctx) => {
 		console.log("[git-undo] turn_end event");
 		await checkGit();
 
@@ -600,7 +600,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 	});
 
 	// Update checkpoints when navigating tree
-	pi.on("session_tree", async (event, ctx) => {
+	pi.on("session_tree", async (_event, ctx) => {
 		console.log("[git-undo] session_tree event - navigation detected");
 
 		// Filter checkpoints to only include those on current path
@@ -622,7 +622,7 @@ export default function gitUndoDebugExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("session_start", async (event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		console.log("[git-undo] session_start");
 		await checkGit();
 

@@ -8,7 +8,6 @@
  */
 
 import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DAGManager } from "./dag-manager.js";
 import { MemoryDatabase } from "./database.js";
@@ -173,7 +172,7 @@ export default function (pi: ExtensionAPI) {
 					modelContextWindow: ctx.model?.contextWindow || 200000,
 				};
 
-				fs.appendFileSync(TRACE_FILE, JSON.stringify(trace) + "\n");
+				fs.appendFileSync(TRACE_FILE, `${JSON.stringify(trace)}\n`);
 				console.log(`[LosslessMemory] Turn ${traceTurn}: ${event.messages.length} msgs, ${totalTokens} tokens`);
 
 				return await onContext(event, ctx);
@@ -263,7 +262,7 @@ export default function (pi: ExtensionAPI) {
 			});
 
 			// Create DAG node
-			const node = await state.dag.createSummaryNode(
+			const _node = await state.dag.createSummaryNode(
 				entriesToSummarize,
 				summaryOutput.summary,
 				1, // Start with L1 summary
@@ -318,7 +317,7 @@ export default function (pi: ExtensionAPI) {
 		// TEST MODE: Use 0.005% threshold for testing (normally 80% = 0.8)
 		// This will trigger context modification very early
 		const TEST_THRESHOLD = 0.00005; // 0.005%
-		const NORMAL_THRESHOLD = 0.8; // 80%
+		const _NORMAL_THRESHOLD = 0.8; // 80%
 		const threshold = TEST_THRESHOLD; // Change to NORMAL_THRESHOLD for production
 
 		// If we're approaching the limit, use summaries
@@ -361,7 +360,7 @@ export default function (pi: ExtensionAPI) {
 	/**
 	 * Handle session shutdown event
 	 */
-	async function onSessionShutdown(ctx: any): Promise<void> {
+	async function _onSessionShutdown(_ctx: any): Promise<void> {
 		// If we're approaching the limit, use summaries
 		if (currentTokens > modelContextWindow * 0.8) {
 			try {
@@ -520,7 +519,7 @@ export default function (pi: ExtensionAPI) {
 		// Memory search command
 		pi.registerCommand("lossless-search", {
 			description: "搜索历史记忆",
-			getArgumentCompletions: (prefix: string) => {
+			getArgumentCompletions: (_prefix: string) => {
 				return null; // No completions for now
 			},
 			handler: async (args, ctx) => {
@@ -584,7 +583,7 @@ export default function (pi: ExtensionAPI) {
 	/**
 	 * Estimate tokens for a message
 	 */
-	function estimateMessageTokens(message: any): number {
+	function _estimateMessageTokens(message: any): number {
 		const content = typeof message.content === "string" ? message.content : message.content?.[0]?.text || "";
 
 		const avgCharPerToken = content.match(/[\u4e00-\u9fa5]/) ? 2 : 4;

@@ -17,7 +17,7 @@
  * 2. Works automatically - tracks file changes at each turn
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -150,7 +150,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 
 				// Persist to session
 				pi.appendEntry(STATE_KEY, state);
-			} catch (error) {
+			} catch (_error) {
 				// Git operations failed, fall back to non-git mode
 				await captureNonGitSnapshot(entryId);
 			}
@@ -186,7 +186,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 	};
 
 	// Create a git commit for the current state (for rollback)
-	const createGitCheckpoint = async (message: string): Promise<string | undefined> => {
+	const _createGitCheckpoint = async (message: string): Promise<string | undefined> => {
 		if (!isGitRepo) return undefined;
 
 		try {
@@ -206,7 +206,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 			});
 
 			return result.stdout.trim();
-		} catch (error) {
+		} catch (_error) {
 			// Commit failed (maybe no changes), ignore
 			return undefined;
 		}
@@ -230,7 +230,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 			});
 
 			return true;
-		} catch (error) {
+		} catch (_error) {
 			return false;
 		}
 	};
@@ -249,8 +249,8 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 				timeout: 10000,
 			});
 
-			return result.exitCode === 0;
-		} catch (error) {
+			return result.code === 0;
+		} catch (_error) {
 			return false;
 		}
 	};
@@ -258,7 +258,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 	// Register /undo command
 	pi.registerCommand("undo", {
 		description: "Undo the last turn's file changes",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			if (state.currentTurnIndex < 0 || state.history.length === 0) {
 				ctx.ui.notify("Nothing to undo", "warning");
 				return;
@@ -312,7 +312,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 	// Register /redo command
 	pi.registerCommand("redo", {
 		description: "Redo the last undone changes",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			if (state.undoStack.length === 0) {
 				ctx.ui.notify("Nothing to redo", "warning");
 				return;
@@ -354,6 +354,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 			return state.history
 				.slice(-10)
 				.map((s, i) => ({
+					value: s.entryId,
 					label: s.entryId,
 					description: `Turn ${state.history.length - 10 + i + 1} - ${new Date(s.timestamp).toLocaleString()}`,
 				}))
@@ -412,7 +413,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 	// Register /share command
 	pi.registerCommand("share", {
 		description: "Export session with file snapshots for sharing",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("Share not available in this mode", "error");
 				return;
@@ -459,9 +460,9 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 				content += `## Git State\n\n`;
 				content += `Current commit: \`${state.history[state.currentTurnIndex]?.gitCommit || "N/A"}\`\n\n`;
 
-				if (ctx.ui.confirm("Include full diff in export?", "This may be large for many changes.").then((r) => r)) {
+				if (await ctx.ui.confirm("Include full diff in export?", "This may be large for many changes.")) {
 					try {
-						const diffResult = await pi.exec("git", ["diff", "HEAD~" + state.history.length, "HEAD"], {
+						const diffResult = await pi.exec("git", ["diff", `HEAD~${state.history.length}`, "HEAD"], {
 							cwd: pi.cwd,
 							timeout: 30000,
 						});
@@ -481,7 +482,7 @@ export default function sessionUndoExtension(pi: ExtensionAPI) {
 	});
 
 	// Listen to turn_end events to capture snapshots
-	pi.on("turn_end", async (event, ctx) => {
+	pi.on("turn_end", async (_event, ctx) => {
 		const leaf = ctx.sessionManager.getLeafEntry();
 		if (leaf) {
 			await captureTurnSnapshot(leaf.id);

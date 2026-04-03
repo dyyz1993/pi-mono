@@ -284,6 +284,8 @@ function createExtensionAPI(
 		},
 
 		events: eventBus,
+
+		cwd,
 	} as ExtensionAPI;
 
 	return api;

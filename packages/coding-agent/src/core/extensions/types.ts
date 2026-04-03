@@ -1126,6 +1126,15 @@ export interface ExtensionAPI {
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 
+	/** Working directory (for convenience, same as passing cwd to exec()). */
+	cwd: string;
+
+	/** UI methods (only available when hasUI is true). Throws if UI not available. */
+	ui: ExtensionUIContext;
+
+	/** Whether UI is available (false in print/RPC mode). */
+	hasUI: boolean;
+
 	/** Get the list of currently active tool names. */
 	getActiveTools(): string[];
 

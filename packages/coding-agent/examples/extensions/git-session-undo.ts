@@ -47,7 +47,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 	const initUndoBranch = async (): Promise<boolean> => {
 		try {
 			// Check if git repo
-			const checkResult = await pi.exec("git", ["rev-parse", "--git-dir"], {
+			const _checkResult = await pi.exec("git", ["rev-parse", "--git-dir"], {
 				cwd: pi.cwd,
 				timeout: 5000,
 			});
@@ -74,7 +74,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 			}
 
 			return true;
-		} catch (error) {
+		} catch (_error) {
 			isGitRepo = false;
 			return false;
 		}
@@ -141,7 +141,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 			});
 
 			return commitHash;
-		} catch (error) {
+		} catch (_error) {
 			// Try to return to original branch if we're stuck in undo branch
 			try {
 				await pi.exec("git", ["checkout", "-"], {
@@ -171,7 +171,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 			});
 
 			return true;
-		} catch (error) {
+		} catch (_error) {
 			return false;
 		}
 	};
@@ -179,7 +179,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 	// Register /undo command
 	pi.registerCommand("undo", {
 		description: "Undo last turn (git-based)",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			if (!isGitRepo) {
 				ctx.ui.notify("Not a git project. Run 'git init' first.", "error");
 				return;
@@ -232,7 +232,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 	// Register /redo command
 	pi.registerCommand("redo", {
 		description: "Redo last undone turn",
-		handler: async (args, ctx) => {
+		handler: async (_args, ctx) => {
 			if (!isGitRepo) {
 				ctx.ui.notify("Not a git project", "error");
 				return;
@@ -265,6 +265,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 			return state.commits
 				.slice(-10)
 				.map((c) => ({
+					value: c.entryId,
 					label: c.entryId,
 					description: `${new Date(c.timestamp).toLocaleString()} - ${c.message}`,
 				}))
@@ -362,7 +363,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const limit = parseInt(args.trim()) || 10;
+			const limit = parseInt(args.trim(), 10) || 10;
 			const recent = state.commits.slice(-limit);
 
 			let output = `Undo History (last ${recent.length} of ${state.commits.length}):\n\n`;
@@ -379,7 +380,7 @@ export default function gitSessionUndoExtension(pi: ExtensionAPI) {
 	});
 
 	// Auto-capture at turn end
-	pi.on("turn_end", async (event, ctx) => {
+	pi.on("turn_end", async (_event, ctx) => {
 		if (!isGitRepo) return;
 
 		const leaf = ctx.sessionManager.getLeafEntry();
