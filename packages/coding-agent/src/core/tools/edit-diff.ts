@@ -618,6 +618,8 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 		const content = await readFile(filePath, "utf-8");
 
 		// Sanitize if requested
+		// When sanitize is enabled, we sanitize both the content and the search/replace text
+		let processedContent = sanitize ? sanitizeText(content) : content;
 		let processedOldText = sanitize ? sanitizeText(oldText) : oldText;
 		let processedNewText = sanitize ? sanitizeText(newText) : newText;
 
