@@ -443,3 +443,235 @@ export async function computeEditDiff(
 ): Promise<EditDiffResult | EditDiffError> {
 	return computeEditsDiff(path, [{ oldText, newText }], cwd);
 }
+
+// ============================================================================
+// NEW FEATURES: replaceAll, smartDeletion, preserveQuoteStyle, sanitize
+// ============================================================================
+
+/**
+ * Options for the enhanced edit functionality.
+ */
+export interface EditOptions {
+	/** File path to edit */
+	filePath: string;
+	/** Text to find and replace */
+	oldText: string;
+	/** Replacement text */
+	newText: string;
+	/** Replace all occurrences (default: false, only first occurrence) */
+	replaceAll?: boolean;
+	/** Enable fuzzy matching (default: false) */
+	enableFuzzyMatch?: boolean;
+	/** Clean up empty lines after deletion (default: false) */
+	smartDeletion?: boolean;
+	/** Preserve quote style from original file (default: false) */
+	preserveQuoteStyle?: boolean;
+	/** Sanitize control characters (default: false) */
+	sanitize?: boolean;
+}
+
+/**
+ * Result of an edit operation.
+ */
+export interface EditResult {
+	/** Whether the edit was successful */
+	success: boolean;
+	/** Number of replacements made */
+	count?: number;
+	/** Error message if unsuccessful */
+	error?: string;
+}
+
+/**
+ * Detect the quote style used in a string.
+ * Returns 'single', 'double', 'template', or 'none'.
+ */
+export function detectQuoteStyle(text: string): "single" | "double" | "template" | "none" {
+	// Check for template literals first (backticks)
+	if (text.includes("`")) {
+		return "template";
+	}
+	// Check for single quotes
+	if (text.includes("'")) {
+		return "single";
+	}
+	// Check for double quotes
+	if (text.includes('"')) {
+		return "double";
+	}
+	return "none";
+}
+
+/**
+ * Apply quote style to text.
+ * Converts quotes in the text to match the specified style.
+ */
+export function applyQuoteStyle(text: string, style: "single" | "double" | "template" | "none"): string {
+	if (style === "none") {
+		return text;
+	}
+
+	// Find all quoted strings and convert them
+	if (style === "single") {
+		// Convert double quotes to single quotes (simple cases)
+		return text.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, "'$1'");
+	} else if (style === "double") {
+		// Convert single quotes to double quotes (simple cases)
+		return text.replace(/'([^'\\]*(\\.[^'\\]*)*)'/g, '"$1"');
+	}
+	// For template literals, we don't auto-convert (too complex)
+	return text;
+}
+
+/**
+ * Clean up empty lines after deletion.
+ * Removes consecutive blank lines, preserving one blank line where appropriate.
+ */
+export function smartCleanupEmptyLines(content: string): string {
+	const lines = content.split("\n");
+	const result: string[] = [];
+	let prevWasEmpty = false;
+
+	for (const line of lines) {
+		const isEmpty = line.trim() === "";
+		if (isEmpty && prevWasEmpty) {
+			// Skip consecutive empty lines
+			continue;
+		}
+		result.push(line);
+		prevWasEmpty = isEmpty;
+	}
+
+	return result.join("\n");
+}
+
+/**
+ * Sanitize control characters in text.
+ * Removes or replaces problematic control characters.
+ */
+export function sanitizeText(text: string): string {
+	// Remove null bytes and other problematic control characters
+	// Keep newlines, tabs, and carriage returns
+	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+/**
+ * Find all occurrences of a pattern in content.
+ * Returns array of {index, length} for each match.
+ */
+export function findAllMatches(content: string, pattern: string, useFuzzyMatch: boolean): Array<{ index: number; length: number }> {
+	const matches: Array<{ index: number; length: number }> = [];
+
+	if (useFuzzyMatch) {
+		// For fuzzy match, we need to work in normalized space
+		const normalizedContent = normalizeForFuzzyMatch(content);
+		const normalizedPattern = normalizeForFuzzyMatch(pattern);
+
+		let searchPos = 0;
+		while (searchPos < normalizedContent.length) {
+			const idx = normalizedContent.indexOf(normalizedPattern, searchPos);
+			if (idx === -1) break;
+
+			matches.push({
+				index: idx,
+				length: normalizedPattern.length,
+			});
+			searchPos = idx + normalizedPattern.length;
+		}
+	} else {
+		// Exact match
+		let searchPos = 0;
+		while (searchPos < content.length) {
+			const idx = content.indexOf(pattern, searchPos);
+			if (idx === -1) break;
+
+			matches.push({
+				index: idx,
+				length: pattern.length,
+			});
+			searchPos = idx + pattern.length;
+		}
+	}
+
+	return matches;
+}
+
+/**
+ * Apply an edit with fallback options and enhanced features.
+ * This is the main entry point for the new edit functionality.
+ */
+export async function applyEditWithFallback(options: EditOptions): Promise<EditResult> {
+	const {
+		filePath,
+		oldText,
+		newText,
+		replaceAll = false,
+		enableFuzzyMatch = false,
+		smartDeletion = false,
+		preserveQuoteStyle = false,
+		sanitize = false,
+	} = options;
+
+	try {
+		// Read the file
+		const { readFile, writeFile } = await import("fs/promises");
+		const content = await readFile(filePath, "utf-8");
+
+		// Sanitize if requested
+		let processedOldText = sanitize ? sanitizeText(oldText) : oldText;
+		let processedNewText = sanitize ? sanitizeText(newText) : newText;
+
+		// Find all matches
+		const matches = findAllMatches(content, processedOldText, enableFuzzyMatch);
+
+		if (matches.length === 0) {
+			return {
+				success: false,
+				error: `Text not found in ${filePath}${enableFuzzyMatch ? " (even with fuzzy matching)" : ""}`,
+			};
+		}
+
+		// Determine which matches to replace
+		const matchesToReplace = replaceAll ? matches : [matches[0]];
+
+		// Detect quote style if needed
+		let quoteStyle: "single" | "double" | "template" | "none" = "none";
+		if (preserveQuoteStyle) {
+			quoteStyle = detectQuoteStyle(content);
+			if (quoteStyle !== "none") {
+				processedNewText = applyQuoteStyle(processedNewText, quoteStyle);
+			}
+		}
+
+		// Apply replacements in reverse order to maintain correct offsets
+		let newContent = enableFuzzyMatch ? normalizeForFuzzyMatch(content) : content;
+
+		// Sort matches in reverse order
+		const sortedMatches = [...matchesToReplace].sort((a, b) => b.index - a.index);
+
+		for (const match of sortedMatches) {
+			newContent =
+				newContent.substring(0, match.index) +
+				processedNewText +
+				newContent.substring(match.index + match.length);
+		}
+
+		// Apply smart deletion cleanup if requested
+		if (smartDeletion && processedNewText === "") {
+			newContent = smartCleanupEmptyLines(newContent);
+		}
+
+		// Write the result
+		await writeFile(filePath, newContent, "utf-8");
+
+		return {
+			success: true,
+			count: matchesToReplace.length,
+		};
+	} catch (error) {
+		return {
+			success: false,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
