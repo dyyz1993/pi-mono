@@ -75,9 +75,9 @@ function generateValidationReport(state: SpecExecutionState): string {
 	report += `**Checklist**: ${passedChecklist}/${totalChecklist} (${checklistPercent}%)\n\n`;
 
 	if (tasksPercent === 100 && checklistPercent === 100) {
-		report += `### ✅ COMPLETE\n\nAll tasks and checklist items passed.\n`;
+		report += `### COMPLETE\n\nAll tasks and checklist items passed.\n`;
 	} else {
-		report += `### ❌ INCOMPLETE\n\n`;
+		report += `### INCOMPLETE\n\n`;
 		if (tasksPercent < 100) {
 			const remaining = state.tasks.filter((t) => !t.checked).map((t) => t.description).join(", ");
 			report += `- Tasks remaining: ${remaining}\n`;
@@ -90,21 +90,41 @@ function generateValidationReport(state: SpecExecutionState): string {
 	return report;
 }
 
+function extractSections(content: string): { spec: string; tasks: string; checklist: string } | null {
+	const lines = content.split("\n");
+	const sections: { spec: string[]; tasks: string[]; checklist: string[] } = { spec: [], tasks: [], checklist: [] };
+	let currentSection: "spec" | "tasks" | "checklist" | null = null;
+
+	for (const line of lines) {
+		if (line.includes("===SPEC===") || line.startsWith("# Specification") || line.startsWith("# SPEC")) {
+			currentSection = "spec";
+			continue;
+		}
+		if (line.includes("===TASKS===") || line.startsWith("# Tasks") || line.startsWith("# TASKS")) {
+			currentSection = "tasks";
+			continue;
+		}
+		if (line.includes("===CHECKLIST===") || line.startsWith("# Checklist") || line.startsWith("# CHECKLIST")) {
+			currentSection = "checklist";
+			continue;
+		}
+		if (currentSection) {
+			sections[currentSection].push(line);
+		}
+	}
+
+	const spec = sections.spec.join("\n").trim();
+	const tasks = sections.tasks.join("\n").trim();
+	const checklist = sections.checklist.join("\n").trim();
+
+	if (spec.length > 50 && tasks.length > 20 && checklist.length > 10) {
+		return { spec, tasks, checklist };
+	}
+	return null;
+}
+
 export default function specExecutionExtension(pi: ExtensionAPI): void {
 	let executionState: SpecExecutionState | null = null;
-
-	pi.registerFlag("spec-exec", {
-		description: "Enable spec-driven execution mode",
-		type: "boolean",
-		default: false,
-	});
-
-	pi.registerCommand("spec", {
-		description: "Start spec-driven workflow",
-		handler: async (_args, ctx) => {
-			ctx.ui.notify("Use /spec-generate <task> to generate spec files with AI", "info");
-		},
-	});
 
 	pi.registerCommand("spec-generate", {
 		description: "Generate spec files with AI",
@@ -118,24 +138,33 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 
 			ctx.ui.notify("Generating spec files with AI...", "info");
 
-			const prompt = `Generate a complete SPEC.md, TASKS.md, and CHECKLIST.md for this task: "${taskDescription}"
+			const prompt = `Generate SPEC.md, TASKS.md, and CHECKLIST.md for: "${taskDescription}"
 
-CRITICAL: Start your response EXACTLY with these lines (no other text before):
+IMPORTANT: Start your response with these exact markers:
 ===SPEC===
 # ${taskDescription} Specification
 ## Why
-...
+## What Changes
+## ADDED Requirements
+## Data Structures
+## Architecture
+## Implementation Files
+## Verification Criteria
+
 ===TASKS===
 # Tasks - Implementation
 ## Task List
-...
+- [ ] 1. 
+
 ===CHECKLIST===
 # Checklist - Implementation
+## Code Implementation Checklist
+- [ ] 
 
-Make sure to include specific file paths in TASKS and specific checkboxes in CHECKLIST.`;
+Generate now:`;
 
-			pi.sendMessage({ customType: "spec-generator", content: prompt, display: false }, { triggerTurn: true });
-			ctx.ui.notify("AI is generating spec files... (wait for message with files)", "info");
+			pi.sendMessage({ customType: "spec-generate", content: prompt, display: false }, { triggerTurn: true });
+			ctx.ui.notify("AI is generating... Wait for completion message.", "info");
 		},
 	});
 
@@ -153,12 +182,12 @@ Make sure to include specific file paths in TASKS and specific checkboxes in CHE
 				tasksContent = fs.readFileSync(executionState.tasksPath, "utf-8");
 				checklistContent = fs.readFileSync(executionState.checklistPath, "utf-8");
 			} catch {
-				ctx.ui.notify("Spec files not found. Use /spec-generate first.", "error");
+				ctx.ui.notify("Spec files not found.", "error");
 				return;
 			}
 
-			if (specContent.trim().length < 100) {
-				ctx.ui.notify("Spec files are empty. Use /spec-generate first.", "warning");
+			if (specContent.trim().length < 50) {
+				ctx.ui.notify("Spec files empty. Use /spec-generate again.", "warning");
 				return;
 			}
 
@@ -166,310 +195,108 @@ Make sure to include specific file paths in TASKS and specific checkboxes in CHE
 			executionState.checklist = parseChecklistFile(checklistContent);
 			executionState.userConfirmed = true;
 
-			ctx.ui.notify(`Execution started! Tasks: ${executionState.tasks.length}, Checklist: ${executionState.checklist.length}. Strict mode enabled.`, "info");
+			ctx.ui.notify(`Execution started! Tasks: ${executionState.tasks.length}, Checklist: ${executionState.checklist.length}`, "info");
 
 			pi.sendMessage({
-				customType: "spec-execution-start",
-				content: `## [SPEC EXECUTION MODE - STRICT]
+				customType: "spec-execute",
+				content: `## [STRICT MODE]
 
-You must follow these 3 files exactly:
-- \`${executionState.specPath}\`
-- \`${executionState.tasksPath}\` 
-- \`${executionState.checklistPath}\`
+Read these files:
+- ${executionState.specPath}
+- ${executionState.tasksPath}
+- ${executionState.checklistPath}
 
-RULES:
-1. Read all 3 spec files at the start
-2. Execute tasks in order. Output [DONE:N] after completing task N
-3. Report progress after each task
-4. If blocked, output: 【阻塞】原因
-5. When ALL tasks done AND ALL checklist pass, output: 【任务已完成】
+Execute tasks in order. Output [DONE:N] after each task.
+Output 任务已完成 when all done.
 
-Begin execution now.`,
+Begin.`,
 				display: false,
 			}, { triggerTurn: true });
 		},
 	});
 
 	pi.registerCommand("spec-status", {
-		description: "Show execution status",
+		description: "Show status",
 		handler: async (_args, ctx) => {
 			if (!executionState) {
-				ctx.ui.notify("No active spec execution. Use /spec-generate first.", "info");
+				ctx.ui.notify("No active spec. Use /spec-generate first.", "info");
 				return;
 			}
-			const totalTasks = executionState.tasks.length;
-			const completedTasks = executionState.tasks.filter((t) => t.checked).length;
-			const totalChecklist = executionState.checklist.length;
-			const passedChecklist = executionState.checklist.filter((c) => c.passed).length;
-			const tasksPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
-			const checklistPercent = totalChecklist > 0 ? Math.round((passedChecklist / totalChecklist) * 100) : 0;
-			ctx.ui.notify(`Tasks: ${completedTasks}/${totalTasks} (${tasksPercent}%)\nChecklist: ${passedChecklist}/${totalChecklist} (${checklistPercent}%)\n${executionState.userConfirmed ? "Mode: Strict" : "Status: Waiting for /spec-confirm"}`, "info");
-		},
-	});
-
-	pi.registerCommand("spec-validate", {
-		description: "Validate against checklist",
-		handler: async (_args, ctx) => {
-			if (!executionState || !executionState.userConfirmed) {
-				ctx.ui.notify("No active execution.", "warning");
-				return;
-			}
-			ctx.ui.notify(generateValidationReport(executionState), "info");
+			const done = executionState.tasks.filter((t) => t.checked).length;
+			const total = executionState.tasks.length;
+			ctx.ui.notify(`Tasks: ${done}/${total}\n${executionState.userConfirmed ? "Mode: Strict" : "Status: Waiting /spec-confirm"}`, "info");
 		},
 	});
 
 	pi.registerShortcut(Key.ctrlShift("s"), {
-		description: "Start spec workflow",
+		description: "Quick start spec",
 		handler: async (ctx) => {
 			if (!ctx.hasUI) return;
 			ctx.ui.setEditorText("/spec-generate ");
 		},
 	});
 
-	pi.on("message_end", async (event, ctx) => {
-		const msgAny = event.message as any;
-		if (!msgAny) return;
+	pi.on("agent_end", async (event, ctx) => {
+		const msg = event.messages?.find((m: any) => m?.role === "assistant" && typeof m?.content === "string");
+		if (!msg) return;
 		
-		const content = typeof msgAny.content === "string" ? msgAny.content : "";
-		if (!content || content.length < 1000) return;
+		const content = (msg as any).content as string;
+		if (!content) return;
 
-		let specContent = "", tasksContent = "", checklistContent = "";
-		
-		// Format 1: ===SPEC=== ... ===TASKS=== ... ===CHECKLIST===
-		const specStart = content.indexOf("===SPEC===");
-		const tasksStart = content.indexOf("===TASKS===");
-		const checklistStart = content.indexOf("===CHECKLIST===");
-		
-		if (specStart >= 0 && tasksStart >= 0 && checklistStart >= 0) {
-			specContent = content.substring(specStart + 10, tasksStart).trim();
-			tasksContent = content.substring(tasksStart + 10, checklistStart).trim();
-			checklistContent = content.substring(checklistStart + 14).trim();
-		}
-		// Format 2: ---SPEC--- etc (legacy)
-		else if (content.includes("---SPEC---") && content.includes("---TASKS---")) {
-			const parts = content.split("---");
-			for (const part of parts) {
-				const p = part.trim();
-				if (p.startsWith("SPEC")) specContent = p.replace(/^SPEC[A-Z-]*/, "").trim();
-				else if (p.startsWith("TASKS")) tasksContent = p.replace(/^TASKS[A-Z-]*/, "").trim();
-				else if (p.startsWith("CHECKLIST")) checklistContent = p.replace(/^CHECKLIST[A-Z-]*/, "").trim();
-			}
-		}
-		// Format 3: Look for markdown document headers in long content
-		else if (content.length > 3000) {
-			// Always try this format for long content
-			const lines = content.split("\n");
-			let specLines: string[] = [];
-			let tasksLines: string[] = [];
-			let checklistLines: string[] = [];
-			let inSection = "";
-			
-			ctx.ui.notify(`DEBUG: parsing ${lines.length} lines, first: ${lines[0]?.substring(0,50)}`, "info");
-			
-			for (const line of lines) {
-				const lower = line.toLowerCase();
-				if ((lower.includes("specification") || lower.includes("# ")) && !lower.includes("task") && !lower.includes("checklist")) {
-					if (inSection !== "spec") inSection = "spec";
-					specLines.push(line);
-				} else if (lower.includes("task") && (lower.includes("list") || lower.includes("#") || lower.includes("##"))) {
-					if (inSection !== "tasks") inSection = "tasks";
-					tasksLines.push(line);
-				} else if (lower.includes("checklist")) {
-					if (inSection !== "checklist") inSection = "checklist";
-					checklistLines.push(line);
-				} else if (inSection === "spec") {
-					specLines.push(line);
-				} else if (inSection === "tasks") {
-					tasksLines.push(line);
-				} else if (inSection === "checklist") {
-					checklistLines.push(line);
+		if (executionState?.userConfirmed) {
+			const doneMatches = content.match(/\[DONE:(\d+)\]/g);
+			if (doneMatches) {
+				for (const match of doneMatches) {
+					const num = parseInt(match.match(/\[DONE:(\d+)\]/)?.[1] || "0", 10);
+					if (num > 0 && num <= executionState.tasks.length) {
+						executionState.tasks[num - 1].checked = true;
+					}
 				}
+				fs.writeFileSync(executionState.tasksPath, "# Tasks\n\n" + executionState.tasks.map((t, i) => `- [${t.checked ? "x" : " "}] ${i + 1}. ${t.description}`).join("\n"), "utf-8");
 			}
-			
-			specContent = specLines.join("\n");
-			tasksContent = tasksLines.join("\n");
-			checklistContent = checklistLines.join("\n");
-		}
-		
-		if (specContent && tasksContent && checklistContent && 
-			specContent.length > 100 && tasksContent.length > 50) {
-				ctx.ui.notify(`DEBUG: Found spec(${specContent.length}), tasks(${tasksContent.length}), checklist(${checklistContent.length})`, "info");
-				const specDir = ensureSpecDir(ctx.cwd);
-				const timestamp = Date.now();
-				const specPath = path.join(specDir, `spec-${timestamp}.md`);
-				const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
-				const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
-				
-				fs.writeFileSync(specPath, specContent, "utf-8");
-				fs.writeFileSync(tasksPath, tasksContent, "utf-8");
-				fs.writeFileSync(checklistPath, checklistContent, "utf-8");
-				
-				executionState = {
-					specGenerated: true,
-					userConfirmed: false,
-					tasks: [],
-					checklist: [],
-					currentTaskIndex: 0,
-					specPath,
-					tasksPath,
-					checklistPath,
-				};
-			
-			ctx.ui.notify(`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
+			const report = generateValidationReport(executionState);
+			const isComplete = executionState.tasks.every((t) => t.checked);
+			pi.sendMessage({
+				customType: "spec-validation",
+				content: report + (isComplete ? "\n\n### Done!" : "\n\n### Incomplete"),
+				display: true,
+			}, { triggerTurn: false });
+			executionState = null;
 			return;
 		}
-		
-		if (!executionState || !executionState.userConfirmed) return;
-		if (msgAny.role !== "assistant") return;
 
-		const msgContent = typeof msgAny.content === "string" ? msgAny.content : "";
-		const doneMatches = msgContent.match(/\[DONE:(\d+)\]/g);
-		if (doneMatches) {
-			for (const match of doneMatches) {
-				const taskNum = parseInt(match.match(/\[DONE:(\d+)\]/)?.[1] || "0", 10);
-				if (taskNum > 0 && taskNum <= executionState.tasks.length) {
-					executionState.tasks[taskNum - 1].checked = true;
-				}
-			}
-			fs.writeFileSync(executionState.tasksPath, "# Tasks\n\n## Task List\n" + executionState.tasks.map((t, i) => `- [${t.checked ? "x" : " "}] ${i + 1}. ${t.description}`).join("\n"), "utf-8");
-		}
-
-		const totalTasks = executionState.tasks.length;
-		const completedTasks = executionState.tasks.filter((t) => t.checked).length;
-		if (completedTasks === totalTasks && totalTasks > 0) {
-			ctx.ui.notify("All tasks completed! Run /spec-validate for final check.", "info");
-		}
-	});
-
-	pi.on("agent_end", async (_event, ctx) => {
-		if (!executionState || !executionState.userConfirmed) return;
-
-		const report = generateValidationReport(executionState);
-		const totalTasks = executionState.tasks.length;
-		const completedTasks = executionState.tasks.filter((t) => t.checked).length;
-		const checklistPercent = executionState.checklist.length > 0 ? Math.round((executionState.checklist.filter((c) => c.passed).length / executionState.checklist.length) * 100) : 0;
-		const isComplete = completedTasks === totalTasks && checklistPercent === 100;
-
-		pi.sendMessage({
-			customType: "spec-execution-complete",
-			content: report + (isComplete ? "\n\n### 🎉 Task complete!" : "\n\n### ⚠️ Validation failed."),
-			display: true,
-		}, { triggerTurn: false });
-
-		executionState = null;
-	});
-
-	pi.on("message_end", async (event, ctx) => {
-		const msgAny = event.message as any;
-		if (!msgAny) return;
-		
-		const content = typeof msgAny.content === "string" ? msgAny.content : "";
-		if (!content || content.length < 1000) return;
-
-		let specContent = "", tasksContent = "", checklistContent = "";
-		
-		const specStart = content.indexOf("===SPEC===");
-		const tasksStart = content.indexOf("===TASKS===");
-		const checklistStart = content.indexOf("===CHECKLIST===");
-		
-		if (specStart >= 0 && tasksStart >= 0 && checklistStart >= 0) {
-			specContent = content.substring(specStart + 10, tasksStart).trim();
-			tasksContent = content.substring(tasksStart + 10, checklistStart).trim();
-			checklistContent = content.substring(checklistStart + 14).trim();
+		const sections = extractSections(content);
+		if (sections) {
+			const specDir = ensureSpecDir(ctx.cwd);
+			const timestamp = Date.now();
+			const specPath = path.join(specDir, `spec-${timestamp}.md`);
+			const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
+			const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
 			
-			ctx.ui.notify(`DEBUG: Found format markers! spec=${specContent.length}, tasks=${tasksContent.length}`, "info");
-		}
-		
-		if (specContent && tasksContent && checklistContent && 
-			specContent.length > 100 && tasksContent.length > 50) {
-				const specDir = ensureSpecDir(ctx.cwd);
-				const timestamp = Date.now();
-				const specPath = path.join(specDir, `spec-${timestamp}.md`);
-				const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
-				const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
-				
-				fs.writeFileSync(specPath, specContent, "utf-8");
-				fs.writeFileSync(tasksPath, tasksContent, "utf-8");
-				fs.writeFileSync(checklistPath, checklistContent, "utf-8");
-				
-				executionState = {
-					specGenerated: true,
-					userConfirmed: false,
-					tasks: [],
-					checklist: [],
-					currentTaskIndex: 0,
-					specPath,
-					tasksPath,
-					checklistPath,
-				};
-				
-				ctx.ui.notify(`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
-				return;
-		}
-		
-		// Also try format 3 for longer content without explicit markers
-		if (content.length > 3000) {
-			const lines = content.split("\n");
-			let specLines: string[] = [];
-			let tasksLines: string[] = [];
-			let checklistLines: string[] = [];
-			let inSection = "";
+			fs.writeFileSync(specPath, sections.spec, "utf-8");
+			fs.writeFileSync(tasksPath, sections.tasks, "utf-8");
+			fs.writeFileSync(checklistPath, sections.checklist, "utf-8");
 			
-			for (const line of lines) {
-				const lower = line.toLowerCase();
-				if (lower.includes("## why") || lower.includes("specification")) {
-					inSection = "spec";
-					specLines.push(line);
-				} else if ((lower.includes("## task") || lower.includes("task list")) && !lower.includes("check")) {
-					inSection = "tasks";
-					tasksLines.push(line);
-				} else if (lower.includes("## checklist") || lower.includes("checklist")) {
-					inSection = "checklist";
-					checklistLines.push(line);
-				} else if (inSection === "spec") {
-					specLines.push(line);
-				} else if (inSection === "tasks") {
-					tasksLines.push(line);
-				} else if (inSection === "checklist") {
-					checklistLines.push(line);
-				}
-			}
+			executionState = {
+				specGenerated: true,
+				userConfirmed: false,
+				tasks: [],
+				checklist: [],
+				currentTaskIndex: 0,
+				specPath,
+				tasksPath,
+				checklistPath,
+			};
 			
-			specContent = specLines.join("\n");
-			tasksContent = tasksLines.join("\n");
-			checklistContent = checklistLines.join("\n");
-			
-			if (specContent && tasksContent && checklistContent && 
-				specContent.length > 100 && tasksContent.length > 50) {
-				const specDir = ensureSpecDir(ctx.cwd);
-				const timestamp = Date.now();
-				const specPath = path.join(specDir, `spec-${timestamp}.md`);
-				const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
-				const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
-				
-				fs.writeFileSync(specPath, specContent, "utf-8");
-				fs.writeFileSync(tasksPath, tasksContent, "utf-8");
-				fs.writeFileSync(checklistPath, checklistContent, "utf-8");
-				
-				executionState = {
-					specGenerated: true,
-					userConfirmed: false,
-					tasks: [],
-					checklist: [],
-					currentTaskIndex: 0,
-					specPath,
-					tasksPath,
-					checklistPath,
-				};
-				
-				ctx.ui.notify(`Spec files generated (via headers)!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
-			}
+			ctx.ui.notify(`Spec files saved!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start.`, "info");
+			return;
 		}
-	});
 
-	pi.on("session_start", async (_event, ctx) => {
-		if (pi.getFlag("spec-exec") === true) {
-			ctx.ui.notify("Spec execution mode enabled", "info");
+		if (content.includes("SPEC") || content.includes("Tasks") || content.includes("Checklist")) {
+			const specDir = ensureSpecDir(ctx.cwd);
+			const rawPath = path.join(specDir, `raw-ai-output-${Date.now()}.txt`);
+			fs.writeFileSync(rawPath, content, "utf-8");
+			ctx.ui.notify(`AI output saved to raw file for debugging:\n${path.basename(rawPath)}\n\nExpected format not detected. Check file.`, "warning");
 		}
 	});
 }
