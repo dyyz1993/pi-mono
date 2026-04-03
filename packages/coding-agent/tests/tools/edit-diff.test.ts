@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { applyEditWithFallback } from "../src/core/tools/edit-diff";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { applyEditWithFallback } from "../../src/core/tools/edit-diff";
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync, existsSync, rmSync } from "fs";
 import { join } from "path";
 
