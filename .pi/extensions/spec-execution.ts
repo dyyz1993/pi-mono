@@ -228,7 +228,7 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("spec-generate", {
-		description: "Generate spec files from current task description",
+		description: "Generate spec files with AI from task description",
 		handler: async (args, ctx) => {
 			let taskDescription = "";
 			
@@ -243,34 +243,55 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const specDir = ensureSpecDir(ctx.cwd);
-			const timestamp = Date.now();
+			ctx.ui.notify("Generating spec files with AI...", "info");
 
-			const specPath = path.join(specDir, `spec-${timestamp}.md`);
-			const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
-			const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
+			const prompt = `Generate 3 complete Markdown documents for this task: "${taskDescription}"
 
-			fs.writeFileSync(specPath, generateSpecTemplate(taskDescription), "utf-8");
-			fs.writeFileSync(tasksPath, generateTasksTemplate(), "utf-8");
-			fs.writeFileSync(checklistPath, generateChecklistTemplate(), "utf-8");
+Output ONLY the 3 documents, separated by "---SPEC---", "---TASKS---", "---CHECKLIST---" markers, NO other text.
 
-			executionState = {
-				specGenerated: true,
-				userConfirmed: false,
-				tasks: [],
-				checklist: [],
-				currentTaskIndex: 0,
-				specPath,
-				tasksPath,
-				checklistPath,
-			};
+---
 
-			ctx.ui.notify(
-				`Spec files generated:\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nEdit these files, then use /spec-confirm to proceed.`,
-				"info",
+## SPEC.md (must include):
+# [Module Name] Specification
+## Why - Why this feature is needed
+## What Changes - What changes
+## Impact - Side effects
+## ADDED Requirements (at least 3 concrete items with checkboxes)
+## Data Structures - TypeScript interfaces
+## Architecture - Data flow description
+## Implementation Files - Specific file paths
+## Verification Criteria (at least 3 items)
+
+---
+
+## TASKS.md (must include):
+# Tasks - Implementation
+## Task List (at least 4 concrete tasks with file paths)
+## Task Dependencies
+## Verification Steps
+
+---
+
+## CHECKLIST.md (must include):
+# Checklist - Implementation  
+## Code Implementation Checklist (at least 6 items)
+## Build and Verification Checklist
+## Functional Verification Checklist
+
+---
+
+Now generate the 3 documents:`;
+
+			pi.sendMessage(
+				{
+					customType: "spec-generator",
+					content: prompt,
+					display: false,
+				},
+				{ triggerTurn: true },
 			);
 
-			inputMode = "confirmation";
+			ctx.ui.notify("AI is generating spec files... (this may take a moment)", "info");
 		},
 	});
 
@@ -285,6 +306,11 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 			const specContent = fs.readFileSync(executionState.specPath, "utf-8");
 			const tasksContent = fs.readFileSync(executionState.tasksPath, "utf-8");
 			const checklistContent = fs.readFileSync(executionState.checklistPath, "utf-8");
+
+			if (specContent.trim().length < 100 || tasksContent.trim().length < 50) {
+				ctx.ui.notify("Spec files are empty. Use /spec-generate first to generate them with AI.", "warning");
+				return;
+			}
 
 			executionState.tasks = parseTasksFile(tasksContent);
 			executionState.checklist = parseChecklistFile(checklistContent);
@@ -428,9 +454,58 @@ Begin execution now.`,
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
+		const msg = event.message;
+		
+		if (msg.role === "assistant" && typeof msg.content === "string") {
+			const msgAny = msg as unknown as { customType?: string; content?: unknown };
+			
+			if (msgAny.customType === "spec-generator") {
+				const rawContent = msgAny.content;
+				if (typeof rawContent !== "string") return;
+				
+				const parts = rawContent.split("---");
+				
+				let specContent = "", tasksContent = "", checklistContent = "";
+				
+				for (let i = 0; i < parts.length; i++) {
+					if (parts[i].startsWith("SPEC---")) specContent = parts[i].replace("SPEC---", "").trim();
+					else if (parts[i].startsWith("TASKS---")) tasksContent = parts[i].replace("TASKS---", "").trim();
+					else if (parts[i].startsWith("CHECKLIST---")) checklistContent = parts[i].replace("CHECKLIST---", "").trim();
+				}
+				
+				if (specContent && tasksContent && checklistContent) {
+					const specDir = ensureSpecDir(ctx.cwd);
+					const timestamp = Date.now();
+					const specPath = path.join(specDir, `spec-${timestamp}.md`);
+					const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
+					const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
+					
+					fs.writeFileSync(specPath, specContent, "utf-8");
+					fs.writeFileSync(tasksPath, tasksContent, "utf-8");
+					fs.writeFileSync(checklistPath, checklistContent, "utf-8");
+					
+					executionState = {
+						specGenerated: true,
+						userConfirmed: false,
+						tasks: [],
+						checklist: [],
+						currentTaskIndex: 0,
+						specPath,
+						tasksPath,
+						checklistPath,
+					};
+					
+					ctx.ui.notify(
+						`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`,
+						"info",
+					);
+					return;
+				}
+			}
+		}
+		
 		if (!executionState || !executionState.userConfirmed) return;
 
-		const msg = event.message;
 		if (msg.role !== "assistant") return;
 
 		const content = typeof msg.content === "string" ? msg.content : "";
