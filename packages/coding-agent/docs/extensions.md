@@ -51,6 +51,12 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
 - [Mode Behavior](#mode-behavior)
 - [Examples Reference](#examples-reference)
 
+## Related Documentation
+
+- **[DISABLE-EXTENSIONS.md](./DISABLE-EXTENSIONS.md)** - How to disable or remove extensions
+- **[EXTENSION-QUICK-REFERENCE.md](./EXTENSION-QUICK-REFERENCE.md)** - Quick reference for extension management
+- **[EXTENSION-SYSTEM-DIAGRAM.md](./EXTENSION-SYSTEM-DIAGRAM.md)** - Visual diagrams of extension loading flow
+
 ## Quick Start
 
 Create `~/.pi/agent/extensions/my-extension.ts`:
