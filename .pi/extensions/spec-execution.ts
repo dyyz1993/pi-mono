@@ -120,32 +120,30 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 
 			const prompt = `Generate 3 complete Markdown documents for this task: "${taskDescription}"
 
-Output ONLY the 3 documents, separated by "---SPEC---", "---TASKS---", "---CHECKLIST---" markers.
+IMPORTANT: Output exactly in this format with clear section headers:
 
-## SPEC.md:
-# ${taskDescription} Specification
+===SPEC===
+# [Module Name] Specification
 ## Why
 ## What Changes  
 ## Impact
-## ADDED Requirements (at least 3 items with checkboxes)
-## Data Structures (TypeScript interfaces)
+## ADDED Requirements
+## Data Structures
 ## Architecture
 ## Implementation Files
 ## Verification Criteria
-
-## TASKS.md:
+===TASKS===
 # Tasks - Implementation
-## Task List (at least 4 tasks with file paths)
+## Task List
 ## Task Dependencies
 ## Verification Steps
-
-## CHECKLIST.md:
+===CHECKLIST===
 # Checklist - Implementation
-## Code Implementation Checklist (at least 6 items)
+## Code Implementation Checklist
 ## Build and Verification Checklist
 ## Functional Verification Checklist
 
-Now generate:`;
+Generate now:`;
 
 			pi.sendMessage({ customType: "spec-generator", content: prompt, display: false }, { triggerTurn: true });
 			ctx.ui.notify("AI is generating spec files... (wait for message with files)", "info");
@@ -246,16 +244,33 @@ Begin execution now.`,
 		const content = typeof msgAny.content === "string" ? msgAny.content : "";
 		if (!content) return;
 
-		// Check if AI generated spec files
-		if (content.includes("---SPEC---") && content.includes("---TASKS---") && content.includes("---CHECKLIST---")) {
-			const parts = content.split("---");
+		// Check if AI generated spec files - support both old and new format
+		const hasSpec = content.includes("===SPEC===") || content.includes("---SPEC---");
+		const hasTasks = content.includes("===TASKS===") || content.includes("---TASKS---");
+		const hasChecklist = content.includes("===CHECKLIST===") || content.includes("---CHECKLIST---");
+		
+		if (hasSpec && hasTasks && hasChecklist) {
+			// Try new format first
 			let specContent = "", tasksContent = "", checklistContent = "";
 			
-			for (const part of parts) {
-				const p = part.trim();
-				if (p.startsWith("SPEC")) specContent = p.replace(/^SPEC[A-Z-]*/, "").trim();
-				else if (p.startsWith("TASKS")) tasksContent = p.replace(/^TASKS[A-Z-]*/, "").trim();
-				else if (p.startsWith("CHECKLIST")) checklistContent = p.replace(/^CHECKLIST[A-Z-]*/, "").trim();
+			// New format: ===SPEC=== ... ===TASKS=== ... ===CHECKLIST===
+			if (content.includes("===SPEC===")) {
+				const specMatch = content.match(/===SPEC===\n?([\s\S]*?)(?:===TASKS===|$)/);
+				const tasksMatch = content.match(/===TASKS===\n?([\s\S]*?)(?:===CHECKLIST===|$)/);
+				const checklistMatch = content.match(/===CHECKLIST===\n?([\s\S]*)/);
+				
+				if (specMatch) specContent = specMatch[1].trim();
+				if (tasksMatch) tasksContent = tasksMatch[1].trim();
+				if (checklistMatch) checklistContent = checklistMatch[1].trim();
+			} else {
+				// Old format: ---SPEC--- ... ---TASKS--- ... ---CHECKLIST---
+				const parts = content.split("---");
+				for (const part of parts) {
+					const p = part.trim();
+					if (p.startsWith("SPEC")) specContent = p.replace(/^SPEC[A-Z-]*/, "").trim();
+					else if (p.startsWith("TASKS")) tasksContent = p.replace(/^TASKS[A-Z-]*/, "").trim();
+					else if (p.startsWith("CHECKLIST")) checklistContent = p.replace(/^CHECKLIST[A-Z-]*/, "").trim();
+				}
 			}
 			
 			if (specContent && tasksContent && checklistContent) {
