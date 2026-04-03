@@ -226,7 +226,7 @@ Begin execution now.`,
 		},
 	});
 
-	pi.on("turn_end", async (event, ctx) => {
+	pi.on("message_end", async (event, ctx) => {
 		const msgAny = event.message as any;
 		if (!msgAny) return;
 		
@@ -357,6 +357,114 @@ Begin execution now.`,
 		}, { triggerTurn: false });
 
 		executionState = null;
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		const msgAny = event.message as any;
+		if (!msgAny) return;
+		
+		const content = typeof msgAny.content === "string" ? msgAny.content : "";
+		if (!content || content.length < 1000) return;
+
+		let specContent = "", tasksContent = "", checklistContent = "";
+		
+		const specStart = content.indexOf("===SPEC===");
+		const tasksStart = content.indexOf("===TASKS===");
+		const checklistStart = content.indexOf("===CHECKLIST===");
+		
+		if (specStart >= 0 && tasksStart >= 0 && checklistStart >= 0) {
+			specContent = content.substring(specStart + 10, tasksStart).trim();
+			tasksContent = content.substring(tasksStart + 10, checklistStart).trim();
+			checklistContent = content.substring(checklistStart + 14).trim();
+			
+			ctx.ui.notify(`DEBUG: Found format markers! spec=${specContent.length}, tasks=${tasksContent.length}`, "info");
+		}
+		
+		if (specContent && tasksContent && checklistContent && 
+			specContent.length > 100 && tasksContent.length > 50) {
+				const specDir = ensureSpecDir(ctx.cwd);
+				const timestamp = Date.now();
+				const specPath = path.join(specDir, `spec-${timestamp}.md`);
+				const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
+				const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
+				
+				fs.writeFileSync(specPath, specContent, "utf-8");
+				fs.writeFileSync(tasksPath, tasksContent, "utf-8");
+				fs.writeFileSync(checklistPath, checklistContent, "utf-8");
+				
+				executionState = {
+					specGenerated: true,
+					userConfirmed: false,
+					tasks: [],
+					checklist: [],
+					currentTaskIndex: 0,
+					specPath,
+					tasksPath,
+					checklistPath,
+				};
+				
+				ctx.ui.notify(`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
+				return;
+		}
+		
+		// Also try format 3 for longer content without explicit markers
+		if (content.length > 3000) {
+			const lines = content.split("\n");
+			let specLines: string[] = [];
+			let tasksLines: string[] = [];
+			let checklistLines: string[] = [];
+			let inSection = "";
+			
+			for (const line of lines) {
+				const lower = line.toLowerCase();
+				if (lower.includes("## why") || lower.includes("specification")) {
+					inSection = "spec";
+					specLines.push(line);
+				} else if ((lower.includes("## task") || lower.includes("task list")) && !lower.includes("check")) {
+					inSection = "tasks";
+					tasksLines.push(line);
+				} else if (lower.includes("## checklist") || lower.includes("checklist")) {
+					inSection = "checklist";
+					checklistLines.push(line);
+				} else if (inSection === "spec") {
+					specLines.push(line);
+				} else if (inSection === "tasks") {
+					tasksLines.push(line);
+				} else if (inSection === "checklist") {
+					checklistLines.push(line);
+				}
+			}
+			
+			specContent = specLines.join("\n");
+			tasksContent = tasksLines.join("\n");
+			checklistContent = checklistLines.join("\n");
+			
+			if (specContent && tasksContent && checklistContent && 
+				specContent.length > 100 && tasksContent.length > 50) {
+				const specDir = ensureSpecDir(ctx.cwd);
+				const timestamp = Date.now();
+				const specPath = path.join(specDir, `spec-${timestamp}.md`);
+				const tasksPath = path.join(specDir, `tasks-${timestamp}.md`);
+				const checklistPath = path.join(specDir, `checklist-${timestamp}.md`);
+				
+				fs.writeFileSync(specPath, specContent, "utf-8");
+				fs.writeFileSync(tasksPath, tasksContent, "utf-8");
+				fs.writeFileSync(checklistPath, checklistContent, "utf-8");
+				
+				executionState = {
+					specGenerated: true,
+					userConfirmed: false,
+					tasks: [],
+					checklist: [],
+					currentTaskIndex: 0,
+					specPath,
+					tasksPath,
+					checklistPath,
+				};
+				
+				ctx.ui.notify(`Spec files generated (via headers)!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
+			}
+		}
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
