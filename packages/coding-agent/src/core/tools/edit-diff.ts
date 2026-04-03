@@ -543,34 +543,15 @@ export function smartCleanupEmptyLines(
 		const delLine = options.deletionLine;
 		const delCount = options.deletedLines;
 
-		// Check if deletion created new empty lines
-		// Look at the area around the deletion point
-		const startLine = Math.max(0, delLine - 1);
-		const endLine = Math.min(lines.length - 1, delLine + 1);
-
-		// Count empty lines in the affected area
-		let emptyLinesInArea = 0;
-		for (let i = startLine; i <= endLine; i++) {
-			if (lines[i] && lines[i].trim() === "") {
-				emptyLinesInArea++;
-			}
-		}
-
-		// If there's an empty line right at the deletion point, it was likely created by the deletion
-		// In this case, we should remove it
+		// If there's an empty line right at the deletion point, check if we should remove it
 		if (delLine < lines.length && lines[delLine].trim() === "") {
-			// Check if this empty line was created by deletion
-			// Heuristic: if the previous non-empty line was followed by non-empty content before deletion,
-			// then this empty line is artificial
 			const prevNonEmpty = findPrevNonEmptyLine(lines, delLine);
 			const nextNonEmpty = findNextNonEmptyLine(lines, delLine);
 
-			if (prevNonEmpty !== -1 && nextNonEmpty !== -1) {
-				// Both sides have content, this empty line separates them
-				// But we need to check if it was created by deletion
-				// If deleted lines were comments or code (not just whitespace),
-				// then this empty line is artificial
-				if (delCount > 0) {
+			// Only remove if both sides have content and the empty line is not worth preserving
+			if (prevNonEmpty !== -1 && nextNonEmpty !== -1 && delCount > 0) {
+				// Check if this empty line should be preserved
+				if (!shouldPreserveEmptyLine(lines, delLine)) {
 					// Remove the empty line at deletion point
 					lines.splice(delLine, 1);
 					return lines.join("\n");
@@ -579,7 +560,7 @@ export function smartCleanupEmptyLines(
 		}
 	}
 
-	// Default behavior: collapse multiple empty lines to one
+	// Default behavior: collapse multiple empty lines to one, with smart preservation
 	const result: string[] = [];
 	let i = 0;
 
@@ -597,16 +578,34 @@ export function smartCleanupEmptyLines(
 			result.push(line);
 			i++;
 		} else {
-			// Count consecutive empty lines
-			let emptyCount = 0;
+			// Collect consecutive empty lines
+			const emptyStartIndex = i;
+			const emptyLineIndices: number[] = [];
 			while (i < lines.length && lines[i].trim() === "") {
-				emptyCount++;
+				// Store the actual index in result array (will be adjusted)
+				emptyLineIndices.push(i);
 				i++;
 			}
 
-			// If there are more lines after, keep one empty line
+			// If there are more lines after, decide whether to keep empty line(s)
 			if (i < lines.length) {
-				result.push("");
+				// Check if any of these empty lines should be preserved
+				let shouldKeep = false;
+				for (const emptyIdx of emptyLineIndices) {
+					// Create a temporary view to check preservation rules
+					const tempLines = [...result, "", ...lines.slice(i)];
+					if (shouldPreserveEmptyLine(tempLines, result.length)) {
+						shouldKeep = true;
+						break;
+					}
+				}
+
+				if (shouldKeep) {
+					result.push("");
+				} else if (emptyLineIndices.length > 0) {
+					// Default: keep one empty line if there were any
+					result.push("");
+				}
 			}
 			// Otherwise, skip trailing empty lines
 		}
