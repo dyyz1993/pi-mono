@@ -525,27 +525,47 @@ export function applyQuoteStyle(text: string, style: "single" | "double" | "temp
 
 /**
  * Clean up empty lines after deletion.
- * Removes consecutive blank lines, preserving one blank line where appropriate.
+ * Removes all consecutive blank lines, including at deletion boundaries.
+ * This is more aggressive than normal cleanup to avoid leaving awkward gaps.
  */
 export function smartCleanupEmptyLines(content: string): string {
 	const lines = content.split("\n");
 	const result: string[] = [];
 	let consecutiveEmptyCount = 0;
+	let lastNonEmptyIndex = -1;
 
+	// First pass: identify all empty line sequences and non-empty lines
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		const isEmpty = line.trim() === "";
 		
 		if (isEmpty) {
 			consecutiveEmptyCount++;
-			// Only keep one empty line in a sequence
-			if (consecutiveEmptyCount === 1) {
-				result.push(line);
-			}
 		} else {
+			// If we had consecutive empty lines before this non-empty line,
+			// and we have content after it, keep one blank line for readability
+			if (consecutiveEmptyCount > 0 && result.length > 0) {
+				// Check if this is likely a structural boundary (indentation changed)
+				const prevLine = result[result.length - 1] || "";
+				const prevIndent = prevLine.match(/^\s*/)?.[0].length || 0;
+				const currIndent = line.match(/^\s*/)?.[0].length || 0;
+				
+				// Only keep blank line if:
+				// 1. It's not at the start of a block (indentation increased)
+				// 2. It's between two lines at the same indentation level
+				if (currIndent === prevIndent && currIndent > 0) {
+					result.push("");
+				}
+			}
 			consecutiveEmptyCount = 0;
 			result.push(line);
+			lastNonEmptyIndex = result.length - 1;
 		}
+	}
+
+	// Remove trailing empty lines (keep only if there's content after)
+	while (result.length > 0 && result[result.length - 1].trim() === "") {
+		result.pop();
 	}
 
 	return result.join("\n");
