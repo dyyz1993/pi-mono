@@ -337,12 +337,11 @@ Begin execution now.`,
 			ctx.ui.notify(`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
 			return;
 		}
-	}
 		
-	if (!executionState || !executionState.userConfirmed) return;
-	if (msgAny.role !== "assistant") return;
+		if (!executionState || !executionState.userConfirmed) return;
+		if (msgAny.role !== "assistant") return;
 
-	const msgContent = typeof msgAny.content === "string" ? msgAny.content : "";
+		const msgContent = typeof msgAny.content === "string" ? msgAny.content : "";
 		const doneMatches = msgContent.match(/\[DONE:(\d+)\]/g);
 		if (doneMatches) {
 			for (const match of doneMatches) {
