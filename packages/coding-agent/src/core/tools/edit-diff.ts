@@ -640,6 +640,82 @@ function findNextNonEmptyLine(lines: string[], fromIndex: number): number {
 }
 
 /**
+ * Get the indentation level of a line (number of leading spaces/tabs).
+ */
+function getIndentLevel(line: string): number {
+	const match = line.match(/^(\s*)/);
+	return match ? match[1].length : 0;
+}
+
+/**
+ * Check if a line opens a code block (ends with {).
+ */
+function isBlockOpen(line: string): boolean {
+	const trimmed = line.trim();
+	return trimmed.endsWith("{") || trimmed.endsWith("{ //");
+}
+
+/**
+ * Check if a line closes a code block (starts with }).
+ */
+function isBlockClose(line: string): boolean {
+	const trimmed = line.trim();
+	return trimmed.startsWith("}") || trimmed === "}";
+}
+
+/**
+ * Check if a line is a comment.
+ */
+function isComment(line: string): boolean {
+	const trimmed = line.trim();
+	return (
+		trimmed.startsWith("//") ||
+		trimmed.startsWith("/*") ||
+		trimmed.startsWith("*") ||
+		trimmed.startsWith("*/")
+	);
+}
+
+/**
+ * Check if a line is a blank line that should be preserved for readability.
+ */
+function shouldPreserveEmptyLine(lines: string[], emptyLineIndex: number): boolean {
+	const prevNonEmpty = findPrevNonEmptyLine(lines, emptyLineIndex);
+	const nextNonEmpty = findNextNonEmptyLine(lines, emptyLineIndex);
+
+	if (prevNonEmpty === -1 || nextNonEmpty === -1) {
+		return false;
+	}
+
+	const prevLine = lines[prevNonEmpty];
+	const nextLine = lines[nextNonEmpty];
+
+	// Rule 1: Preserve empty line before block close (improves readability)
+	if (isBlockClose(nextLine)) {
+		return true;
+	}
+
+	// Rule 2: Preserve empty line after block open
+	if (isBlockOpen(prevLine)) {
+		return true;
+	}
+
+	// Rule 3: Preserve empty line between different indent levels
+	const prevIndent = getIndentLevel(prevLine);
+	const nextIndent = getIndentLevel(nextLine);
+	if (Math.abs(prevIndent - nextIndent) > 0) {
+		return true;
+	}
+
+	// Rule 4: Preserve empty line around comments
+	if (isComment(prevLine) || isComment(nextLine)) {
+		return true;
+	}
+
+	return false;
+}
+
+/**
  * Sanitize control characters in text.
  * Removes or replaces problematic control characters.
  */
