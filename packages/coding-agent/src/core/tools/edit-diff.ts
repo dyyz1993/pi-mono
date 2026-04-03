@@ -525,13 +525,61 @@ export function applyQuoteStyle(text: string, style: "single" | "double" | "temp
 
 /**
  * Clean up empty lines after deletion.
- * Strategy:
- * 1. Remove all trailing empty lines at the end
- * 2. Collapse multiple consecutive empty lines to one
- * 3. Preserve single empty lines that separate logical blocks
+ * This version compares before/after to determine if empty lines were created by deletion.
  */
-export function smartCleanupEmptyLines(content: string): string {
+export function smartCleanupEmptyLines(
+	content: string,
+	options?: {
+		/** Position where deletion occurred (line number, 0-based) */
+		deletionLine?: number;
+		/** Number of lines deleted */
+		deletedLines?: number;
+	},
+): string {
 	const lines = content.split("\n");
+
+	// If we have context about the deletion, use smart detection
+	if (options?.deletionLine !== undefined && options?.deletedLines !== undefined) {
+		const delLine = options.deletionLine;
+		const delCount = options.deletedLines;
+
+		// Check if deletion created new empty lines
+		// Look at the area around the deletion point
+		const startLine = Math.max(0, delLine - 1);
+		const endLine = Math.min(lines.length - 1, delLine + 1);
+
+		// Count empty lines in the affected area
+		let emptyLinesInArea = 0;
+		for (let i = startLine; i <= endLine; i++) {
+			if (lines[i] && lines[i].trim() === "") {
+				emptyLinesInArea++;
+			}
+		}
+
+		// If there's an empty line right at the deletion point, it was likely created by the deletion
+		// In this case, we should remove it
+		if (delLine < lines.length && lines[delLine].trim() === "") {
+			// Check if this empty line was created by deletion
+			// Heuristic: if the previous non-empty line was followed by non-empty content before deletion,
+			// then this empty line is artificial
+			const prevNonEmpty = findPrevNonEmptyLine(lines, delLine);
+			const nextNonEmpty = findNextNonEmptyLine(lines, delLine);
+
+			if (prevNonEmpty !== -1 && nextNonEmpty !== -1) {
+				// Both sides have content, this empty line separates them
+				// But we need to check if it was created by deletion
+				// If deleted lines were comments or code (not just whitespace),
+				// then this empty line is artificial
+				if (delCount > 0) {
+					// Remove the empty line at deletion point
+					lines.splice(delLine, 1);
+					return lines.join("\n");
+				}
+			}
+		}
+	}
+
+	// Default behavior: collapse multiple empty lines to one
 	const result: string[] = [];
 	let i = 0;
 
@@ -565,6 +613,30 @@ export function smartCleanupEmptyLines(content: string): string {
 	}
 
 	return result.join("\n");
+}
+
+/**
+ * Find the previous non-empty line index.
+ */
+function findPrevNonEmptyLine(lines: string[], fromIndex: number): number {
+	for (let i = fromIndex - 1; i >= 0; i--) {
+		if (lines[i].trim() !== "") {
+			return i;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Find the next non-empty line index.
+ */
+function findNextNonEmptyLine(lines: string[], fromIndex: number): number {
+	for (let i = fromIndex + 1; i < lines.length; i++) {
+		if (lines[i].trim() !== "") {
+			return i;
+		}
+	}
+	return -1;
 }
 
 /**
