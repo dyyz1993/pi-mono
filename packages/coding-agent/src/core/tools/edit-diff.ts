@@ -700,7 +700,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 
 			// Apply replacements in reverse order to maintain correct offsets
 			// Work in original space
-			newContent = content;
+			newContent = processedContent;
 			const sortedMatches = [...matchesToReplace].sort((a, b) => b.index - a.index);
 
 			for (const match of sortedMatches) {
@@ -713,8 +713,8 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			// Exact matching
 			const matches: Array<{ index: number; length: number }> = [];
 			let searchPos = 0;
-			while (searchPos < content.length) {
-				const idx = content.indexOf(processedOldText, searchPos);
+			while (searchPos < processedContent.length) {
+				const idx = processedContent.indexOf(processedOldText, searchPos);
 				if (idx === -1) break;
 				matches.push({
 					index: idx,
@@ -735,7 +735,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			matchCount = matchesToReplace.length;
 
 			// Apply replacements in reverse order to maintain correct offsets
-			newContent = content;
+			newContent = processedContent;
 			const sortedMatches = [...matchesToReplace].sort((a, b) => b.index - a.index);
 
 			for (const match of sortedMatches) {
