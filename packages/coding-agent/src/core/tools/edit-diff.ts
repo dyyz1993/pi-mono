@@ -639,7 +639,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			// For fuzzy matching, we need to work in original space
 			// Strategy: Find matches using normalized comparison, but replace in original space
 			
-			const normalizedContent = normalizeForFuzzyMatch(content);
+			const normalizedContent = normalizeForFuzzyMatch(processedContent);
 			const normalizedPattern = normalizeForFuzzyMatch(processedOldText);
 			
 			// Check if pattern exists at all
@@ -660,11 +660,11 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 				// Try different lengths in original content
 				// The match in original content could be different length than processedOldText
 				// due to different quote characters or whitespace
-				const maxLen = Math.min(content.length - startPos, processedOldText.length + 10);
+				const maxLen = Math.min(processedContent.length - startPos, processedOldText.length + 10);
 				const minLen = Math.max(1, processedOldText.length - 10);
 				
 				for (let len = minLen; len <= maxLen; len++) {
-					const originalSubstring = content.substring(startPos, startPos + len);
+					const originalSubstring = processedContent.substring(startPos, startPos + len);
 					const normalizedSubstring = normalizeForFuzzyMatch(originalSubstring);
 					
 					if (normalizedSubstring === normalizedPattern) {
@@ -675,7 +675,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			};
 			
 			// Search through the content
-			for (let i = 0; i < content.length; i++) {
+			for (let i = 0; i < processedContent.length; i++) {
 				const matchLen = tryMatch(i);
 				if (matchLen > 0) {
 					matches.push({
