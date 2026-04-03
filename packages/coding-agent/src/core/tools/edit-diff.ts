@@ -634,21 +634,38 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 		let matchCount = 0;
 
 		if (enableFuzzyMatch) {
-			// For fuzzy matching, normalize both content and pattern
+			// For fuzzy matching, we need to work in original space
+			// Strategy: Find matches using normalized comparison, but replace in original space
+			
 			const normalizedContent = normalizeForFuzzyMatch(content);
 			const normalizedPattern = normalizeForFuzzyMatch(processedOldText);
+			
+			// Check if pattern exists at all
+			if (!normalizedContent.includes(normalizedPattern)) {
+				return {
+					success: false,
+					error: `Text not found in ${filePath} (even with fuzzy matching)`,
+				};
+			}
 
-			// Find all matches in normalized space
+			// Find all matches by comparing normalized versions
+			// We'll search through the content and find where normalized patterns match
 			const matches: Array<{ index: number; length: number }> = [];
-			let searchPos = 0;
-			while (searchPos < normalizedContent.length) {
-				const idx = normalizedContent.indexOf(normalizedPattern, searchPos);
-				if (idx === -1) break;
-				matches.push({
-					index: idx,
-					length: normalizedPattern.length,
-				});
-				searchPos = idx + normalizedPattern.length;
+			
+			// For each position in the original content, check if the normalized substring matches
+			for (let i = 0; i <= content.length - processedOldText.length; i++) {
+				// Extract a substring from original content and normalize it
+				const originalSubstring = content.substring(i, i + processedOldText.length);
+				const normalizedSubstring = normalizeForFuzzyMatch(originalSubstring);
+				
+				if (normalizedSubstring === normalizedPattern) {
+					matches.push({
+						index: i,
+						length: processedOldText.length,
+					});
+					// Skip ahead to avoid overlapping matches
+					i += processedOldText.length - 1;
+				}
 			}
 
 			if (matches.length === 0) {
@@ -663,18 +680,16 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			matchCount = matchesToReplace.length;
 
 			// Apply replacements in reverse order to maintain correct offsets
-			// Work in normalized space
-			let normalizedResult = normalizedContent;
+			// Work in original space
+			newContent = content;
 			const sortedMatches = [...matchesToReplace].sort((a, b) => b.index - a.index);
 
 			for (const match of sortedMatches) {
-				normalizedResult =
-					normalizedResult.substring(0, match.index) +
+				newContent =
+					newContent.substring(0, match.index) +
 					processedNewText +
-					normalizedResult.substring(match.index + match.length);
+					newContent.substring(match.index + match.length);
 			}
-
-			newContent = normalizedResult;
 		} else {
 			// Exact matching
 			const matches: Array<{ index: number; length: number }> = [];
