@@ -59,50 +59,89 @@ function escapeMarkdown(text: string): string {
 }
 
 function generateSpecTemplate(taskDescription: string): string {
-	return `# Specification
+	const title = taskDescription.replace(/^#\s*/, "").split("\n")[0].trim();
+	return `# ${title} Specification
 
-## Overview
-${taskDescription}
+## Why
+<!-- Why this feature is needed. What problem does it solve? -->
 
-## Requirements
-- [ ] Feature 1
-- [ ] Feature 2
+## What Changes
+<!-- What exactly changes in this implementation -->
 
-## Boundaries
-- What this does NOT do
+## Impact
+<!-- Side effects, breaking changes, performance implications -->
 
-## Acceptance Criteria
-- [ ] Criteria 1
-- [ ] Criteria 2
+## ADDED Requirements
+
+### Scenario 1: When-Then
+- [ ] 
+
+## MODIFIED Requirements (if any)
+- [ ]
+
+## Data Structures
+\`\`\`typescript
+// Define TypeScript interfaces here
+\`\`\`
+
+## Architecture
+<!-- Architecture data flow, module relationships -->
+
+## Implementation Files
+<!-- File list to be created/modified:
+- src/...
+- test/...
+-->
+
+## Verification Criteria
+- [ ] Unit tests pass
+- [ ] Integration tests pass
+- [ ] Manual verification steps
 `;
 }
 
 function generateTasksTemplate(): string {
-	return `# Tasks
+	return `# Tasks - Implementation
 
-## Execution Order
-- [ ] 1. Task description
-- [ ] 2. Task description
+## Task List (in coding order, with file paths)
+- [ ] 1. 
+- [ ] 2. 
+
+## Task Dependencies
+<!-- Dependencies:
+Task 1 → Task 2 → Task 3
+-->
+
+## Verification Steps
+### Task 1
+1. 
+
+### Task 2
+1. 
 `;
 }
 
 function generateChecklistTemplate(): string {
-	return `# Checklist
+	return `# Checklist - Implementation
 
-## Pre-Execution
-- [ ] All dependencies available
-- [ ] Environment configured
+## Code Implementation Checklist (per task)
+- [ ] Task 1: Code written
+- [ ] Task 1: Types defined
+- [ ] Task 1: Error handling added
+- [ ] Task 2: Code written
+- [ ] Task 2: Types defined
+- [ ] Task 2: Error handling added
 
-## Post-Execution
-- [ ] All tasks completed (100%)
-- [ ] No errors in output
-- [ ] Code passes lint/typecheck
-- [ ] Tests pass (if applicable)
+## Build and Verification Checklist
+- [ ] TypeScript compiles without errors
+- [ ] Lint passes (\`npm run check\`)
+- [ ] No new TypeScript errors introduced
 
-## Final Validation
-- [ ] spec.md requirements met
-- [ ] tasks.md all checked
-- [ ] deliverables produced
+## Functional Verification Checklist
+- [ ] Feature works as specified in spec.md
+- [ ] Edge cases handled
+- [ ] Error messages are user-friendly
+- [ ] Performance acceptable
 `;
 }
 
@@ -261,21 +300,40 @@ export default function specExecutionExtension(pi: ExtensionAPI): void {
 			pi.sendMessage(
 				{
 					customType: "spec-execution-start",
-					content: `[SPEC EXECUTION MODE - STRICT]
+					content: `## [SPEC EXECUTION MODE - STRICT]
 
-You must follow these files exactly:
-- ${executionState.specPath}
-- ${executionState.tasksPath}
-- ${executionState.checklistPath}
+You must execute this task by strictly following these 3 files:
+- \`${executionState.specPath}\` - Requirements, boundaries, acceptance criteria
+- \`${executionState.tasksPath}\` - Ordered task list, MUST complete ALL items
+- \`${executionState.checklistPath}\` - Validation checklist, ALL items must pass
 
-RULES:
-1. Complete ALL tasks in tasks.md (all must be checked)
-2. Meet ALL checklist criteria
-3. Do NOT add, skip, or modify requirements
-4. Report progress after each task
-5. Use [DONE:n] markers to mark completed tasks
+### Execution Rules
 
-Begin execution.`,
+1. **READ FILES**: Read all 3 spec files at the start. Understand the requirements.
+
+2. **TASKS**: Execute items in tasks.md in order. After completing task N, output \`[DONE:N]\` in your response.
+
+3. **PROGRESS**: After each tool execution, report: "Task N: done. Remaining: X tasks."
+
+4. **BLOCKING**: If you cannot proceed (missing info, environment issue, unclear requirement), output exactly:
+   \`【阻塞】具体原因\`
+   Do NOT skip or guess. Wait for human clarification.
+
+5. **VALIDATION**: Before completing, verify against checklist.md. Update the file with \`[x]\` for passed items.
+
+6. **FILES**: You MUST read and write to the 3 spec files to track progress. Do NOT assume what's in them.
+
+7. **COMPLETION**: When ALL tasks are checked AND ALL checklist items pass, output:
+   \`【任务已完成】\`
+   With a summary of: total tasks, completed tasks, checklist pass rate.
+
+### Forbidden
+- Do NOT add new requirements not in spec.md
+- Do NOT skip tasks in tasks.md
+- Do NOT mark tasks as done without actual execution
+- Do NOT finish without validation report
+
+Begin execution now.`,
 					display: false,
 				},
 				{ triggerTurn: true },
