@@ -256,23 +256,26 @@ Begin execution now.`,
 			}
 		}
 		// Format 3: Look for markdown document headers in long content
-		else if (content.length > 3000 && content.includes("# Specification")) {
+		else if (content.length > 3000) {
+			// Always try this format for long content
 			const lines = content.split("\n");
 			let specLines: string[] = [];
 			let tasksLines: string[] = [];
 			let checklistLines: string[] = [];
 			let inSection = "";
 			
+			ctx.ui.notify(`DEBUG: parsing ${lines.length} lines, first: ${lines[0]?.substring(0,50)}`, "info");
+			
 			for (const line of lines) {
 				const lower = line.toLowerCase();
-				if (lower.includes("specification") && !lower.includes("task") && !lower.includes("checklist")) {
-					inSection = "spec";
+				if ((lower.includes("specification") || lower.includes("# ")) && !lower.includes("task") && !lower.includes("checklist")) {
+					if (inSection !== "spec") inSection = "spec";
 					specLines.push(line);
-				} else if (lower.includes("# task") || lower.includes("## task") || lower.includes("tasks")) {
-					inSection = "tasks";
+				} else if (lower.includes("task") && (lower.includes("list") || lower.includes("#") || lower.includes("##"))) {
+					if (inSection !== "tasks") inSection = "tasks";
 					tasksLines.push(line);
-				} else if (lower.includes("# checklist") || lower.includes("## checklist")) {
-					inSection = "checklist";
+				} else if (lower.includes("checklist")) {
+					if (inSection !== "checklist") inSection = "checklist";
 					checklistLines.push(line);
 				} else if (inSection === "spec") {
 					specLines.push(line);
@@ -290,6 +293,7 @@ Begin execution now.`,
 		
 		if (specContent && tasksContent && checklistContent && 
 			specContent.length > 100 && tasksContent.length > 50) {
+				ctx.ui.notify(`DEBUG: Found spec(${specContent.length}), tasks(${tasksContent.length}), checklist(${checklistContent.length})`, "info");
 				const specDir = ensureSpecDir(ctx.cwd);
 				const timestamp = Date.now();
 				const specPath = path.join(specDir, `spec-${timestamp}.md`);
