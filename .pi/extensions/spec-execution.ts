@@ -242,38 +242,77 @@ Begin execution now.`,
 		if (!msgAny) return;
 		
 		const content = typeof msgAny.content === "string" ? msgAny.content : "";
-		if (!content) return;
+		if (!content || content.length < 500) return;
 
-		// Check if AI generated spec files - support both old and new format
-		const hasSpec = content.includes("===SPEC===") || content.includes("---SPEC---");
-		const hasTasks = content.includes("===TASKS===") || content.includes("---TASKS---");
-		const hasChecklist = content.includes("===CHECKLIST===") || content.includes("---CHECKLIST---");
+		// Check if AI generated spec files - try multiple formats
+		let specContent = "", tasksContent = "", checklistContent = "";
 		
-		if (hasSpec && hasTasks && hasChecklist) {
-			// Try new format first
-			let specContent = "", tasksContent = "", checklistContent = "";
+		// Format 1: ===SPEC=== ... ===TASKS=== ... ===CHECKLIST===
+		if (content.includes("===SPEC===")) {
+			const specMatch = content.match(/===SPEC===\n?([\s\S]*?)(?:===TASKS===|$)/);
+			const tasksMatch = content.match(/===TASKS===\n?([\s\S]*?)(?:===CHECKLIST===|$)/);
+			const checklistMatch = content.match(/===CHECKLIST===\n?([\s\S]*)/);
+			if (specMatch) specContent = specMatch[1].trim();
+			if (tasksMatch) tasksContent = tasksMatch[1].trim();
+			if (checklistMatch) checklistContent = checklistMatch[1].trim();
+		}
+		// Format 2: ---SPEC--- ... ---TASKS--- ... ---CHECKLIST---
+		else if (content.includes("---SPEC---")) {
+			const parts = content.split("---");
+			for (const part of parts) {
+				const p = part.trim();
+				if (p.startsWith("SPEC")) specContent = p.replace(/^SPEC[A-Z-]*/, "").trim();
+				else if (p.startsWith("TASKS")) tasksContent = p.replace(/^TASKS[A-Z-]*/, "").trim();
+				else if (p.startsWith("CHECKLIST")) checklistContent = p.replace(/^CHECKLIST[A-Z-]*/, "").trim();
+			}
+		}
+		// Format 3: Look for markdown headers
+		else if (content.includes("# Specification") || content.includes("# ") && content.length > 2000) {
+			// Try to find sections by markdown headers
+			const lines = content.split("\n");
+			let currentSection = "";
+			let specLines: string[] = [];
+			let tasksLines: string[] = [];
+			let checklistLines: string[] = [];
+			let currentList: string[] = [];
 			
-			// New format: ===SPEC=== ... ===TASKS=== ... ===CHECKLIST===
-			if (content.includes("===SPEC===")) {
-				const specMatch = content.match(/===SPEC===\n?([\s\S]*?)(?:===TASKS===|$)/);
-				const tasksMatch = content.match(/===TASKS===\n?([\s\S]*?)(?:===CHECKLIST===|$)/);
-				const checklistMatch = content.match(/===CHECKLIST===\n?([\s\S]*)/);
-				
-				if (specMatch) specContent = specMatch[1].trim();
-				if (tasksMatch) tasksContent = tasksMatch[1].trim();
-				if (checklistMatch) checklistContent = checklistMatch[1].trim();
-			} else {
-				// Old format: ---SPEC--- ... ---TASKS--- ... ---CHECKLIST---
-				const parts = content.split("---");
-				for (const part of parts) {
-					const p = part.trim();
-					if (p.startsWith("SPEC")) specContent = p.replace(/^SPEC[A-Z-]*/, "").trim();
-					else if (p.startsWith("TASKS")) tasksContent = p.replace(/^TASKS[A-Z-]*/, "").trim();
-					else if (p.startsWith("CHECKLIST")) checklistContent = p.replace(/^CHECKLIST[A-Z-]*/, "").trim();
+			for (const line of lines) {
+				if (line.match(/^#\s+.*Specification/i) || line.match(/^##\s+Why/i)) {
+					if (currentList.length > 0 && specLines.length > 0) {
+						// This might be checklist
+						checklistLines.push(...currentList);
+						currentList = [];
+					}
+					currentSection = "spec";
+					specLines.push(line);
+				} else if (line.match(/^##\s+Task/i) || line.match(/^#\s+Task/i)) {
+					if (currentSection === "spec" && specLines.length > 0) {
+						tasksLines = [line];
+						currentSection = "tasks";
+					}
+				} else if (line.match(/^##\s+Checklist/i) || line.match(/^#\s+Checklist/i)) {
+					if (currentSection === "tasks" && tasksLines.length > 0) {
+						checklistLines = [line];
+						currentSection = "checklist";
+					}
+				} else if (line.match(/^- \[/)) {
+					currentList.push(line);
+				} else if (currentSection === "spec") {
+					specLines.push(line);
+				} else if (currentSection === "tasks") {
+					tasksLines.push(line);
+				} else if (currentSection === "checklist") {
+					checklistLines.push(line);
 				}
 			}
 			
-			if (specContent && tasksContent && checklistContent) {
+			specContent = specLines.join("\n");
+			tasksContent = tasksLines.join("\n");
+			checklistContent = checklistLines.join("\n");
+		}
+		
+		if (specContent && tasksContent && checklistContent && 
+			specContent.length > 100 && tasksContent.length > 50) {
 				const specDir = ensureSpecDir(ctx.cwd);
 				const timestamp = Date.now();
 				const specPath = path.join(specDir, `spec-${timestamp}.md`);
@@ -294,16 +333,16 @@ Begin execution now.`,
 					tasksPath,
 					checklistPath,
 				};
-				
-				ctx.ui.notify(`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
-				return;
-			}
+			
+			ctx.ui.notify(`Spec files generated!\n- ${path.basename(specPath)}\n- ${path.basename(tasksPath)}\n- ${path.basename(checklistPath)}\n\nUse /spec-confirm to start execution.`, "info");
+			return;
 		}
+	}
 		
-		if (!executionState || !executionState.userConfirmed) return;
-		if (msgAny.role !== "assistant") return;
+	if (!executionState || !executionState.userConfirmed) return;
+	if (msgAny.role !== "assistant") return;
 
-		const msgContent = typeof msgAny.content === "string" ? msgAny.content : "";
+	const msgContent = typeof msgAny.content === "string" ? msgAny.content : "";
 		const doneMatches = msgContent.match(/\[DONE:(\d+)\]/g);
 		if (doneMatches) {
 			for (const match of doneMatches) {
