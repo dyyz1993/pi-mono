@@ -1,0 +1,12 @@
+{
+  "packages": [
+    {
+      "source": "/Users/xuyingzhou/Project/temporary/OpenViking/examples/pi-openviking-auto-extension",
+      "extensions": [],
+      "skills": [],
+      "prompts": [],
+      "themes": []
+    },
+    "npm:pi-bailian-models"
+  ]
+}
