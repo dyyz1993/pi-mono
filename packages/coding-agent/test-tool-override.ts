@@ -2,8 +2,8 @@
  * Test script to verify tool override functionality
  */
 
-import { createAgentSession } from '../dist/index.js';
-import type { ToolDefinition } from '../dist/core/extensions/types.js';
+import { createAgentSession } from './dist/index.js';
+import type { ToolDefinition } from './dist/core/extensions/types.js';
 
 async function main() {
     console.log('=== Testing Tool Override Functionality ===\n');
