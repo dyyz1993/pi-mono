@@ -59,6 +59,23 @@ npm run check        # Lint, format, and type check
 
 > **Note:** `npm run check` requires `npm run build` to be run first. The web-ui package uses `tsc` which needs compiled `.d.ts` files from dependencies.
 
+## 📚 文档资源
+
+### 核心架构设计
+- **[LSP 环境变量方案架构](LSP_ENV_ARCHITECTURE.md)** - 解决 PI 中 LSP 服务器环境变量管理的技术方案
+- **[PI 扩展开发指南](PI_EXTENSION_DEVELOPMENT_GUIDE.md)** - 完整的扩展系统文档，包含所有 API 和最佳实践
+
+### 使用指南
+- **[LSP 环境变量使用指南](LSP_ENV_VARIABLES_GUIDE.md)** - 用户友好的环境变量配置教程
+- **[实现清单](LSP_ENV_IMPLEMENTATION_CHECKLIST.md)** - 方案实现状态和测试清单
+
+### 代码示例
+- **[example-plugin/](example-plugin/)** - 完整的 LSP 环境变量管理扩展示例
+  - 支持设置、加载、列出、清除环境变量
+  - 工具调用拦截与自动注入
+  - 状态持久化与会话恢复
+  - 可直接编译运行
+
 ## License
 
 MIT
