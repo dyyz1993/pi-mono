@@ -1,0 +1,31 @@
+{
+  "name": "pi-lsp-env-extension",
+  "version": "1.0.0",
+  "description": "LSP 环境变量注入扩展 - 为 PI 的工具调用自动注入环境变量",
+  "keywords": ["pi-extension"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0",
+    "atonal": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": ">=0.0.1",
+    "@mariozechner/pi-coding-agent": ">=0.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "pi": {
+    "extensions": ["./dist/index.js"],
+    "config": {
+      "envFiles": [".env", ".env.local"],
+      "autoLoad": true
+    }
+  }
+}
