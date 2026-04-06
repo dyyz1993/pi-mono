@@ -233,7 +233,9 @@ export function createLSPClient(language: string, options?: LSPClientOptions): L
 	// For testing, use mock implementation
 	if (options?.mock) {
 		// Import dynamically to avoid circular dependencies
-		// biome-ignore lint/suspicious/noDeferredImport: <explanation>
+		// Use inline require for ESM compatibility with tsx
+		// @ts-ignore - Dynamic import for testing
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		const { MockLSPClient } = require("./lsp-client-mock.js");
 		return new MockLSPClient(options);
 	}
@@ -248,6 +250,8 @@ export function createLSPClient(language: string, options?: LSPClientOptions): L
 
 	// TODO: Implement real LSP client using actual language servers
 	// For now, return mock client for testing
+	// @ts-ignore - Dynamic import
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
 	const { MockLSPClient } = require("./lsp-client-mock.js");
 	return new MockLSPClient(options);
 }
