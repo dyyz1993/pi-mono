@@ -360,38 +360,6 @@ export default function (pi: ExtensionAPI) {
 	/**
 	 * Handle session shutdown event
 	 */
-	async function _onSessionShutdown(_ctx: any): Promise<void> {
-		// If we're approaching the limit, use summaries
-		if (currentTokens > modelContextWindow * 0.8) {
-			try {
-				// Get root summaries (highest level)
-				const rootNodes = state.dag.getRootNodes();
-
-				if (rootNodes.length > 0) {
-					// Keep recent messages, replace old ones with summaries
-					const recentMessages = messages.slice(-15); // Keep last 15 messages
-
-					// Prepend summaries
-					const summaryMessages = rootNodes.map((node: MemoryNode) => ({
-						role: "system" as const,
-						content: [{ type: "text" as const, text: `历史摘要：${node.content}` }],
-					}));
-
-					return {
-						messages: [...summaryMessages, ...recentMessages],
-					};
-				}
-			} catch (error) {
-				console.error("[LosslessMemory] 上下文装配失败:", error);
-			}
-		}
-
-		return { messages };
-	}
-
-	/**
-	 * Handle session shutdown event
-	 */
 	async function onSessionShutdown(ctx: any): Promise<void> {
 		// Update session index before closing
 		if (state.dag && state.currentSessionId) {
