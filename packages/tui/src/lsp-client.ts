@@ -270,6 +270,7 @@ class MockLSPClientImpl implements LSPClient {
 
 	constructor(opts: LSPClientOptions = {}) {
 		this.options = {
+			workspaceRoot: process.cwd(),
 			timeout: 5000,
 			enableCache: false,
 			maxRetries: 3,
