@@ -488,7 +488,8 @@ class MockLSPClientImpl implements LSPClient {
 
 		if (this.options.simulateTransientError) {
 			this.requestCount++;
-			if (this.requestCount <= this.options.maxRetries - 1) {
+			// Fail first two times, succeed on third attempt
+			if (this.requestCount <= 2) {
 				throw new Error("Temporary error");
 			}
 		}
