@@ -44,6 +44,13 @@ export class Text implements Component {
 		this.cachedLines = undefined;
 	}
 
+	setNoPadding(noPadding: boolean): void {
+		this.noPadding = noPadding;
+		this.cachedText = undefined;
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
 	invalidate(): void {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
