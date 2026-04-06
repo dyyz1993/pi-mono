@@ -482,7 +482,9 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 
 		try {
 			const stats = statSync(resolvedPath);
-			const source = getSource(resolvedPath);
+			// When loading from skillPaths, use resolvedPath as source to track the original path
+			// This allows identifying which skillPath a skill came from
+			const source = getSource(resolvedPath) === "path" ? resolvedPath : getSource(resolvedPath);
 			if (stats.isDirectory()) {
 				addSkills(loadSkillsFromDirInternal(resolvedPath, source, true));
 			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
