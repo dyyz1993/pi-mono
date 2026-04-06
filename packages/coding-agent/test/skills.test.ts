@@ -425,4 +425,35 @@ describe("skills", () => {
 			expect(collisionWarnings[0].message).toContain("name collision");
 		});
 	});
+
+	describe("real collision detection in loadSkills()", () => {
+		it("should emit collision diagnostic when skills have the same name", () => {
+			// This test actually calls loadSkills() to verify collision diagnostics
+			const first = join(collisionFixturesDir, "first");
+			const second = join(collisionFixturesDir, "second");
+			const emptyAgentDir = resolve(__dirname, "fixtures/empty-agent");
+			const emptyCwd = resolve(__dirname, "fixtures/empty-cwd");
+
+			// Load skills from both directories
+			const { skills, diagnostics } = loadSkills({
+				agentDir: emptyAgentDir,
+				cwd: emptyCwd,
+				skillPaths: [first, second],
+			});
+
+			// Should have only one skill (first one wins)
+			expect(skills).toHaveLength(1);
+			expect(skills[0].name).toBe("calendar");
+			expect(skills[0].sourceInfo.source).toBe(first);
+
+			// Should have one collision diagnostic
+			expect(diagnostics.length).toBeGreaterThanOrEqual(1);
+			const collisionDiag = diagnostics.find(
+				(d: ResourceDiagnostic) => d.message.includes("collision") && d.message.includes("calendar")
+			);
+			expect(collisionDiag).toBeDefined();
+			expect(collisionDiag?.severity).toBe("warning");
+			expect(collisionDiag?.filePath).toBe(join(second, "calendar", "SKILL.md"));
+		});
+	});
 });
