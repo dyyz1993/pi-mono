@@ -17,10 +17,20 @@ import { Text } from "../src/components/text.js";
 const text = new Text("Hello World");
 console.log(`Text created: "Hello World"`);
 const lines = text.render(40);
-console.log(`Rendered ${lines.length} lines:`);
+console.log(`Rendered ${lines.length} lines at width 40:`);
 lines.forEach((line, i) => {
 	console.log(`  Line ${i}: visibleWidth=${visibleWidth(line)}`);
 	console.log(`    Content: "${line}"`);
+});
+
+console.log("\n=== Testing Text component at large width ===");
+const linesLarge = text.render(1000);
+console.log(`Rendered ${linesLarge.length} lines at width 1000:`);
+linesLarge.forEach((line, i) => {
+	console.log(`  Line ${i}: visibleWidth=${visibleWidth(line)}`);
+	if (i === 1) {
+		console.log(`    First 80 chars: "${line.substring(0, 80)}"`);
+	}
 });
 
 console.log("\n=== Testing Text with center ===");
@@ -35,3 +45,11 @@ centeredLines.forEach((line, i) => {
 	console.log(`  Line ${i}: visibleWidth=${visibleWidth(line)}`);
 	console.log(`    Content: "${line}"`);
 });
+
+console.log("\n=== Testing plain text centering ===");
+const plainText = "Hello";
+const plainWidth = visibleWidth(plainText);
+console.log(`Plain text: "${plainText}", width=${plainWidth}`);
+const leftPad = Math.floor((40 - plainWidth) / 2);
+const centered = " ".repeat(leftPad) + plainText;
+console.log(`Centered: "${centered}", visibleWidth=${visibleWidth(centered)}`);
