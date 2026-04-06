@@ -344,28 +344,31 @@ class MockLSPClientImpl implements LSPClient {
 		signal?: AbortSignal,
 	): Promise<CompletionList> {
 		this.checkInitialized();
-		await this.maybeSimulateError();
-		await this.maybeSimulateDelay(signal);
+		
+		return this.withRetry(async () => {
+			await this.maybeSimulateError();
+			await this.maybeSimulateDelay(signal);
 
-		if (signal?.aborted) {
-			throw new Error("Request aborted");
-		}
+			if (signal?.aborted) {
+				throw new Error("Request aborted");
+			}
 
-		// Use external mock server if provided
-		if (this.mockServer && typeof this.mockServer.getCompletions === 'function') {
-			const result = this.mockServer.getCompletions(`file://${filePath}`, { line, character });
-			return result;
-		}
+			// Use external mock server if provided
+			if (this.mockServer && typeof this.mockServer.getCompletions === 'function') {
+				const result = this.mockServer.getCompletions(`file://${filePath}`, { line, character });
+				return result;
+			}
 
-		const completions = this.completions.get(filePath) ?? [];
-		return {
-			isIncomplete: false,
-			items: completions.map((c) => ({
-				label: c.label,
-				kind: c.kind,
-				detail: c.detail,
-			})),
-		};
+			const completions = this.completions.get(filePath) ?? [];
+			return {
+				isIncomplete: false,
+				items: completions.map((c) => ({
+					label: c.label,
+					kind: c.kind,
+					detail: c.detail,
+				})),
+			};
+		}, signal);
 	}
 
 	async getDefinition(
