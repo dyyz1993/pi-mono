@@ -90,8 +90,11 @@ export class Text implements Component {
 			// Add margins
 			const lineWithMargins = leftMargin + line + rightMargin;
 
-			// Apply background if specified (this also pads to full width)
-			if (this.customBgFn) {
+			// If noPadding is true, don't pad to full width
+			if (this.noPadding) {
+				contentLines.push(lineWithMargins);
+			} else if (this.customBgFn) {
+				// Apply background if specified (this also pads to full width)
 				contentLines.push(applyBackgroundToLine(lineWithMargins, width, this.customBgFn));
 			} else {
 				// No background - just pad to width with spaces
@@ -102,11 +105,16 @@ export class Text implements Component {
 		}
 
 		// Add top/bottom padding (empty lines)
-		const emptyLine = " ".repeat(width);
+		const emptyLine = " ".repeat(this.noPadding ? 0 : width);
 		const emptyLines: string[] = [];
 		for (let i = 0; i < this.paddingY; i++) {
-			const line = this.customBgFn ? applyBackgroundToLine(emptyLine, width, this.customBgFn) : emptyLine;
-			emptyLines.push(line);
+			if (this.noPadding) {
+				emptyLines.push("");
+			} else if (this.customBgFn) {
+				emptyLines.push(applyBackgroundToLine(emptyLine, width, this.customBgFn));
+			} else {
+				emptyLines.push(emptyLine);
+			}
 		}
 
 		const result = [...emptyLines, ...contentLines, ...emptyLines];
