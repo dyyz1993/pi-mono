@@ -5,6 +5,7 @@ import { createBashTool } from "./bash.js";
 import { createEditTool } from "./edit.js";
 import { createReadTool } from "./read.js";
 import { createWriteTool } from "./write.js";
+import { createRequestWriteTool, createPendingReviewsTool, createManualReviewTool, createReviewHistoryTool } from "./review.js";
 import type { ReviewManager } from "../review-manager.js";
 
 export { setUploadFunction } from "./attach.js";
@@ -16,5 +17,10 @@ export function createMomTools(executor: Executor, reviewManager: ReviewManager)
 		createEditTool(executor, reviewManager),
 		createWriteTool(executor, reviewManager),
 		attachTool,
+		// Review tools for protected files
+		createRequestWriteTool(executor, reviewManager),
+		createPendingReviewsTool(reviewManager),
+		createManualReviewTool(executor, reviewManager),
+		createReviewHistoryTool(reviewManager),
 	];
 }
