@@ -452,8 +452,8 @@ describe("skills", () => {
 				(d: ResourceDiagnostic) => d.message.includes("collision") && d.message.includes("calendar")
 			);
 			expect(collisionDiag).toBeDefined();
-			expect(collisionDiag?.severity).toBe("warning");
-			expect(collisionDiag?.filePath).toBe(join(second, "calendar", "SKILL.md"));
+			expect(collisionDiag?.type).toBe("collision");
+			expect(collisionDiag?.path).toBe(join(second, "calendar", "SKILL.md"));
 		});
 	});
 });
