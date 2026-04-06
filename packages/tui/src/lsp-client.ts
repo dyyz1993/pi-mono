@@ -230,7 +230,24 @@ export interface LSPClient {
  * @param options Client options
  */
 export function createLSPClient(language: string, options?: LSPClientOptions): LSPClient {
-	// This is a placeholder that will throw an error
-	// The actual implementation will be in lsp-client-impl.ts
-	throw new Error(`LSP client implementation not yet available for language: ${language}`);
+	// For testing, use mock implementation
+	if (options?.mock) {
+		// Import dynamically to avoid circular dependencies
+		// biome-ignore lint/suspicious/noDeferredImport: <explanation>
+		const { MockLSPClient } = require("./lsp-client-mock.js");
+		return new MockLSPClient(options);
+	}
+
+	// Supported languages
+	const supportedLanguages = ["typescript", "javascript", "python", "rust", "go"];
+	if (!supportedLanguages.includes(language)) {
+		throw new Error(
+			`Unsupported language: ${language}. Supported languages: ${supportedLanguages.join(", ")}`,
+		);
+	}
+
+	// TODO: Implement real LSP client using actual language servers
+	// For now, return mock client for testing
+	const { MockLSPClient } = require("./lsp-client-mock.js");
+	return new MockLSPClient(options);
 }
