@@ -11,6 +11,7 @@ export {
 // Components
 export { Box } from "./components/box.js";
 export { CancellableLoader } from "./components/cancellable-loader.js";
+export { Center } from "./components/center.js";
 export { Editor, type EditorOptions, type EditorTheme } from "./components/editor.js";
 export { Image, type ImageOptions, type ImageTheme } from "./components/image.js";
 export { Input } from "./components/input.js";
