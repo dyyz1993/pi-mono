@@ -485,7 +485,7 @@ class MockLSPClientImpl implements LSPClient {
 
 		if (this.options.simulateTransientError) {
 			this.requestCount++;
-			if (this.requestCount < this.options.maxRetries) {
+			if (this.requestCount <= this.options.maxRetries - 1) {
 				throw new Error("Temporary error");
 			}
 		}
@@ -509,5 +509,42 @@ class MockLSPClientImpl implements LSPClient {
 				});
 			}
 		});
+	}
+
+	/**
+	 * Retry wrapper for operations that may fail transiently
+	 */
+	private async withRetry<T>(
+		operation: () => Promise<T>,
+		signal?: AbortSignal,
+	): Promise<T> {
+		let lastError: Error | undefined;
+		
+		for (let attempt = 0; attempt < this.options.maxRetries; attempt++) {
+			if (signal?.aborted) {
+				throw new Error("Request aborted");
+			}
+			
+			try {
+				return await operation();
+			} catch (error) {
+				lastError = error instanceof Error ? error : new Error(String(error));
+				
+				// Don't retry if this is a permanent error (like simulateCrash)
+				if (this.options.simulateCrash && lastError.message === "Language server crashed") {
+					throw lastError;
+				}
+				
+				// Don't retry if this is the last attempt
+				if (attempt === this.options.maxRetries - 1) {
+					throw lastError;
+				}
+				
+				// Wait a bit before retrying
+				await this.delay(10 * (attempt + 1), signal);
+			}
+		}
+		
+		throw lastError ?? new Error("Operation failed");
 	}
 }
