@@ -376,6 +376,12 @@ class MockLSPClientImpl implements LSPClient {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
+		
+		// Use external mock server if provided
+		if (this.mockServer && typeof this.mockServer.getDefinition === 'function') {
+			return this.mockServer.getDefinition(`file://${filePath}`, { line, character });
+		}
+		
 		return [
 			{
 				uri: `file://${filePath}`,
@@ -395,6 +401,12 @@ class MockLSPClientImpl implements LSPClient {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
+		
+		// Use external mock server if provided
+		if (this.mockServer && typeof this.mockServer.getReferences === 'function') {
+			return this.mockServer.getReferences(`file://${filePath}`, { line, character });
+		}
+		
 		return [
 			{
 				uri: `file://${filePath}`,
