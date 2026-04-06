@@ -579,7 +579,7 @@ export function smartCleanupEmptyLines(
 			i++;
 		} else {
 			// Collect consecutive empty lines
-			const emptyStartIndex = i;
+			const _emptyStartIndex = i;
 			const emptyLineIndices: number[] = [];
 			while (i < lines.length && lines[i].trim() === "") {
 				// Store the actual index in result array (will be adjusted)
@@ -591,7 +591,7 @@ export function smartCleanupEmptyLines(
 			if (i < lines.length) {
 				// Check if any of these empty lines should be preserved
 				let shouldKeep = false;
-				for (const emptyIdx of emptyLineIndices) {
+				for (const _emptyIdx of emptyLineIndices) {
 					// Create a temporary view to check preservation rules
 					const tempLines = [...result, "", ...lines.slice(i)];
 					if (shouldPreserveEmptyLine(tempLines, result.length)) {

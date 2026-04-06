@@ -336,7 +336,7 @@ class MockLSPClientImpl implements LSPClient {
 		filePath: string,
 		line: number,
 		character: number,
-		triggerCharacter?: string,
+		_triggerCharacter?: string,
 		signal?: AbortSignal,
 	): Promise<CompletionList> {
 		this.checkInitialized();

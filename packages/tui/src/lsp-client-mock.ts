@@ -97,9 +97,9 @@ export class MockLSPClient implements LSPClient {
 
 	async getCompletions(
 		filePath: string,
-		line: number,
-		character: number,
-		triggerCharacter?: string,
+		_line: number,
+		_character: number,
+		_triggerCharacter?: string,
 		signal?: AbortSignal,
 	): Promise<CompletionList> {
 		this.checkInitialized();
@@ -122,7 +122,7 @@ export class MockLSPClient implements LSPClient {
 		};
 	}
 
-	async getDefinition(filePath: string, line: number, character: number): Promise<Location[] | null> {
+	async getDefinition(filePath: string, _line: number, _character: number): Promise<Location[] | null> {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
@@ -138,7 +138,7 @@ export class MockLSPClient implements LSPClient {
 		];
 	}
 
-	async getReferences(filePath: string, line: number, character: number): Promise<Location[]> {
+	async getReferences(filePath: string, _line: number, _character: number): Promise<Location[]> {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
@@ -179,7 +179,7 @@ export class MockLSPClient implements LSPClient {
 		return diagnostics;
 	}
 
-	async getHover(filePath: string, line: number, character: number): Promise<Hover | null> {
+	async getHover(_filePath: string, line: number, character: number): Promise<Hover | null> {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();

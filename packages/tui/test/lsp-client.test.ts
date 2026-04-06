@@ -14,11 +14,11 @@
  */
 
 import assert from "node:assert";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it, test } from "node:test";
-import { createLSPClient, type LSPClient, LSPClientOptions } from "../src/lsp-client.js";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { createLSPClient, type LSPClient } from "../src/lsp-client.js";
 
 /**
  * Mock LSP Server for testing
@@ -519,7 +519,7 @@ describe("LSP Client", () => {
 			await client.openDocument(filePath);
 			const hover = await client.getHover(filePath, 0, 6);
 
-			if (hover && hover.contents) {
+			if (hover?.contents) {
 				assert.ok(typeof hover.contents === "object", "Should have structured content");
 			}
 		});
