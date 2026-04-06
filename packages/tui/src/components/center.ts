@@ -80,12 +80,15 @@ export class Center implements Component {
 			paddedLines.push(line + " ".repeat(rightPadding));
 		}
 
-		// Center each line horizontally
+		// Center each line horizontally within the available width
+		// Each line should have exactly 'width' characters
 		const centeredLines: string[] = [];
 		for (const line of paddedLines) {
 			const lineWidth = visibleWidth(line);
-			const leftPadding = Math.floor((width - lineWidth) / 2);
-			centeredLines.push(" ".repeat(Math.max(0, leftPadding)) + line);
+			const totalPadding = width - lineWidth;
+			const leftPadding = Math.floor(totalPadding / 2);
+			const rightPadding = totalPadding - leftPadding;
+			centeredLines.push(" ".repeat(Math.max(0, leftPadding)) + line + " ".repeat(Math.max(0, rightPadding)));
 		}
 
 		// If vertical centering is enabled, add top/bottom padding
