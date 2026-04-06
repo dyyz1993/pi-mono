@@ -266,6 +266,7 @@ class MockLSPClientImpl implements LSPClient {
 	private options: Required<LSPClientOptions>;
 	private initialized = false;
 	private requestCount = 0;
+	private mockServer: any = null;
 
 	constructor(opts: LSPClientOptions = {}) {
 		this.options = {
@@ -276,8 +277,13 @@ class MockLSPClientImpl implements LSPClient {
 			simulateSlowResponse: false,
 			simulateTransientError: false,
 			mock: false,
+			mockServer: undefined,
 			...opts,
 		};
+		// Use external mock server if provided
+		if (opts.mockServer) {
+			this.mockServer = opts.mockServer;
+		}
 	}
 
 	async initialize(): Promise<void> {
