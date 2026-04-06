@@ -449,7 +449,7 @@ describe("skills", () => {
 			// Should have one collision diagnostic
 			expect(diagnostics.length).toBeGreaterThanOrEqual(1);
 			const collisionDiag = diagnostics.find(
-				(d: ResourceDiagnostic) => d.message.includes("collision") && d.message.includes("calendar")
+				(d: ResourceDiagnostic) => d.message.includes("collision") && d.message.includes("calendar"),
 			);
 			expect(collisionDiag).toBeDefined();
 			expect(collisionDiag?.type).toBe("collision");

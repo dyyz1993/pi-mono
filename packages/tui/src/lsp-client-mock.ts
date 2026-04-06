@@ -5,14 +5,14 @@
  * The real implementation will use actual language servers.
  */
 
-import {
+import type {
+	CompletionList,
+	Diagnostic,
+	Hover,
+	Location,
 	LSPClient,
 	LSPClientOptions,
 	ServerCapabilities,
-	CompletionList,
-	Location,
-	Diagnostic,
-	Hover,
 } from "./lsp-client.js";
 
 interface MockDocument {

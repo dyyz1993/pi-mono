@@ -49,10 +49,7 @@ export interface Diagnostic {
 }
 
 export interface Hover {
-	contents:
-		| string
-		| { kind: string; value: string }
-		| Array<{ language?: string; value: string }>;
+	contents: string | { kind: string; value: string } | Array<{ language?: string; value: string }>;
 	range?: Range;
 }
 
@@ -233,9 +230,7 @@ export function createLSPClient(language: string, options?: LSPClientOptions): L
 	// Supported languages (check before creating mock for proper error handling)
 	const supportedLanguages = ["typescript", "javascript", "python", "rust", "go"];
 	if (!supportedLanguages.includes(language)) {
-		throw new Error(
-			`Unsupported language: ${language}. Supported languages: ${supportedLanguages.join(", ")}`,
-		);
+		throw new Error(`Unsupported language: ${language}. Supported languages: ${supportedLanguages.join(", ")}`);
 	}
 
 	// For testing, use mock implementation
@@ -290,9 +285,9 @@ class MockLSPClientImpl implements LSPClient {
 	async initialize(): Promise<void> {
 		if (this.initialized) return;
 		await this.delay(10);
-		
+
 		// Use external mock server if provided
-		if (this.mockServer && typeof this.mockServer.getCapabilities === 'function') {
+		if (this.mockServer && typeof this.mockServer.getCapabilities === "function") {
 			this.capabilities = this.mockServer.getCapabilities();
 		} else {
 			this.capabilities = {
@@ -345,7 +340,7 @@ class MockLSPClientImpl implements LSPClient {
 		signal?: AbortSignal,
 	): Promise<CompletionList> {
 		this.checkInitialized();
-		
+
 		return this.withRetry(async () => {
 			await this.maybeSimulateError();
 			await this.maybeSimulateDelay(signal);
@@ -355,7 +350,7 @@ class MockLSPClientImpl implements LSPClient {
 			}
 
 			// Use external mock server if provided
-			if (this.mockServer && typeof this.mockServer.getCompletions === 'function') {
+			if (this.mockServer && typeof this.mockServer.getCompletions === "function") {
 				const result = this.mockServer.getCompletions(`file://${filePath}`, { line, character });
 				return result;
 			}
@@ -372,20 +367,16 @@ class MockLSPClientImpl implements LSPClient {
 		}, signal);
 	}
 
-	async getDefinition(
-		filePath: string,
-		line: number,
-		character: number,
-	): Promise<Location[] | null> {
+	async getDefinition(filePath: string, line: number, character: number): Promise<Location[] | null> {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
-		
+
 		// Use external mock server if provided
-		if (this.mockServer && typeof this.mockServer.getDefinition === 'function') {
+		if (this.mockServer && typeof this.mockServer.getDefinition === "function") {
 			return this.mockServer.getDefinition(`file://${filePath}`, { line, character });
 		}
-		
+
 		return [
 			{
 				uri: `file://${filePath}`,
@@ -397,20 +388,16 @@ class MockLSPClientImpl implements LSPClient {
 		];
 	}
 
-	async getReferences(
-		filePath: string,
-		line: number,
-		character: number,
-	): Promise<Location[]> {
+	async getReferences(filePath: string, line: number, character: number): Promise<Location[]> {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
-		
+
 		// Use external mock server if provided
-		if (this.mockServer && typeof this.mockServer.getReferences === 'function') {
+		if (this.mockServer && typeof this.mockServer.getReferences === "function") {
 			return this.mockServer.getReferences(`file://${filePath}`, { line, character });
 		}
-		
+
 		return [
 			{
 				uri: `file://${filePath}`,
@@ -426,9 +413,9 @@ class MockLSPClientImpl implements LSPClient {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
-		
+
 		// Use external mock server if provided
-		if (this.mockServer && typeof this.mockServer.getDiagnostics === 'function') {
+		if (this.mockServer && typeof this.mockServer.getDiagnostics === "function") {
 			return this.mockServer.getDiagnostics(`file://${filePath}`);
 		}
 
@@ -454,12 +441,12 @@ class MockLSPClientImpl implements LSPClient {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
-		
+
 		// Use external mock server if provided
-		if (this.mockServer && typeof this.mockServer.getHover === 'function') {
+		if (this.mockServer && typeof this.mockServer.getHover === "function") {
 			return this.mockServer.getHover(`file://${filePath}`, { line, character });
 		}
-		
+
 		return {
 			contents: {
 				kind: "markdown",
@@ -519,37 +506,34 @@ class MockLSPClientImpl implements LSPClient {
 	/**
 	 * Retry wrapper for operations that may fail transiently
 	 */
-	private async withRetry<T>(
-		operation: () => Promise<T>,
-		signal?: AbortSignal,
-	): Promise<T> {
+	private async withRetry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 		let lastError: Error | undefined;
-		
+
 		for (let attempt = 0; attempt < this.options.maxRetries; attempt++) {
 			if (signal?.aborted) {
 				throw new Error("Request aborted");
 			}
-			
+
 			try {
 				return await operation();
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
-				
+
 				// Don't retry if this is a permanent error (like simulateCrash)
 				if (this.options.simulateCrash && lastError.message === "Language server crashed") {
 					throw lastError;
 				}
-				
+
 				// Don't retry if this is the last attempt
 				if (attempt === this.options.maxRetries - 1) {
 					throw lastError;
 				}
-				
+
 				// Wait a bit before retrying
 				await this.delay(10 * (attempt + 1), signal);
 			}
 		}
-		
+
 		throw lastError ?? new Error("Operation failed");
 	}
 }

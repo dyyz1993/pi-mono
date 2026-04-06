@@ -14,11 +14,11 @@
  */
 
 import assert from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, test } from "node:test";
-import { LSPClient, LSPClientOptions, createLSPClient } from "../src/lsp-client.js";
+import { createLSPClient, type LSPClient, LSPClientOptions } from "../src/lsp-client.js";
 
 /**
  * Mock LSP Server for testing
@@ -656,7 +656,10 @@ describe("LSP Client", () => {
 				await promise;
 				assert.fail("Should be cancelled");
 			} catch (error) {
-				assert.ok((error as Error).message.includes("cancel") || (error as Error).message.includes("abort"), "Should be cancelled");
+				assert.ok(
+					(error as Error).message.includes("cancel") || (error as Error).message.includes("abort"),
+					"Should be cancelled",
+				);
 			}
 		});
 	});

@@ -667,12 +667,7 @@ function isBlockClose(line: string): boolean {
  */
 function isComment(line: string): boolean {
 	const trimmed = line.trim();
-	return (
-		trimmed.startsWith("//") ||
-		trimmed.startsWith("/*") ||
-		trimmed.startsWith("*") ||
-		trimmed.startsWith("*/")
-	);
+	return trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*") || trimmed.startsWith("*/");
 }
 
 /**
@@ -728,7 +723,11 @@ export function sanitizeText(text: string): string {
  * Find all occurrences of a pattern in content.
  * Returns array of {index, length} for each match.
  */
-export function findAllMatches(content: string, pattern: string, useFuzzyMatch: boolean): Array<{ index: number; length: number }> {
+export function findAllMatches(
+	content: string,
+	pattern: string,
+	useFuzzyMatch: boolean,
+): Array<{ index: number; length: number }> {
 	const matches: Array<{ index: number; length: number }> = [];
 
 	if (useFuzzyMatch) {
@@ -788,8 +787,8 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 
 		// Sanitize if requested
 		// When sanitize is enabled, we sanitize both the content and the search/replace text
-		let processedContent = sanitize ? sanitizeText(content) : content;
-		let processedOldText = sanitize ? sanitizeText(oldText) : oldText;
+		const processedContent = sanitize ? sanitizeText(content) : content;
+		const processedOldText = sanitize ? sanitizeText(oldText) : oldText;
 		let processedNewText = sanitize ? sanitizeText(newText) : newText;
 
 		// Detect quote style if needed
@@ -807,10 +806,10 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 		if (enableFuzzyMatch) {
 			// For fuzzy matching, we need to work in original space
 			// Strategy: Find matches using normalized comparison, but replace in original space
-			
+
 			const normalizedContent = normalizeForFuzzyMatch(processedContent);
 			const normalizedPattern = normalizeForFuzzyMatch(processedOldText);
-			
+
 			// Check if pattern exists at all
 			if (!normalizedContent.includes(normalizedPattern)) {
 				return {
@@ -822,7 +821,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			// Find all matches by comparing normalized versions
 			// We need to find where in the original content the pattern matches when normalized
 			const matches: Array<{ index: number; length: number }> = [];
-			
+
 			// Helper: try to match at a given position in original content
 			// Returns the actual length of the match in original content, or -1 if no match
 			const tryMatch = (startPos: number): number => {
@@ -831,18 +830,18 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 				// due to different quote characters or whitespace
 				const maxLen = Math.min(processedContent.length - startPos, processedOldText.length + 10);
 				const minLen = Math.max(1, processedOldText.length - 10);
-				
+
 				for (let len = minLen; len <= maxLen; len++) {
 					const originalSubstring = processedContent.substring(startPos, startPos + len);
 					const normalizedSubstring = normalizeForFuzzyMatch(originalSubstring);
-					
+
 					if (normalizedSubstring === normalizedPattern) {
 						return len;
 					}
 				}
 				return -1;
 			};
-			
+
 			// Search through the content
 			for (let i = 0; i < processedContent.length; i++) {
 				const matchLen = tryMatch(i);
@@ -921,7 +920,7 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 			// We need to find this before replacement
 			const beforeLines = processedContent.split("\n");
 			const deletePosition = processedContent.indexOf(processedOldText);
-			
+
 			if (deletePosition !== -1) {
 				// Calculate line number (0-based)
 				let lineNumber = 0;
@@ -933,9 +932,9 @@ export async function applyEditWithFallback(options: EditOptions): Promise<EditR
 					}
 					pos += beforeLines[i].length + 1; // +1 for newline
 				}
-				
+
 				const deletedLines = processedOldText.split("\n").length;
-				
+
 				newContent = smartCleanupEmptyLines(newContent, {
 					deletionLine: lineNumber,
 					deletedLines,
