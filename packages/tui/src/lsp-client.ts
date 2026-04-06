@@ -232,12 +232,7 @@ export interface LSPClient {
 export function createLSPClient(language: string, options?: LSPClientOptions): LSPClient {
 	// For testing, use mock implementation
 	if (options?.mock) {
-		// Import dynamically to avoid circular dependencies
-		// Use inline require for ESM compatibility with tsx
-		// @ts-ignore - Dynamic import for testing
-		// eslint-disable-next-line @typescript-eslint/no-var-requires
-		const { MockLSPClient } = require("./lsp-client-mock.js");
-		return new MockLSPClient(options);
+		return createMockClient(options);
 	}
 
 	// Supported languages
@@ -250,8 +245,228 @@ export function createLSPClient(language: string, options?: LSPClientOptions): L
 
 	// TODO: Implement real LSP client using actual language servers
 	// For now, return mock client for testing
-	// @ts-ignore - Dynamic import
-	// eslint-disable-next-line @typescript-eslint/no-var-requires
-	const { MockLSPClient } = require("./lsp-client-mock.js");
-	return new MockLSPClient(options);
+	return createMockClient(options);
+}
+
+/**
+ * Internal function to create mock client
+ */
+function createMockClient(options?: LSPClientOptions): LSPClient {
+	// Inline mock implementation to avoid ESM import issues
+	return new MockLSPClientImpl(options);
+}
+
+/**
+ * Inline mock implementation
+ */
+class MockLSPClientImpl implements LSPClient {
+	private capabilities: ServerCapabilities | null = null;
+	private documents = new Map<string, { content: string; version: number }>();
+	private completions = new Map<string, any[]>();
+	private options: Required<LSPClientOptions>;
+	private initialized = false;
+	private requestCount = 0;
+
+	constructor(opts: LSPClientOptions = {}) {
+		this.options = {
+			timeout: 5000,
+			enableCache: false,
+			maxRetries: 3,
+			simulateCrash: false,
+			simulateSlowResponse: false,
+			simulateTransientError: false,
+			mock: false,
+			...opts,
+		};
+	}
+
+	async initialize(): Promise<void> {
+		if (this.initialized) return;
+		await this.delay(10);
+		this.capabilities = {
+			completionProvider: {
+				triggerCharacters: ["."],
+				resolveProvider: false,
+			},
+			definitionProvider: true,
+			referencesProvider: true,
+			diagnosticProvider: {
+				interFileDependencies: true,
+				workspaceDiagnostics: false,
+			},
+			hoverProvider: true,
+		};
+		this.initialized = true;
+	}
+
+	async shutdown(): Promise<void> {
+		this.documents.clear();
+		this.completions.clear();
+		this.initialized = false;
+	}
+
+	getCapabilities(): ServerCapabilities | null {
+		return this.capabilities;
+	}
+
+	async openDocument(filePath: string): Promise<void> {
+		this.checkInitialized();
+		const content = this.documents.get(filePath)?.content ?? "";
+		this.documents.set(filePath, { content, version: 1 });
+	}
+
+	async updateDocument(filePath: string, content: string, version: number): Promise<void> {
+		this.checkInitialized();
+		this.documents.set(filePath, { content, version });
+	}
+
+	async closeDocument(filePath: string): Promise<void> {
+		this.documents.delete(filePath);
+	}
+
+	async getCompletions(
+		filePath: string,
+		line: number,
+		character: number,
+		triggerCharacter?: string,
+		signal?: AbortSignal,
+	): Promise<CompletionList> {
+		this.checkInitialized();
+		await this.maybeSimulateError();
+		await this.maybeSimulateDelay(signal);
+
+		if (signal?.aborted) {
+			throw new Error("Request aborted");
+		}
+
+		const completions = this.completions.get(filePath) ?? [];
+		return {
+			isIncomplete: false,
+			items: completions.map((c) => ({
+				label: c.label,
+				kind: c.kind,
+				detail: c.detail,
+			})),
+		};
+	}
+
+	async getDefinition(
+		filePath: string,
+		line: number,
+		character: number,
+	): Promise<Location[] | null> {
+		this.checkInitialized();
+		await this.maybeSimulateError();
+		await this.maybeSimulateDelay();
+		return [
+			{
+				uri: `file://${filePath}`,
+				range: {
+					start: { line: 0, character: 0 },
+					end: { line: 0, character: 10 },
+				},
+			},
+		];
+	}
+
+	async getReferences(
+		filePath: string,
+		line: number,
+		character: number,
+	): Promise<Location[]> {
+		this.checkInitialized();
+		await this.maybeSimulateError();
+		await this.maybeSimulateDelay();
+		return [
+			{
+				uri: `file://${filePath}`,
+				range: {
+					start: { line: 5, character: 2 },
+					end: { line: 5, character: 12 },
+				},
+			},
+		];
+	}
+
+	async getDiagnostics(filePath: string): Promise<Diagnostic[]> {
+		this.checkInitialized();
+		await this.maybeSimulateError();
+		await this.maybeSimulateDelay();
+
+		const doc = this.documents.get(filePath);
+		if (!doc) return [];
+
+		const diagnostics: Diagnostic[] = [];
+		if (doc.content.includes("error")) {
+			diagnostics.push({
+				range: {
+					start: { line: 0, character: 0 },
+					end: { line: 0, character: 5 },
+				},
+				severity: DiagnosticSeverity.Error,
+				message: 'Unexpected keyword "error"',
+			});
+		}
+
+		return diagnostics;
+	}
+
+	async getHover(filePath: string, line: number, character: number): Promise<Hover | null> {
+		this.checkInitialized();
+		await this.maybeSimulateError();
+		await this.maybeSimulateDelay();
+		return {
+			contents: {
+				kind: "markdown",
+				value: `**Mock Hover**\n\nPosition: Line ${line}, Character ${character}`,
+			},
+			range: {
+				start: { line, character },
+				end: { line, character: character + 5 },
+			},
+		};
+	}
+
+	addCompletions(filePath: string, completions: any[]): void {
+		this.completions.set(filePath, completions);
+	}
+
+	private checkInitialized(): void {
+		if (!this.initialized) {
+			throw new Error("LSP client not initialized. Call initialize() first.");
+		}
+	}
+
+	private async maybeSimulateError(): Promise<void> {
+		if (this.options.simulateCrash) {
+			throw new Error("Language server crashed");
+		}
+
+		if (this.options.simulateTransientError) {
+			this.requestCount++;
+			if (this.requestCount < this.options.maxRetries) {
+				throw new Error("Temporary error");
+			}
+		}
+	}
+
+	private async maybeSimulateDelay(signal?: AbortSignal): Promise<void> {
+		if (this.options.simulateSlowResponse) {
+			await this.delay(this.options.timeout + 100, signal);
+		} else {
+			await this.delay(5);
+		}
+	}
+
+	private delay(ms: number, signal?: AbortSignal): Promise<void> {
+		return new Promise((resolve, reject) => {
+			const timeout = setTimeout(resolve, ms);
+			if (signal) {
+				signal.addEventListener("abort", () => {
+					clearTimeout(timeout);
+					reject(new Error("Request aborted"));
+				});
+			}
+		});
+	}
 }
