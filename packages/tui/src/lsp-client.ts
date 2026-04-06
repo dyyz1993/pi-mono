@@ -289,19 +289,25 @@ class MockLSPClientImpl implements LSPClient {
 	async initialize(): Promise<void> {
 		if (this.initialized) return;
 		await this.delay(10);
-		this.capabilities = {
-			completionProvider: {
-				triggerCharacters: ["."],
-				resolveProvider: false,
-			},
-			definitionProvider: true,
-			referencesProvider: true,
-			diagnosticProvider: {
-				interFileDependencies: true,
-				workspaceDiagnostics: false,
-			},
-			hoverProvider: true,
-		};
+		
+		// Use external mock server if provided
+		if (this.mockServer && typeof this.mockServer.getCapabilities === 'function') {
+			this.capabilities = this.mockServer.getCapabilities();
+		} else {
+			this.capabilities = {
+				completionProvider: {
+					triggerCharacters: ["."],
+					resolveProvider: false,
+				},
+				definitionProvider: true,
+				referencesProvider: true,
+				diagnosticProvider: {
+					interFileDependencies: true,
+					workspaceDiagnostics: false,
+				},
+				hoverProvider: true,
+			};
+		}
 		this.initialized = true;
 	}
 
