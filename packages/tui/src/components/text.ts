@@ -9,17 +9,25 @@ export class Text implements Component {
 	private paddingX: number; // Left/right padding
 	private paddingY: number; // Top/bottom padding
 	private customBgFn?: (text: string) => string;
+	private noPadding: boolean; // If true, don't pad lines to full width
 
 	// Cache for rendered output
 	private cachedText?: string;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
-	constructor(text: string = "", paddingX: number = 1, paddingY: number = 1, customBgFn?: (text: string) => string) {
+	constructor(
+		text: string = "",
+		paddingX: number = 1,
+		paddingY: number = 1,
+		customBgFn?: (text: string) => string,
+		noPadding: boolean = false
+	) {
 		this.text = text;
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
 		this.customBgFn = customBgFn;
+		this.noPadding = noPadding;
 	}
 
 	setText(text: string): void {
