@@ -230,17 +230,17 @@ export interface LSPClient {
  * @param options Client options
  */
 export function createLSPClient(language: string, options?: LSPClientOptions): LSPClient {
-	// For testing, use mock implementation
-	if (options?.mock) {
-		return createMockClient(options);
-	}
-
-	// Supported languages
+	// Supported languages (check before creating mock for proper error handling)
 	const supportedLanguages = ["typescript", "javascript", "python", "rust", "go"];
 	if (!supportedLanguages.includes(language)) {
 		throw new Error(
 			`Unsupported language: ${language}. Supported languages: ${supportedLanguages.join(", ")}`,
 		);
+	}
+
+	// For testing, use mock implementation
+	if (options?.mock) {
+		return createMockClient(options);
 	}
 
 	// TODO: Implement real LSP client using actual language servers
