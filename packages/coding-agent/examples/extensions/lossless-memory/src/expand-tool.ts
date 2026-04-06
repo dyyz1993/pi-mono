@@ -24,6 +24,7 @@ const DEFAULT_MAX_DEPTH = 5;
 export class ExpandTool {
 	private pi: ExtensionAPI;
 	private dag: DAGManager;
+	private db: MemoryDatabase;
 
 	constructor(pi: ExtensionAPI, db: MemoryDatabase, dag: DAGManager) {
 		this.pi = pi;
