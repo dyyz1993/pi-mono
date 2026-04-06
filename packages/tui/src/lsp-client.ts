@@ -351,6 +351,12 @@ class MockLSPClientImpl implements LSPClient {
 			throw new Error("Request aborted");
 		}
 
+		// Use external mock server if provided
+		if (this.mockServer && typeof this.mockServer.getCompletions === 'function') {
+			const result = this.mockServer.getCompletions(`file://${filePath}`, { line, character });
+			return result;
+		}
+
 		const completions = this.completions.get(filePath) ?? [];
 		return {
 			isIncomplete: false,
