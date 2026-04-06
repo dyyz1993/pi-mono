@@ -422,6 +422,11 @@ class MockLSPClientImpl implements LSPClient {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
+		
+		// Use external mock server if provided
+		if (this.mockServer && typeof this.mockServer.getDiagnostics === 'function') {
+			return this.mockServer.getDiagnostics(`file://${filePath}`);
+		}
 
 		const doc = this.documents.get(filePath);
 		if (!doc) return [];
@@ -445,6 +450,12 @@ class MockLSPClientImpl implements LSPClient {
 		this.checkInitialized();
 		await this.maybeSimulateError();
 		await this.maybeSimulateDelay();
+		
+		// Use external mock server if provided
+		if (this.mockServer && typeof this.mockServer.getHover === 'function') {
+			return this.mockServer.getHover(`file://${filePath}`, { line, character });
+		}
+		
 		return {
 			contents: {
 				kind: "markdown",
