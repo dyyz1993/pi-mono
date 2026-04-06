@@ -72,9 +72,17 @@ export class Center implements Component {
 			return wrappedLines;
 		}
 
+		// Pad all lines to the maximum content width to ensure consistent centering
+		const paddedLines: string[] = [];
+		for (const line of allLines) {
+			const lineWidth = visibleWidth(line);
+			const rightPadding = Math.max(0, maxContentWidth - lineWidth);
+			paddedLines.push(line + " ".repeat(rightPadding));
+		}
+
 		// Center each line horizontally
 		const centeredLines: string[] = [];
-		for (const line of allLines) {
+		for (const line of paddedLines) {
 			const lineWidth = visibleWidth(line);
 			const leftPadding = Math.floor((width - lineWidth) / 2);
 			centeredLines.push(" ".repeat(Math.max(0, leftPadding)) + line);
