@@ -40,10 +40,12 @@ export class Center implements Component {
 			return [];
 		}
 
-		// Render all children first
+		// First, render children at a large width to get their natural size
+		// We use a temporary large width to avoid premature padding
+		const tempWidth = 1000; // Large enough for most content
 		const allLines: string[] = [];
 		for (const child of this.children) {
-			const lines = child.render(width);
+			const lines = child.render(tempWidth);
 			allLines.push(...lines);
 		}
 
@@ -51,13 +53,23 @@ export class Center implements Component {
 			return [];
 		}
 
-		// Find the maximum visible width among all lines
-		let maxLineWidth = 0;
+		// Find the maximum visible width among all lines (actual content width)
+		let maxContentWidth = 0;
 		for (const line of allLines) {
 			const lineWidth = visibleWidth(line);
-			if (lineWidth > maxLineWidth) {
-				maxLineWidth = lineWidth;
+			if (lineWidth > maxContentWidth) {
+				maxContentWidth = lineWidth;
 			}
+		}
+
+		// If content is wider than available width, re-render at actual width
+		if (maxContentWidth > width) {
+			const wrappedLines: string[] = [];
+			for (const child of this.children) {
+				const lines = child.render(width);
+				wrappedLines.push(...lines);
+			}
+			return wrappedLines;
 		}
 
 		// Center each line horizontally
