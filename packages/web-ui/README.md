@@ -14,6 +14,57 @@ Built with [mini-lit](https://github.com/badlogic/mini-lit) web components and T
 - **CORS Proxy**: Automatic proxy handling for browser environments
 - **Custom Providers**: Support for Ollama, LM Studio, vLLM, and OpenAI-compatible APIs
 
+## Browser Extensions
+
+When building browser extensions with pi-web-ui, you need to handle Chrome's Content Security Policy (CSP) restrictions for artifact rendering:
+
+### 1. Sandboxed Artifacts
+
+Due to Chrome's restrictions on `eval()` and `new Function()`, artifact HTML/SVG rendering requires a sandboxed iframe with relaxed CSP. Configure this using `sandboxUrlProvider`:
+
+```typescript
+const chatPanel = new ChatPanel();
+await chatPanel.setAgent(agent, {
+  sandboxUrlProvider: () => chrome.runtime.getURL('sandbox.html'),
+});
+```
+
+### 2. Sandbox HTML
+
+Create a `sandbox.html` file in your extension's public directory:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com">
+</head>
+<body></body>
+</html>
+```
+
+### 3. Manifest V3 Configuration
+
+Add the sandbox page to `web_accessible_resources` in your `manifest.json`:
+
+```json
+{
+  "web_accessible_resources": [{
+    "resources": ["sandbox.html"],
+    "matches": ["<all_urls>"]
+  }]
+}
+```
+
+### Why This Is Needed
+
+Chrome extensions with Manifest V3 enforce strict CSP that prohibits dynamic code execution (`eval()`, `new Function()`). The artifacts system needs these capabilities to render interactive HTML/SVG content safely. The sandboxed iframe approach allows:
+
+- **Isolation**: Artifacts run in a separate context
+- **Relaxed CSP**: The sandbox can use `unsafe-eval` without compromising extension security
+- **Safe execution**: User-generated content is isolated from the extension's privileged context
+
 ## Installation
 
 ```bash
