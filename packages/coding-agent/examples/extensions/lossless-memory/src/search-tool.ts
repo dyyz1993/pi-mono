@@ -17,6 +17,8 @@ import type { LosslessMemoryConfig, SearchToolInput, SearchToolOutput } from "./
 export class SearchTool {
 	private pi: ExtensionAPI;
 	private db: MemoryDatabase;
+	private dag: DAGManager;
+	private config: LosslessMemoryConfig;
 
 	constructor(pi: ExtensionAPI, db: MemoryDatabase, dag: DAGManager, config: LosslessMemoryConfig) {
 		this.pi = pi;
