@@ -222,7 +222,15 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 					}
 
 					if (choice?.delta?.tool_calls) {
+						require("fs").appendFileSync(
+							"/tmp/toolcall-debug.log",
+							`[ENTRY] tool_calls count=${choice.delta.tool_calls.length}\n`,
+						);
 						for (const toolCall of choice.delta.tool_calls) {
+							require("fs").appendFileSync(
+								"/tmp/toolcall-debug.log",
+								`[TC] id=${toolCall.id} idx=${toolCall.index} name=${toolCall.function?.name} args=${JSON.stringify(toolCall.function?.arguments)}\n`,
+							);
 							// Check if we already have this toolCall (by ID or index as fallback)
 							let block = toolCall.id ? activeToolCalls.get(toolCall.id) : undefined;
 							if (!block && toolCall.index !== undefined && toolCall.index !== null) {
