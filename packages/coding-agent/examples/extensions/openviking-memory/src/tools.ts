@@ -8,7 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { defineTool } from "@mariozechner/pi-coding-agent";
-import type { OpenVikingConfig, SearchResult } from "./types.js";
+import type { OpenVikingConfig, SearchResult, SessionMapping } from "./types.js";
 import { makeRequest, unwrapResponse, totalMemoriesFromResult } from "./config.js";
 import {
 	getSessionMapping,
@@ -247,11 +247,11 @@ export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void 
 						}
 					}
 
-					const tempMapping = resolvedMapping ?? {
+					const tempMapping: SessionMapping = resolvedMapping ?? {
 						ovSessionId: sessionId,
 						createdAt: Date.now(),
 						capturedMessages: new Set<string>(),
-						messageRoles: new Map<string, string>(),
+						messageRoles: new Map<string, "user" | "assistant">(),
 						pendingMessages: new Map<string, string>(),
 						sendingMessages: new Set<string>(),
 					};
@@ -269,7 +269,7 @@ export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void 
 										n,
 										commitStart.result.session_id ?? sessionId,
 										"completed",
-										commitStart.taskId,
+										commitStart.result.task_id ?? "",
 										commitStart.result.archived,
 									),
 								},
@@ -369,7 +369,7 @@ export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void 
 						abortSignal: ctx.signal,
 					});
 					const result = unwrapResponse(response) ?? { memories: [], resources: [], skills: [], total: 0 };
-					const qp = (result as Record<string, unknown>).query_plan;
+					const qp = (result as unknown as Record<string, unknown>).query_plan;
 					return {
 						content: [
 							{
