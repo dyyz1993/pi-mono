@@ -257,8 +257,13 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				params = nextParams as MessageCreateParamsStreaming;
 			}
 			if (process.env.DEBUG_ANTHROPIC_REQUEST) {
-				const fs = await import("fs");
-				fs.writeFileSync("/tmp/anthropic-request-debug.json", JSON.stringify(params, null, 2));
+				console.error("[ANTH-DEBUG] model.baseUrl:", model.baseUrl);
+				console.error("[ANTH-DEBUG] params keys:", Object.keys(params));
+				console.error("[ANTH-DEBUG] tools count:", params.tools?.length);
+				require("fs").writeFileSync(
+					"/tmp/anthropic-request-debug.json",
+					JSON.stringify(params, (k, v) => (k === "system" ? v?.substring(0, 200) : v), 2),
+				);
 			}
 			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
@@ -433,6 +438,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			if (process.env.DEBUG_ANTHROPIC_REQUEST) {
+				console.error("[ANTH-DEBUG-ERROR]", error instanceof Error ? error.message : error);
+				const status = (error as any)?.status;
+				console.error("[ANTH-DEBUG-ERROR] status:", status);
+			}
 			for (const block of output.content) delete (block as any).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
