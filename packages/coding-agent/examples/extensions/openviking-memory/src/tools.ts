@@ -76,12 +76,14 @@ export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void 
 				"Retrieve the content of a specific memory, resource, or skill at a given viking:// URI.\n\nProgressive loading levels:\n- abstract: brief summary\n- overview: structured directory overview\n- read: full content\n- auto: choose overview for directories and read for files\n\nRequires: Complete viking:// URI (e.g., viking://user/memories/profile.md)",
 			parameters: Type.Object({
 				uri: Type.String({ description: "Complete viking:// URI (e.g., viking://user/memories/profile.md)" }),
-				level: Type.Union(
-					[Type.Literal("auto"), Type.Literal("abstract"), Type.Literal("overview"), Type.Literal("read")],
-					{
-						description:
-							"'auto' (directory->overview, file->read), 'abstract' (brief), 'overview' (directory), 'read' (full)",
-					},
+				level: Type.Optional(
+					Type.Union(
+						[Type.Literal("auto"), Type.Literal("abstract"), Type.Literal("overview"), Type.Literal("read")],
+						{
+							description:
+								"'auto' (directory->overview, file->read), 'abstract' (brief), 'overview' (directory), 'read' (full)",
+						},
+					),
 				),
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -140,11 +142,13 @@ export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void 
 				"Browse the OpenViking filesystem structure for a specific URI.\n\nViews: list, tree, stat.\nRequires: Complete viking:// URI",
 			parameters: Type.Object({
 				uri: Type.String({ description: "Complete viking:// URI to inspect (e.g., viking://user/memories/)" }),
-				view: Type.Union([Type.Literal("list"), Type.Literal("tree"), Type.Literal("stat")], {
-					description: "'list', 'tree', or 'stat'",
-				}),
-				recursive: Type.Boolean({ description: "Recursively list descendants (list view only)" }),
-				simple: Type.Boolean({ description: "Simpler URI-oriented output (list view only)" }),
+				view: Type.Optional(
+					Type.Union([Type.Literal("list"), Type.Literal("tree"), Type.Literal("stat")], {
+						description: "'list', 'tree', or 'stat'",
+					}),
+				),
+				recursive: Type.Optional(Type.Boolean({ description: "Recursively list descendants (list view only)" })),
+				simple: Type.Optional(Type.Boolean({ description: "Simpler URI-oriented output (list view only)" })),
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				const err = validateVikingUri(params.uri);
@@ -190,10 +194,12 @@ export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void 
 			description:
 				"Commit the current pi session to OpenViking and extract persistent memories.\n\nReturns background commit progress including task_id, memories_extracted.",
 			parameters: Type.Object({
-				session_id: Type.String({
-					description:
-						"Optional explicit OpenViking session ID. Omit to commit current session's mapped OV session.",
-				}),
+				session_id: Type.Optional(
+					Type.String({
+						description:
+							"Optional explicit OpenViking session ID. Omit to commit current session's mapped OV session.",
+					}),
+				),
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				let sessionId = params.session_id;
@@ -338,13 +344,17 @@ export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void 
 			description: "Search OpenViking memories, resources, and skills. Modes: auto/fast/deep.",
 			parameters: Type.Object({
 				query: Type.String({ description: "Search query - natural language, question, or task description" }),
-				target_uri: Type.String({ description: "Limit search to URI prefix (e.g., viking://resources/)" }),
-				mode: Type.Union([Type.Literal("auto"), Type.Literal("fast"), Type.Literal("deep")], {
-					description: "Search mode: auto/fast/deep",
-				}),
-				session_id: Type.String({ description: "Optional OV session ID for context-aware search" }),
-				limit: Type.Number({ description: "Max results", default: 10 }),
-				score_threshold: Type.Number({ description: "Minimum score threshold" }),
+				target_uri: Type.Optional(
+					Type.String({ description: "Limit search to URI prefix (e.g., viking://resources/)" }),
+				),
+				mode: Type.Optional(
+					Type.Union([Type.Literal("auto"), Type.Literal("fast"), Type.Literal("deep")], {
+						description: "Search mode: auto/fast/deep",
+					}),
+				),
+				session_id: Type.Optional(Type.String({ description: "Optional OV session ID for context-aware search" })),
+				limit: Type.Optional(Type.Number({ description: "Max results" })),
+				score_threshold: Type.Optional(Type.Number({ description: "Minimum score threshold" })),
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				let sessionId = params.session_id;
