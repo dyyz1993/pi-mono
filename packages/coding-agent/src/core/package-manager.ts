@@ -1011,9 +1011,18 @@ export class DefaultPackageManager implements PackageManager {
 			const filter = typeof pkg === "object" ? pkg : undefined;
 			const parsed = this.parseSource(sourceStr);
 			const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
+			console.log(
+				"[DEBUG-PM] resolvePackageSources: sourceStr=",
+				sourceStr,
+				"parsed.type=",
+				parsed.type,
+				"scope=",
+				scope,
+			);
 
 			if (parsed.type === "local") {
 				const baseDir = this.getBaseDirForScope(scope);
+				console.log("[DEBUG-PM] local source: path=", parsed.path, "baseDir=", baseDir);
 				this.resolveLocalExtensionSource(parsed, accumulator, filter, metadata, baseDir);
 				continue;
 			}
@@ -1069,6 +1078,16 @@ export class DefaultPackageManager implements PackageManager {
 		baseDir: string,
 	): void {
 		const resolved = this.resolvePathFromBase(source.path, baseDir);
+		console.log(
+			"[DEBUG-PM] resolveLocalExtSrc: path=",
+			source.path,
+			"baseDir=",
+			baseDir,
+			"resolved=",
+			resolved,
+			"exists=",
+			existsSync(resolved),
+		);
 		if (!existsSync(resolved)) {
 			return;
 		}

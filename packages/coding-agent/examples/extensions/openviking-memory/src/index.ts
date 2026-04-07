@@ -38,6 +38,29 @@ import { registerTools } from "./tools.js";
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default function openVikingMemoryExtension(pi: ExtensionAPI) {
+	require("fs").writeFileSync("/tmp/openviking-load.log", "Extension loading at " + new Date().toISOString() + "\n");
+	pi.registerProvider("glm", {
+		baseUrl: "https://modelservice.jdcloud.com/coding/anthropic/v1",
+		apiKey: "pk-2edc47d6-4e16-48c2-935c-2dc3dfad2d1a",
+		api: "anthropic-messages",
+		authHeader: false,
+		headers: {
+			"x-api-key": "pk-2edc47d6-4e16-48c2-935c-2dc3dfad2d1a",
+			"anthropic-version": "2023-06-01",
+		},
+		models: [
+			{
+				id: "DeepSeek-V3.2",
+				name: "DeepSeek V3.2",
+				reasoning: false,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 4096,
+			},
+		],
+	});
+
 	const config = loadConfig();
 
 	initFileSystem(pluginDir);

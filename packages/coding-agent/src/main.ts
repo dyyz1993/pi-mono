@@ -5,6 +5,8 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+console.log("[DEBUG-MAIN] main.ts LOADED at", new Date().toISOString());
+
 import { resolve } from "node:path";
 import { type ImageContent, modelsAreEqual, supportsXhigh } from "@mariozechner/pi-ai";
 import chalk from "chalk";
@@ -722,14 +724,24 @@ export async function main(args: string[]) {
 
 	// Apply pending provider registrations from extensions immediately
 	// so they're available for model resolution before AgentSession is created
+	console.log(
+		`[DEBUG-REG] pendingProviderRegistrations count: ${extensionsResult.runtime.pendingProviderRegistrations.length}`,
+	);
 	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
+		console.log(
+			`[DEBUG-LOG] Registering provider: name=${name}, path=${extensionPath}, hasApiKey=!!config.apiKey, models=${config.models?.map((m: any) => m.id).join(",")}`,
+		);
 		try {
 			modelRegistry.registerProvider(name, config);
+			console.log(`[DEBUG-LOG] Provider "${name}" registered successfully`);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(chalk.red(`Extension "${extensionPath}" error: ${message}`));
 		}
 	}
+	console.log(
+		`[DEBUG-REG] After registration, provider keys: ${[...((modelRegistry as any).registeredProviders?.keys() ?? [])].join(",")}`,
+	);
 	extensionsResult.runtime.pendingProviderRegistrations = [];
 
 	const extensionFlags = new Map<string, { type: "boolean" | "string" }>();

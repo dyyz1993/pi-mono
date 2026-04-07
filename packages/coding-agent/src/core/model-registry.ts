@@ -535,10 +535,15 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
-		return (
-			this.authStorage.hasAuth(model.provider) ||
-			this.providerRequestConfigs.get(model.provider)?.apiKey !== undefined
-		);
+		const hasAuthStorage = this.authStorage.hasAuth(model.provider);
+		const providerConfig = this.providerRequestConfigs.get(model.provider);
+		const hasApiKey = providerConfig?.apiKey !== undefined;
+		if (model.provider === "glm" || model.id === "DeepSeek-V3.2") {
+			console.log(
+				`[DEBUG-HASAUTH] *** GLM MODEL CHECK *** provider=${model.provider}, id=${model.id}, api=${model.api}, baseUrl=${model.baseUrl?.slice(0, 50)}, hasAuthStorage=${hasAuthStorage}, hasProviderConfig=!!providerConfig, hasApiKey=${hasApiKey}, providerConfigKeys=[${[...this.providerRequestConfigs.keys()].join(",")}]`,
+			);
+		}
+		return hasAuthStorage || hasApiKey;
 	}
 
 	private getModelRequestKey(provider: string, modelId: string): string {
@@ -579,12 +584,18 @@ export class ModelRegistry {
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
 		try {
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
+			console.log(
+				`[DEBUG-KEY] getApiKeyAndHeaders: provider=${model.provider}, hasProviderConfig=!!providerConfig, authHeader=${providerConfig?.authHeader}, hasApiKey=!!providerConfig?.apiKey`,
+			);
 			const apiKeyFromAuthStorage = await this.authStorage.getApiKey(model.provider, { includeFallback: false });
 			const apiKey =
 				apiKeyFromAuthStorage ??
 				(providerConfig?.apiKey
 					? resolveConfigValueOrThrow(providerConfig.apiKey, `API key for provider "${model.provider}"`)
 					: undefined);
+			console.log(
+				`[DEBUG-KEY] apiKeyFromAuthStorage=${!!apiKeyFromAuthStorage}, resolvedApiKey=${typeof apiKey}=${apiKey?.slice(0, 10)}...`,
+			);
 
 			const providerHeaders = resolveHeadersOrThrow(providerConfig?.headers, `provider "${model.provider}"`);
 			const modelHeaders = resolveHeadersOrThrow(

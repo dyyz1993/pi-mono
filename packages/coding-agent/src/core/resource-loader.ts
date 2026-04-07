@@ -6,6 +6,8 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
 
+console.log("[DEBUG-FILE] resource-loader.ts LOADED at", new Date().toISOString());
+
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.js";
 
 import { createEventBus, type EventBus } from "./event-bus.js";
@@ -316,9 +318,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	async reload(): Promise<void> {
 		const resolvedPaths = await this.packageManager.resolve();
+		console.log("[DEBUG-RL] additionalExtensionPaths:", JSON.stringify(this.additionalExtensionPaths));
 		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
+		console.log("[DEBUG-RL] cliExtensionPaths:", JSON.stringify(cliExtensionPaths, null, 2));
 		const metadataByPath = new Map<string, PathMetadata>();
 
 		this.extensionSkillSourceInfos = new Map();
