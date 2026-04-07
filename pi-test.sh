@@ -29,8 +29,6 @@ if [[ "$NO_ENV" == "true" ]]; then
 fi
 
 export PI_CACHE_RETENTION=none
-export DEBUG_ANTHROPIC_REQUEST=1
-export NODE_DEBUG=http,https
 
 TSX_BIN="$SCRIPT_DIR/node_modules/.bin/tsx"
 if [[ ! -x "$TSX_BIN" ]]; then
