@@ -8,6 +8,9 @@
 process.title = "pi";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
+console.error("[CLI-INIT] DEBUG_ANTHROPIC_REQUEST=", process.env.DEBUG_ANTHROPIC_REQUEST);
+console.error("[CLI-INIT] Global fetch type:", typeof globalThis.fetch);
+
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
 if (process.env.DEBUG_ANTHROPIC_REQUEST) {
