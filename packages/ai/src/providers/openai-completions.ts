@@ -223,8 +223,12 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 
 					if (choice?.delta?.tool_calls) {
 						for (const toolCall of choice.delta.tool_calls) {
-							// Check if we already have this toolCall (by ID)
+							// Check if we already have this toolCall (by ID or index as fallback)
 							let block = toolCall.id ? activeToolCalls.get(toolCall.id) : undefined;
+							if (!block && toolCall.index !== undefined && toolCall.index !== null) {
+								const idxKey = `__idx_${toolCall.index}`;
+								block = activeToolCalls.get(idxKey);
+							}
 							if (!block) {
 								// New toolCall - create block
 								finishCurrentBlock(currentBlock);
@@ -236,9 +240,8 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 									partialArgs: "",
 								};
 								output.content.push(block);
-								if (toolCall.id) {
-									activeToolCalls.set(toolCall.id, block);
-								}
+								const mapKey = toolCall.id || `__idx_${toolCall.index ?? output.content.length}`;
+								activeToolCalls.set(mapKey, block);
 								stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
 								currentBlock = block;
 							} else {
