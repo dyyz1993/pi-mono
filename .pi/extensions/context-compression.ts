@@ -16,8 +16,50 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { compressContext } from "../../packages/coding-agent/src/core/context-compression/index.js";
 import { DEFAULT_COMPRESSION_PIPELINE_CONFIG } from "../../packages/coding-agent/src/core/context-compression/types.js";
 
+function estimateTokens(messages: unknown[]): number {
+	let chars = 0;
+	for (const msg of messages) {
+		const m = msg as Record<string, unknown>;
+		if (m.role === "user" || m.role === "toolResult") {
+			const content = m.content as string | Array<{ type?: string; text?: string }> | undefined;
+			if (typeof content === "string") chars += content.length;
+			else if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type === "text" && block.text) chars += block.text.length;
+				}
+			}
+		} else if (m.role === "assistant") {
+			const blocks = m.content as Array<{ type?: string; text?: string; arguments?: string }> | undefined;
+			if (Array.isArray(blocks)) {
+				for (const block of blocks) {
+					if (block.type === "text" && block.text) chars += block.text.length;
+					else if (block.type === "toolCall" && block.arguments) chars += block.arguments.length;
+				}
+			}
+		}
+	}
+	return Math.ceil(chars / 4);
+}
+
 export default function contextCompressionExtension(pi: ExtensionAPI) {
 	let totalCompressions = 0;
+	let totalInputTokens = 0;
+	let totalOutputTokens = 0;
+	let totalCleared = 0;
+	let totalSummarized = 0;
+
+	const updateStatus = (ctx: { ui: { setStatus: (id: string, text?: string) => void } }) => {
+		if (totalCompressions === 0) {
+			ctx.ui.setStatus("ctx-compress", undefined);
+			return;
+		}
+		const saved = totalInputTokens - totalOutputTokens;
+		const ratio = totalInputTokens > 0 ? ((saved / totalInputTokens) * 100).toFixed(0) : "0";
+		ctx.ui.setStatus(
+			"ctx-compress",
+			`压缩:${totalCompressions}次 | 节省${ratio}% | 清${totalCleared} 摘${totalSummarized}`,
+		);
+	};
 
 	pi.on("context", async (event, ctx) => {
 		const { messages } = event;
@@ -25,19 +67,34 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		if (messages.length < 5) return undefined;
 
 		try {
+			const tokensBefore = estimateTokens(messages);
+
 			const result = await compressContext(messages, DEFAULT_COMPRESSION_PIPELINE_CONFIG);
 
 			const stepCount = Object.keys(result.steps).length;
 			if (stepCount === 0) return undefined;
 
 			totalCompressions++;
-			const duration = result.durationMs;
+			const tokensAfter = estimateTokens(result.messages);
+			totalInputTokens += tokensBefore;
+			totalOutputTokens += tokensAfter;
 
-			let logMsg = `[ctx-compress] #${totalCompressions} (${duration}ms)`;
+			if (result.steps.lifecycle) {
+				totalCleared += result.steps.lifecycle.clearedCount + result.steps.lifecycle.degradedCount;
+			}
+			if (result.steps.summary) {
+				totalSummarized += result.steps.summary.summarizedCount;
+			}
+
+			const duration = result.durationMs;
+			const saved = tokensBefore - tokensAfter;
+			const pct = tokensBefore > 0 ? ((saved / tokensBefore) * 100).toFixed(0) : "0";
+
+			let logMsg = `[ctx-compress] #${totalCompressions} (${duration}ms) ${tokensBefore}->${tokensAfter}tok (-${pct}%)`;
 			const parts: string[] = [];
 
 			if (result.steps.persistence) {
-				parts.push(`persist:${result.steps.persistence.persistedCount}(-${(result.steps.persistence.bytesSaved / 1024).toFixed(1)}KB)`);
+				parts.push(`persist:${result.steps.persistence.persistedCount}`);
 			}
 			if (result.steps.lifecycle) {
 				parts.push(`life:-${result.steps.lifecycle.degradedCount}/clr:${result.steps.lifecycle.clearedCount}`);
@@ -47,12 +104,13 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 			}
 			if (result.steps.classification) {
 				const c = result.steps.classification as { intent: string; confidence: number };
-				parts.push(`intent:${c.intent}(${(c.confidence * 100).toFixed(0)}%)`);
+				parts.push(`${c.intent}`);
 			}
 
-			logMsg += ` ${parts.join(" | ")}`;
+			if (parts.length > 0) logMsg += ` | ${parts.join(" ")}`;
 
 			ctx.ui.notify(logMsg, "info");
+			updateStatus(ctx);
 
 			return { messages: result.messages };
 		} catch (err) {
@@ -61,12 +119,16 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
-		if (totalCompressions > 0) {
-			ctx.ui.notify(
-				`[ctx-compress] session done: ${totalCompressions} compressions applied`,
-				"info",
-			);
-		}
+	pi.on("agent_start", async (_event, ctx) => {
+		totalCompressions = 0;
+		totalInputTokens = 0;
+		totalOutputTokens = 0;
+		totalCleared = 0;
+		totalSummarized = 0;
+		ctx.ui.setStatus("ctx-compress", undefined);
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		ctx.ui.setStatus("ctx-compress", undefined);
 	});
 }
