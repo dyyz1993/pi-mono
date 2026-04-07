@@ -2,11 +2,11 @@
  * 自定义消息组件示例
  * 展示如何创建自定义消息渲染器来渲染特殊类型的消息
  */
-import { html, LitElement } from "lit";
-import { customElement, property } from "lit/decorators.js";
-import { css } from "lit";
+
 import type { MessageRenderer, MessageRole } from "@mariozechner/pi-web-ui";
 import { registerMessageRenderer } from "@mariozechner/pi-web-ui";
+import { css, html, LitElement } from "lit";
+import { customElement, property } from "lit/decorators.js";
 
 /**
  * 自定义通知消息类型

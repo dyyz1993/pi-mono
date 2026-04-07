@@ -6,16 +6,16 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
 import { defineTool } from "@mariozechner/pi-coding-agent";
-import type { OpenVikingConfig, SearchResult, SessionMapping } from "./types.js";
-import { makeRequest, unwrapResponse, totalMemoriesFromResult } from "./config.js";
+import { Type } from "@sinclair/typebox";
+import { makeRequest, totalMemoriesFromResult, unwrapResponse } from "./config.js";
 import {
+	flushPendingMessages,
 	getSessionMapping,
 	startBackgroundCommit,
 	waitForCommitCompletion,
-	flushPendingMessages,
 } from "./session-manager.js";
+import type { OpenVikingConfig, SearchResult, SessionMapping } from "./types.js";
 
 function formatSearchResults(
 	result: SearchResult,

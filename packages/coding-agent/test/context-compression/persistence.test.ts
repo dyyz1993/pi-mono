@@ -1,12 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_LARGE_THRESHOLD,
 	DEFAULT_PERSISTENCE_CONFIG,
 	DEFAULT_STUB_PREVIEW_SIZE,
-	type PersistenceConfig,
 	type PersistedResult,
+	type PersistenceConfig,
 	type ToolResultInfo,
 } from "../../src/core/context-compression/types.js";
 

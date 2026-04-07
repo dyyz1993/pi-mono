@@ -13,9 +13,9 @@ import {
 	DEFAULT_KEEP_RECENT,
 	DEFAULT_LIFECYCLE_CONFIG,
 	DEFAULT_STALE_MINUTES,
-	ToolPriority,
 	type LifecycleConfig,
 	type LifecycleResult,
+	ToolPriority,
 	type ToolResultEntry,
 } from "./types.js";
 
@@ -170,10 +170,17 @@ function extractToolResults(messages: AgentMessage[]): IndexedEntry[] {
 
 function extractTextContent(msg: AgentMessage): string | null {
 	const content = (msg as unknown as { content?: string | Array<{ type?: string; text?: string }> }).content;
-	if (typeof content === "string") return content;
+	if (typeof content === "string") {
+		if (content.startsWith(CLEARED_MARKER) || content.startsWith(STUB_PREFIX)) return null;
+		return content;
+	}
 	if (Array.isArray(content)) {
 		const textParts = content.filter((p) => p.type === "text" && p.text).map((p) => p.text);
-		if (textParts.length > 0) return textParts.join("\n");
+		if (textParts.length > 0) {
+			const joined = textParts.join("\n");
+			if (joined.startsWith(CLEARED_MARKER) || joined.startsWith(STUB_PREFIX)) return null;
+			return joined;
+		}
 	}
 	return null;
 }
@@ -256,7 +263,6 @@ function applyCountRule(entries: IndexedEntry[], config: LifecycleConfig): Index
 		if (!keptSet.has(entry)) {
 			entry.level = "stub";
 		}
-	}
 	}
 
 	return entries;

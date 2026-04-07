@@ -1,12 +1,17 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { ReviewManager } from "../review-manager.js";
 import type { Executor } from "../sandbox.js";
 import { attachTool } from "./attach.js";
 import { createBashTool } from "./bash.js";
 import { createEditTool } from "./edit.js";
 import { createReadTool } from "./read.js";
+import {
+	createManualReviewTool,
+	createPendingReviewsTool,
+	createRequestWriteTool,
+	createReviewHistoryTool,
+} from "./review.js";
 import { createWriteTool } from "./write.js";
-import { createRequestWriteTool, createPendingReviewsTool, createManualReviewTool, createReviewHistoryTool } from "./review.js";
-import type { ReviewManager } from "../review-manager.js";
 
 export { setUploadFunction } from "./attach.js";
 

@@ -5,16 +5,16 @@
 import { Agent, createTool } from "@mariozechner/pi-agent-core";
 import { z } from "zod";
 import {
-	registerNotificationMessageRenderer,
+	createDataCard,
+	type DataCardItem,
+	DataCardMessage,
+	registerDataCardMessageRenderer,
+} from "./custom-data-card.js";
+import {
 	createNotification,
 	NotificationMessage,
+	registerNotificationMessageRenderer,
 } from "./custom-notification-message.js";
-import {
-	registerDataCardMessageRenderer,
-	createDataCard,
-	DataCardMessage,
-	DataCardItem,
-} from "./custom-data-card.js";
 
 /**
  * 步骤 1: 注册所有自定义消息渲染器
@@ -250,9 +250,11 @@ class EmbedMessage extends LitElement {
 	override render() {
 		return html`
 			<div class="embed-card">
-				${this.data.thumbnail
-					? html`<img class="thumbnail" src=${this.data.thumbnail} alt=${this.data.title} />`
-					: ""}
+				${
+					this.data.thumbnail
+						? html`<img class="thumbnail" src=${this.data.thumbnail} alt=${this.data.title} />`
+						: ""
+				}
 				<div class="content">
 					<div class="title">${this.data.title}</div>
 					${this.data.description ? html`<div class="description">${this.data.description}</div>` : ""}
@@ -283,9 +285,8 @@ export const embedMessageRenderer: MessageRenderer = {
  * - 可以通过 metadata 传递额外的上下文信息
  */
 
-// 需要导入的依赖
-import { css } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
-import { LitElement } from "lit";
 import type { MessageRenderer } from "@mariozechner/pi-web-ui";
 import { registerMessageRenderer } from "@mariozechner/pi-web-ui";
+// 需要导入的依赖
+import { css, LitElement } from "lit";
+import { customElement, property, state } from "lit/decorators.js";

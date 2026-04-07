@@ -2,12 +2,12 @@
  * 自定义数据卡片消息示例
  * 展示如何创建交互式自定义消息组件
  */
-import { html, LitElement } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
-import { css } from "lit";
-import { unsafeHTML } from "lit/directives/unsafe-html.js";
+
 import type { MessageRenderer, MessageRole } from "@mariozechner/pi-web-ui";
 import { registerMessageRenderer } from "@mariozechner/pi-web-ui";
+import { css, html, LitElement } from "lit";
+import { customElement, property, state } from "lit/decorators.js";
+import { unsafeHTML } from "lit/directives/unsafe-html.js";
 
 /**
  * 数据卡片项定义
@@ -219,9 +219,7 @@ export class DataCardMessage extends LitElement {
 				case "date":
 					return new Date(value).toLocaleDateString();
 				case "number":
-					return typeof value === "number"
-						? new Intl.NumberFormat("en-US").format(value)
-						: String(value);
+					return typeof value === "number" ? new Intl.NumberFormat("en-US").format(value) : String(value);
 				default:
 					return String(value);
 			}
@@ -261,8 +259,9 @@ export class DataCardMessage extends LitElement {
 					)}
 				</div>
 
-				${card.actions
-					? html`
+				${
+					card.actions
+						? html`
 							<div class="actions">
 								${card.actions.map(
 									(action) => html`
@@ -276,18 +275,19 @@ export class DataCardMessage extends LitElement {
 								)}
 							</div>
 						`
-					: ""}
+						: ""
+				}
 
-				${metadata
-					? html`
+				${
+					metadata
+						? html`
 							<button class="expand-button" @click=${() => (this.showMetadata = !this.showMetadata)}>
 								${this.showMetadata ? "隐藏" : "显示"}元数据
 							</button>
-							${this.showMetadata
-								? html`<div class="metadata">${JSON.stringify(metadata, null, 2)}</div>`
-								: ""}
+							${this.showMetadata ? html`<div class="metadata">${JSON.stringify(metadata, null, 2)}</div>` : ""}
 						`
-					: ""}
+						: ""
+				}
 			</div>
 		`;
 	}

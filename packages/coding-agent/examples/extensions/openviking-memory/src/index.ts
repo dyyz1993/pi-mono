@@ -11,27 +11,27 @@
  * Copyright 2026 Convolens.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { AssistantMessageEvent } from "@mariozechner/pi-ai";
-import { fileURLToPath } from "node:url";
 import * as path from "node:path";
-import { loadConfig, DEFAULT_CONFIG, checkServiceHealth } from "./config.js";
+import { fileURLToPath } from "node:url";
+import type { AssistantMessageEvent } from "@mariozechner/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { checkServiceHealth, DEFAULT_CONFIG, loadConfig } from "./config.js";
 import {
+	createSessionMapping,
+	ensureOpenVikingSession,
+	flushAndSave,
+	flushPendingMessages,
+	getSessionMapping,
 	initFileSystem,
 	loadSessionMap,
-	ensureOpenVikingSession,
-	createSessionMapping,
-	getSessionMapping,
 	removeSessionMapping,
-	upsertBufferedMessage,
-	flushPendingMessages,
-	storeMessageRole,
-	storePendingContent,
-	startBackgroundCommit,
-	flushAndSave,
-	stopAutoCommit,
 	resolveSessionId,
 	sessionMessageBuffer,
+	startBackgroundCommit,
+	stopAutoCommit,
+	storeMessageRole,
+	storePendingContent,
+	upsertBufferedMessage,
 } from "./session-manager.js";
 import { registerTools } from "./tools.js";
 
@@ -138,7 +138,7 @@ export default function openVikingMemoryExtension(pi: ExtensionAPI) {
 		if (!mapping) {
 			const msgId = generateMessageId(message);
 			const evt = event.assistantMessageEvent;
-			let content: string | undefined = undefined;
+			let content: string | undefined;
 			const messageContent = extractTextContent(event.message);
 			if (messageContent) content = messageContent;
 			if (!content && evt && isTextDeltaEvent(evt)) {

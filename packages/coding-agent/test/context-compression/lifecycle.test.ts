@@ -1,14 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, afterEach } from "vitest";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	DEFAULT_LIFECYCLE_CONFIG,
 	DEFAULT_KEEP_RECENT,
+	DEFAULT_LIFECYCLE_CONFIG,
 	DEFAULT_STALE_MINUTES,
-	ToolPriority,
 	type LifecycleConfig,
 	type LifecycleResult,
+	ToolPriority,
 	type ToolResultEntry,
 } from "../../src/core/context-compression/types.js";
 

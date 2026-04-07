@@ -3,7 +3,7 @@ import { visibleWidth } from "../utils.js";
 
 /**
  * Center component - centers its children horizontally (and optionally vertically)
- * 
+ *
  * This component wraps other components and centers their content within the available width.
  */
 export class Center implements Component {

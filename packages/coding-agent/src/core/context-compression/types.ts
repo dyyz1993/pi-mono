@@ -5,9 +5,9 @@
  * in the context, reducing token usage without losing data.
  */
 
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 
 // ============================================================================
 // Configuration
@@ -144,6 +144,54 @@ export interface LifecycleResult {
 	degradedCount: number;
 	/** Number of results cleared entirely */
 	clearedCount: number;
+	/** Estimated tokens before */
+	tokensBefore: number;
+	/** Estimated tokens after */
+	tokensAfter: number;
+}
+
+// ============================================================================
+// L3: Zero-cost Structured Summary Configuration
+// ============================================================================
+
+export const DEFAULT_SUMMARY_MAX_LINES = 20;
+export const DEFAULT_SUMMARY_TRUNCATE_LINE = 120;
+
+export interface SummaryConfig {
+	/** Max lines to keep in a structured summary */
+	maxLines: number;
+	/** Max chars per line before truncation */
+	truncateLine: number;
+	/** Whether zero-cost summarization is enabled */
+	enabled: boolean;
+}
+
+export const DEFAULT_SUMMARY_CONFIG: SummaryConfig = {
+	maxLines: DEFAULT_SUMMARY_MAX_LINES,
+	truncateLine: DEFAULT_SUMMARY_TRUNCATE_LINE,
+	enabled: true,
+};
+
+/** A structured note extracted from a tool result without LLM */
+export interface StructuredNote {
+	/** Compact one-line description */
+	headline: string;
+	/** Key-value metadata extracted from content */
+	metadata: Record<string, string>;
+	/** Sample lines (first N + last N) */
+	samples: string[];
+	/** Original content size for reference */
+	originalSize: number;
+	/** The formatted note string to place in context */
+	formatted: string;
+}
+
+/** Result of applying zero-cost summarization */
+export interface SummaryResult {
+	/** Modified messages with summarized content */
+	messages: AgentMessage[];
+	/** Number of results summarized */
+	summarizedCount: number;
 	/** Estimated tokens before */
 	tokensBefore: number;
 	/** Estimated tokens after */

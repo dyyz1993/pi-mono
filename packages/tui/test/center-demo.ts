@@ -25,14 +25,16 @@ const mainContainer = new Center();
 // Create title
 const title = new Text(
 	chalk.bold.cyan("╔══════════════════════════════════════════╗\n") +
-	chalk.bold.cyan("║") + chalk.bold.yellow("     Center Alignment Demo     ") + chalk.bold.cyan("║\n") +
-	chalk.bold.cyan("╚══════════════════════════════════════════╝\n\n"),
+		chalk.bold.cyan("║") +
+		chalk.bold.yellow("     Center Alignment Demo     ") +
+		chalk.bold.cyan("║\n") +
+		chalk.bold.cyan("╚══════════════════════════════════════════╝\n\n"),
 );
 
 // Create welcome message
 const welcome = new Markdown(
 	"## Welcome!\n\nThis demo shows how to use the **Center** component to center content horizontally and vertically.\n\n" +
-	"Type some text and press Enter to see it centered below.",
+		"Type some text and press Enter to see it centered below.",
 	1,
 	1,
 	defaultMarkdownTheme,
@@ -40,9 +42,13 @@ const welcome = new Markdown(
 
 // Create instructions
 const instructions = new Text(
-	"\n" + chalk.dim("Commands:") + "\n" +
-	chalk.dim("  /clear") + " - Clear all messages\n" +
-	chalk.dim("  Ctrl+C") + " - Exit\n\n",
+	"\n" +
+		chalk.dim("Commands:") +
+		"\n" +
+		chalk.dim("  /clear") +
+		" - Clear all messages\n" +
+		chalk.dim("  Ctrl+C") +
+		" - Exit\n\n",
 );
 
 // Add initial content
@@ -72,12 +78,10 @@ editor.onSubmit = (value: string) => {
 
 	if (trimmed) {
 		// Add user message
-		const userMessage = new Markdown(
-			"**You:** " + trimmed,
-			1,
-			1,
-			{ ...defaultMarkdownTheme, background: "transparent" },
-		);
+		const userMessage = new Markdown("**You:** " + trimmed, 1, 1, {
+			...defaultMarkdownTheme,
+			background: "transparent",
+		});
 		messages.push(userMessage);
 		mainContainer.addChild(userMessage);
 
@@ -90,12 +94,10 @@ editor.onSubmit = (value: string) => {
 			"Nice! 🌟",
 		];
 		const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-		const botMessage = new Markdown(
-			"**Bot:** " + randomResponse,
-			1,
-			1,
-			{ ...defaultMarkdownTheme, background: "transparent" },
-		);
+		const botMessage = new Markdown("**Bot:** " + randomResponse, 1, 1, {
+			...defaultMarkdownTheme,
+			background: "transparent",
+		});
 		messages.push(botMessage);
 		mainContainer.addChild(botMessage);
 

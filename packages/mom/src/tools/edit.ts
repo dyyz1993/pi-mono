@@ -1,9 +1,9 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
-import type { Executor } from "../sandbox.js";
+import * as log from "../log.js";
 import { isProtectedPath } from "../protection.js";
 import type { ReviewManager } from "../review-manager.js";
-import * as log from "../log.js";
+import type { Executor } from "../sandbox.js";
 
 const editSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what you're editing (shown to user)" }),
@@ -31,20 +31,20 @@ export function createEditTool(executor: Executor, reviewManager: ReviewManager)
 		) => {
 			// Check if this is a protected path
 			const protectionCheck = isProtectedPath(path);
-			
+
 			if (protectionCheck.protected) {
 				// This is a protected file - need to check if user used request_write
 				// For edit tool, we need to apply the operations first to get the final content
 				// then submit that for review
-				
+
 				// Read current file
 				const readResult = await executor.exec(`cat ${shellEscape(path)}`, { signal });
 				if (readResult.code !== 0) {
 					throw new Error(`Failed to read file for edit: ${readResult.stderr || path}`);
 				}
-				
+
 				let content = readResult.stdout || "";
-				
+
 				// Apply operations
 				const appliedOps: Array<{ oldText: string; newText: string; found: boolean }> = [];
 				for (const op of operations) {
@@ -55,7 +55,7 @@ export function createEditTool(executor: Executor, reviewManager: ReviewManager)
 						appliedOps.push({ ...op, found: false });
 					}
 				}
-				
+
 				// Check if all operations found their targets
 				const failedOps = appliedOps.filter((op) => !op.found);
 				if (failedOps.length > 0) {
@@ -64,36 +64,39 @@ export function createEditTool(executor: Executor, reviewManager: ReviewManager)
 							failedOps.map((op) => `  - "${op.oldText.substring(0, 50)}..." not found`).join("\n"),
 					);
 				}
-				
+
 				// Create review request with the final content
-				const opsSummary = operations.map(op => 
-					`Replace "${op.oldText.substring(0, 50)}${op.oldText.length > 50 ? '...' : ''}" with "${op.newText.substring(0, 50)}${op.newText.length > 50 ? '...' : ''}"`
-				).join('; ');
-				
-				const request = reviewManager.createRequest(
-					path, 
-					content, 
-					`Edit operations: ${opsSummary}`,
-					false
-				);
-				
+				const opsSummary = operations
+					.map(
+						(op) =>
+							`Replace "${op.oldText.substring(0, 50)}${op.oldText.length > 50 ? "..." : ""}" with "${op.newText.substring(0, 50)}${op.newText.length > 50 ? "..." : ""}"`,
+					)
+					.join("; ");
+
+				const request = reviewManager.createRequest(path, content, `Edit operations: ${opsSummary}`, false);
+
 				log.logWarning(`Protected file edit blocked: ${path}`, `Created review request ${request.id}`);
-				
+
 				throw new Error(
 					`⚠️ Protected File Edit Blocked\n\n` +
-					`The file "${path}" is protected and cannot be edited directly.\n\n` +
-					`**Reason:** ${protectionCheck.match?.reason || "This is a critical system file"}\n\n` +
-					`**Operations applied in preview:**\n` +
-					appliedOps.map((op, i) => `${i + 1}. Replace "${op.oldText.substring(0, 30)}..." with "${op.newText.substring(0, 30)}..."`).join('\n') +
-					`\n\n**What to do:**\n` +
-					`1. Use the \`request_write\` tool to submit your edit for review\n` +
-					`2. A product manager will review and approve/reject the request\n` +
-					`3. If approved, the changes will be applied\n\n` +
-					`**Current Request ID:** ${request.id}\n` +
-					`Use \`pending_reviews\` to see the request status.`
+						`The file "${path}" is protected and cannot be edited directly.\n\n` +
+						`**Reason:** ${protectionCheck.match?.reason || "This is a critical system file"}\n\n` +
+						`**Operations applied in preview:**\n` +
+						appliedOps
+							.map(
+								(op, i) =>
+									`${i + 1}. Replace "${op.oldText.substring(0, 30)}..." with "${op.newText.substring(0, 30)}..."`,
+							)
+							.join("\n") +
+						`\n\n**What to do:**\n` +
+						`1. Use the \`request_write\` tool to submit your edit for review\n` +
+						`2. A product manager will review and approve/reject the request\n` +
+						`3. If approved, the changes will be applied\n\n` +
+						`**Current Request ID:** ${request.id}\n` +
+						`Use \`pending_reviews\` to see the request status.`,
 				);
 			}
-			
+
 			// Not protected - proceed with edit
 			// Read current file
 			const readResult = await executor.exec(`cat ${shellEscape(path)}`, { signal });
@@ -125,10 +128,9 @@ export function createEditTool(executor: Executor, reviewManager: ReviewManager)
 			}
 
 			// Write back
-			const writeResult = await executor.exec(
-				`cat > ${shellEscape(path)} << 'MOM_EOF'\n${content}\nMOM_EOF`,
-				{ signal },
-			);
+			const writeResult = await executor.exec(`cat > ${shellEscape(path)} << 'MOM_EOF'\n${content}\nMOM_EOF`, {
+				signal,
+			});
 
 			if (writeResult.code !== 0) {
 				throw new Error(writeResult.stderr || `Failed to write edited file: ${path}`);

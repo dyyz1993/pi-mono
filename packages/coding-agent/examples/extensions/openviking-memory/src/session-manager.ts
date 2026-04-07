@@ -9,14 +9,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type {
-	OpenVikingConfig,
-	SessionMapping,
-	SessionMappingPersisted,
-	SessionMapFile,
 	BufferedMessage,
 	CommitResult,
-	TaskResult,
 	CommitStartResult,
+	OpenVikingConfig,
+	SessionMapFile,
+	SessionMapping,
+	SessionMappingPersisted,
+	TaskResult,
 } from "./types.js";
 
 export const COMMIT_TIMEOUT_MS = 180000;
@@ -25,7 +25,8 @@ export const BUFFERED_MESSAGE_TTL_MS = 15 * 60 * 1000;
 export const BUFFER_CLEANUP_INTERVAL_MS = 30 * 1000;
 
 export { sessionMessageBuffer };
-import { makeRequest, unwrapResponse, totalMemoriesFromResult } from "./config.js";
+
+import { makeRequest, totalMemoriesFromResult, unwrapResponse } from "./config.js";
 
 // ============================================================================
 // State
@@ -68,7 +69,7 @@ function safeStringify(obj: any): any {
 	if (Array.isArray(obj)) return obj.map((item) => safeStringify(item));
 	const result: any = {};
 	for (const key in obj) {
-		if (Object.prototype.hasOwnProperty.call(obj, key)) {
+		if (Object.hasOwn(obj, key)) {
 			const value = obj[key];
 			if (typeof value === "function") result[key] = "[Function]";
 			else if (typeof value === "object" && value !== null) {

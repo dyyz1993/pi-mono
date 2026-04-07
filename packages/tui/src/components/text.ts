@@ -21,7 +21,7 @@ export class Text implements Component {
 		paddingX: number = 1,
 		paddingY: number = 1,
 		customBgFn?: (text: string) => string,
-		noPadding: boolean = false
+		noPadding: boolean = false,
 	) {
 		this.text = text;
 		this.paddingX = paddingX;

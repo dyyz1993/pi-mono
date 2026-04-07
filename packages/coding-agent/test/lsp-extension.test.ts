@@ -9,18 +9,18 @@
  *   E. Edge Cases & Error Handling (TC21-TC25)
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
 import { spawn as spawnProc } from "child_process";
-import * as path from "path";
 import * as fs from "fs/promises";
-import * as os from "os";
 import { createServer } from "net";
-import { pathToFileURL, fileURLToPath } from "url";
+import * as os from "os";
+import * as path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { LspClient } from "../../../../.pi/extensions/lsp/client.js";
-import { LspServers, getServersForExtension } from "../../../../.pi/extensions/lsp/servers.js";
 import { LANGUAGE_EXTENSIONS } from "../../../../.pi/extensions/lsp/language.js";
-import { prettyDiagnostic, symbolKindName, formatLspResult } from "../../.pi/extensions/lsp/index.js";
+import { getServersForExtension, LspServers } from "../../../../.pi/extensions/lsp/servers.js";
+import { formatLspResult, prettyDiagnostic, symbolKindName } from "../../.pi/extensions/lsp/index.js";
 import type { Diagnostic, Range } from "../../.pi/extensions/lsp/types.js";
 
 // ============================================================================

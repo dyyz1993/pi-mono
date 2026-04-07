@@ -14,8 +14,8 @@ import {
 	DEFAULT_LARGE_THRESHOLD,
 	DEFAULT_PERSISTENCE_CONFIG,
 	DEFAULT_STUB_PREVIEW_SIZE,
-	type PersistenceConfig,
 	type PersistedResult,
+	type PersistenceConfig,
 	type ToolResultInfo,
 } from "./types.js";
 
@@ -81,7 +81,7 @@ async function doPersist(
 	config: PersistenceConfig,
 ): Promise<PersistedResult> {
 	// Ensure cache directory exists
-	let cacheDir = config.cacheDir;
+	const cacheDir = config.cacheDir;
 	try {
 		mkdirSync(cacheDir, { recursive: true });
 	} catch {
