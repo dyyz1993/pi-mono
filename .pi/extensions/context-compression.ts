@@ -70,10 +70,10 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 			}
 
 			const duration = result.durationMs;
-			const saved = tokensBefore - tokensAfter;
-			const pct = tokensBefore > 0 ? ((saved / tokensBefore) * 100).toFixed(0) : "0";
+			const saved = sizeBefore - sizeAfter;
+			const pct = sizeBefore > 0 ? ((saved / sizeBefore) * 100).toFixed(0) : "0";
 
-			let logMsg = `[ctx-compress] #${totalCompressions} (${duration}ms) ${tokensBefore}->${tokensAfter}tok (-${pct}%)`;
+			let logMsg = `[ctx-compress] #${totalCompressions} (${duration}ms) ${sizeBefore}->${sizeAfter}B (-${pct}%)`;
 			const parts: string[] = [];
 
 			if (result.steps.persistence) {
