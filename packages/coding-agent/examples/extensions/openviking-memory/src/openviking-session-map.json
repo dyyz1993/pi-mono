@@ -4,10 +4,7 @@
     "/Users/xuyingzhou/.pi/agent/sessions/--Users-xuyingzhou-Project-temporary-pi-mono--/2026-04-07T16-32-45-593Z_6abb8b32-1779-490e-9b15-a4ecc2baf6f7.jsonl": {
       "ovSessionId": "58271343-07bd-49bd-aea0-be853c7c66db",
       "createdAt": 1775579565748,
-      "capturedMessages": [
-        "user-1775579587469",
-        "assistant-1775579587527"
-      ],
+      "capturedMessages": [],
       "messageRoles": [
         [
           "user-1775579587469",
@@ -16,10 +13,20 @@
         [
           "assistant-1775579587527",
           "assistant"
+        ],
+        [
+          "user-1775579622392",
+          "user"
+        ],
+        [
+          "assistant-1775579622400",
+          "assistant"
         ]
       ],
-      "pendingMessages": []
+      "pendingMessages": [],
+      "lastCommitTime": 1775579648021,
+      "commitInFlight": false
     }
   },
-  "lastSaved": 1775579588794
+  "lastSaved": 1775579648322
 }
