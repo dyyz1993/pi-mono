@@ -204,6 +204,8 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
+		if (process.env.DEBUG_ANTHROPIC_REQUEST)
+			console.error("[ANTH-STREAM] streamAnthropic entered, require=", typeof require);
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
