@@ -9,11 +9,18 @@ process.title = "pi";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 import { writeFileSync } from "fs";
-writeFileSync("/tmp/pi-cli-debug.log", `CLI-INIT at ${new Date().toISOString()}\n`);
-writeFileSync("/tmp/pi-cli-debug.log", `DEBUG_ANTHROPIC_REQUEST=${process.env.DEBUG_ANTHROPIC_REQUEST}\n`, {
-	flag: "a",
-});
-writeFileSync("/tmp/pi-cli-debug.log", `Global fetch type: ${typeof globalThis.fetch}\n`, { flag: "a" });
+import { join } from "path";
+const debugDir = process.cwd();
+try {
+	writeFileSync(join(debugDir, "cli-debug.log"), `CLI-INIT at ${new Date().toISOString()}\n`);
+	writeFileSync(join(debugDir, "cli-debug.log"), `DEBUG_ANTHROPIC_REQUEST=${process.env.DEBUG_ANTHROPIC_REQUEST}\n`, {
+		flag: "a",
+	});
+} catch (e) {
+	try {
+		writeFileSync("/tmp/pi-cli-debug.log", `FALLBACK: ${e.message}\n`);
+	} catch (e2) {}
+}
 
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
