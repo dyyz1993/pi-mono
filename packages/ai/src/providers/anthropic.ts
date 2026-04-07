@@ -40,9 +40,9 @@ function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention 
 	if (cacheRetention) {
 		return cacheRetention;
 	}
-	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION === "long") {
-		return "long";
-	}
+	const envVal = typeof process !== "undefined" ? process.env.PI_CACHE_RETENTION : undefined;
+	if (envVal === "long") return "long";
+	if (envVal === "none") return "none";
 	return "short";
 }
 
