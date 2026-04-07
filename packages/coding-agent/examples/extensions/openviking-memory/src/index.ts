@@ -38,7 +38,7 @@ import { registerTools } from "./tools.js";
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default function openVikingMemoryExtension(pi: ExtensionAPI) {
-	require("fs").writeFileSync("/tmp/openviking-load.log", "Extension loading at " + new Date().toISOString() + "\n");
+	// Extension loaded successfully (debug: remove this in production)
 	pi.registerProvider("glm", {
 		baseUrl: "https://modelservice.jdcloud.com/coding/anthropic",
 		apiKey: "pk-2edc47d6-4e16-48c2-935c-2dc3dfad2d1a",
