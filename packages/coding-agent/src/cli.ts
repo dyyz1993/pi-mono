@@ -21,10 +21,10 @@ if (process.env.DEBUG_ANTHROPIC_REQUEST) {
 	const origFetch = globalThis.fetch;
 	globalThis.fetch = async (url, opts) => {
 		const urlStr = typeof url === "string" ? url : (url as any)?.url || String(url);
-		_ws("/tmp/pi-fetch-debug.log", `[${new Date().toISOString()}] URL: ${urlStr}\n`);
+		_ws("/tmp/pi-fetch-debug.log", `[${new Date().toISOString()}] FETCH URL: ${urlStr}\n`);
 		_ws("/tmp/pi-fetch-debug.log", `  METHOD: ${opts?.method}\n`);
 		if (urlStr?.includes("jdcloud") || urlStr?.includes("anthropic")) {
-			const body = typeof opts?.body === "string" ? opts.body?.substring(0, 1000) : "(non-string body)";
+			const body = typeof opts?.body === "string" ? opts.body?.substring(0, 2000) : "(non-string body)";
 			_ws("/tmp/pi-fetch-debug.log", `  BODY: ${body}\n`);
 		}
 		try {
@@ -32,7 +32,7 @@ if (process.env.DEBUG_ANTHROPIC_REQUEST) {
 			_ws("/tmp/pi-fetch-debug.log", `  STATUS: ${resp.status}\n`);
 			if (!resp.ok && (urlStr?.includes("jdcloud") || urlStr?.includes("anthropic"))) {
 				const respText = await resp.text();
-				_ws("/tmp/pi-fetch-debug.log", `  ERROR BODY: ${respText.substring(0, 500)}\n`);
+				_ws("/tmp/pi-fetch-debug.log", `  ERROR: ${respText.substring(0, 1000)}\n`);
 				return new Response(respText, { status: resp.status, headers: resp.headers });
 			}
 			return resp;
