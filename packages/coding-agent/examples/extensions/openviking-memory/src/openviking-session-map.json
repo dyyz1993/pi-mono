@@ -5,7 +5,8 @@
       "ovSessionId": "58271343-07bd-49bd-aea0-be853c7c66db",
       "createdAt": 1775579565748,
       "capturedMessages": [
-        "assistant-1775579648031"
+        "assistant-1775579648031",
+        "user-1775579665207"
       ],
       "messageRoles": [
         [
@@ -27,6 +28,10 @@
         [
           "assistant-1775579648031",
           "assistant"
+        ],
+        [
+          "user-1775579665207",
+          "user"
         ]
       ],
       "pendingMessages": [],
@@ -34,5 +39,5 @@
       "commitInFlight": false
     }
   },
-  "lastSaved": 1775579649925
+  "lastSaved": 1775579665520
 }
