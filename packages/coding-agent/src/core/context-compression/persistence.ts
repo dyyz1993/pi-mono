@@ -199,7 +199,7 @@ export async function cleanupOldFiles(
 	const toRemove: string[] = [];
 
 	for (const [filePath, meta] of persistedFiles) {
-		if (now - meta.timestamp > maxAgeMs) {
+		if (now - meta.timestamp >= maxAgeMs) {
 			toRemove.push(filePath);
 		}
 	}
