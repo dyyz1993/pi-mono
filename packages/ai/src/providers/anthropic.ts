@@ -256,6 +256,10 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
+			if (process.env.DEBUG_ANTHROPIC_REQUEST) {
+				const fs = await import("fs");
+				fs.writeFileSync("/tmp/anthropic-request-debug.json", JSON.stringify(params, null, 2));
+			}
 			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
 
