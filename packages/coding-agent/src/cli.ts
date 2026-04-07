@@ -8,32 +8,37 @@
 process.title = "pi";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
-console.error("[CLI-INIT] DEBUG_ANTHROPIC_REQUEST=", process.env.DEBUG_ANTHROPIC_REQUEST);
-console.error("[CLI-INIT] Global fetch type:", typeof globalThis.fetch);
+import { writeFileSync } from "fs";
+writeFileSync("/tmp/pi-cli-debug.log", `CLI-INIT at ${new Date().toISOString()}\n`);
+writeFileSync("/tmp/pi-cli-debug.log", `DEBUG_ANTHROPIC_REQUEST=${process.env.DEBUG_ANTHROPIC_REQUEST}\n`, {
+	flag: "a",
+});
+writeFileSync("/tmp/pi-cli-debug.log", `Global fetch type: ${typeof globalThis.fetch}\n`, { flag: "a" });
 
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
 if (process.env.DEBUG_ANTHROPIC_REQUEST) {
 	const origFetch = globalThis.fetch;
+	const { writeFileSync: _ws } = require("fs");
 	globalThis.fetch = async (url, opts) => {
 		const urlStr = typeof url === "string" ? url : (url as any)?.url || String(url);
-		console.error("[FETCH] URL:", urlStr);
-		console.error("[FETCH] METHOD:", opts?.method);
+		_ws("/tmp/pi-fetch-debug.log", `[${new Date().toISOString()}] URL: ${urlStr}\n`, { flag: "a" });
+		_ws("/tmp/pi-fetch-debug.log", `  METHOD: ${opts?.method}\n`, { flag: "a" });
 		if (urlStr?.includes("jdcloud") || urlStr?.includes("anthropic")) {
-			const body = typeof opts?.body === "string" ? opts.body?.substring(0, 500) : "(non-string body)";
-			console.error("[FETCH] BODY:", body);
+			const body = typeof opts?.body === "string" ? opts.body?.substring(0, 1000) : "(non-string body)";
+			_ws("/tmp/pi-fetch-debug.log", `  BODY: ${body}\n`, { flag: "a" });
 		}
 		try {
 			const resp = await origFetch(url, opts);
+			_ws("/tmp/pi-fetch-debug.log", `  STATUS: ${resp.status}\n`, { flag: "a" });
 			if (!resp.ok && (urlStr?.includes("jdcloud") || urlStr?.includes("anthropic"))) {
 				const respText = await resp.text();
-				console.error("[FETCH] ERROR STATUS:", resp.status, "BODY:", respText.substring(0, 500));
+				_ws("/tmp/pi-fetch-debug.log", `  ERROR BODY: ${respText.substring(0, 500)}\n`, { flag: "a" });
 				return new Response(respText, { status: resp.status, headers: resp.headers });
 			}
-			console.error("[FETCH] STATUS:", resp.status);
 			return resp;
 		} catch (e) {
-			console.error("[FETCH] EXCEPTION:", e instanceof Error ? e.message : e);
+			_ws("/tmp/pi-fetch-debug.log", `  EXCEPTION: ${e instanceof Error ? e.message : e}\n`, { flag: "a" });
 			throw e;
 		}
 	};
