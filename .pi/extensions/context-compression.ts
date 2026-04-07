@@ -50,7 +50,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		if (messages.length < 5) return undefined;
 
 		try {
-			const tokensBefore = estimateTokens(messages);
+			const sizeBefore = estimateSize(messages);
 
 			const result = await compressContext(messages, DEFAULT_COMPRESSION_PIPELINE_CONFIG);
 
