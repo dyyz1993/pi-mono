@@ -430,9 +430,8 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			stream.end();
 		} catch (error) {
 			if (process.env.DEBUG_ANTHROPIC_REQUEST) {
-				console.error("[ANTH-DEBUG-ERROR]", error instanceof Error ? error.message : error);
-				const status = (error as any)?.status;
-				console.error("[ANTH-DEBUG-ERROR] status:", status);
+				const errStr = error instanceof Error ? `${error.message}\n${error.stack}` : JSON.stringify(error);
+				console.error("[ANTH-DEBUG-ERROR]", errStr);
 			}
 			for (const block of output.content) delete (block as any).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
