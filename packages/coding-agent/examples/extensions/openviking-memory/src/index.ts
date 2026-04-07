@@ -40,7 +40,7 @@ const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 export default function openVikingMemoryExtension(pi: ExtensionAPI) {
 	require("fs").writeFileSync("/tmp/openviking-load.log", "Extension loading at " + new Date().toISOString() + "\n");
 	pi.registerProvider("glm", {
-		baseUrl: "https://modelservice.jdcloud.com/coding/anthropic/v1",
+		baseUrl: "https://modelservice.jdcloud.com/coding/anthropic",
 		apiKey: "pk-2edc47d6-4e16-48c2-935c-2dc3dfad2d1a",
 		api: "anthropic-messages",
 		authHeader: false,
