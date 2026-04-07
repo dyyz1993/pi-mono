@@ -256,15 +256,6 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
-			if (process.env.DEBUG_ANTHROPIC_REQUEST) {
-				console.error("[ANTH-DEBUG] model.baseUrl:", model.baseUrl);
-				console.error("[ANTH-DEBUG] params keys:", Object.keys(params));
-				console.error("[ANTH-DEBUG] tools count:", params.tools?.length);
-				require("fs").writeFileSync(
-					"/tmp/anthropic-request-debug.json",
-					JSON.stringify(params, (k, v) => (k === "system" ? v?.substring(0, 200) : v), 2),
-				);
-			}
 			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
 
