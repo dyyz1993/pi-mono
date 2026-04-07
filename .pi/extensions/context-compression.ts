@@ -16,29 +16,12 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { compressContext } from "../../packages/coding-agent/src/core/context-compression/index.js";
 import { DEFAULT_COMPRESSION_PIPELINE_CONFIG } from "../../packages/coding-agent/src/core/context-compression/types.js";
 
-function estimateTokens(messages: unknown[]): number {
-	let chars = 0;
-	for (const msg of messages) {
-		const m = msg as Record<string, unknown>;
-		if (m.role === "user" || m.role === "toolResult") {
-			const content = m.content as string | Array<{ type?: string; text?: string }> | undefined;
-			if (typeof content === "string") chars += content.length;
-			else if (Array.isArray(content)) {
-				for (const block of content) {
-					if (block.type === "text" && block.text) chars += block.text.length;
-				}
-			}
-		} else if (m.role === "assistant") {
-			const blocks = m.content as Array<{ type?: string; text?: string; arguments?: string }> | undefined;
-			if (Array.isArray(blocks)) {
-				for (const block of blocks) {
-					if (block.type === "text" && block.text) chars += block.text.length;
-					else if (block.type === "toolCall" && block.arguments) chars += block.arguments.length;
-				}
-			}
-		}
+function estimateSize(messages: unknown[]): number {
+	try {
+		return JSON.stringify(messages).length;
+	} catch {
+		return 0;
 	}
-	return Math.ceil(chars / 4);
 }
 
 export default function contextCompressionExtension(pi: ExtensionAPI) {
