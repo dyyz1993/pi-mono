@@ -37,6 +37,10 @@ import { registerTools } from "./tools.js";
 
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 
+import("fs")
+	.then((fs) => fs.writeFileSync("/tmp/ov-ext-module.log", `Module loaded at ${new Date().toISOString()}\n`))
+	.catch(() => {});
+
 export default function openVikingMemoryExtension(pi: ExtensionAPI) {
 	import("fs")
 		.then((fs) => fs.writeFileSync("/tmp/ov-ext-debug.log", `Extension called at ${new Date().toISOString()}\n`))
