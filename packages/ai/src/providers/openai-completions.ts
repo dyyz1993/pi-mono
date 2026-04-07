@@ -222,15 +222,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 					}
 
 					if (choice?.delta?.tool_calls) {
-						require("fs").appendFileSync(
-							"/tmp/toolcall-debug.log",
-							`[ENTRY] tool_calls count=${choice.delta.tool_calls.length}\n`,
-						);
 						for (const toolCall of choice.delta.tool_calls) {
-							require("fs").appendFileSync(
-								"/tmp/toolcall-debug.log",
-								`[TC] id=${toolCall.id} idx=${toolCall.index} name=${toolCall.function?.name} args=${JSON.stringify(toolCall.function?.arguments)}\n`,
-							);
 							// Check if we already have this toolCall (by ID or index as fallback)
 							let block = toolCall.id ? activeToolCalls.get(toolCall.id) : undefined;
 							if (!block && toolCall.index !== undefined && toolCall.index !== null) {
@@ -267,15 +259,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 								if (toolCall.function?.arguments) {
 									delta = toolCall.function.arguments;
 									block.partialArgs += toolCall.function.arguments;
-									require("fs").appendFileSync(
-										"/tmp/toolcall-debug.log",
-										`[FIX] name=${block.name} delta=${delta} partial=${block.partialArgs}\n`,
-									);
 									block.arguments = parseStreamingJson(block.partialArgs);
-									require("fs").appendFileSync(
-										"/tmp/toolcall-debug.log",
-										`[FIX] parsed=${JSON.stringify(block.arguments)}\n`,
-									);
 								}
 								stream.push({
 									type: "toolcall_delta",
