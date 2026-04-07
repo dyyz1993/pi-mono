@@ -5,12 +5,12 @@
  * without any LLM calls. Pure pattern-based summarization.
  */
 
-import { describe, it, expect } from "vitest";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_SUMMARY_CONFIG,
-	type SummaryConfig,
 	type StructuredNote,
+	type SummaryConfig,
 } from "../../src/core/context-compression/types.js";
 
 // Dynamic import for the module under test (handles compile errors gracefully)

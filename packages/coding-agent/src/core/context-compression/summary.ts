@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { DEFAULT_SUMMARY_CONFIG, type SummaryConfig, type StructuredNote, type SummaryResult } from "./types.js";
+import { DEFAULT_SUMMARY_CONFIG, type StructuredNote, type SummaryConfig, type SummaryResult } from "./types.js";
 
 // ============================================================================
 // Markers
@@ -84,9 +84,7 @@ function truncateLine(line: string, maxLen: number): string {
 // Tool-specific extractors
 // ============================================================================
 
-interface ExtractorFn {
-	(toolName: string, content: string, config: SummaryConfig): StructuredNote;
-}
+type ExtractorFn = (toolName: string, content: string, config: SummaryConfig) => StructuredNote;
 
 function extractReadContent(_toolName: string, content: string, config: SummaryConfig): StructuredNote {
 	const lines = content.split("\n");
@@ -105,16 +103,17 @@ function extractReadContent(_toolName: string, content: string, config: SummaryC
 	// Sample: first N/2 and last N/2 lines
 	const sampleCount = Math.min(config.maxLines, lineCount);
 	const headCount = Math.ceil(sampleCount / 2);
-	const tailCount = sampleCount - headCount;
+	const tailCount = Math.min(sampleCount - headCount, lineCount - headCount);
 	const samples: string[] = [];
 
 	for (let i = 0; i < headCount && i < lineCount; i++) {
 		samples.push(truncateLine(lines[i], config.truncateLine));
 	}
-	if (headCount < lineCount - tailCount) {
+	if (headCount < lineCount - tailCount && samples.length + tailCount + 1 <= config.maxLines) {
 		samples.push(`... (${lineCount - headCount - tailCount} more lines) ...`);
 	}
 	for (let i = Math.max(headCount, lineCount - tailCount); i < lineCount; i++) {
+		if (samples.length >= config.maxLines) break;
 		samples.push(truncateLine(lines[i], config.truncateLine));
 	}
 
@@ -147,11 +146,12 @@ function extractGrepContent(_toolName: string, content: string, config: SummaryC
 			`Files: ${Array.from(files).slice(0, 10).join(", ")}${files.size > 10 ? ` (+${files.size - 10} more)` : ""}`,
 		);
 	}
-	const sampleLines = lines.slice(0, Math.min(config.maxLines - (files.size > 0 ? 1 : 0), lines.length));
+	const remainingSlots = config.maxLines - samples.length;
+	const sampleLines = lines.slice(0, Math.min(remainingSlots > 0 ? remainingSlots : 0, lines.length));
 	for (const line of sampleLines) {
 		samples.push(truncateLine(line, config.truncateLine));
 	}
-	if (lines.length > sampleLines.length) {
+	if (lines.length > sampleLines.length && samples.length < config.maxLines) {
 		samples.push(`... (+${lines.length - sampleLines.length} more matches)`);
 	}
 
@@ -192,10 +192,11 @@ function extractBashContent(_toolName: string, content: string, config: SummaryC
 	for (let i = 0; i < headCount; i++) {
 		samples.push(truncateLine(lines[i], config.truncateLine));
 	}
-	if (tailCount > 0 && headCount < lineCount - tailCount) {
+	if (tailCount > 0 && headCount < lineCount - tailCount && samples.length + tailCount + 1 <= config.maxLines) {
 		samples.push(`... (${lineCount - headCount - tailCount} more lines) ...`);
 	}
 	for (let i = lineCount - tailCount; i < lineCount; i++) {
+		if (samples.length >= config.maxLines) break;
 		samples.push(truncateLine(lines[i], config.truncateLine));
 	}
 
@@ -331,16 +332,17 @@ function extractGenericContent(toolName: string, content: string, config: Summar
 
 	const sampleCount = Math.min(config.maxLines, lineCount);
 	const headCount = Math.ceil(sampleCount / 2);
-	const tailCount = sampleCount - headCount;
+	const tailCount = Math.min(sampleCount - headCount, lineCount - headCount);
 	const samples: string[] = [];
 
 	for (let i = 0; i < headCount; i++) {
 		samples.push(truncateLine(lines[i], config.truncateLine));
 	}
-	if (headCount < lineCount - tailCount) {
+	if (headCount < lineCount - tailCount && samples.length + tailCount + 1 <= config.maxLines) {
 		samples.push(`... (${lineCount - headCount - tailCount} more lines) ...`);
 	}
 	for (let i = Math.max(headCount, lineCount - tailCount); i < lineCount; i++) {
+		if (samples.length >= config.maxLines) break;
 		samples.push(truncateLine(lines[i], config.truncateLine));
 	}
 
@@ -401,7 +403,18 @@ export function summarizeToolResult(
 	}
 
 	const extractor = getExtractor(toolName);
-	return extractor(toolName, content, config);
+	const note = extractor(toolName, content, config);
+
+	// If content is already small enough, produce minimal note (headline + metadata only)
+	if (note.formatted.length >= content.length) {
+		return {
+			...note,
+			formatted: `${SUMMARY_MARKER} [${toolName}] ${note.headline.replace(`${toolName}: `, "")}`,
+			samples: [],
+		};
+	}
+
+	return note;
 }
 
 /**

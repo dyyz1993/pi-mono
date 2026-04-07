@@ -197,3 +197,63 @@ export interface SummaryResult {
 	/** Estimated tokens after */
 	tokensAfter: number;
 }
+
+// ============================================================================
+// Classifier: Message Intent Classification
+// ============================================================================
+
+export enum IntentCategory {
+	BUG = "bug",
+	REQUIREMENT = "requirement",
+	EXPLORATION = "exploration",
+	CHITCHAT = "chitchat",
+}
+
+export interface ClassificationResult {
+	intent: IntentCategory;
+	confidence: number; // 0-1
+	reason: string;
+}
+
+export interface ClassifierConfig {
+	enabled: boolean;
+}
+
+export const DEFAULT_CLASSIFIER_CONFIG: ClassifierConfig = {
+	enabled: true,
+};
+
+// ============================================================================
+// Orchestration: Full Pipeline Configuration
+// ============================================================================
+
+export interface CompressionPipelineConfig {
+	persistence: PersistenceConfig;
+	lifecycle: LifecycleConfig;
+	summary: SummaryConfig;
+	classifier: ClassifierConfig;
+	/** Enable/disable entire pipeline */
+	enabled: boolean;
+}
+
+export const DEFAULT_COMPRESSION_PIPELINE_CONFIG: CompressionPipelineConfig = {
+	persistence: DEFAULT_PERSISTENCE_CONFIG,
+	lifecycle: DEFAULT_LIFECYCLE_CONFIG,
+	summary: DEFAULT_SUMMARY_CONFIG,
+	classifier: DEFAULT_CLASSIFIER_CONFIG,
+	enabled: true,
+};
+
+/** Result of running the full compression pipeline */
+export interface PipelineResult {
+	messages: AgentMessage[];
+	steps: {
+		persistence?: { persistedCount: number; bytesSaved: number };
+		lifecycle?: { degradedCount: number; clearedCount: number };
+		summary?: { summarizedCount: number };
+		classification?: { intent: string; confidence: number };
+	};
+	tokensBefore: number;
+	tokensAfter: number;
+	durationMs: number;
+}
