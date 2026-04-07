@@ -58,9 +58,9 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 			if (stepCount === 0) return undefined;
 
 			totalCompressions++;
-			const tokensAfter = estimateTokens(result.messages);
-			totalInputTokens += tokensBefore;
-			totalOutputTokens += tokensAfter;
+			const sizeAfter = estimateSize(result.messages);
+			totalInputTokens += sizeBefore;
+			totalOutputTokens += sizeAfter;
 
 			if (result.steps.lifecycle) {
 				totalCleared += result.steps.lifecycle.clearedCount + result.steps.lifecycle.degradedCount;
