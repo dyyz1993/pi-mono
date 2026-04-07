@@ -8,9 +8,9 @@
 
 import type { Diagnostic, JsonRpcConnection } from "./types.js";
 import { LANGUAGE_EXTENSIONS } from "./language.js";
-import path from "path";
+import * as path from "path";
 import { pathToFileURL, fileURLToPath } from "url";
-import fs from "fs/promises";
+import * as fs from "fs/promises";
 import type { ServerHandle } from "./types.js";
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150;
@@ -55,6 +55,10 @@ export class LspClient {
 
 	get diagnostics(): Map<string, Diagnostic[]> {
 		return this.diagnosticsMap;
+	}
+
+	get notify(): { open: (input: { path: string }) => Promise<void> } {
+		return { open: (input) => this.openFile(input) };
 	}
 
 	static async create(input: {
