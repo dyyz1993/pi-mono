@@ -7,7 +7,8 @@
       "capturedMessages": [
         "assistant-1775579648031",
         "user-1775579665207",
-        "assistant-1775579670024"
+        "assistant-1775579670024",
+        "assistant-1775579685849"
       ],
       "messageRoles": [
         [
@@ -41,6 +42,14 @@
         [
           "assistant-1775579670024",
           "assistant"
+        ],
+        [
+          "assistant-1775579683667",
+          "assistant"
+        ],
+        [
+          "assistant-1775579685849",
+          "assistant"
         ]
       ],
       "pendingMessages": [],
@@ -48,5 +57,5 @@
       "commitInFlight": false
     }
   },
-  "lastSaved": 1775579679287
+  "lastSaved": 1775579687206
 }
