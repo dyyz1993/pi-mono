@@ -109,6 +109,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		totalCleared = 0;
 		totalSummarized = 0;
 		ctx.ui.setStatus("ctx-compress", undefined);
+		ctx.ui.notify("[ctx-compress] extension loaded", "info");
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
