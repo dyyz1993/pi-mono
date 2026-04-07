@@ -204,8 +204,6 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
-		if (process.env.DEBUG_ANTHROPIC_REQUEST)
-			console.error("[ANTH-STREAM] streamAnthropic entered, require=", typeof require);
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
@@ -431,10 +429,6 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			if (process.env.DEBUG_ANTHROPIC_REQUEST) {
-				const errStr = error instanceof Error ? `${error.message}\n${error.stack}` : JSON.stringify(error);
-				console.error("[ANTH-DEBUG-ERROR]", errStr);
-			}
 			for (const block of output.content) delete (block as any).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);

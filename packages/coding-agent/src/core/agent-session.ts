@@ -331,9 +331,6 @@ export class AgentSession {
 		headers?: Record<string, string>;
 	}> {
 		const result = await this._modelRegistry.getApiKeyAndHeaders(model);
-		console.log(
-			`[DEBUG-AUTH] getApiKeyAndHeaders result: ok=${result.ok}, hasApiKey=!!result.apiKey, error=${(result as any).error}`,
-		);
 		if (!result.ok) {
 			throw new Error(result.error);
 		}
@@ -995,9 +992,6 @@ export class AgentSession {
 		}
 
 		if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
-			console.log(
-				`[DEBUG-NOAUTH] hasConfiguredAuth returned false for provider=${this.model.provider}, registry instance=${this._modelRegistry.constructor.name}`,
-			);
 			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
 			if (isOAuth) {
 				throw new Error(

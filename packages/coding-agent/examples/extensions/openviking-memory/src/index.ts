@@ -37,14 +37,7 @@ import { registerTools } from "./tools.js";
 
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 
-import("fs")
-	.then((fs) => fs.writeFileSync("/tmp/ov-ext-module.log", `Module loaded at ${new Date().toISOString()}\n`))
-	.catch(() => {});
-
 export default function openVikingMemoryExtension(pi: ExtensionAPI) {
-	import("fs")
-		.then((fs) => fs.writeFileSync("/tmp/ov-ext-debug.log", `Extension called at ${new Date().toISOString()}\n`))
-		.catch(() => {});
 	// Extension loaded successfully (debug: remove this in production)
 	pi.registerProvider("glm", {
 		baseUrl: "https://modelservice.jdcloud.com/coding/anthropic",
@@ -85,13 +78,7 @@ export default function openVikingMemoryExtension(pi: ExtensionAPI) {
 		})
 		.catch(() => {});
 
-	console.log("[OV-EXT] Calling registerTools...");
-	try {
-		registerTools(pi, config);
-		console.log("[OV-EXT] registerTools completed successfully");
-	} catch (err) {
-		console.error("[OV-EXT] registerTools FAILED:", err);
-	}
+	registerTools(pi, config);
 
 	// ====================================================================
 	// Event Handlers

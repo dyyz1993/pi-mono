@@ -68,7 +68,6 @@ function commitResultJson(n: number, sessionId: string, status: string, task_id:
 }
 
 export function registerTools(pi: ExtensionAPI, config: OpenVikingConfig): void {
-	console.log("[OV-TOOLS] registerTools called, pi.registerTool type:", typeof pi.registerTool);
 	pi.registerTool(
 		defineTool({
 			name: "memread",
