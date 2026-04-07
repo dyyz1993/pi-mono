@@ -56,10 +56,14 @@ fi
 export PI_CACHE_RETENTION=none
 export DEBUG_ANTHROPIC_REQUEST=1
 
+echo "PI-TEST: Starting pi at $(date)" > /tmp/pi-test-debug.log 2>&1
+echo "PI-TEST: DEBUG_ANTHROPIC_REQUEST=$DEBUG_ANTHROPIC_REQUEST" >> /tmp/pi-test-debug.log 2>&1
+echo "PI-TEST: CWD=$(pwd)" >> /tmp/pi-test-debug.log 2>&1
+
 TSX_BIN="$SCRIPT_DIR/node_modules/.bin/tsx"
 if [[ ! -x "$TSX_BIN" ]]; then
   echo "tsx not found at $TSX_BIN. Run npm install from the repo root first." >&2
   exit 1
 fi
 
-"$TSX_BIN" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}
+"$TSX_BIN" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"} 2>/tmp/pi-stderr.log
