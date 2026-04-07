@@ -240,8 +240,11 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 									partialArgs: "",
 								};
 								output.content.push(block);
-								const mapKey = toolCall.id || `__idx_${toolCall.index ?? output.content.length}`;
-								activeToolCalls.set(mapKey, block);
+								// Register under both ID and index so subsequent chunks can find us
+								// even if the provider sends null id/name in later deltas
+								if (toolCall.id) activeToolCalls.set(toolCall.id, block);
+								const idxKey = `__idx_${toolCall.index ?? output.content.length}`;
+								activeToolCalls.set(idxKey, block);
 								stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
 								currentBlock = block;
 							} else {
