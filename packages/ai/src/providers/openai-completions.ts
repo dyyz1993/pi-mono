@@ -259,7 +259,16 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 								if (toolCall.function?.arguments) {
 									delta = toolCall.function.arguments;
 									block.partialArgs += toolCall.function.arguments;
+									console.error(
+										"[TOOL-CALL-FIX] name:",
+										block.name,
+										"delta:",
+										delta,
+										"partialArgs:",
+										block.partialArgs,
+									);
 									block.arguments = parseStreamingJson(block.partialArgs);
+									console.error("[TOOL-CALL-FIX] parsed args:", JSON.stringify(block.arguments));
 								}
 								stream.push({
 									type: "toolcall_delta",
