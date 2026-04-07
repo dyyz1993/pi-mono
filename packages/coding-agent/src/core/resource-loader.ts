@@ -316,11 +316,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	async reload(): Promise<void> {
 		const resolvedPaths = await this.packageManager.resolve();
-		console.log("[DEBUG-RL] additionalExtensionPaths:", JSON.stringify(this.additionalExtensionPaths));
 		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
-		console.log("[DEBUG-RL] cliExtensionPaths:", JSON.stringify(cliExtensionPaths, null, 2));
 		const metadataByPath = new Map<string, PathMetadata>();
 
 		this.extensionSkillSourceInfos = new Map();
