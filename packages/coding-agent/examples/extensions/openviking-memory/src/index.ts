@@ -78,7 +78,13 @@ export default function openVikingMemoryExtension(pi: ExtensionAPI) {
 		})
 		.catch(() => {});
 
-	registerTools(pi, config);
+	console.log("[OV-EXT] Calling registerTools...");
+	try {
+		registerTools(pi, config);
+		console.log("[OV-EXT] registerTools completed successfully");
+	} catch (err) {
+		console.error("[OV-EXT] registerTools FAILED:", err);
+	}
 
 	// ====================================================================
 	// Event Handlers
