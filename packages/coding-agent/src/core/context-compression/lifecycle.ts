@@ -236,7 +236,7 @@ function extractToolResults(messages: AgentMessage[], config: LifecycleConfig): 
 		const timestamp = (msg as unknown as { timestamp?: number })?.timestamp ?? Date.now();
 		const size = Buffer.byteLength(content, "utf-8");
 		// Resolve priority here so clearThreshold path can use it
-		const resolvedPriority = getToolPriority(toolName, config);
+		const resolvedPriority = adjustPriorityByContent(toolName, content);
 
 		entries.push({
 			id: `${i}-${toolName}`,
