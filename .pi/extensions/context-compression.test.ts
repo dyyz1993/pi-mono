@@ -4,52 +4,21 @@
  * These tests verify the extension's behavior when integrated with the
  * compressContext pipeline. They mock the compressContext function to
  * test the extension logic independently.
+ *
+ * NOTE: Vitest mock hoisting requires manual mock management.
  */
 
-import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import type { ExtensionAPI, AgentMessage, ToolResultMessage } from "@mariozechner/pi-coding-agent";
 
-// Mock compressContext
+// Create mock function that will be hoisted
 const mockCompressContext = vi.fn();
-vi.mock("../../packages/coding-agent/src/core/context-compression/index.js", () => ({
-	compressContext: (...args: unknown[]) => mockCompressContext(...args),
-}));
 
-// Mock types
-vi.mock("../../packages/coding-agent/src/core/context-compression/types.js", () => ({
-	DEFAULT_COMPRESSION_PIPELINE_CONFIG: {
-		persistence: {
-			largeThreshold: 51200,
-			stubPreviewSize: 2048,
-			cacheDir: "/tmp/pi-context-compression",
-			exemptTools: new Set(["read", "cat", "view", "open"]),
-		},
-		lifecycle: {
-			keepRecent: 5,
-			staleMinutes: 60,
-			toolPriority: {},
-			enabled: true,
-		},
-		summary: {
-			maxLines: 20,
-			truncateLine: 120,
-			enabled: true,
-		},
-		classifier: {
-			enabled: true,
-		},
-		scoring: {
-			enabled: true,
-		},
-		enabled: true,
-	},
-	STRATEGY_LABELS: {
-		protected: "protected",
-		persist: "persist",
-		summary: "summary",
-		persist_short: "persist_short",
-		drop: "drop",
-	},
+// Mock the entire @mariozechner/pi-coding-agent module
+vi.mock("@mariozechner/pi-coding-agent", () => ({
+	compressContext: (...args: unknown[]) => mockCompressContext(...args),
+	// Export types as undefined (they're only used for TypeScript)
+	// The actual runtime doesn't need them
 }));
 
 // Import after mocking
