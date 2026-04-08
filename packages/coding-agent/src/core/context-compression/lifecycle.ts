@@ -232,7 +232,7 @@ interface IndexedEntry extends ToolResultEntry {
 	messageIndex: number;
 }
 
-function extractToolResults(messages: AgentMessage[], config: LifecycleConfig): IndexedEntry[] {
+function extractToolResults(messages: AgentMessage[], _config: LifecycleConfig): IndexedEntry[] {
 	const entries: IndexedEntry[] = [];
 
 	for (let i = 0; i < messages.length; i++) {
