@@ -1,25 +1,30 @@
 /**
  * Context Compression Pipeline - Orchestration Layer
  *
- * Runs the 5-layer compression in sequence:
- *   L0: Persistence (large results → disk, stub in context)
- *   L1: Lifecycle count (keep recent N, degrade old)
- *   L2: Lifecycle time (clear stale results)
- *   L3: Zero-cost summary (structured extraction, no LLM)
- *   Classifier: Intent classification (for downstream decisions)
+ * Compression strategies:
+ * - Scoring: Intelligent per-tool-result scoring (Score = BaseScore + SizeBonus + AgePenalty + RepeatPenalty + ContentBonus)
+ * - L0: Persistence (large results → disk, stub in context)
+ * - L1: Lifecycle count (keep recent N, degrade old)
+ * - L2: Lifecycle time (clear stale results)
+ * - L3: Zero-cost summary (structured extraction, no LLM)
+ * - Classifier: Intent classification (for downstream decisions)
+ *
+ * When scoring is enabled, it takes precedence over L0/L1/L2/L3.
  */
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { classifyConversation } from "./classifier.js";
 import { applyLifecycle, estimateTokens } from "./lifecycle.js";
 import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded, rollbackStats, snapshotStats } from "./persistence.js";
-import { applySummary } from "./summary.js";
+import { scoreAllToolResults, scoreToolResult, STRATEGY_LABELS, type CompressionStrategy } from "./scoring.js";
+import { summarizeToolResult } from "./summary.js";
 import {
 	type CompressionPipelineConfig,
 	DEFAULT_COMPRESSION_PIPELINE_CONFIG,
 	IntentCategory,
 	type LifecycleConfig,
 	type PipelineResult,
+	type ScoredToolResult,
 	type SummaryConfig,
 } from "./types.js";
 
