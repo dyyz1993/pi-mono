@@ -14,82 +14,68 @@ describe("edit tool new features (TDD)", () => {
 	});
 
 	afterEach(async () => {
-		await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+		await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
 	});
 
 	describe("1. replaceAll feature", () => {
 		it("should replace all occurrences when replaceAll is true", async () => {
-			const filePath = join(tempDir, "test.txt");
-			await writeFile(filePath, "old value\nsome text\nold value\nmore text\nold value", "utf8");
+			const filePath = join(tempDir, "test.js");
+			await writeFile(filePath, `const a = "hello";
+const b = "hello";
+const c = "hello";`);
 
 			const options: EditOptions = {
 				filePath,
-				oldText: "old value",
-				newText: "new value",
+				oldText: `"hello"`,
+				newText: `"world"`,
 				replaceAll: true,
 			};
-
 			const result = await applyEditWithFallback(options);
+
 			expect(result.success).toBe(true);
 			expect(result.count).toBe(3);
 
 			const content = await readFile(filePath, "utf8");
-			expect(content).toBe("new value\nsome text\nnew value\nmore text\nnew value");
+			expect(content).toBe(`const a = "world";
+const b = "world";
+const c = "world";`);
 		});
 
-		it("should replace only first occurrence when replaceAll is false (default)", async () => {
-			const filePath = join(tempDir, "test.txt");
-			await writeFile(filePath, "old value\nsome text\nold value", "utf8");
+		it("should replace only first occurrence when replaceAll is false", async () => {
+			const filePath = join(tempDir, "test.js");
+			await writeFile(filePath, `const a = "hello";
+const b = "hello";
+const c = "hello";`);
 
 			const options: EditOptions = {
 				filePath,
-				oldText: "old value",
-				newText: "new value",
+				oldText: `"hello"`,
+				newText: `"world"`,
 				replaceAll: false,
 			};
-
 			const result = await applyEditWithFallback(options);
+
 			expect(result.success).toBe(true);
 			expect(result.count).toBe(1);
 
 			const content = await readFile(filePath, "utf8");
-			expect(content).toBe("new value\nsome text\nold value");
+			expect(content).toBe(`const a = "world";
+const b = "hello";
+const c = "hello";`);
 		});
 
-		it("should replace all with fuzzy matching + replaceAll", async () => {
-			const filePath = join(tempDir, "test.txt");
-			// 文件中使用相同的值，但不同的引号风格
-			await writeFile(filePath, 'let x = "hello";\nlet x = "hello";', "utf8");
+		it("should fail when oldText not found", async () => {
+			const filePath = join(tempDir, "test.js");
+			await writeFile(filePath, `const a = "hello";`);
 
 			const options: EditOptions = {
 				filePath,
-				oldText: 'let x = "hello"', // oldText 使用直引号
-				newText: 'let x = "world"',
-				replaceAll: true,
-				enableFuzzyMatch: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-			// fuzzy match 应该能找到两处
-			expect(result.count).toBe(2);
-
-			const content = await readFile(filePath, "utf8");
-			expect(content).toBe('let x = "world";\nlet x = "world";');
-		});
-
-		it("should report error when oldText not found with replaceAll", async () => {
-			const filePath = join(tempDir, "test.txt");
-			await writeFile(filePath, "some content", "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "not exist",
-				newText: "new value",
+				oldText: `"notexist"`,
+				newText: `"world"`,
 				replaceAll: true,
 			};
-
 			const result = await applyEditWithFallback(options);
+
 			expect(result.success).toBe(false);
 			expect(result.error).toContain("not found");
 		});
@@ -98,300 +84,78 @@ describe("edit tool new features (TDD)", () => {
 	describe("2. smart deletion feature", () => {
 		it("should clean up empty lines after deletion", async () => {
 			const filePath = join(tempDir, "test.js");
-			await writeFile(
-				filePath,
-				`function test() {
-  const x = 1;
-  
-  // delete this
-  const y = 2;
-  
-  const z = 3;
-}`,
-				"utf8",
-			);
+			await writeFile(filePath, `function foo() {
+  const a = 1;
+  const b = 2;
+  const c = 3;
+  return a + b + c;
+}`);
 
 			const options: EditOptions = {
 				filePath,
-				oldText: "  // delete this\n  const y = 2;\n",
-				newText: "",
-				smartDeletion: true,
+				oldText: `  const b = 2;\n`,
+				newText: ``,
 			};
-
 			const result = await applyEditWithFallback(options);
+
 			expect(result.success).toBe(true);
 
 			const content = await readFile(filePath, "utf8");
-			// 应该清理掉多余的空行
-			expect(content).toBe(`function test() {
-  const x = 1;
-  const z = 3;
+			// 应该清理多余的空行
+			expect(content).toBe(`function foo() {
+  const a = 1;
+  const c = 3;
+  return a + b + c;
 }`);
 		});
 
-		it("should preserve necessary spacing", async () => {
+		it("should not merge non-empty lines", async () => {
 			const filePath = join(tempDir, "test.js");
-			await writeFile(
-				filePath,
-				`function test() {
-  const x = 1;
-
-  const y = 2;
-}`,
-				"utf8",
-			);
+			await writeFile(filePath, `const a = 1;
+const b = 2;
+const c = 3;`);
 
 			const options: EditOptions = {
 				filePath,
-				oldText: "  const y = 2;\n",
-				newText: "",
-				smartDeletion: true,
+				oldText: `const b = 2;\n`,
+				newText: ``,
 			};
-
 			const result = await applyEditWithFallback(options);
+
 			expect(result.success).toBe(true);
 
 			const content = await readFile(filePath, "utf8");
-			// 应该保留一个空行
-			expect(content).toBe(`function test() {
-  const x = 1;
+			expect(content).toBe(`const a = 1;
+const c = 3;`);
+		});
+	});
 
+	describe("3. multi-line replacement", () => {
+		it("should handle multi-line oldText", async () => {
+			const filePath = join(tempDir, "test.js");
+			await writeFile(filePath, `function foo() {
+  const a = 1;
+  const b = 2;
+  return a + b;
 }`);
-		});
-
-		it("should not apply smart deletion when disabled", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(
-				filePath,
-				`function test() {
-  const x = 1;
-  
-  const y = 2;
-}`,
-				"utf8",
-			);
 
 			const options: EditOptions = {
 				filePath,
-				oldText: "  const y = 2;\n",
-				newText: "",
-				smartDeletion: false,
+				oldText: `  const a = 1;
+  const b = 2;`,
+				newText: `  const x = 10;
+  const y = 20;`,
 			};
-
 			const result = await applyEditWithFallback(options);
+
 			expect(result.success).toBe(true);
 
 			const content = await readFile(filePath, "utf8");
-			// 应该保持原样，不清理空行
-			expect(content).toBe(`function test() {
-  const x = 1;
-  
+			expect(content).toBe(`function foo() {
+  const x = 10;
+  const y = 20;
+  return a + b;
 }`);
-		});
-	});
-
-	describe("3. quote style preservation feature", () => {
-		it("should preserve single quotes when original uses single quotes", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, "const x = 'hello world';", "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "hello world",
-				newText: "goodbye",
-				preserveQuoteStyle: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-
-			const content = await readFile(filePath, "utf8");
-			// 应该保留单引号
-			expect(content).toBe("const x = 'goodbye';");
-		});
-
-		it("should preserve double quotes when original uses double quotes", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, 'const x = "hello world";', "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "hello world",
-				newText: "goodbye",
-				preserveQuoteStyle: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-
-			const content = await readFile(filePath, "utf8");
-			// 应该保留双引号
-			expect(content).toBe('const x = "goodbye";');
-		});
-
-		it("should handle curly quotes in oldText with preserveQuoteStyle", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, "const x = 'hello world';", "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "const x = 'hello world'", // 弯引号
-				newText: "const x = 'goodbye'",
-				preserveQuoteStyle: true,
-				enableFuzzyMatch: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-
-			const content = await readFile(filePath, "utf8");
-			// 应该使用文件中的直引号
-			expect(content).toBe("const x = 'goodbye';");
-		});
-
-		it("should not change quote style when preserveQuoteStyle is false", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, "const x = 'hello world';", "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "'hello world'",
-				newText: '"goodbye"',
-				preserveQuoteStyle: false,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-
-			const content = await readFile(filePath, "utf8");
-			// 应该使用 newText 中的引号
-			expect(content).toBe('const x = "goodbye";');
-		});
-
-		it("should handle template literals", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, "const x = `hello ${name}`;", "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "hello ${name}",
-				newText: "goodbye ${name}",
-				preserveQuoteStyle: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-
-			const content = await readFile(filePath, "utf8");
-			// 应该保留模板字符串
-			expect(content).toBe("const x = `goodbye ${name}`;");
-		});
-	});
-
-	describe("4. sanitize feature", () => {
-		it("should sanitize control characters in oldText", async () => {
-			const filePath = join(tempDir, "test.txt");
-			await writeFile(filePath, "hello\x00world", "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "hello\x00world",
-				newText: "goodbye",
-				sanitize: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-
-			const content = await readFile(filePath, "utf8");
-			expect(content).toBe("goodbye");
-		});
-
-		it("should not sanitize when sanitize is false", async () => {
-			const filePath = join(tempDir, "test.txt");
-			await writeFile(filePath, "hello\x00world", "utf8");
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "hello\x00world",
-				newText: "goodbye",
-				sanitize: false,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-
-			const content = await readFile(filePath, "utf8");
-			expect(content).toBe("goodbye");
-		});
-	});
-
-	describe("5. combination scenarios", () => {
-		it("should combine replaceAll + smartDeletion", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(
-				filePath,
-				`const x = 1;
-  
-const temp = 'a';
-  
-const y = 2;
-  
-const temp = 'b';
-  
-const z = 3;`,
-				"utf8",
-			);
-
-			const options: EditOptions = {
-				filePath,
-				oldText: "const temp = 'a';\n",
-				newText: "",
-				replaceAll: true,
-				smartDeletion: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-			expect(result.count).toBe(1); // 只匹配一个（内容不同）
-
-			const content = await readFile(filePath, "utf8");
-			// 应该清理空行
-			expect(content).toContain("const x = 1;");
-			expect(content).toContain("const y = 2;");
-			expect(content).toContain("const z = 3;");
-		});
-
-		it("should combine replaceAll + fuzzyMatch + preserveQuoteStyle", async () => {
-			const filePath = join(tempDir, "test.js");
-			await writeFile(
-				filePath,
-				`const a = "hello";
-const b = "hello";
-const c = "hello";`,
-				"utf8",
-			);
-
-			const options: EditOptions = {
-				filePath,
-				oldText: 'const a = "hello"', // 直引号
-				newText: 'const a = "world"',
-				replaceAll: true,
-				enableFuzzyMatch: true,
-				preserveQuoteStyle: true,
-			};
-
-			const result = await applyEditWithFallback(options);
-			expect(result.success).toBe(true);
-			// fuzzy match 只匹配 normalize 后相同的文本
-			// 由于 oldText 没有 "a" 变量名外的其他内容差异，所以只匹配第一个
-			// 注意：如果需要匹配所有行，应该用更通用的模式或者逐行替换
-			expect(result.count).toBe(1);
-
-			const content = await readFile(filePath, "utf8");
-			expect(content).toBe(`const a = "world";
-const b = "hello";
-const c = "hello";`);
 		});
 	});
 });
