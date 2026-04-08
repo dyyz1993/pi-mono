@@ -6,8 +6,8 @@
  */
 
 import * as fs from "fs";
-import * as path from "path";
 import { homedir } from "os";
+import * as path from "path";
 
 // ============================================================================
 // Types
@@ -106,14 +106,14 @@ class CompressionLogger {
 	private formatEntry(entry: CompressionLogEntry): string {
 		const header = `[${entry.timestamp}] [${entry.sessionId}] [${entry.phase.toUpperCase()}]`;
 		let line = `${header} ${entry.message}`;
-		
+
 		if (entry.details) {
 			const detailsStr = Object.entries(entry.details)
 				.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
 				.join(" ");
 			line += ` | ${detailsStr}`;
 		}
-		
+
 		return line;
 	}
 
@@ -172,7 +172,7 @@ class CompressionLogger {
 	 */
 	logIntent(intent: string, confidence: number): void {
 		if (!this.sessionLog) return;
-		
+
 		this.sessionLog.intent = intent;
 		this.sessionLog.intentConfidence = confidence;
 
@@ -263,7 +263,7 @@ class CompressionLogger {
 	 */
 	logError(phase: string, error: Error | string): void {
 		const errorMsg = error instanceof Error ? error.message : error;
-		
+
 		if (this.sessionLog) {
 			this.sessionLog.errors.push(`[${phase}] ${errorMsg}`);
 		}
@@ -361,11 +361,13 @@ class CompressionLogger {
 		if (log.toolResults.length > 0) {
 			lines.push(`📋 详细决策列表:`);
 			lines.push(``);
-			
+
 			for (const tr of log.toolResults) {
 				lines.push(`  ─────────────────────────────────────────`);
 				lines.push(`  [${tr.messageIndex}] ${tr.toolName} → ${tr.strategy.toUpperCase()}`);
-				lines.push(`  评分: ${tr.score}/100 (base=${tr.breakdown.base}, size=${tr.breakdown.size}, age=${tr.breakdown.age}, repeat=${tr.breakdown.repeat}, content=${tr.breakdown.content})`);
+				lines.push(
+					`  评分: ${tr.score}/100 (base=${tr.breakdown.base}, size=${tr.breakdown.size}, age=${tr.breakdown.age}, repeat=${tr.breakdown.repeat}, content=${tr.breakdown.content})`,
+				);
 				lines.push(`  原因: ${tr.reason}`);
 				lines.push(`  大小: ${tr.originalSize}B → ${tr.compressedSize}B (节省 ${tr.savedBytes}B)`);
 				lines.push(`  预览: ${tr.contentPreview}`);

@@ -22,7 +22,10 @@ const extractText = (content: unknown): string => {
 	}
 	if (Array.isArray(content)) {
 		return content
-			.filter((c): c is { type: "text"; text: string } => typeof c === "object" && c !== null && (c as any).type === "text")
+			.filter(
+				(c): c is { type: "text"; text: string } =>
+					typeof c === "object" && c !== null && (c as any).type === "text",
+			)
 			.map((c) => (c as { text: string }).text)
 			.join("");
 	}
@@ -35,7 +38,10 @@ const getMessageText = (msg: any): string => {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
 		return content
-			.filter((c): c is { type: "text"; text: string } => typeof c === "object" && c !== null && (c as any).type === "text")
+			.filter(
+				(c): c is { type: "text"; text: string } =>
+					typeof c === "object" && c !== null && (c as any).type === "text",
+			)
 			.map((c) => (c as { text: string }).text)
 			.join("");
 	}

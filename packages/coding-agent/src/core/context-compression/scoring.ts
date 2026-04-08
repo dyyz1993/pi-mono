@@ -282,7 +282,7 @@ export function checkForDuplicateReads(messages: AgentMessage[], currentIndex: n
 	const result = new Map<number, boolean>();
 	const currentMsg = messages[currentIndex];
 
-	if (currentMsg.role !== "toolResult") return result;
+	if ((currentMsg.role as string) !== "toolResult" && (currentMsg.role as string) !== "tool") return result;
 
 	const toolName = (currentMsg as unknown as { toolName?: string }).toolName ?? "";
 	if (!READABLE_TOOLS.has(toolName.toLowerCase())) return result;
@@ -292,7 +292,7 @@ export function checkForDuplicateReads(messages: AgentMessage[], currentIndex: n
 
 	for (let i = currentIndex + 1; i < messages.length; i++) {
 		const msg = messages[i];
-		if (msg.role !== "toolResult") continue;
+		if ((msg.role as string) !== "toolResult" && (msg.role as string) !== "tool") continue;
 
 		const otherTool = (msg as unknown as { toolName?: string }).toolName ?? "";
 		if (!READABLE_TOOLS.has(otherTool.toLowerCase())) continue;
@@ -325,7 +325,8 @@ export function scoreAllToolResults(messages: AgentMessage[], context: ScoringCo
 
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
-		if (msg.role !== "toolResult") continue;
+		const role = msg.role as string;
+		if (role !== "toolResult" && role !== "tool") continue;
 
 		const content = extractTextContent(msg);
 		if (content === null) continue;

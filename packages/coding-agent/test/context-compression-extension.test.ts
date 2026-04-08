@@ -8,8 +8,8 @@
  * NOTE: Vitest mock hoisting requires manual mock management.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
-import type { ExtensionAPI, AgentMessage, ToolResultMessage } from "@mariozechner/pi-coding-agent";
+import type { AgentMessage, ExtensionAPI, ToolResultMessage } from "@mariozechner/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 // Create mock function that will be hoisted
 const mockCompressContext = vi.fn();
@@ -331,10 +331,7 @@ describe("Context Compression Extension", () => {
 			await handler!(event2, ctx);
 
 			// Verify status shows cumulative statistics
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("压缩:2次"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("压缩:2次"));
 		});
 
 		it("should show percentage saved in status", async () => {
@@ -350,11 +347,7 @@ describe("Context Compression Extension", () => {
 			];
 
 			mockCompressContext.mockResolvedValueOnce({
-				messages: [
-					createUserMsg("hello"),
-					createAssistantMsg("hi"),
-					createToolResult("bash", compressedContent),
-				],
+				messages: [createUserMsg("hello"), createAssistantMsg("hi"), createToolResult("bash", compressedContent)],
 				steps: {
 					scoring: {
 						protectCount: 1,
@@ -372,10 +365,7 @@ describe("Context Compression Extension", () => {
 			await handler!(event, ctx);
 
 			// Should show approximately 66% saved (15KB -> 5KB)
-			expect(mockSetStatus).toHaveBeenCalledWith(
-				"ctx-compress",
-				expect.stringMatching(/节省[0-9]+%/),
-			);
+			expect(mockSetStatus).toHaveBeenCalledWith("ctx-compress", expect.stringMatching(/节省[0-9]+%/));
 		});
 	});
 
@@ -409,10 +399,7 @@ describe("Context Compression Extension", () => {
 			const result = (await handler!(event, ctx)) as { messages: AgentMessage[] };
 
 			expect(result).toBeDefined();
-			expect(mockNotify).toHaveBeenCalledWith(
-				expect.stringContaining("persist:2"),
-				"info",
-			);
+			expect(mockNotify).toHaveBeenCalledWith(expect.stringContaining("persist:2"), "info");
 		});
 
 		it("should handle compression results with classification step", async () => {
@@ -446,10 +433,7 @@ describe("Context Compression Extension", () => {
 			const result = (await handler!(event, ctx)) as { messages: AgentMessage[] };
 
 			expect(result).toBeDefined();
-			expect(mockNotify).toHaveBeenCalledWith(
-				expect.stringContaining("debugging"),
-				"info",
-			);
+			expect(mockNotify).toHaveBeenCalledWith(expect.stringContaining("debugging"), "info");
 		});
 	});
 
@@ -491,14 +475,8 @@ describe("Context Compression Extension", () => {
 			});
 			await handler!(event, ctx);
 
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("L0持久化"),
-			);
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("压缩:2次"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("L0持久化"));
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("压缩:2次"));
 		});
 
 		it("should accumulate L1/L2 lifecycle degraded and cleared stats", async () => {
@@ -524,10 +502,7 @@ describe("Context Compression Extension", () => {
 			const ctx = { ui: mockPI.ui };
 			await handler!(event, ctx);
 
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("L1/2降4清2"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("L1/2降4清2"));
 		});
 
 		it("should accumulate L3 summary stats", async () => {
@@ -553,10 +528,7 @@ describe("Context Compression Extension", () => {
 			const ctx = { ui: mockPI.ui };
 			await handler!(event, ctx);
 
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("L3摘5"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("L3摘5"));
 		});
 
 		it("should show all L0/L1/L2/L3 stats combined", async () => {
@@ -616,10 +588,7 @@ describe("Context Compression Extension", () => {
 			await contextHandler!({ messages }, { ui: mockPI.ui });
 
 			// Verify stats accumulated
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("L0持久化5"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("L0持久化5"));
 
 			// Reset
 			await agentStartHandler!({}, { ui: mockPI.ui });
@@ -636,15 +605,9 @@ describe("Context Compression Extension", () => {
 			await contextHandler!({ messages }, { ui: mockPI.ui });
 
 			// Stats should be reset, only showing new session stats
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("L0持久化1"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("L0持久化1"));
 			// Should NOT contain old session stats
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.not.stringContaining("L0持久化5"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.not.stringContaining("L0持久化5"));
 		});
 
 		it("should show scoring stats format when scoring step present", async () => {
@@ -676,22 +639,10 @@ describe("Context Compression Extension", () => {
 			const ctx = { ui: mockPI.ui };
 			await handler!(event, ctx);
 
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("保留2"),
-			);
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("持久化3"),
-			);
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("摘要4"),
-			);
-			expect(mockSetStatus).toHaveBeenLastCalledWith(
-				"ctx-compress",
-				expect.stringContaining("清理5"),
-			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("保留2"));
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("持久化3"));
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("摘要4"));
+			expect(mockSetStatus).toHaveBeenLastCalledWith("ctx-compress", expect.stringContaining("清理5"));
 		});
 
 		it("should accumulate scoring stats across multiple compressions", async () => {

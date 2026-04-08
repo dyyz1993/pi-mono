@@ -1,9 +1,9 @@
 /**
  * CLI command to view compression logs
- * 
+ *
  * Usage:
  *   pi compression-logs [options]
- * 
+ *
  * Options:
  *   --today         Show today's logs (default)
  *   --latest        Show the latest session summary
@@ -14,8 +14,8 @@
  */
 
 import * as fs from "fs";
-import * as path from "path";
 import { homedir } from "os";
+import * as path from "path";
 
 interface CompressionSessionLog {
 	sessionId: string;
@@ -273,9 +273,7 @@ export class CompressionLogsCLI {
 		console.log(`  Before Compression:    ${stats.totalTokensBefore.toLocaleString()}`);
 		console.log(`  After Compression:     ${stats.totalTokensAfter.toLocaleString()}`);
 		console.log(`  Total Saved:           ${stats.totalTokensSaved.toLocaleString()}`);
-		console.log(
-			`  Compression Ratio:     ${((stats.totalTokensSaved / stats.totalTokensBefore) * 100).toFixed(1)}%`,
-		);
+		console.log(`  Compression Ratio:     ${((stats.totalTokensSaved / stats.totalTokensBefore) * 100).toFixed(1)}%`);
 		console.log(`\n🎯 Strategies:`);
 		console.log(`  Protected:             ${stats.strategies.protected}`);
 		console.log(`  Persisted:             ${stats.strategies.persist}`);
@@ -287,7 +285,9 @@ export class CompressionLogsCLI {
 			.sort((a, b) => b[1].count - a[1].count)
 			.slice(0, 10);
 		for (const [tool, data] of sortedTools) {
-			console.log(`  ${tool.padEnd(20)} ${data.count.toString().padStart(5)} calls, ${(data.saved / 1024).toFixed(2)}KB saved`);
+			console.log(
+				`  ${tool.padEnd(20)} ${data.count.toString().padStart(5)} calls, ${(data.saved / 1024).toFixed(2)}KB saved`,
+			);
 		}
 		console.log("\n" + "═".repeat(80));
 	}

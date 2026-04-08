@@ -121,9 +121,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const input =
-				args ||
-				"How do I implement a binary search tree in JavaScript? Can you show me an example?";
+			const input = args || "How do I implement a binary search tree in JavaScript? Can you show me an example?";
 
 			ctx.ui.notify(`Classifying theme for:\n"${input}"`, "info");
 
@@ -192,7 +190,7 @@ Just reply with the summary, nothing else.`,
 
 			try {
 				await ctx.callModel({
-					// @ts-ignore - intentionally passing undefined to test error handling
+					// @ts-expect-error - intentionally passing undefined to test error handling
 					messages: [{ role: "user", content: "test" }],
 					speed: "off",
 				} as any);

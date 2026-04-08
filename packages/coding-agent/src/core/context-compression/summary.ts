@@ -41,7 +41,7 @@ function estimateTokens(messages: AgentMessage[]): number {
 						chars += ((block as { thinking?: string }).thinking ?? "").length;
 				}
 			}
-		} else if (msg.role === "toolResult") {
+		} else if (msg.role === "toolResult" || (msg.role as string) === "tool") {
 			const content = (msg as unknown as { content?: string | Array<{ type?: string; text?: string }> }).content;
 			if (typeof content === "string") chars += content.length;
 			else if (Array.isArray(content)) {
@@ -222,7 +222,7 @@ function extractGlobContent(_toolName: string, content: string, config: SummaryC
 	};
 
 	// Top extensions
-	const sortedExts = [...extMap.entries()].sort((a, b) => b[1] - a[1]);
+	const sortedExts = Array.from(extMap.entries()).sort((a, b) => b[1] - a[1]);
 	if (sortedExts.length > 0) {
 		metadata.types = sortedExts
 			.slice(0, 5)
@@ -437,7 +437,7 @@ export async function applySummary(
 	let summarizedCount = 0;
 
 	const modifiedMessages = messages.map((msg) => {
-		if (msg.role !== "toolResult") return msg;
+		if (msg.role !== "toolResult" && (msg.role as string) !== "tool") return msg;
 
 		const content = extractTextContent(msg);
 		if (content === null) return msg; // Already summarized or non-text
