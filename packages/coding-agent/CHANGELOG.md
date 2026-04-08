@@ -4,13 +4,32 @@
 
 ### Added
 
-- Added `BashManager` plugin for tracking and managing bash processes. Provides:
+- Five-layer context compression system (`src/core/context-compression/`) for intelligent tool result management:
+  - **L0 Persistence**: Large results (>50KB) written to disk with lightweight stubs in context
+  - **L1 Lifecycle (count)**: Keeps recent N results intact, degrades older ones to stubs, clears far-excess
+  - **L2 Lifecycle (time)**: Clears stale results exceeding configurable time threshold (default 60min)
+  - **L3 Zero-cost summary**: Structured note extraction per tool type (bash/grep/read/git/etc.) without LLM calls
+  - **Intent classifier**: Categorizes conversation as bug-fix/requirement/exploration/chitchat for adaptive behavior
+  - **Content-aware priority**: Dynamically adjusts compression priority based on output content (error traces → CRITICAL, file listings → DISCARDABLE, test failures → IMPORTANT)
+  - **Pipeline orchestrator**: Chains L0→L1→L2→L3 with error isolation and rollback on layer failure
+- Context compression extension (`.pi/extensions/context-compression.ts`) integrating into pi `context` hook with status bar showing compression count, savings percentage, and cleared/summarized counts
+- `BashManager` plugin for tracking and managing bash processes. Provides:
   - Process tracking with associated agent IDs
   - Status monitoring (running/stopped/killed)
   - Runtime and countdown tracking
   - Event subscription system (`bash_start`, `bash_update`, `bash_end`, `bash_killed`, `bash_error`)
   - Kill support for terminating processes
   - Global singleton via `getGlobalBashManager()`
+
+### Fixed
+
+- Fixed `formatSize()` syntax error in lifecycle.ts that prevented module loading
+- Fixed clearThreshold path bypassing priority system, allowing write/edit results to be incorrectly cleared
+- Fixed L0 persistence using overly permissive file permissions (0o666 → 0o700 dirs, 0o600 files)
+- Fixed orphaned temp file accumulation from L0 persistence crashes via cleanupOrphanedFiles()
+- Fixed rebuildMessages toolName case-sensitivity mismatch causing entry lookup failures
+- Fixed pipeline layer failure leaking partially-modified messages to subsequent layers (added rollback)
+- Fixed extension skipping compression when messages.length < 5 even when containing large results
 
 ## [0.52.10] - 2026-02-12
 

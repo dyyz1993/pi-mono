@@ -164,4 +164,31 @@ describe("Compression Pipeline: Orchestration (L0→L1→L2→L3)", () => {
 		const elapsed = Date.now() - start;
 		expect(elapsed).toBeLessThan(1000);
 	});
+
+	it("should report accurate token estimates (tokensAfter <= tokensBefore)", async () => {
+		const messages: AgentMessage[] = [];
+		for (let i = 0; i < 15; i++) {
+			messages.push(createUserMsg(`q${i}`));
+			messages.push(createAssistantWithTools(`a${i}`, [{ name: "bash" }]));
+			messages.push(createToolResult("bash", `large output ${i}\n`.repeat(300)));
+		}
+		const result = await compressContext(messages);
+
+		expect(result.tokensBefore).toBeGreaterThan(0);
+		expect(result.tokensAfter).toBeLessThanOrEqual(result.tokensBefore);
+		expect(result.tokensAfter).toBeGreaterThanOrEqual(0);
+	});
+
+	it("should return equal tokens when disabled", async () => {
+		const messages: AgentMessage[] = [
+			createUserMsg("hello"),
+			createAssistantWithTools("hi", [{ name: "bash" }]),
+			createToolResult("bash", "output\n".repeat(500)),
+		];
+		const config = createPipelineConfig({ enabled: false });
+		const result = await compressContext(messages, config);
+
+		expect(result.tokensBefore).toBe(result.tokensAfter);
+		expect(result.tokensBefore).toBeGreaterThan(0);
+	});
 });

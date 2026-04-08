@@ -21,7 +21,7 @@ import {
 // Token estimation (simple char/4 heuristic)
 // ============================================================================
 
-function estimateTokens(messages: AgentMessage[]): number {
+export function estimateTokens(messages: AgentMessage[]): number {
 	let chars = 0;
 	for (const msg of messages) {
 		if (msg.role === "user") {

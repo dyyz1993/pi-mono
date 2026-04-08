@@ -11,7 +11,7 @@
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { classifyConversation } from "./classifier.js";
-import { applyLifecycle } from "./lifecycle.js";
+import { applyLifecycle, estimateTokens } from "./lifecycle.js";
 import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded } from "./persistence.js";
 import { applySummary } from "./summary.js";
 import { type CompressionPipelineConfig, DEFAULT_COMPRESSION_PIPELINE_CONFIG, type PipelineResult } from "./types.js";
@@ -33,12 +33,14 @@ export async function compressContext(
 ): Promise<PipelineResult> {
 	const startTime = Date.now();
 
+	const tokensBefore = estimateTokens(messages);
+
 	if (!config.enabled) {
 		return {
 			messages,
 			steps: {},
-			tokensBefore: 0,
-			tokensAfter: 0,
+			tokensBefore,
+			tokensAfter: tokensBefore,
 			durationMs: Date.now() - startTime,
 		};
 	}
@@ -178,8 +180,8 @@ export async function compressContext(
 	return {
 		messages: lastSuccessfulMessages,
 		steps,
-		tokensBefore: 0, // Estimated at higher level if needed
-		tokensAfter: 0,
+		tokensBefore,
+		tokensAfter: estimateTokens(lastSuccessfulMessages),
 		durationMs: Date.now() - startTime,
 	};
 }
@@ -199,6 +201,6 @@ function extractToolContent(msg: AgentMessage): string | null {
 }
 
 export { classifyConversation, classifyMessage } from "./classifier.js";
-export { applyLifecycle } from "./lifecycle.js";
+export { applyLifecycle, estimateTokens } from "./lifecycle.js";
 export { cleanupOldFiles, persistIfNeeded, readPersistedFile } from "./persistence.js";
 export { summarizeToolResult } from "./summary.js";
