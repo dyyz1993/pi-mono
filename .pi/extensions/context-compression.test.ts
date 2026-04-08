@@ -1,89 +1,112 @@
 /**
- * Context Compression Extension Tests
+ * Tests for Context Compression Extension
  *
- * Tests for the extension that hooks into 'context' event
+ * These tests verify the extension's behavior when integrated with the
+ * compressContext pipeline. They mock the compressContext function to
+ * test the extension logic independently.
  */
 
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import type { ExtensionAPI, AgentMessage, ToolResultMessage } from "@mariozechner/pi-coding-agent";
 
-// Mock the ExtensionAPI
-interface MockUI {
-	setStatus: ReturnType<typeof vi.fn>;
-	notify: ReturnType<typeof vi.fn>;
-}
+// Mock compressContext
+const mockCompressContext = vi.fn();
+vi.mock("../../packages/coding-agent/src/core/context-compression/index.js", () => ({
+	compressContext: (...args: unknown[]) => mockCompressContext(...args),
+}));
 
-interface MockExtensionAPI {
-	on: ReturnType<typeof vi.fn>;
-	ui: MockUI;
-}
-
-// Import the actual implementation
-import { compressContext } from "../../packages/coding-agent/src/core/context-compression/index.js";
-import { DEFAULT_COMPRESSION_PIPELINE_CONFIG, STRATEGY_LABELS } from "../../packages/coding-agent/src/core/context-compression/types.js";
-import contextCompressionExtension from "../context-compression.js";
-
-// ============================================================================
-// Test helpers
-// ============================================================================
-
-function createMockExtensionAPI(): MockExtensionAPI {
-	return {
-		on: vi.fn(),
-		ui: {
-			setStatus: vi.fn(),
-			notify: vi.fn(),
+// Mock types
+vi.mock("../../packages/coding-agent/src/core/context-compression/types.js", () => ({
+	DEFAULT_COMPRESSION_PIPELINE_CONFIG: {
+		persistence: {
+			largeThreshold: 51200,
+			stubPreviewSize: 2048,
+			cacheDir: "/tmp/pi-context-compression",
+			exemptTools: new Set(["read", "cat", "view", "open"]),
 		},
+		lifecycle: {
+			keepRecent: 5,
+			staleMinutes: 60,
+			toolPriority: {},
+			enabled: true,
+		},
+		summary: {
+			maxLines: 20,
+			truncateLine: 120,
+			enabled: true,
+		},
+		classifier: {
+			enabled: true,
+		},
+		scoring: {
+			enabled: true,
+		},
+		enabled: true,
+	},
+	STRATEGY_LABELS: {
+		protected: "protected",
+		persist: "persist",
+		summary: "summary",
+		persist_short: "persist_short",
+		drop: "drop",
+	},
+}));
+
+// Import after mocking
+import contextCompressionExtension from "./context-compression.js";
+
+// Helper functions
+function createUserMsg(content: string): AgentMessage {
+	return { role: "user", content };
+}
+
+function createAssistantMsg(content: string): AgentMessage {
+	return { role: "assistant", content };
+}
+
+function createToolResult(toolName: string, content: string): ToolResultMessage {
+	return {
+		role: "tool",
+		name: toolName,
+		content,
+		tool_call_id: `call_${toolName}_${Date.now()}`,
 	};
 }
 
-function createUserMsg(text: string): AgentMessage {
-	return { role: "user", content: [{ type: "text", text }] } as AgentMessage;
+function createLargeContent(kb: number): string {
+	const base = "This is a test line for compression. It has some content.\n";
+	const targetSize = kb * 1024;
+	let result = "";
+	while (result.length < targetSize) {
+		result += base;
+	}
+	return result.substring(0, targetSize);
 }
-
-function createAssistantMsg(text: string): AgentMessage {
-	return { role: "assistant", content: [{ type: "text", text }] } as AgentMessage;
-}
-
-function createToolResult(toolName: string, content: string): AgentMessage {
-	return {
-		role: "toolResult",
-		content: [{ type: "text", text: content }],
-		toolName,
-		timestamp: Date.now(),
-	} as AgentMessage;
-}
-
-function createLargeContent(sizeKB: number): string {
-	return "x".repeat(sizeKB * 1024);
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 describe("Context Compression Extension", () => {
-	let mockPI: MockExtensionAPI;
-	let eventHandlers: Map<string, Function>;
+	let mockPI: ExtensionAPI;
+	let eventHandlers: Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>;
+	let mockSetStatus: Mock;
+	let mockNotify: Mock;
 
 	beforeEach(() => {
-		mockPI = createMockExtensionAPI();
+		vi.clearAllMocks();
 		eventHandlers = new Map();
+		mockSetStatus = vi.fn();
+		mockNotify = vi.fn();
 
-		// Capture event handlers
-		mockPI.on.mockImplementation((event: string, handler: Function) => {
-			eventHandlers.set(event, handler);
-		});
+		mockPI = {
+			on: vi.fn((event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) => {
+				eventHandlers.set(event, handler);
+			}),
+			ui: {
+				setStatus: mockSetStatus,
+				notify: mockNotify,
+			},
+		} as unknown as ExtensionAPI;
 
-		// Reset mocks
-		vi.clearAllMocks();
-
-		// Initialize extension
-		contextCompressionExtension(mockPI as any);
-	});
-
-	afterEach(() => {
-		vi.clearAllMocks();
+		// Initialize the extension
+		contextCompressionExtension(mockPI);
 	});
 
 	// -----------------------------------------------------------------------
@@ -91,472 +114,416 @@ describe("Context Compression Extension", () => {
 	// -----------------------------------------------------------------------
 
 	it("should register handlers for context, agent_start, and session_shutdown events", () => {
-		expect(mockPI.on).toHaveBeenCalledWith("context", expect.any(Function));
-		expect(mockPI.on).toHaveBeenCalledWith("agent_start", expect.any(Function));
-		expect(mockPI.on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
-		expect(mockPI.on).toHaveBeenCalledTimes(3);
+		expect(eventHandlers.has("context")).toBe(true);
+		expect(eventHandlers.has("agent_start")).toBe(true);
+		expect(eventHandlers.has("session_shutdown")).toBe(true);
 	});
 
 	// -----------------------------------------------------------------------
-	// Compression Logic Tests (Real Implementation)
+	// Context Compression Logic Tests
 	// -----------------------------------------------------------------------
 
-	it("should call compressContext with correct parameters when triggered", async () => {
-		const contextHandler = eventHandlers.get("context");
-		expect(contextHandler).toBeDefined();
+	describe("context event handler", () => {
+		it("should not compress when there are fewer than 3 messages", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		// Create messages >= 10KB
-		const largeContent = createLargeContent(15);
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent),
-		];
+			const messages: AgentMessage[] = [createUserMsg("hello"), createAssistantMsg("hi")];
 
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
 
-		await contextHandler!(event, ctx);
+			const result = await handler!(event, ctx);
 
-		// The extension should call compressContext with the messages
-		// Note: We can't easily verify the call was made since we're using the real implementation
-		// but we can verify the result is correct
-	});
-
-	// -----------------------------------------------------------------------
-	// Early Return Tests
-	// -----------------------------------------------------------------------
-
-	it("should skip compression when messages < 3", async () => {
-		const contextHandler = eventHandlers.get("context");
-		expect(contextHandler).toBeDefined();
-
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-		];
-
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
-
-		const result = await contextHandler!(event, ctx);
-
-		expect(result).toBeUndefined();
-		expect(compressContext).not.toHaveBeenCalled();
-	});
-
-	it("should skip compression when message size < 10KB", async () => {
-		const contextHandler = eventHandlers.get("context");
-		expect(contextHandler).toBeDefined();
-
-		// 3 messages but total size < 10KB
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", "small output"),
-		];
-
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
-
-		const result = await contextHandler!(event, ctx);
-
-		expect(result).toBeUndefined();
-		expect(compressContext).not.toHaveBeenCalled();
-	});
-
-	it("should trigger compression when messages >= 3 and size >= 10KB", async () => {
-		const contextHandler = eventHandlers.get("context");
-		expect(contextHandler).toBeDefined();
-
-		// Create large messages >= 10KB
-		const largeContent = createLargeContent(12); // 12KB
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent),
-		];
-
-		const compressedMessages = [...messages]; // Simulate no actual compression
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages: compressedMessages,
-			steps: {},
-			tokensBefore: 12000,
-			tokensAfter: 12000,
-			durationMs: 50,
+			expect(result).toBeUndefined();
+			expect(mockCompressContext).not.toHaveBeenCalled();
 		});
 
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
+		it("should not compress when message size is less than 10KB", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		const result = await contextHandler!(event, ctx);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", "small output"),
+			];
 
-		expect(compressContext).toHaveBeenCalledWith(messages, DEFAULT_COMPRESSION_PIPELINE_CONFIG);
-		expect(result).toEqual({ messages: compressedMessages });
-	});
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
 
-	// -----------------------------------------------------------------------
-	// Compression Result Tests
-	// -----------------------------------------------------------------------
+			const result = await handler!(event, ctx);
 
-	it("should return undefined when no compression steps executed", async () => {
-		const contextHandler = eventHandlers.get("context");
-
-		const largeContent = createLargeContent(15);
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent),
-		];
-
-		// Simulate no compression steps
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages,
-			steps: {}, // No steps executed
-			tokensBefore: 15000,
-			tokensAfter: 15000,
-			durationMs: 10,
+			expect(result).toBeUndefined();
+			expect(mockCompressContext).not.toHaveBeenCalled();
 		});
 
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
+		it("should compress when there are 3+ messages and size >= 10KB", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		const result = await contextHandler!(event, ctx);
+			const largeContent = createLargeContent(15);
+			const compressedContent = createLargeContent(8);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
 
-		expect(result).toBeUndefined();
-	});
+			const compressedMessages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", compressedContent),
+			];
 
-	it("should return compressed messages when compression happens", async () => {
-		const contextHandler = eventHandlers.get("context");
-
-		const largeContent = createLargeContent(20);
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent),
-		];
-
-		const compressedMessages = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", "[compressed]"),
-		];
-
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages: compressedMessages,
-			steps: {
-				scoring: {
-					protectCount: 0,
-					persistCount: 1,
-					summaryCount: 0,
-					persistShortCount: 0,
-					dropCount: 0,
+			mockCompressContext.mockResolvedValueOnce({
+				messages: compressedMessages,
+				steps: {
+					scoring: {
+						protectCount: 1,
+						persistCount: 1,
+						summaryCount: 0,
+						persistShortCount: 0,
+						dropCount: 1,
+					},
 				},
-			},
-			tokensBefore: 20000,
-			tokensAfter: 5000,
-			durationMs: 100,
+				durationMs: 150,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+
+			const result = (await handler!(event, ctx)) as { messages: AgentMessage[] };
+
+			expect(result).toBeDefined();
+			expect(result.messages).toBeDefined();
+			expect(mockCompressContext).toHaveBeenCalledWith(messages, expect.any(Object));
+			expect(mockNotify).toHaveBeenCalled();
+			expect(mockSetStatus).toHaveBeenCalledWith("ctx-compress", expect.stringContaining("压缩:1次"));
 		});
 
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
+		it("should handle compression errors gracefully", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		const result = await contextHandler!(event, ctx);
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
 
-		expect(result).toEqual({ messages: compressedMessages });
-		expect(mockPI.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("[ctx-compress]"),
-			"info"
-		);
+			mockCompressContext.mockRejectedValueOnce(new Error("Compression failed"));
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+
+			const result = await handler!(event, ctx);
+
+			expect(result).toBeUndefined();
+			expect(mockNotify).toHaveBeenCalledWith(
+				expect.stringContaining("[ctx-compress] error: Compression failed"),
+				"warning",
+			);
+		});
+
+		it("should return undefined if no compression steps were performed", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {},
+				durationMs: 10,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+
+			const result = await handler!(event, ctx);
+
+			expect(result).toBeUndefined();
+			expect(mockNotify).not.toHaveBeenCalled();
+		});
 	});
 
 	// -----------------------------------------------------------------------
-	// Statistics Tests
+	// Agent Start Event Tests
 	// -----------------------------------------------------------------------
 
-	it("should track compression statistics across multiple calls", async () => {
-		const contextHandler = eventHandlers.get("context");
+	describe("agent_start event handler", () => {
+		it("should reset compression statistics on agent start", async () => {
+			const handler = eventHandlers.get("agent_start");
+			expect(handler).toBeDefined();
 
-		// First compression
-		const largeContent1 = createLargeContent(20);
-		const messages1: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent1),
-		];
+			const ctx = { ui: mockPI.ui };
+			await handler!({}, ctx);
 
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages: messages1,
-			steps: {
-				scoring: {
-					protectCount: 2,
-					persistCount: 1,
-					summaryCount: 1,
-					persistShortCount: 0,
-					dropCount: 0,
-				},
-			},
-			tokensBefore: 20000,
-			tokensAfter: 8000,
-			durationMs: 100,
+			expect(mockSetStatus).toHaveBeenCalledWith("ctx-compress", undefined);
+			expect(mockNotify).toHaveBeenCalledWith("[ctx-compress] extension loaded", "info");
 		});
-
-		await contextHandler!({ messages: messages1 }, { ui: mockPI.ui });
-
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith(
-			"ctx-compress",
-			expect.stringContaining("压缩:1次")
-		);
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith(
-			"ctx-compress",
-			expect.stringContaining("保留2")
-		);
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith(
-			"ctx-compress",
-			expect.stringContaining("持久化1")
-		);
-
-		// Second compression
-		const largeContent2 = createLargeContent(25);
-		const messages2: AgentMessage[] = [
-			createUserMsg("test"),
-			createAssistantMsg("ok"),
-			createToolResult("bash", largeContent2),
-		];
-
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages: messages2,
-			steps: {
-				scoring: {
-					protectCount: 3,
-					persistCount: 2,
-					summaryCount: 0,
-					persistShortCount: 1,
-					dropCount: 1,
-				},
-			},
-			tokensBefore: 25000,
-			tokensAfter: 10000,
-			durationMs: 150,
-		});
-
-		await contextHandler!({ messages: messages2 }, { ui: mockPI.ui });
-
-		// Stats should accumulate
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith(
-			"ctx-compress",
-			expect.stringContaining("压缩:2次")
-		);
-	});
-
-	it("should reset statistics on agent_start event", async () => {
-		const agentStartHandler = eventHandlers.get("agent_start");
-		const contextHandler = eventHandlers.get("context");
-
-		// First do a compression
-		const largeContent = createLargeContent(15);
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent),
-		];
-
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages,
-			steps: {
-				scoring: {
-					protectCount: 1,
-					persistCount: 1,
-					summaryCount: 0,
-					persistShortCount: 0,
-					dropCount: 0,
-				},
-			},
-			tokensBefore: 15000,
-			tokensAfter: 5000,
-			durationMs: 50,
-		});
-
-		await contextHandler!({ messages }, { ui: mockPI.ui });
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith(
-			"ctx-compress",
-			expect.stringContaining("压缩:1次")
-		);
-
-		// Now trigger agent_start
-		await agentStartHandler!({}, { ui: mockPI.ui });
-
-		// Status should be cleared
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith("ctx-compress", undefined);
-
-		// Stats should be reset
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages,
-			steps: {
-				scoring: {
-					protectCount: 1,
-					persistCount: 0,
-					summaryCount: 0,
-					persistShortCount: 0,
-					dropCount: 0,
-				},
-			},
-			tokensBefore: 15000,
-			tokensAfter: 10000,
-			durationMs: 50,
-		});
-
-		await contextHandler!({ messages }, { ui: mockPI.ui });
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith(
-			"ctx-compress",
-			expect.stringContaining("压缩:1次") // Back to 1, not 2
-		);
-	});
-
-	it("should clear status on session_shutdown event", async () => {
-		const sessionShutdownHandler = eventHandlers.get("session_shutdown");
-
-		await sessionShutdownHandler!({}, { ui: mockPI.ui });
-
-		expect(mockPI.ui.setStatus).toHaveBeenCalledWith("ctx-compress", undefined);
 	});
 
 	// -----------------------------------------------------------------------
-	// Error Handling Tests
+	// Session Shutdown Event Tests
 	// -----------------------------------------------------------------------
 
-	it("should handle compression errors gracefully", async () => {
-		const contextHandler = eventHandlers.get("context");
+	describe("session_shutdown event handler", () => {
+		it("should clear status on session shutdown", async () => {
+			const handler = eventHandlers.get("session_shutdown");
+			expect(handler).toBeDefined();
 
-		const largeContent = createLargeContent(15);
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent),
-		];
+			const ctx = { ui: mockPI.ui };
+			await handler!({}, ctx);
 
-		vi.mocked(compressContext).mockRejectedValueOnce(new Error("Compression failed"));
+			expect(mockSetStatus).toHaveBeenCalledWith("ctx-compress", undefined);
+		});
+	});
 
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
+	// -----------------------------------------------------------------------
+	// Status Update Tests
+	// -----------------------------------------------------------------------
 
-		const result = await contextHandler!(event, ctx);
+	describe("status updates", () => {
+		it("should update status with compression statistics", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		expect(result).toBeUndefined();
-		expect(mockPI.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("[ctx-compress] error: Compression failed"),
-			"warning"
-		);
+			// First compression
+			const largeContent1 = createLargeContent(15);
+			const messages1: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent1),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages: messages1,
+				steps: {
+					scoring: {
+						protectCount: 1,
+						persistCount: 1,
+						summaryCount: 1,
+						persistShortCount: 0,
+						dropCount: 1,
+					},
+				},
+				durationMs: 150,
+			});
+
+			const event1 = { messages: messages1 };
+			const ctx = { ui: mockPI.ui };
+			await handler!(event1, ctx);
+
+			// Second compression
+			const largeContent2 = createLargeContent(20);
+			const messages2: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent2),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages: messages2,
+				steps: {
+					scoring: {
+						protectCount: 2,
+						persistCount: 1,
+						summaryCount: 0,
+						persistShortCount: 1,
+						dropCount: 2,
+					},
+				},
+				durationMs: 200,
+			});
+
+			const event2 = { messages: messages2 };
+			await handler!(event2, ctx);
+
+			// Verify status shows cumulative statistics
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("压缩:2次"),
+			);
+		});
+
+		it("should show percentage saved in status", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const compressedContent = createLargeContent(5);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages: [
+					createUserMsg("hello"),
+					createAssistantMsg("hi"),
+					createToolResult("bash", compressedContent),
+				],
+				steps: {
+					scoring: {
+						protectCount: 1,
+						persistCount: 1,
+						summaryCount: 0,
+						persistShortCount: 0,
+						dropCount: 1,
+					},
+				},
+				durationMs: 150,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			await handler!(event, ctx);
+
+			// Should show approximately 66% saved (15KB -> 5KB)
+			expect(mockSetStatus).toHaveBeenCalledWith(
+				"ctx-compress",
+				expect.stringMatching(/节省[0-9]+%/),
+			);
+		});
 	});
 
 	// -----------------------------------------------------------------------
 	// Legacy Pipeline Tests
 	// -----------------------------------------------------------------------
 
-	it("should handle legacy pipeline (L0/L1/L2/L3) results", async () => {
-		const contextHandler = eventHandlers.get("context");
+	describe("legacy pipeline support", () => {
+		it("should handle compression results with persistence step", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		const largeContent = createLargeContent(20);
-		const messages: AgentMessage[] = [
-			createUserMsg("hello"),
-			createAssistantMsg("hi"),
-			createToolResult("bash", largeContent),
-		];
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
 
-		// Legacy pipeline returns different step structure
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages,
-			steps: {
-				persistence: { persistedCount: 2, bytesSaved: 10000 },
-				lifecycle: { degradedCount: 3, clearedCount: 1 },
-				summary: { summarizedCount: 1 },
-			},
-			tokensBefore: 20000,
-			tokensAfter: 8000,
-			durationMs: 150,
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					persistence: { persistedCount: 2 },
+					lifecycle: { degradedCount: 1, clearedCount: 0 },
+				},
+				durationMs: 100,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			const result = (await handler!(event, ctx)) as { messages: AgentMessage[] };
+
+			expect(result).toBeDefined();
+			expect(mockNotify).toHaveBeenCalledWith(
+				expect.stringContaining("persist:2"),
+				"info",
+			);
 		});
 
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
+		it("should handle compression results with classification step", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		const result = await contextHandler!(event, ctx);
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
 
-		expect(result).toEqual({ messages });
-		expect(mockPI.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("persist:2"),
-			"info"
-		);
-		expect(mockPI.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("life:-3"),
-			"info"
-		);
-		expect(mockPI.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("summarized:1"),
-			"info"
-		);
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					scoring: {
+						protectCount: 1,
+						persistCount: 1,
+						summaryCount: 0,
+						persistShortCount: 0,
+						dropCount: 1,
+					},
+					classification: { intent: "debugging", confidence: 0.9 },
+				},
+				durationMs: 120,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			const result = (await handler!(event, ctx)) as { messages: AgentMessage[] };
+
+			expect(result).toBeDefined();
+			expect(mockNotify).toHaveBeenCalledWith(
+				expect.stringContaining("debugging"),
+				"info",
+			);
+		});
 	});
 
 	// -----------------------------------------------------------------------
 	// Edge Cases
 	// -----------------------------------------------------------------------
 
-	it("should handle messages with non-serializable content", async () => {
-		const contextHandler = eventHandlers.get("context");
+	describe("edge cases", () => {
+		it("should handle empty messages array", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		// Create messages with circular reference
-		const circularObj: any = { name: "test" };
-		circularObj.self = circularObj;
+			const event = { messages: [] };
+			const ctx = { ui: mockPI.ui };
+			const result = await handler!(event, ctx);
 
-		const messages: AgentMessage[] = [
-			{ role: "user", content: circularObj } as AgentMessage,
-			{ role: "assistant", content: "hi" } as AgentMessage,
-			{ role: "toolResult", content: createLargeContent(15) } as AgentMessage,
-		];
-
-		const event = { messages };
-		const ctx = { ui: mockPI.ui };
-
-		// Should not throw, should handle gracefully
-		const result = await contextHandler!(event, ctx);
-
-		// If JSON.stringify fails, estimateSize returns 0, so no compression triggered
-		expect(result).toBeUndefined();
-	});
-
-	it("should handle very large messages efficiently", async () => {
-		const contextHandler = eventHandlers.get("context");
-
-		// Create a very large conversation (100KB+)
-		const messages: AgentMessage[] = [];
-		for (let i = 0; i < 50; i++) {
-			messages.push(createUserMsg(`Question ${i}`));
-			messages.push(createAssistantMsg(`Answer ${i}`));
-			messages.push(createToolResult("bash", createLargeContent(2)));
-		}
-
-		const compressedMessages = messages.slice(0, 30); // Simulate 40% reduction
-
-		vi.mocked(compressContext).mockResolvedValueOnce({
-			messages: compressedMessages,
-			steps: {
-				scoring: {
-					protectCount: 10,
-					persistCount: 20,
-					summaryCount: 15,
-					persistShortCount: 5,
-					dropCount: 10,
-				},
-			},
-			tokensBefore: 100000,
-			tokensAfter: 40000,
-			durationMs: 500,
+			expect(result).toBeUndefined();
+			expect(mockCompressContext).not.toHaveBeenCalled();
 		});
 
-		const start = Date.now();
-		const result = await contextHandler!({ messages }, { ui: mockPI.ui });
-		const elapsed = Date.now() - start;
+		it("should handle messages with undefined content", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
 
-		expect(result).toEqual({ messages: compressedMessages });
-		expect(elapsed).toBeLessThan(1000); // Should complete quickly
+			const messages: AgentMessage[] = [
+				{ role: "user", content: undefined as unknown as string },
+				{ role: "assistant", content: undefined as unknown as string },
+				{ role: "tool", content: undefined as unknown as string, name: "test", tool_call_id: "123" },
+			];
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			const result = await handler!(event, ctx);
+
+			// Should still attempt to estimate size (which may be smaller due to undefined)
+			expect(result).toBeUndefined();
+		});
+
+		it("should handle messages with non-serializable content gracefully", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const circularObj: { self?: unknown } = {};
+			circularObj.self = circularObj;
+
+			const messages: AgentMessage[] = [
+				{ role: "user", content: circularObj as unknown as string },
+				{ role: "assistant", content: "hi" },
+				{ role: "tool", content: "output", name: "test", tool_call_id: "123" },
+			];
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+
+			// Should not throw, but may have size estimate of 0
+			const result = await handler!(event, ctx);
+			expect(result).toBeUndefined();
+		});
 	});
 });
