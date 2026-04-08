@@ -212,7 +212,7 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 		it("should NOT clear CRITICAL tools even in far-excess scenario", async () => {
 			const messages: AgentMessage[] = [];
 			// 20 results: mix of critical (write/edit) and discardable (bash)
-			// Only 5 kept → 15 cleared, but write/edit must survive
+			// Only 3 kept → 17 cleared, but write/edit must survive
 			for (let i = 0; i < 8; i++) {
 				messages.push(createUserMsg(`q${i}`));
 				messages.push(createAssistantWithTools(`a${i}`, [{ name: "bash" }]));
@@ -233,6 +233,17 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 			const config = createLifecycleConfig({ keepRecent: 3 });
 
 			const result = await applyLifecycle(messages, config);
+
+			// Debug: show ALL toolResult contents
+			const allToolResults = result.messages.filter((m) => m.role === "toolResult");
+			console.log(
+				`[DEBUG] Total toolResults: ${allToolResults.length}, cleared: ${result.clearedCount}, degraded: ${result.degradedCount}`,
+			);
+			for (const tr of allToolResults) {
+				const c = tr.content as Array<{ type: string; text?: string }>;
+				const t = c?.find((p) => p.type === "text")?.text ?? "";
+				console.log(`[DEBUG] tool preview: ${t.slice(0, 100)}`);
+			}
 
 			// Write/edit results should NOT be cleared or degraded
 			const writeResults = result.messages.filter((m) => {
