@@ -10,9 +10,7 @@
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
-	DEFAULT_KEEP_RECENT,
 	DEFAULT_LIFECYCLE_CONFIG,
-	DEFAULT_STALE_MINUTES,
 	type LifecycleConfig,
 	type LifecycleResult,
 	ToolPriority,
