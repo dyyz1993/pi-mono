@@ -14,11 +14,25 @@ import type { ExtensionAPI, AgentMessage, ToolResultMessage } from "@mariozechne
 // Create mock function that will be hoisted
 const mockCompressContext = vi.fn();
 
-// Mock the entire @mariozechner/pi-coding-agent module
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+// Mock the compressContext function from the actual import path used by the extension
+vi.mock("../../packages/coding-agent/src/core/context-compression/index.js", () => ({
 	compressContext: (...args: unknown[]) => mockCompressContext(...args),
-	// Export types as undefined (they're only used for TypeScript)
-	// The actual runtime doesn't need them
+}));
+
+// Also mock the types import
+vi.mock("../../packages/coding-agent/src/core/context-compression/types.js", () => ({
+	DEFAULT_COMPRESSION_PIPELINE_CONFIG: {
+		protectedMessageCount: 6,
+		protectedContentAge: 20,
+		maxProtectedPerStep: 3,
+	},
+	STRATEGY_LABELS: {
+		protected: "保留",
+		persist: "持久化",
+		summary: "摘要",
+		persistShort: "持久化短",
+		drop: "清理",
+	},
 }));
 
 // Import after mocking
