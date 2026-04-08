@@ -549,12 +549,14 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 	describe("Content-aware priority adjustment", () => {
 		let adjustPriorityByContent: (toolName: string, content: string) => ToolPriority;
 
-		try {
-			const mod = await import("../../src/core/context-compression/lifecycle.js");
-			adjustPriorityByContent = mod.adjustPriorityByContent;
-		} catch {
-			adjustPriorityByContent = () => ToolPriority.DISCARDABLE;
-		}
+		beforeAll(async () => {
+			try {
+				const mod = await import("../../src/core/context-compression/lifecycle.js");
+				adjustPriorityByContent = mod.adjustPriorityByContent;
+			} catch {
+				adjustPriorityByContent = () => ToolPriority.DISCARDABLE;
+			}
+		});
 
 		it("should boost error/stack trace output to CRITICAL", () => {
 			const errorOutput = `Error: Cannot find module 'xxx'
@@ -595,8 +597,9 @@ Done.`;
 		});
 
 		it("should downgrade large grep matches with no errors to DISCARDABLE", () => {
-			const grepOutput = Array.from({ length: 100 }, (_, i) =>
-				`src/file${i}.ts:${i * 10}: import { foo } from 'bar'`,
+			const grepOutput = Array.from(
+				{ length: 100 },
+				(_, i) => `src/file${i}.ts:${i * 10}: import { foo } from 'bar'`,
 			).join("\n");
 			expect(adjustPriorityByContent("grep", grepOutput)).toBe(ToolPriority.DISCARDABLE);
 		});
