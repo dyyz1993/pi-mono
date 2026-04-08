@@ -235,14 +235,16 @@ function applyCountRule(entries: IndexedEntry[], config: LifecycleConfig): Index
 	const fullEntries = entries.filter((e) => e.level === "full");
 
 	// If we have WAY more than keepRecent * 2, clear the oldest entirely (not just stub)
-	// This prevents unbounded growth
+	// This prevents unbounded growth. CRITICAL priority tools are always protected.
 	const clearThreshold = keepRecent * 2;
 	if (fullEntries.length > clearThreshold) {
 		// Sort by timestamp ascending (oldest first)
 		fullEntries.sort((a, b) => a.timestamp - b.timestamp);
-		const numToClear = fullEntries.length - keepRecent;
-		for (let i = 0; i < numToClear; i++) {
+		let numToClear = fullEntries.length - keepRecent;
+		for (let i = 0; i < fullEntries.length && numToClear > 0; i++) {
+			if (fullEntries[i].priority === ToolPriority.CRITICAL) continue;
 			fullEntries[i].level = "cleared";
+			numToClear--;
 		}
 		return entries;
 	}
