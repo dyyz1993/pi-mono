@@ -44,6 +44,7 @@ export interface DataCardMessage {
  * 自定义数据卡片组件
  */
 @customElement("data-card-message")
+// biome-ignore lint/suspicious/noUnsafeDeclarationMerging: LitElement classes can safely extend interfaces
 export class DataCardMessage extends LitElement {
 	static override styles = css`
 		:host {
@@ -204,6 +205,10 @@ export class DataCardMessage extends LitElement {
 	@property({ type: Object }) declare data: DataCardMessage;
 	@state() private showMetadata = false;
 
+	private toggleMetadata() {
+		this.showMetadata = !this.showMetadata;
+	}
+
 	override render() {
 		const { card, metadata } = this.data;
 
@@ -281,7 +286,7 @@ export class DataCardMessage extends LitElement {
 				${
 					metadata
 						? html`
-							<button class="expand-button" @click=${() => (this.showMetadata = !this.showMetadata)}>
+							<button class="expand-button" @click=${this.toggleMetadata}>
 								${this.showMetadata ? "隐藏" : "显示"}元数据
 							</button>
 							${this.showMetadata ? html`<div class="metadata">${JSON.stringify(metadata, null, 2)}</div>` : ""}

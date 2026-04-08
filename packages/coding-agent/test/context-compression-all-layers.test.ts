@@ -183,9 +183,9 @@ describe("Context Compression - All Layers", () => {
 	describe("L1: Lifecycle Count", () => {
 		it("should record lifecycle cleared count when entries exceed keepRecent*2 (excess path)", async () => {
 			const results = createManyToolResults("bash", 10, () => "output line");
-			const messages: AgentMessage[] = [createUserMsg("task"), createAssistantMsg("working"), ...results];
+			const messages: AgentMessage[] = [createUserMsg("debug a bug"), createAssistantMsg("working"), ...results];
 
-			const result = await compressContext(messages, makeConfig());
+			const result = await compressContext(messages, makeConfig({ classifier: { enabled: false } }));
 
 			expect(result.steps.lifecycle).toBeDefined();
 			expect(result.steps.lifecycle!.clearedCount).toBeGreaterThan(0);
@@ -193,9 +193,12 @@ describe("Context Compression - All Layers", () => {
 
 		it("should record degraded+cleared count when entries are under clearThreshold", async () => {
 			const results = createManyToolResults("bash", 3, () => "output");
-			const messages: AgentMessage[] = [createUserMsg("task"), createAssistantMsg("working"), ...results];
+			const messages: AgentMessage[] = [createUserMsg("debug a bug"), createAssistantMsg("working"), ...results];
 
-			const result = await compressContext(messages, makeConfig({ lifecycle: { keepRecent: 1 } }));
+			const result = await compressContext(
+				messages,
+				makeConfig({ classifier: { enabled: false }, lifecycle: { keepRecent: 1 } }),
+			);
 
 			expect(result.steps.lifecycle).toBeDefined();
 			expect(result.steps.lifecycle!.degradedCount + result.steps.lifecycle!.clearedCount).toBeGreaterThan(0);

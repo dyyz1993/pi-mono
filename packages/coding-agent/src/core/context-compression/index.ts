@@ -210,7 +210,11 @@ export async function compressContext(
 		// Step L1+L2: Lifecycle management
 		if (config.lifecycle.enabled) {
 			try {
-				const lifecycleConfig = adjustLifecycleForIntent(config.lifecycle, detectedIntent);
+				// Only apply intent-based adjustments when confidence is reasonable (not 0)
+				const lifecycleConfig =
+					steps.classification && steps.classification.confidence > 0.1
+						? adjustLifecycleForIntent(config.lifecycle, detectedIntent)
+						: config.lifecycle;
 				const lifecycleResult = await applyLifecycle(currentMessages, lifecycleConfig);
 				currentMessages = lifecycleResult.messages;
 				lastSuccessfulMessages = currentMessages;
@@ -271,7 +275,7 @@ export async function compressContext(
 /**
  * Adjust lifecycle config based on classified conversation intent.
  * - BUG: conservative (keep more, clear less aggressively)
- * - CHITCHAT: aggressive (compress more, keep fewer recent)
+ * - CHITCHAT: slightly conservative (don't destroy too much context in long conversations)
  * - REQUIREMENT/EXPLORATION: normal defaults
  */
 function adjustLifecycleForIntent(base: LifecycleConfig, intent: IntentCategory): LifecycleConfig {
@@ -281,8 +285,8 @@ function adjustLifecycleForIntent(base: LifecycleConfig, intent: IntentCategory)
 		case IntentCategory.CHITCHAT:
 			return {
 				...base,
-				keepRecent: Math.max(2, Math.floor(base.keepRecent / 2)),
-				staleMinutes: Math.floor(base.staleMinutes / 2),
+				keepRecent: Math.max(5, base.keepRecent),
+				staleMinutes: base.staleMinutes * 1.5,
 			};
 		default:
 			return base;
@@ -292,7 +296,7 @@ function adjustLifecycleForIntent(base: LifecycleConfig, intent: IntentCategory)
 /**
  * Adjust summary config based on classified conversation intent.
  * - BUG: raise threshold (summarize less, preserve detail)
- * - CHITCHAT: lower threshold (summarize more aggressively)
+ * - CHITCHAT: slightly conservative (preserve more in conversations)
  */
 function adjustSummaryForIntent(base: SummaryConfig, intent: IntentCategory): SummaryConfig {
 	switch (intent) {
@@ -301,8 +305,8 @@ function adjustSummaryForIntent(base: SummaryConfig, intent: IntentCategory): Su
 		case IntentCategory.CHITCHAT:
 			return {
 				...base,
-				maxLines: Math.max(5, Math.floor(base.maxLines / 2)),
-				truncateLine: Math.max(40, Math.floor(base.truncateLine / 2)),
+				maxLines: base.maxLines * 1.5,
+				truncateLine: base.truncateLine * 1.5,
 			};
 		default:
 			return base;

@@ -281,7 +281,7 @@ export class ReviewManager {
 			});
 
 			if (recentEntries.length < lines.length) {
-				writeFileSync(this.historyFile, recentEntries.join("\n") + "\n", "utf-8");
+				writeFileSync(this.historyFile, `${recentEntries.join("\n")}\n`, "utf-8");
 				log.logInfo(`Cleared ${lines.length - recentEntries.length} old history entries`);
 			}
 		} catch (error) {

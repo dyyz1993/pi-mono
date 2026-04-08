@@ -4,17 +4,8 @@
  */
 import { Agent, createTool } from "@mariozechner/pi-agent-core";
 import { z } from "zod";
-import {
-	createDataCard,
-	type DataCardItem,
-	DataCardMessage,
-	registerDataCardMessageRenderer,
-} from "./custom-data-card.js";
-import {
-	createNotification,
-	NotificationMessage,
-	registerNotificationMessageRenderer,
-} from "./custom-notification-message.js";
+import { createDataCard, type DataCardItem, registerDataCardMessageRenderer } from "./custom-data-card.js";
+import { createNotification, registerNotificationMessageRenderer } from "./custom-notification-message.js";
 
 /**
  * 步骤 1: 注册所有自定义消息渲染器
@@ -197,6 +188,7 @@ export interface EmbedMessage {
 }
 
 @customElement("embed-message")
+// biome-ignore lint/suspicious/noUnsafeDeclarationMerging: LitElement classes can safely extend interfaces
 class EmbedMessage extends LitElement {
 	static override styles = css`
 		:host {
@@ -286,7 +278,6 @@ export const embedMessageRenderer: MessageRenderer = {
  */
 
 import type { MessageRenderer } from "@mariozechner/pi-web-ui";
-import { registerMessageRenderer } from "@mariozechner/pi-web-ui";
 // 需要导入的依赖
 import { css, LitElement } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { customElement, property } from "lit/decorators.js";

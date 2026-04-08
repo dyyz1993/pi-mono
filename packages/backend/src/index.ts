@@ -7,12 +7,12 @@ const PORT = process.env.PORT || 3001;
 app.use(express.json());
 
 // Health check endpoint
-app.get("/api/health", (req: Request, res: Response) => {
+app.get("/api/health", (_req: Request, res: Response) => {
 	res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
 // Sample API endpoint
-app.get("/api/hello", (req: Request, res: Response) => {
+app.get("/api/hello", (_req: Request, res: Response) => {
 	res.json({ message: "Hello from backend!" });
 });
 
@@ -26,7 +26,7 @@ app.post("/api/users", (req: Request, res: Response) => {
 	try {
 		const user = UserSchema.parse(req.body);
 		res.json({ success: true, user });
-	} catch (error) {
+	} catch (_error) {
 		res.status(400).json({ error: "Invalid user data" });
 	}
 });

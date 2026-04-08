@@ -9,7 +9,7 @@
  */
 
 import type { AgentMessage, ExtensionAPI, ToolResultMessage } from "@mariozechner/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 // Create mock function that will be hoisted
 const mockCompressContext = vi.fn();
@@ -17,6 +17,17 @@ const mockCompressContext = vi.fn();
 // Mock the compressContext function from the actual import path used by the extension
 vi.mock("../src/core/context-compression/index.js", () => ({
 	compressContext: (...args: unknown[]) => mockCompressContext(...args),
+	estimateTokens: (msgs: unknown): number => {
+		// Return a large value to pass the 40K threshold unless it's clearly small
+		try {
+			const str = String(msgs);
+			// Small messages (< ~160KB string) won't reach 40K tokens
+			if (str.length < 160000) return Math.floor(str.length / 4);
+			return 50000; // Large enough to pass threshold
+		} catch {
+			return 50000; // Circular refs - pass threshold
+		}
+	},
 }));
 
 // Also mock the types import

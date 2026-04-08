@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("turn_start", async (event, ctx) => {
+	pi.on("turn_start", async (_event, _ctx) => {
 		state.currentTurnMessages = [];
 		state.pendingSummary = false;
 	});

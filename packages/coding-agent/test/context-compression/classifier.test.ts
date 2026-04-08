@@ -6,11 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import {
-	type ClassifierConfig,
-	DEFAULT_CLASSIFIER_CONFIG,
-	IntentCategory,
-} from "../../src/core/context-compression/types.js";
+import { type ClassifierConfig, IntentCategory } from "../../src/core/context-compression/types.js";
 
 let classifyMessage: (
 	text: string,

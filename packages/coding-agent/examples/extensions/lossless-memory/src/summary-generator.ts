@@ -32,7 +32,6 @@ const _DEFAULT_SYSTEM_PROMPT = `你是一个专业的对话摘要助手。你的
 // ============================================================================
 
 export class SummaryGenerator {
-	private pi: ExtensionAPI;
 	private config: SummaryConfig;
 
 	constructor(pi: ExtensionAPI, config: SummaryConfig) {

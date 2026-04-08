@@ -14,12 +14,11 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AssistantMessageEvent } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { checkServiceHealth, DEFAULT_CONFIG, loadConfig } from "./config.js";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { checkServiceHealth, loadConfig } from "./config.js";
 import {
 	createSessionMapping,
 	ensureOpenVikingSession,
-	flushAndSave,
 	flushPendingMessages,
 	getSessionMapping,
 	initFileSystem,
@@ -28,7 +27,6 @@ import {
 	resolveSessionId,
 	sessionMessageBuffer,
 	startBackgroundCommit,
-	stopAutoCommit,
 	storeMessageRole,
 	storePendingContent,
 	upsertBufferedMessage,

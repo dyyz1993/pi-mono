@@ -14,10 +14,8 @@ import * as fs from "fs/promises";
 import { createServer } from "net";
 import * as os from "os";
 import * as path from "path";
-import { fileURLToPath, pathToFileURL } from "url";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { LspClient } from "../../../../.pi/extensions/lsp/client.js";
 import { LANGUAGE_EXTENSIONS } from "../../../../.pi/extensions/lsp/language.js";
 import { getServersForExtension, LspServers } from "../../../../.pi/extensions/lsp/servers.js";
 import { formatLspResult, prettyDiagnostic, symbolKindName } from "../../.pi/extensions/lsp/index.js";
@@ -81,7 +79,7 @@ interface FakeLspServer {
 	closed: boolean;
 }
 
-async function createFakeLspServer(responses?: Array<Record<string, unknown> | null>): Promise<FakeLspServer> {
+async function _createFakeLspServer(responses?: Array<Record<string, unknown> | null>): Promise<FakeLspServer> {
 	return new Promise((resolve, reject) => {
 		const srv = createServer((socket) => {
 			const msgs: Array<Record<string, unknown>> = [];
@@ -240,7 +238,7 @@ describe("C. Client Lifecycle", () => {
 	}
 
 	it("TC11: Initialize handshake sends correct capabilities", async () => {
-		const filePath = await createTestFile("test.ts", "const x = 1;");
+		const _filePath = await createTestFile("test.ts", "const x = 1;");
 		let receivedInit: Record<string, unknown> | undefined;
 
 		const srv = await new Promise<FakeLspServer>((resolve, reject) => {

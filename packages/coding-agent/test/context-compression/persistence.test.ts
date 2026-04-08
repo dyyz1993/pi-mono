@@ -1,10 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_LARGE_THRESHOLD,
 	DEFAULT_PERSISTENCE_CONFIG,
-	DEFAULT_STUB_PREVIEW_SIZE,
 	type PersistedResult,
 	type PersistenceConfig,
 	type ToolResultInfo,
@@ -52,7 +50,7 @@ function createTempDir(): string {
 
 function createLargeContent(sizeBytes: number): string {
 	// Create content of exact byte size (ASCII for predictability)
-	const line = "A".repeat(99) + "\n"; // 100 bytes per line
+	const line = `${"A".repeat(99)}\n`; // 100 bytes per line
 	const linesNeeded = Math.ceil(sizeBytes / 100);
 	return line.repeat(linesNeeded).slice(0, sizeBytes);
 }
@@ -167,7 +165,7 @@ describe("L0: Tool Result Persistence", () => {
 	// 5. Persisted file can be read back with identical content
 	// -----------------------------------------------------------------------
 	it("should allow reading persisted file back with exact original content", async () => {
-		const original = "Line 1\nLine 2\nLine 3\n" + "x".repeat(60 * 1024);
+		const original = `Line 1\nLine 2\nLine 3\n${"x".repeat(60 * 1024)}`;
 		const config = createConfig({ cacheDir: tempDir });
 
 		const result = await persistIfNeeded({ toolName: "bash", content: original }, config);
@@ -344,9 +342,9 @@ describe("L0: Tool Result Persistence", () => {
 		expect(stats.totalBytesSaved).toBe(0);
 
 		// Persist 3 files
-		const r1 = await persistIfNeeded({ toolName: "bash", content: createLargeContent(60 * 1024) }, config);
-		const r2 = await persistIfNeeded({ toolName: "grep", content: createLargeContent(80 * 1024) }, config);
-		const r3 = await persistIfNeeded({ toolName: "find", content: createLargeContent(55 * 1024) }, config);
+		const _r1 = await persistIfNeeded({ toolName: "bash", content: createLargeContent(60 * 1024) }, config);
+		const _r2 = await persistIfNeeded({ toolName: "grep", content: createLargeContent(80 * 1024) }, config);
+		const _r3 = await persistIfNeeded({ toolName: "find", content: createLargeContent(55 * 1024) }, config);
 
 		stats = getPersistenceStats();
 		expect(stats.totalPersisted).toBe(3);

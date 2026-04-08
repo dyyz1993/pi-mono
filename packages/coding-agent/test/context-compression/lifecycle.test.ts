@@ -1,33 +1,29 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	DEFAULT_KEEP_RECENT,
 	DEFAULT_LIFECYCLE_CONFIG,
-	DEFAULT_STALE_MINUTES,
 	type LifecycleConfig,
 	type LifecycleResult,
 	ToolPriority,
-	type ToolResultEntry,
 } from "../../src/core/context-compression/types.js";
 
 // Import module under test (will fail until implemented)
 let applyLifecycle: (messages: AgentMessage[], config?: LifecycleConfig) => Promise<LifecycleResult>;
-let getToolPriority: (toolName: string) => ToolPriority;
-let estimateTokens: (messages: AgentMessage[]) => number;
+let _getToolPriority: (toolName: string) => ToolPriority;
+let _estimateTokens: (messages: AgentMessage[]) => number;
 
 try {
 	const mod = await import("../../src/core/context-compression/lifecycle.js");
 	applyLifecycle = mod.applyLifecycle;
-	getToolPriority = mod.getToolPriority;
-	estimateTokens = mod.estimateTokens;
+	_getToolPriority = mod.getToolPriority;
+	_estimateTokens = mod.estimateTokens;
 } catch {
 	applyLifecycle = async () => {
 		throw new Error("lifecycle.ts not implemented yet");
 	};
-	getToolPriority = () => ToolPriority.DISCARDABLE;
-	estimateTokens = () => 0;
+	_getToolPriority = () => ToolPriority.DISCARDABLE;
+	_estimateTokens = () => 0;
 }
 
 // ============================================================================
@@ -81,7 +77,7 @@ function createAssistantWithTools(
 /**
  * Build a realistic conversation turn: user → assistant(with tools) → results
  */
-function createTurn(
+function _createTurn(
 	userText: string,
 	assistantText: string,
 	results: Array<{ tool: string; output: string }>,
@@ -89,7 +85,7 @@ function createTurn(
 	now?: number,
 ): AgentMessage[] {
 	const t = baseTime ?? Date.now();
-	const n = now ?? Date.now();
+	const _n = now ?? Date.now();
 	return [
 		createUserMsg(userText),
 		{
@@ -235,7 +231,7 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 			const result = await applyLifecycle(messages, config);
 
 			// Debug: show ALL toolResult contents
-			const allToolResults = result.messages.filter((m) => m.role === "toolResult");
+			const _allToolResults = result.messages.filter((m) => m.role === "toolResult");
 
 			// Write/edit results should NOT be cleared or degraded
 			const writeResults = result.messages.filter((m) => {

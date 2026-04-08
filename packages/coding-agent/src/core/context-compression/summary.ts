@@ -77,7 +77,7 @@ function extractTextContent(msg: AgentMessage): string | null {
 
 function truncateLine(line: string, maxLen: number): string {
 	if (line.length <= maxLen) return line;
-	return line.slice(0, maxLen - 3) + "...";
+	return `${line.slice(0, maxLen - 3)}...`;
 }
 
 // ============================================================================
@@ -213,7 +213,7 @@ function extractGlobContent(_toolName: string, content: string, config: SummaryC
 	// Categorize by extension
 	const extMap = new Map<string, number>();
 	for (const line of lines) {
-		const ext = line.includes(".") ? "." + line.split(".").pop() : "(no ext)";
+		const ext = line.includes(".") ? `.${line.split(".").pop()}` : "(no ext)";
 		extMap.set(ext, (extMap.get(ext) || 0) + 1);
 	}
 

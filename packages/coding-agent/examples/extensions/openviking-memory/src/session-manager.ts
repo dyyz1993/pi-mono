@@ -7,7 +7,6 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type {
 	BufferedMessage,
 	CommitResult,
@@ -38,7 +37,7 @@ let lastBufferCleanupAt = 0;
 
 let sessionMapPath: string | null = null;
 let logFilePath: string | null = null;
-let pluginDataDir: string | null = null;
+let _pluginDataDir: string | null = null;
 
 let backgroundCommitSupported: boolean | null = null;
 let autoCommitTimer: ReturnType<typeof setInterval> | null = null;
@@ -59,7 +58,7 @@ function ensurePluginDataDir(dir: string): string | null {
 }
 
 function initLogger(dir: string) {
-	pluginDataDir = dir;
+	_pluginDataDir = dir;
 	logFilePath = path.join(dir, "openviking-memory.log");
 }
 
@@ -89,7 +88,7 @@ function log(level: "INFO" | "ERROR" | "DEBUG", toolName: string, message: strin
 	const timestamp = new Date().toISOString();
 	const logEntry = { timestamp, level, tool: toolName, message, ...(data && { data: safeStringify(data) }) };
 	try {
-		fs.appendFileSync(logFilePath, JSON.stringify(logEntry) + "\n", "utf-8");
+		fs.appendFileSync(logFilePath, `${JSON.stringify(logEntry)}\n`, "utf-8");
 	} catch (error) {
 		console.error("Failed to write to log file:", error);
 	}
@@ -169,7 +168,7 @@ async function saveSessionMap(): Promise<void> {
 			sessions[opencodeSessionId] = serializeSessionMapping(mapping);
 		}
 		const data: SessionMapFile = { version: 1, sessions, lastSaved: Date.now() };
-		const tempPath = sessionMapPath + ".tmp";
+		const tempPath = `${sessionMapPath}.tmp`;
 		await fs.promises.writeFile(tempPath, JSON.stringify(data, null, 2), "utf-8");
 		await fs.promises.rename(tempPath, sessionMapPath);
 		log("DEBUG", "persistence", "Session map saved", { count: sessionMap.size });

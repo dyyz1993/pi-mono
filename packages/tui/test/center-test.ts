@@ -21,7 +21,9 @@ const center2 = new Center();
 center2.addChild(new Text("Line 1\nLine 2\nLine 3"));
 const lines2 = center2.render(40);
 console.log(`Lines (${lines2.length}):`);
-lines2.forEach((line, i) => console.log(`  ${i}: "${line}"`));
+lines2.forEach((line, i) => {
+	console.log(`  ${i}: "${line}"`);
+});
 
 // Test 3: Different widths
 console.log("\n=== Test 3: Different widths ===");
@@ -35,7 +37,7 @@ for (const width of [20, 40, 60, 80]) {
 // Test 4: With ANSI codes
 console.log("\n=== Test 4: With ANSI codes ===");
 const center4 = new Center();
-center4.addChild(new Text(chalk.red("Red") + " " + chalk.blue("Blue")));
+center4.addChild(new Text(`${chalk.red("Red")} ${chalk.blue("Blue")}`));
 const lines4 = center4.render(40);
 console.log(`Line: "${lines4[0]}"`);
 

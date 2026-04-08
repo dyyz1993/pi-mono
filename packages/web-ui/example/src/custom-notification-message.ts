@@ -26,6 +26,7 @@ export interface NotificationMessage {
  * 自定义通知消息组件
  */
 @customElement("notification-message")
+// biome-ignore lint/suspicious/noUnsafeDeclarationMerging: LitElement classes can safely extend interfaces
 export class NotificationMessage extends LitElement {
 	static override styles = css`
 		:host {

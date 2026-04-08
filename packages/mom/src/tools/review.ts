@@ -15,7 +15,7 @@ import type { Executor } from "../sandbox.js";
  * Create the request_write tool
  * This tool is used to request a write to a protected file
  */
-export function createRequestWriteTool(executor: Executor, reviewManager: ReviewManager): AgentTool<any> {
+export function createRequestWriteTool(_executor: Executor, reviewManager: ReviewManager): AgentTool<any> {
 	const schema = Type.Object({
 		filePath: Type.String({ description: "Path to the file to write (relative or absolute)" }),
 		content: Type.String({ description: "Content to write to the file" }),
@@ -101,7 +101,7 @@ export function createPendingReviewsTool(reviewManager: ReviewManager): AgentToo
 		label: "pending reviews",
 		description: "List all pending review requests for protected file writes.",
 		parameters: schema,
-		execute: async (_toolCallId: string, {}: {}, _signal?: AbortSignal) => {
+		execute: async (_toolCallId: string, _params: Record<string, never>, _signal?: AbortSignal) => {
 			const reviews = reviewManager.getPendingReviews();
 
 			if (reviews.length === 0) {

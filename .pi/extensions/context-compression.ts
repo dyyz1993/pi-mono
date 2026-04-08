@@ -12,6 +12,14 @@ import {
 	STRATEGY_LABELS,
 } from "../../packages/coding-agent/src/core/context-compression/types.js";
 
+function safeEstimateTokens(messages: unknown[]): number {
+	try {
+		return estimateTokens(messages as Parameters<typeof estimateTokens>[0]);
+	} catch {
+		return 0;
+	}
+}
+
 function estimateSize(messages: unknown[]): number {
 	try {
 		return JSON.stringify(messages).length;
@@ -69,7 +77,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 
 		if (messages.length < 3) return undefined;
 
-		const msgTokens = estimateTokens(messages as Parameters<typeof estimateTokens>[0]);
+		const msgTokens = safeEstimateTokens(messages);
 
 		// 阈值1：至少 40K tokens 才考虑压缩
 		if (msgTokens < MIN_COMPRESSION_TOKENS) return undefined;
@@ -90,7 +98,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 			if (stepCount === 0) return undefined;
 
 			// 记录这次压缩的状态
-			lastCompressedTokens = estimateTokens(result.messages as Parameters<typeof estimateTokens>[0]);
+			lastCompressedTokens = safeEstimateTokens(result.messages);
 			lastCompressAt = now;
 
 			totalCompressions++;

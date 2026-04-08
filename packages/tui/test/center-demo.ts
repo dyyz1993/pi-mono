@@ -4,7 +4,6 @@
  */
 
 import chalk from "chalk";
-import { Box } from "../src/components/box.js";
 import { Center } from "../src/components/center.js";
 import { Editor } from "../src/components/editor.js";
 import { Markdown } from "../src/components/markdown.js";
@@ -78,7 +77,7 @@ editor.onSubmit = (value: string) => {
 
 	if (trimmed) {
 		// Add user message
-		const userMessage = new Markdown("**You:** " + trimmed, 1, 1, {
+		const userMessage = new Markdown(`**You:** ${trimmed}`, 1, 1, {
 			...defaultMarkdownTheme,
 			background: "transparent",
 		});
@@ -94,7 +93,7 @@ editor.onSubmit = (value: string) => {
 			"Nice! 🌟",
 		];
 		const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-		const botMessage = new Markdown("**Bot:** " + randomResponse, 1, 1, {
+		const botMessage = new Markdown(`**Bot:** ${randomResponse}`, 1, 1, {
 			...defaultMarkdownTheme,
 			background: "transparent",
 		});

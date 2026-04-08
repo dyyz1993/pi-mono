@@ -29,7 +29,6 @@ const MAX_LEVEL = 4;
 export class DAGManager {
 	private db: MemoryDatabase;
 	private state: DAGState;
-	private config: LosslessMemoryConfig;
 
 	constructor(db: MemoryDatabase, config: LosslessMemoryConfig) {
 		this.db = db;

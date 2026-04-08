@@ -122,7 +122,7 @@ class CompressionLogger {
 
 		try {
 			this.currentLogFile = this.getLogFileName();
-			const line = this.formatEntry(entry) + "\n";
+			const line = `${this.formatEntry(entry)}\n`;
 			fs.appendFileSync(this.currentLogFile, line, "utf-8");
 		} catch (error) {
 			console.error("[CompressionLogger] Failed to write log:", error);
@@ -287,7 +287,7 @@ class CompressionLogger {
 		this.sessionLog.savedTokens = this.sessionLog.tokensBefore - tokensAfter;
 		this.sessionLog.savedPercent =
 			this.sessionLog.tokensBefore > 0
-				? ((this.sessionLog.savedTokens / this.sessionLog.tokensBefore) * 100).toFixed(1) + "%"
+				? `${((this.sessionLog.savedTokens / this.sessionLog.tokensBefore) * 100).toFixed(1)}%`
 				: "0%";
 		this.sessionLog.durationMs = durationMs;
 

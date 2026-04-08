@@ -186,7 +186,7 @@ export class CompressionLogsCLI {
 		}
 
 		if (fs.existsSync(summaryFile)) {
-			console.log("\n" + fs.readFileSync(summaryFile, "utf-8"));
+			console.log(`\n${fs.readFileSync(summaryFile, "utf-8")}`);
 		}
 
 		if (fs.existsSync(jsonFile)) {
@@ -261,7 +261,7 @@ export class CompressionLogsCLI {
 			}
 		}
 
-		console.log("\n" + "═".repeat(80));
+		console.log(`\n${"═".repeat(80)}`);
 		console.log("📊 COMPRESSION STATISTICS SUMMARY");
 		console.log("═".repeat(80));
 		console.log(`\n📈 Overall:`);
@@ -289,7 +289,7 @@ export class CompressionLogsCLI {
 				`  ${tool.padEnd(20)} ${data.count.toString().padStart(5)} calls, ${(data.saved / 1024).toFixed(2)}KB saved`,
 			);
 		}
-		console.log("\n" + "═".repeat(80));
+		console.log(`\n${"═".repeat(80)}`);
 	}
 
 	private getAllSummaryFiles(): string[] {
