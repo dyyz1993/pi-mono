@@ -1,41 +1,46 @@
+# Dependencies
 node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
 dist/
-*.log
-.DS_Store
+build/
 *.tsbuildinfo
-# packages/*/node_modules/
-packages/*/dist/
-packages/*/dist-chrome/
-packages/*/dist-firefox/
-*.cpuprofile
 
-# Environment
+# Environment variables
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Editor files
-.vscode/
-.zed/
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+*.log
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
 .idea/
-*.swp
-*.swo
-*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
 
-# Package specific
-.npm/
+# Testing
 coverage/
 .nyc_output/
-.pi_config/
-tui-debug.log
-compaction-results/
-.opencode/
-syntax.jsonl
-out.jsonl
-pi-*.html
-out.html
-packages/coding-agent/binaries/
-todo.md
-plans/
 
-# Tencent Cloud EdgeOne
-.edgeone/*
-.tef_dist/*
+# Misc
+.cache/
+temp/
+tmp/
+
+# Docker
+.dockerignore
