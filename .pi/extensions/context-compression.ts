@@ -14,9 +14,15 @@ import * as os from "os";
 
 // ==================== Type Definitions ====================
 
+interface Message {
+	role: string;
+	content: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
+	name?: string;
+}
+
 interface CompressionModule {
-	compressContext: (messages: unknown[], config: unknown) => Promise<CompressionResult>;
-	estimateTokens: (messages: unknown[]) => number;
+	compressContext: (messages: Message[], config: PipelineConfig) => Promise<CompressionResult>;
+	estimateTokens: (messages: Message[]) => number;
 }
 
 interface TypesModule {
@@ -39,7 +45,7 @@ interface PipelineConfig {
 }
 
 interface CompressionResult {
-	messages: unknown[];
+	messages: Message[];
 	steps: {
 		scoring?: {
 			protectCount: number;
@@ -113,6 +119,17 @@ interface CompressionRecord {
 
 // ==================== Module Loading ====================
 
+interface ContextEvent {
+	messages: Message[];
+}
+
+interface AgentContext {
+	ui: {
+		setStatus: (key: string, status: string | undefined) => void;
+		notify: (message: string, level: "info" | "warning" | "error") => void;
+	};
+}
+
 interface LoadedModules {
 	compressContext: CompressionModule["compressContext"];
 	estimateTokens: CompressionModule["estimateTokens"];
@@ -152,7 +169,12 @@ async function loadModules(): Promise<LoadedModules> {
 
 		return modules;
 	} catch (error) {
-		throw new Error(`Failed to load compression modules: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(
+			`Failed to load compression modules from:\n` +
+			`  - ${compressionPath}\n` +
+			`  - ${typesPath}\n` +
+			`Error: ${error instanceof Error ? error.message : String(error)}`
+		);
 	}
 }
 
@@ -212,17 +234,19 @@ function resetStats(stats: CompressionStats): void {
 	Object.assign(stats, createEmptyStats());
 }
 
-function safeEstimateTokens(messages: unknown[], estimateTokensFn: LoadedModules["estimateTokens"]): number {
+const AVG_BYTES_PER_TOKEN = 4; // Rough approximation for token estimation
+
+function safeEstimateTokens(messages: Message[], estimateTokensFn: LoadedModules["estimateTokens"]): number {
 	try {
 		return estimateTokensFn(messages);
 	} catch (error) {
 		console.error("[ctx-compress] Failed to estimate tokens:", error);
 		// Fallback: estimate ~4 bytes per token on average
-		return Math.ceil(JSON.stringify(messages).length / 4);
+		return Math.ceil(JSON.stringify(messages).length / AVG_BYTES_PER_TOKEN);
 	}
 }
 
-function estimateSize(messages: unknown[]): number {
+function estimateSize(messages: Message[]): number {
 	try {
 		return JSON.stringify(messages).length;
 	} catch {
@@ -298,12 +322,19 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 	const config = loadConfig();
 	const stats = createEmptyStats();
 	const compressionHistory: CompressionRecord[] = [];
+	let isCompressing = false; // Lock to prevent concurrent compression
 
-	pi.on("context", async (event, ctx) => {
+	pi.on("context", async (event: ContextEvent, ctx: AgentContext) => {
 		const { messages } = event;
 
 		// Check minimum message count
 		if (messages.length < config.minMessagesToCompress) {
+			return undefined;
+		}
+
+		// Prevent concurrent compression
+		if (isCompressing) {
+			log("debug", "Compression already in progress, skipping", config);
 			return undefined;
 		}
 
@@ -326,6 +357,7 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 			return undefined;
 		}
 
+		isCompressing = true;
 		try {
 			const sizeBeforeBytes = estimateSize(messages);
 
@@ -420,8 +452,8 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 			ctx.ui.notify(logMsg, "info");
 			updateStatus(ctx, stats);
 
-			// Record compression history
-			const inputTokens = safeEstimateTokens(messages, loadedModules.estimateTokens);
+			// Record compression history (reuse already calculated inputTokens)
+			const inputTokens = msgTokens;
 			const outputTokens = safeEstimateTokens(result.messages, loadedModules.estimateTokens);
 			const triggerReasons: string[] = [];
 			if (inputTokens >= config.minTokensToCompress) triggerReasons.push(`tokens>=${config.minTokensToCompress}`);
@@ -448,10 +480,12 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 			log("error", `Compression failed: ${errorMsg}`, config);
 			ctx.ui.notify(`[ctx-compress] error: ${errorMsg}`, "warning");
 			return undefined;
+		} finally {
+			isCompressing = false;
 		}
 	});
 
-	pi.on("agent_start", async (_event: any, ctx: any) => {
+	pi.on("agent_start", async (_event: unknown, ctx: AgentContext) => {
 		resetStats(stats);
 		compressionHistory.length = 0;
 
@@ -493,7 +527,7 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_shutdown", async (_event: any, ctx: any) => {
+	pi.on("session_shutdown", async (_event: unknown, ctx: AgentContext) => {
 		// Save compression history if configured
 		if (compressionHistory.length > 0) {
 			const historyPath = path.join(os.homedir(), ".pi", "compression-history.json");
