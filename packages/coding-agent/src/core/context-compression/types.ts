@@ -223,15 +223,36 @@ export const DEFAULT_CLASSIFIER_CONFIG: ClassifierConfig = {
 	enabled: true,
 };
 
+// Re-export scoring types
+export type { CompressionStrategy, ToolResultScore, ScoringContext, ScoredToolResult } from "./scoring.js";
+export {
+	TOOL_BASE_SCORE,
+	SCORE_THRESHOLDS,
+	LIFECYCLE_DECAY,
+	STRATEGY_LABELS,
+	scoreToolResult,
+	scoreAllToolResults,
+} from "./scoring.js";
+
 // ============================================================================
 // Orchestration: Full Pipeline Configuration
 // ============================================================================
+
+export interface ScoringConfig {
+	/** Enable scoring-based compression strategy */
+	enabled: boolean;
+}
+
+export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
+	enabled: true,
+};
 
 export interface CompressionPipelineConfig {
 	persistence: PersistenceConfig;
 	lifecycle: LifecycleConfig;
 	summary: SummaryConfig;
 	classifier: ClassifierConfig;
+	scoring: ScoringConfig;
 	/** Enable/disable entire pipeline */
 	enabled: boolean;
 }
@@ -241,6 +262,7 @@ export const DEFAULT_COMPRESSION_PIPELINE_CONFIG: CompressionPipelineConfig = {
 	lifecycle: DEFAULT_LIFECYCLE_CONFIG,
 	summary: DEFAULT_SUMMARY_CONFIG,
 	classifier: DEFAULT_CLASSIFIER_CONFIG,
+	scoring: DEFAULT_SCORING_CONFIG,
 	enabled: true,
 };
 
