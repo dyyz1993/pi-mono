@@ -112,10 +112,14 @@ interface CompressionRecord {
 	timestamp: number;
 	inputBytes: number;
 	outputBytes: number;
+	inputTokens: number;
+	outputTokens: number;
+	messageCount: number;
 	duration: number;
 	savedBytes: number;
 	savedPercent: string;
 	strategies: Record<string, number>;
+	triggerReason: string;
 }
 
 // ==================== Module Loading ====================
@@ -427,14 +431,25 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 			updateStatus(ctx, stats);
 
 			// Record compression history
+			const inputTokens = safeEstimateTokens(messages, loadedModules.estimateTokens);
+			const outputTokens = safeEstimateTokens(result.messages, loadedModules.estimateTokens);
+			const triggerReasons: string[] = [];
+			if (inputTokens >= config.minTokensToCompress) triggerReasons.push(`tokens>=${config.minTokensToCompress}`);
+			if (stats.lastTimestamp > 0 && now - stats.lastTimestamp >= config.minIntervalMs) triggerReasons.push(`interval>=${config.minIntervalMs}ms`);
+			if (stats.lastTokens > 0 && inputTokens - stats.lastTokens >= config.minGrowthToCompress) triggerReasons.push(`growth>=${config.minGrowthToCompress}`);
+
 			compressionHistory.push({
 				timestamp: now,
 				inputBytes: sizeBeforeBytes,
 				outputBytes: sizeAfterBytes,
+				inputTokens: inputTokens || 0,
+				outputTokens: outputTokens || 0,
+				messageCount: messages.length,
 				duration,
 				savedBytes,
 				savedPercent: pct,
 				strategies: { ...stats.strategies },
+				triggerReason: triggerReasons.join(",") || "unknown",
 			});
 
 			return { messages: result.messages };
