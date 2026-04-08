@@ -478,6 +478,12 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 			try {
 				fs.writeFileSync(historyPath, JSON.stringify(compressionHistory, null, 2));
 				log("debug", `Saved compression history to ${historyPath}`, config);
+
+				// Generate HTML report
+				const htmlReportPath = path.join(os.homedir(), ".pi", "compression-report.html");
+				const html = generateHtmlReport(compressionHistory, config);
+				fs.writeFileSync(htmlReportPath, html);
+				log("debug", `Generated HTML report to ${htmlReportPath}`, config);
 			} catch (error) {
 				log("error", `Failed to save compression history: ${error}`, config);
 			}
@@ -485,4 +491,102 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setStatus("ctx-compress", undefined);
 	});
+}
+
+function generateHtmlReport(records: CompressionRecord[], config: CompressionConfig): string {
+	const totalInput = records.reduce((sum, r) => sum + r.inputBytes, 0);
+	const totalOutput = records.reduce((sum, r) => sum + r.outputBytes, 0);
+	const totalSaved = totalInput - totalOutput;
+	const overallPct = totalInput > 0 ? ((totalSaved / totalInput) * 100).toFixed(1) : "0";
+
+	const rows = records.map((r, i) => {
+		const date = new Date(r.timestamp).toLocaleTimeString();
+		const strategiesStr = Object.entries(r.strategies)
+			.filter(([_, v]) => v > 0)
+			.map(([k, v]) => `${k}:${v}`)
+			.join(", ") || "none";
+		return `<tr>
+			<td>${i + 1}</td>
+			<td>${date}</td>
+			<td>${r.messageCount}</td>
+			<td>${r.inputTokens || "?"}</td>
+			<td>${r.outputTokens || "?"}</td>
+			<td>${(r.inputBytes / 1024).toFixed(1)}KB</td>
+			<td>${(r.outputBytes / 1024).toFixed(1)}KB</td>
+			<td>-${r.savedPercent}%</td>
+			<td>${r.duration}ms</td>
+			<td>${r.triggerReason}</td>
+			<td>${strategiesStr}</td>
+		</tr>`;
+	}).join("\n");
+
+	return `<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<title>Context Compression Report</title>
+	<style>
+		body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 20px; background: #1a1a2e; color: #eee; }
+		h1 { color: #00d4ff; }
+		.summary { display: flex; gap: 20px; margin: 20px 0; }
+		.card { background: #16213e; padding: 20px; border-radius: 8px; }
+		.card h3 { margin: 0 0 10px 0; color: #888; font-size: 14px; }
+		.card .value { font-size: 24px; font-weight: bold; color: #00d4ff; }
+		table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+		th { background: #16213e; padding: 12px; text-align: left; }
+		td { padding: 10px; border-bottom: 1px solid #333; }
+		tr:hover { background: #16213e; }
+		.config { background: #16213e; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 14px; }
+		.config span { color: #00d4ff; }
+	</style>
+</head>
+<body>
+	<h1>Context Compression Report</h1>
+	<p>Generated: ${new Date().toLocaleString()}</p>
+
+	<div class="summary">
+		<div class="card">
+			<h3>Total Compressions</h3>
+			<div class="value">${records.length}</div>
+		</div>
+		<div class="card">
+			<h3>Total Saved</h3>
+			<div class="value">${(totalSaved / 1024).toFixed(1)} KB</div>
+		</div>
+		<div class="card">
+			<h3>Overall Reduction</h3>
+			<div class="value">${overallPct}%</div>
+		</div>
+	</div>
+
+	<div class="config">
+		<strong>Config:</strong>
+		minTokens=${config.minTokensToCompress},
+		minGrowth=${config.minGrowthToCompress},
+		keepRecent=${config.keepRecent},
+		staleMinutes=${config.staleMinutes}
+	</div>
+
+	<table>
+		<thead>
+			<tr>
+				<th>#</th>
+				<th>Time</th>
+				<th>Msgs</th>
+				<th>In Tokens</th>
+				<th>Out Tokens</th>
+				<th>In Size</th>
+				<th>Out Size</th>
+				<th>Saved</th>
+				<th>Duration</th>
+				<th>Trigger</th>
+				<th>Strategies</th>
+			</tr>
+		</thead>
+		<tbody>
+			${rows}
+		</tbody>
+	</table>
+</body>
+</html>`;
 }
