@@ -25,7 +25,6 @@ import type {
 } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
 import { isContextOverflow, modelsAreEqual, resetApiProviders, streamSimple, supportsXhigh } from "@mariozechner/pi-ai";
-import type { ExtensionLLMCallOptions } from "./extensions/index.js";
 import { getDocsPath } from "../config.js";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
@@ -44,6 +43,7 @@ import {
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
+import type { ExtensionLLMCallOptions } from "./extensions/index.js";
 import {
 	type ContextUsage,
 	type ExtensionCommandContextActions,

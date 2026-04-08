@@ -4,7 +4,6 @@
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Model } from "@mariozechner/pi-ai";
-import type { ExtensionLLMCallOptions } from "./types.js";
 import type { KeyId } from "@mariozechner/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "../diagnostics.js";
@@ -28,6 +27,7 @@ import type {
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFlag,
+	ExtensionLLMCallOptions,
 	ExtensionRuntime,
 	ExtensionShortcut,
 	ExtensionUIContext,

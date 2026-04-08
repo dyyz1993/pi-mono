@@ -224,14 +224,14 @@ export const DEFAULT_CLASSIFIER_CONFIG: ClassifierConfig = {
 };
 
 // Re-export scoring types
-export type { CompressionStrategy, ToolResultScore, ScoringContext, ScoredToolResult } from "./scoring.js";
+export type { CompressionStrategy, ScoredToolResult, ScoringContext, ToolResultScore } from "./scoring.js";
 export {
-	TOOL_BASE_SCORE,
-	SCORE_THRESHOLDS,
 	LIFECYCLE_DECAY,
+	SCORE_THRESHOLDS,
 	STRATEGY_LABELS,
-	scoreToolResult,
 	scoreAllToolResults,
+	scoreToolResult,
+	TOOL_BASE_SCORE,
 } from "./scoring.js";
 
 // ============================================================================

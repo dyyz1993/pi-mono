@@ -16,7 +16,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { classifyConversation } from "./classifier.js";
 import { applyLifecycle, estimateTokens } from "./lifecycle.js";
 import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded, rollbackStats, snapshotStats } from "./persistence.js";
-import { scoreAllToolResults, scoreToolResult, STRATEGY_LABELS, type CompressionStrategy } from "./scoring.js";
+import { type CompressionStrategy, STRATEGY_LABELS, scoreAllToolResults, scoreToolResult } from "./scoring.js";
 import { summarizeToolResult } from "./summary.js";
 import {
 	type CompressionPipelineConfig,

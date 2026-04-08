@@ -62,6 +62,9 @@ export type {
 	ExtensionFactory,
 	ExtensionFlag,
 	ExtensionHandler,
+	// LLM Call
+	ExtensionLLMCallOptions,
+	ExtensionLLMSpeedLevel,
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,
@@ -129,10 +132,8 @@ export type {
 	SetModelHandler,
 	SetThinkingLevelHandler,
 	TerminalInputHandler,
-	// LLM Call
-	ExtensionLLMCallOptions,
-	ExtensionLLMSpeedLevel,
 } from "./types.js";
+
 // Tools
 ToolCallEvent,
 ToolCallEventResult,
@@ -155,6 +156,7 @@ ToolDefinition,
 	WriteToolCallEvent,
 	WriteToolResultEvent,
 } from "./types.js";
+
 // Type guards
 export {
 	defineTool,

@@ -278,10 +278,7 @@ function extractPathFromReadTool(msg: AgentMessage): string | null {
 	return match ? match[1] : null;
 }
 
-export function checkForDuplicateReads(
-	messages: AgentMessage[],
-	currentIndex: number,
-): Map<number, boolean> {
+export function checkForDuplicateReads(messages: AgentMessage[], currentIndex: number): Map<number, boolean> {
 	const result = new Map<number, boolean>();
 	const currentMsg = messages[currentIndex];
 
@@ -322,10 +319,7 @@ export interface ScoredToolResult {
 	timestamp: number;
 }
 
-export function scoreAllToolResults(
-	messages: AgentMessage[],
-	context: ScoringContext = {},
-): ScoredToolResult[] {
+export function scoreAllToolResults(messages: AgentMessage[], context: ScoringContext = {}): ScoredToolResult[] {
 	const now = context.currentTime ?? Date.now();
 	const results: ScoredToolResult[] = [];
 
