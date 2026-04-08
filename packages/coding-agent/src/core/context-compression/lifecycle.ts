@@ -157,7 +157,7 @@ export function adjustPriorityByContent(toolName: string, content: string): Tool
 	const lines = trimmed.split("\n");
 	if (lines.length > 30) {
 		const sample = Math.min(5, lines.length);
-		let uniquePrefixes = new Set<string>();
+		const uniquePrefixes = new Set<string>();
 		for (let i = 0; i < sample; i++) {
 			const prefix = lines[i].split(":")[0]?.split("/").pop() ?? "";
 			if (prefix) uniquePrefixes.add(prefix);

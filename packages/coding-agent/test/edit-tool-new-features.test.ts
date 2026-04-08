@@ -20,9 +20,12 @@ describe("edit tool new features (TDD)", () => {
 	describe("1. replaceAll feature", () => {
 		it("should replace all occurrences when replaceAll is true", async () => {
 			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, `const a = "hello";
+			await writeFile(
+				filePath,
+				`const a = "hello";
 const b = "hello";
-const c = "hello";`);
+const c = "hello";`,
+			);
 
 			const options: EditOptions = {
 				filePath,
@@ -43,9 +46,12 @@ const c = "world";`);
 
 		it("should replace only first occurrence when replaceAll is false", async () => {
 			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, `const a = "hello";
+			await writeFile(
+				filePath,
+				`const a = "hello";
 const b = "hello";
-const c = "hello";`);
+const c = "hello";`,
+			);
 
 			const options: EditOptions = {
 				filePath,
@@ -84,12 +90,15 @@ const c = "hello";`);
 	describe("2. smart deletion feature", () => {
 		it("should clean up empty lines after deletion", async () => {
 			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, `function foo() {
+			await writeFile(
+				filePath,
+				`function foo() {
   const a = 1;
   const b = 2;
   const c = 3;
   return a + b + c;
-}`);
+}`,
+			);
 
 			const options: EditOptions = {
 				filePath,
@@ -111,9 +120,12 @@ const c = "hello";`);
 
 		it("should not merge non-empty lines", async () => {
 			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, `const a = 1;
+			await writeFile(
+				filePath,
+				`const a = 1;
 const b = 2;
-const c = 3;`);
+const c = 3;`,
+			);
 
 			const options: EditOptions = {
 				filePath,
@@ -133,11 +145,14 @@ const c = 3;`);
 	describe("3. multi-line replacement", () => {
 		it("should handle multi-line oldText", async () => {
 			const filePath = join(tempDir, "test.js");
-			await writeFile(filePath, `function foo() {
+			await writeFile(
+				filePath,
+				`function foo() {
   const a = 1;
   const b = 2;
   return a + b;
-}`);
+}`,
+			);
 
 			const options: EditOptions = {
 				filePath,
