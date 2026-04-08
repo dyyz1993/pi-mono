@@ -2,7 +2,7 @@
  * Context Compression Extension
  *
  * Hooks into 'context' event to compress messages before each LLM call.
- * Supports both legacy pipeline (L0/L1/L2/L3) and new scoring-based compression.
+ * Configuration is loaded from ~/.pi/compression-config.json
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -11,6 +11,43 @@ import {
 	DEFAULT_COMPRESSION_PIPELINE_CONFIG,
 	STRATEGY_LABELS,
 } from "../../packages/coding-agent/src/core/context-compression/types.js";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+
+export interface CompressionConfig {
+	minTokensToCompress: number;
+	minGrowthToCompress: number;
+	minIntervalMs: number;
+	keepRecent: number;
+	staleMinutes: number;
+	summaryMaxLines: number;
+	persistenceThreshold: number;
+}
+
+const DEFAULT_CONFIG: CompressionConfig = {
+	minTokensToCompress: 40 * 1000,
+	minGrowthToCompress: 20 * 1000,
+	minIntervalMs: 5000,
+	keepRecent: 5,
+	staleMinutes: 60,
+	summaryMaxLines: 100,
+	persistenceThreshold: 50 * 1024,
+};
+
+function loadConfig(): CompressionConfig {
+	const configPath = path.join(os.homedir(), ".pi", "compression-config.json");
+	try {
+		if (fs.existsSync(configPath)) {
+			const content = fs.readFileSync(configPath, "utf-8");
+			const userConfig = JSON.parse(content);
+			return { ...DEFAULT_CONFIG, ...userConfig };
+		}
+	} catch (err) {
+		console.error(`[ctx-compress] Failed to load config: ${err}`);
+	}
+	return DEFAULT_CONFIG;
+}
 
 function safeEstimateTokens(messages: unknown[]): number {
 	try {
@@ -29,9 +66,7 @@ function estimateSize(messages: unknown[]): number {
 }
 
 export default function contextCompressionExtension(pi: ExtensionAPI) {
-	const MIN_COMPRESSION_TOKENS = 40 * 1000;
-	const MIN_GROWTH_TOKENS = 20 * 1000;
-	const MIN_INTERVAL_MS = 5000;
+	const config = loadConfig();
 
 	let totalCompressions = 0;
 	let totalInputTokens = 0;
@@ -39,14 +74,12 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 	let lastCompressedTokens = 0;
 	let lastCompressAt = 0;
 
-	// Scoring stats
 	let totalProtected = 0;
 	let totalPersist = 0;
 	let totalSummary = 0;
 	let totalPersistShort = 0;
 	let totalDrop = 0;
 
-	// L0/L1/L2/L3 stats
 	let totalPersistL0 = 0;
 	let totalPersistBytesL0 = 0;
 	let totalLifecycleDegraded = 0;
@@ -78,27 +111,40 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		if (messages.length < 3) return undefined;
 
 		const msgTokens = safeEstimateTokens(messages);
-		console.log(`[ctx-compress] messages=${messages.length}, tokens=${msgTokens}, threshold=${MIN_COMPRESSION_TOKENS}`);
+		console.log(`[ctx-compress] messages=${messages.length}, tokens=${msgTokens}, threshold=${config.minTokensToCompress}`);
 
-		// 阈值1：至少 40K tokens 才考虑压缩
-		if (msgTokens < MIN_COMPRESSION_TOKENS) return undefined;
+		if (msgTokens < config.minTokensToCompress) return undefined;
 
-		// 阈值2：距离上次压缩至少 5 秒
 		const now = Date.now();
-		if (now - lastCompressAt < MIN_INTERVAL_MS) return undefined;
+		if (now - lastCompressAt < config.minIntervalMs) return undefined;
 
-		// 阈值3：相比上次压缩后，上下文必须增长至少 20K tokens
-		if (lastCompressedTokens > 0 && msgTokens - lastCompressedTokens < MIN_GROWTH_TOKENS) return undefined;
+		if (lastCompressedTokens > 0 && msgTokens - lastCompressedTokens < config.minGrowthToCompress) return undefined;
 
 		try {
 			const sizeBefore = estimateSize(messages);
 
-			const result = await compressContext(messages, DEFAULT_COMPRESSION_PIPELINE_CONFIG);
+			const pipelineConfig = {
+				...DEFAULT_COMPRESSION_PIPELINE_CONFIG,
+				lifecycle: {
+					...DEFAULT_COMPRESSION_PIPELINE_CONFIG.lifecycle!,
+					keepRecent: config.keepRecent,
+					staleMinutes: config.staleMinutes,
+				},
+				summary: {
+					...DEFAULT_COMPRESSION_PIPELINE_CONFIG.summary!,
+					maxLines: config.summaryMaxLines,
+				},
+				persistence: {
+					...DEFAULT_COMPRESSION_PIPELINE_CONFIG.persistence!,
+					largeThreshold: config.persistenceThreshold,
+				},
+			};
+
+			const result = await compressContext(messages, pipelineConfig);
 
 			const stepCount = Object.keys(result.steps).length;
 			if (stepCount === 0) return undefined;
 
-			// 记录这次压缩的状态
 			lastCompressedTokens = safeEstimateTokens(result.messages);
 			lastCompressAt = now;
 
@@ -114,17 +160,14 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 				totalPersistShort += result.steps.scoring.persistShortCount;
 				totalDrop += result.steps.scoring.dropCount;
 			} else {
-				// L0: Persistence
 				if (result.steps.persistence) {
 					totalPersistL0 += result.steps.persistence.persistedCount;
 					totalPersistBytesL0 += result.steps.persistence.bytesSaved;
 				}
-				// L1+L2: Lifecycle
 				if (result.steps.lifecycle) {
 					totalLifecycleDegraded += result.steps.lifecycle.degradedCount;
 					totalLifecycleCleared += result.steps.lifecycle.clearedCount;
 				}
-				// L3: Summary
 				if (result.steps.summary) {
 					totalSummaryL3 += result.steps.summary.summarizedCount;
 				}
@@ -157,11 +200,6 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			if (result.steps.classification) {
-				const c = result.steps.classification as { intent: string; confidence: number };
-				parts.push(`${c.intent}`);
-			}
-
 			if (parts.length > 0) logMsg += ` | ${parts.join(" ")}`;
 
 			ctx.ui.notify(logMsg, "info");
@@ -180,13 +218,11 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		totalOutputTokens = 0;
 		lastCompressedTokens = 0;
 		lastCompressAt = 0;
-		// Scoring stats
 		totalProtected = 0;
 		totalPersist = 0;
 		totalSummary = 0;
 		totalPersistShort = 0;
 		totalDrop = 0;
-		// L0/L1/L2/L3 stats
 		totalPersistL0 = 0;
 		totalPersistBytesL0 = 0;
 		totalLifecycleDegraded = 0;
