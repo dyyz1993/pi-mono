@@ -56,12 +56,13 @@ export async function compressContext(
 	compressionLogger.startSession(sessionId, messages.length, tokensBefore);
 
 	if (!config.enabled) {
-		compressionLogger.endSession(tokensBefore, Date.now() - startTime);
+		const tokensAfter = tokensBefore;
+		compressionLogger.endSession(tokensAfter, Date.now() - startTime);
 		return {
 			messages,
 			steps: {},
 			tokensBefore,
-			tokensAfter: tokensBefore,
+			tokensAfter,
 			durationMs: Date.now() - startTime,
 		};
 	}
