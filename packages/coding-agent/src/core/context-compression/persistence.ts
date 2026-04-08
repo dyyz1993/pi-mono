@@ -219,6 +219,46 @@ export async function cleanupOldFiles(
 	return removed;
 }
 
+/**
+ * Scan cache directory for orphaned files (exist on disk but not in memory map)
+ * and remove those older than maxAgeMs.
+ * Call this at startup to clean up files from previous sessions/crashes.
+ */
+export async function cleanupOrphanedFiles(
+	config: PersistenceConfig = DEFAULT_PERSISTENCE_CONFIG,
+	maxAgeMs: number = 7 * 24 * 60 * 60 * 1000,
+): Promise<number> {
+	const now = Date.now();
+	let removed = 0;
+
+	try {
+		const entries = await fs.promises.readdir(config.cacheDir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isFile() || !entry.name.endsWith(".txt")) continue;
+
+			const filePath = nodePath.join(config.cacheDir, entry.name);
+
+			// Skip if already tracked in memory
+			if (persistedFiles.has(filePath)) continue;
+
+			// Check file age by mtime
+			try {
+				const stat = await fs.promises.stat(filePath);
+				if (now - stat.mtimeMs >= maxAgeMs) {
+					await fs.promises.unlink(filePath);
+					removed++;
+				}
+			} catch {
+				// Can't stat or unlink - skip
+			}
+		}
+	} catch {
+		// Directory doesn't exist or can't read - nothing to clean
+	}
+
+	return removed;
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
