@@ -18,24 +18,20 @@ echo "2. List All Memories"
 echo "--------------------"
 curl -s "$BASE_URL/api/memories" | jq '.'
 echo ""
-echo ""
 
 echo "3. Get User Profile"
 echo "-------------------"
 curl -s "$BASE_URL/api/memories/user/profile" | jq '.'
-echo ""
 echo ""
 
 echo "4. List All Resources"
 echo "---------------------"
 curl -s "$BASE_URL/api/resources" | jq '.'
 echo ""
-echo ""
 
 echo "5. List All Skills"
 echo "------------------"
 curl -s "$BASE_URL/api/skills" | jq '.'
-echo ""
 echo ""
 
 echo "6. Search for 'typescript'"
