@@ -15,12 +15,12 @@ import type { ExtensionAPI, AgentMessage, ToolResultMessage } from "@mariozechne
 const mockCompressContext = vi.fn();
 
 // Mock the compressContext function from the actual import path used by the extension
-vi.mock("../../packages/coding-agent/src/core/context-compression/index.js", () => ({
+vi.mock("../src/core/context-compression/index.js", () => ({
 	compressContext: (...args: unknown[]) => mockCompressContext(...args),
 }));
 
 // Also mock the types import
-vi.mock("../../packages/coding-agent/src/core/context-compression/types.js", () => ({
+vi.mock("../src/core/context-compression/types.js", () => ({
 	DEFAULT_COMPRESSION_PIPELINE_CONFIG: {
 		protectedMessageCount: 6,
 		protectedContentAge: 20,
@@ -35,8 +35,8 @@ vi.mock("../../packages/coding-agent/src/core/context-compression/types.js", () 
 	},
 }));
 
-// Import after mocking
-import contextCompressionExtension from "./context-compression.js";
+// Import after mocking - extension is in .pi/extensions/
+import contextCompressionExtension from "../../.pi/extensions/context-compression.js";
 
 // Helper functions
 function createUserMsg(content: string): AgentMessage {
