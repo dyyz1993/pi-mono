@@ -15,6 +15,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { classifyConversation } from "./classifier.js";
 import { applyLifecycle, estimateTokens } from "./lifecycle.js";
+import { compressionLogger } from "./logger.js";
 import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded, rollbackStats, snapshotStats } from "./persistence.js";
 import { scoreAllToolResults } from "./scoring.js";
 import { applySummary, summarizeToolResult } from "./summary.js";
@@ -47,10 +48,15 @@ export async function compressContext(
 	config: CompressionPipelineConfig = DEFAULT_COMPRESSION_PIPELINE_CONFIG,
 ): Promise<PipelineResult> {
 	const startTime = Date.now();
+	const sessionId = `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
 	const tokensBefore = estimateTokens(messages);
 
+	// 启动日志会话
+	compressionLogger.startSession(sessionId, messages.length, tokensBefore);
+
 	if (!config.enabled) {
+		compressionLogger.endSession(tokensBefore, Date.now() - startTime);
 		return {
 			messages,
 			steps: {},
@@ -102,15 +108,19 @@ export async function compressContext(
 				intent: classification.intent,
 				confidence: classification.confidence,
 			};
+			
+			// 记录意图分类
+			compressionLogger.logIntent(classification.intent, classification.confidence);
 		}
-	} catch {
+	} catch (error) {
 		// Classification is best-effort; don't fail pipeline
+		compressionLogger.logError("classification", error instanceof Error ? error : String(error));
 	}
 
 	// Step Scoring: Intelligent per-tool-result compression based on scoring
 	if (config.scoring?.enabled) {
 		try {
-			const scoringResult = await applyScoring(currentMessages, config);
+			const scoringResult = await applyScoring(currentMessages, config, sessionId);
 			currentMessages = scoringResult.messages;
 
 			if (
@@ -128,7 +138,8 @@ export async function compressContext(
 					dropCount: scoringResult.dropCount,
 				};
 			}
-		} catch {
+		} catch (error) {
+			compressionLogger.logError("scoring", error instanceof Error ? error : String(error));
 			currentMessages = lastSuccessfulMessages;
 		}
 	} else {
@@ -186,8 +197,10 @@ export async function compressContext(
 
 				if (persistedCount > 0) {
 					steps.persistence = { persistedCount, bytesSaved };
+					compressionLogger.logPersistence("multiple", 0, "multiple", bytesSaved);
 				}
-			} catch {
+			} catch (error) {
+				compressionLogger.logError("persistence", error instanceof Error ? error : String(error));
 				currentMessages = lastSuccessfulMessages;
 				rollbackStats(statsSnapshot);
 			}
@@ -206,8 +219,10 @@ export async function compressContext(
 						degradedCount: lifecycleResult.degradedCount,
 						clearedCount: lifecycleResult.clearedCount,
 					};
+					compressionLogger.logLifecycle(lifecycleResult.degradedCount, lifecycleResult.clearedCount);
 				}
-			} catch {
+			} catch (error) {
+				compressionLogger.logError("lifecycle", error instanceof Error ? error : String(error));
 				currentMessages = lastSuccessfulMessages;
 			}
 		}
@@ -224,19 +239,27 @@ export async function compressContext(
 					steps.summary = {
 						summarizedCount: summaryResult.summarizedCount,
 					};
+					compressionLogger.logSummary("multiple", 0, summaryResult.summarizedCount);
 				}
-			} catch {
+			} catch (error) {
+				compressionLogger.logError("summary", error instanceof Error ? error : String(error));
 				currentMessages = lastSuccessfulMessages;
 			}
 		}
 	}
 
+	const tokensAfter = estimateTokens(lastSuccessfulMessages);
+	const durationMs = Date.now() - startTime;
+	
+	// 结束日志会话
+	compressionLogger.endSession(tokensAfter, durationMs);
+
 	return {
 		messages: lastSuccessfulMessages,
 		steps,
 		tokensBefore,
-		tokensAfter: estimateTokens(lastSuccessfulMessages),
-		durationMs: Date.now() - startTime,
+		tokensAfter,
+		durationMs,
 	};
 }
 
@@ -302,7 +325,11 @@ interface ScoringApplyResult {
 	dropCount: number;
 }
 
-async function applyScoring(messages: AgentMessage[], config: CompressionPipelineConfig): Promise<ScoringApplyResult> {
+async function applyScoring(
+	messages: AgentMessage[],
+	config: CompressionPipelineConfig,
+	sessionId: string,
+): Promise<ScoringApplyResult> {
 	const now = Date.now();
 	const result: ScoringApplyResult = {
 		messages: [],
@@ -327,10 +354,25 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 		const { score, toolName, content } = scored;
 
 		switch (score.strategy) {
-			case "protected":
+			case "protected": {
 				result.messages.push(msg);
 				result.protectCount++;
+				
+				// 记录决策
+				compressionLogger.logToolResultDecision({
+					messageIndex: i,
+					toolName,
+					strategy: "protected",
+					score: score.normalized,
+					breakdown: score.breakdown,
+					reason: score.reason,
+					contentPreview: content.substring(0, 100),
+					originalSize: content.length,
+					compressedSize: content.length,
+					savedBytes: 0,
+				});
 				break;
+			}
 
 			case "persist": {
 				const persisted = await persistIfNeeded(
@@ -340,10 +382,28 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 				if (persisted.persisted) {
 					result.persistCount++;
 					const imageParts = extractImageParts(msg);
+					const compressedContent = persisted.stub;
 					result.messages.push({
 						...msg,
-						content: [{ type: "text", text: persisted.stub }, ...imageParts],
+						content: [{ type: "text", text: compressedContent }, ...imageParts],
 					} as unknown as AgentMessage);
+					
+					// 记录决策
+					compressionLogger.logToolResultDecision({
+						messageIndex: i,
+						toolName,
+						strategy: "persist",
+						score: score.normalized,
+						breakdown: score.breakdown,
+						reason: score.reason,
+						contentPreview: content.substring(0, 100),
+						originalSize: content.length,
+						compressedSize: compressedContent.length,
+						savedBytes: content.length - compressedContent.length,
+					});
+					
+					// 记录持久化
+					compressionLogger.logPersistence(toolName, content.length, persisted.path || "unknown", content.length - compressedContent.length);
 				} else {
 					result.messages.push(msg);
 				}
@@ -358,6 +418,20 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 						...msg,
 						content: [{ type: "text", text: note.formatted }],
 					} as unknown as AgentMessage);
+					
+					// 记录决策
+					compressionLogger.logToolResultDecision({
+						messageIndex: i,
+						toolName,
+						strategy: "summary",
+						score: score.normalized,
+						breakdown: score.breakdown,
+						reason: score.reason,
+						contentPreview: content.substring(0, 100),
+						originalSize: content.length,
+						compressedSize: note.formatted.length,
+						savedBytes: content.length - note.formatted.length,
+					});
 				} else {
 					result.messages.push(msg);
 				}
@@ -372,27 +446,73 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 				if (persisted.persisted) {
 					result.persistShortCount++;
 					const imageParts = extractImageParts(msg);
+					const compressedContent = persisted.stub;
 					result.messages.push({
 						...msg,
-						content: [{ type: "text", text: persisted.stub }, ...imageParts],
+						content: [{ type: "text", text: compressedContent }, ...imageParts],
 					} as unknown as AgentMessage);
+					
+					// 记录决策
+					compressionLogger.logToolResultDecision({
+						messageIndex: i,
+						toolName,
+						strategy: "persist_short",
+						score: score.normalized,
+						breakdown: score.breakdown,
+						reason: score.reason,
+						contentPreview: content.substring(0, 100),
+						originalSize: content.length,
+						compressedSize: compressedContent.length,
+						savedBytes: content.length - compressedContent.length,
+					});
 				} else {
+					const compressedContent = `${CLEARED_MARKER} [${toolName}]`;
 					result.messages.push({
 						...msg,
-						content: [{ type: "text", text: `${CLEARED_MARKER} [${toolName}]` }],
+						content: [{ type: "text", text: compressedContent }],
 					} as unknown as AgentMessage);
 					result.dropCount++;
+					
+					// 记录决策
+					compressionLogger.logToolResultDecision({
+						messageIndex: i,
+						toolName,
+						strategy: "drop",
+						score: score.normalized,
+						breakdown: score.breakdown,
+						reason: "persist_short failed, fallback to drop",
+						contentPreview: content.substring(0, 100),
+						originalSize: content.length,
+						compressedSize: compressedContent.length,
+						savedBytes: content.length - compressedContent.length,
+					});
 				}
 				break;
 			}
 
-			case "drop":
+			case "drop": {
 				result.dropCount++;
+				const compressedContent = `${CLEARED_MARKER} [${toolName}]`;
 				result.messages.push({
 					...msg,
-					content: [{ type: "text", text: `${CLEARED_MARKER} [${toolName}]` }],
+					content: [{ type: "text", text: compressedContent }],
 				} as unknown as AgentMessage);
+				
+				// 记录决策
+				compressionLogger.logToolResultDecision({
+					messageIndex: i,
+					toolName,
+					strategy: "drop",
+					score: score.normalized,
+					breakdown: score.breakdown,
+					reason: score.reason,
+					contentPreview: content.substring(0, 100),
+					originalSize: content.length,
+					compressedSize: compressedContent.length,
+					savedBytes: content.length - compressedContent.length,
+				});
 				break;
+			}
 		}
 	}
 
@@ -422,5 +542,6 @@ function extractToolContent(msg: AgentMessage): string | null {
 
 export { classifyConversation, classifyMessage } from "./classifier.js";
 export { applyLifecycle, estimateTokens } from "./lifecycle.js";
+export { compressionLogger } from "./logger.js";
 export { cleanupOldFiles, persistIfNeeded, readPersistedFile } from "./persistence.js";
 export { summarizeToolResult } from "./summary.js";
