@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { compressContext } from "../../packages/coding-agent/src/core/context-compression/index.js";
+import { compressContext, estimateTokens } from "../../packages/coding-agent/src/core/context-compression/index.js";
 import {
 	DEFAULT_COMPRESSION_PIPELINE_CONFIG,
 	STRATEGY_LABELS,
@@ -21,13 +21,14 @@ function estimateSize(messages: unknown[]): number {
 }
 
 export default function contextCompressionExtension(pi: ExtensionAPI) {
-	const MIN_COMPRESSION_SIZE = 40 * 1024;
-	const MIN_GROWTH_TO_COMPRESS = 20 * 1024;
+	const MIN_COMPRESSION_TOKENS = 40 * 1000;
+	const MIN_GROWTH_TOKENS = 20 * 1000;
+	const MIN_INTERVAL_MS = 5000;
 
 	let totalCompressions = 0;
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
-	let lastCompressedSize = 0;
+	let lastCompressedTokens = 0;
 	let lastCompressAt = 0;
 
 	// Scoring stats
@@ -68,17 +69,17 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 
 		if (messages.length < 3) return undefined;
 
-		const msgSize = estimateSize(messages);
+		const msgTokens = estimateTokens(messages as Parameters<typeof estimateTokens>[0]);
 
-		// 阈值1：至少 40KB 才考虑压缩
-		if (msgSize < MIN_COMPRESSION_SIZE) return undefined;
+		// 阈值1：至少 40K tokens 才考虑压缩
+		if (msgTokens < MIN_COMPRESSION_TOKENS) return undefined;
 
 		// 阈值2：距离上次压缩至少 5 秒
 		const now = Date.now();
-		if (now - lastCompressAt < 5000) return undefined;
+		if (now - lastCompressAt < MIN_INTERVAL_MS) return undefined;
 
-		// 阈值3：相比上次压缩后，上下文必须增长至少 20KB
-		if (lastCompressedSize > 0 && msgSize - lastCompressedSize < MIN_GROWTH_TO_COMPRESS) return undefined;
+		// 阈值3：相比上次压缩后，上下文必须增长至少 20K tokens
+		if (lastCompressedTokens > 0 && msgTokens - lastCompressedTokens < MIN_GROWTH_TOKENS) return undefined;
 
 		try {
 			const sizeBefore = estimateSize(messages);
@@ -89,7 +90,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 			if (stepCount === 0) return undefined;
 
 			// 记录这次压缩的状态
-			lastCompressedSize = estimateSize(result.messages);
+			lastCompressedTokens = estimateTokens(result.messages as Parameters<typeof estimateTokens>[0]);
 			lastCompressAt = now;
 
 			totalCompressions++;
