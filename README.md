@@ -1,112 +1,263 @@
-# Full Stack Monorepo Template
+# OpenViking Knowledge Base
 
-A modern full-stack monorepo template with React, TypeScript, Express, and Docker.
+A personal knowledge management system inspired by Viking, with a beautiful web interface and RESTful API.
 
-## Project Structure
+## 🎯 Features
+
+- **Three Knowledge Types**: Memories, Resources, and Skills
+- **Browse & Search**: Navigate through your knowledge base with ease
+- **Beautiful UI**: Modern, responsive web interface
+- **RESTful API**: Full-featured backend API
+- **Markdown Storage**: All knowledge stored as readable Markdown files
+- **Type-Safe**: Full TypeScript support on frontend
+
+## 🏗️ Architecture
 
 ```
-.
+OpenViking/
 ├── packages/
-│   ├── frontend/     # React + TypeScript + Vite
-│   └── backend/      # Express + TypeScript
-├── package.json      # Root package.json with workspaces
-├── tsconfig.base.json
-├── Dockerfile
-├── Dockerfile.backend
-├── docker-compose.yml
-└── nginx.conf
+│   ├── frontend/          # React + TypeScript + TailwindCSS
+│   │   ├── src/
+│   │   │   ├── components/   # Reusable UI components
+│   │   │   ├── pages/        # Page components
+│   │   │   ├── services/     # API client
+│   │   │   └── types/        # TypeScript types
+│   │   └── package.json
+│   └── backend/           # FastAPI + Python
+│       ├── app/
+│       │   ├── routers/      # API endpoints
+│       │   ├── models.py     # Data models
+│       │   └── database.py   # Database config
+│       └── requirements.txt
+├── memories/              # User memories
+│   ├── user/              # Personal profile
+│   └── projects/          # Project context
+├── resources/             # Reference materials
+├── skills/                # Reusable procedures
+└── README.md
 ```
 
-## Prerequisites
+## 🚀 Quick Start
 
-- Node.js 20+
-- npm 10+
-- Docker (optional)
+### Prerequisites
 
-## Quick Start
+- Node.js 18+ and npm
+- Python 3.11+
+- pip or uv
 
-### Development
+### Installation
 
-1. Install dependencies:
 ```bash
+# Clone the repository
+git clone <repository-url>
+cd OpenViking
+
+# Install frontend dependencies
+cd packages/frontend
 npm install
+
+# Install backend dependencies
+cd ../backend
+pip install -r requirements.txt
+
+# Return to root
+cd ../..
 ```
 
-2. Start development servers:
+### Running the Application
+
+#### Option 1: Using the start script
+
 ```bash
+./start.sh
+```
+
+This will start both frontend and backend servers.
+
+#### Option 2: Manual start
+
+```bash
+# Terminal 1: Start backend
+cd packages/backend
+python start.py
+
+# Terminal 2: Start frontend
+cd packages/frontend
 npm run dev
 ```
 
-This will start:
-- Frontend: http://localhost:5173
-- Backend: http://localhost:3001
+### Access the Application
 
-### Production with Docker
+- **Frontend**: http://localhost:5173
+- **Backend API**: http://localhost:8001
+- **API Documentation**: http://localhost:8001/docs
 
+## 📚 Knowledge Types
+
+### Memories (`memories/`)
+Personal context and experiences:
+- **User**: Profile, preferences, goals
+- **Projects**: Project-specific context and learnings
+
+### Resources (`resources/`)
+Reference materials and documentation:
+- Programming language guides
+- Framework documentation
+- Best practices
+- Cheatsheets
+
+### Skills (`skills/`)
+Reusable procedures and workflows:
+- Development workflows
+- Testing procedures
+- Deployment checklists
+- Code review guidelines
+
+## 🔍 API Endpoints
+
+### Knowledge Endpoints
+- `GET /api/memories` - List all memories
+- `GET /api/memories/{path:path}` - Get specific memory
+- `GET /api/resources` - List all resources
+- `GET /api/resources/{path:path}` - Get specific resource
+- `GET /api/skills` - List all skills
+- `GET /api/skills/{path:path}` - Get specific skill
+
+### Search Endpoints
+- `POST /api/search` - Search all knowledge types
+- `POST /api/search/memories` - Search memories only
+- `POST /api/search/resources` - Search resources only
+- `POST /api/search/skills` - Search skills only
+
+### Health Check
+- `GET /health` - Check server status
+
+## 🎨 Frontend Routes
+
+- `/` - Home page with quick links
+- `/browse` - Browse all knowledge types
+- `/browse/memories` - Browse memories
+- `/browse/resources` - Browse resources
+- `/browse/skills` - Browse skills
+- `/view/*` - View specific knowledge item
+
+## 📝 Adding Knowledge
+
+### Create a Memory
 ```bash
-docker-compose up --build
+# Create a project memory
+cat > memories/projects/my-project.md << EOF
+# My Project
+
+## Description
+A brief description of the project.
+
+## Goals
+- Goal 1
+- Goal 2
+
+## Context
+Important context and decisions.
+
+## Learnings
+What I learned from this project.
+EOF
 ```
 
-This will start:
-- Frontend: http://localhost
-- Backend: http://localhost:3001
+### Create a Resource
+```bash
+# Create a resource
+cat > resources/python-best-practices.md << EOF
+# Python Best Practices
 
-## Available Scripts
+## Code Style
+- Use Black for formatting
+- Follow PEP 8 guidelines
+- Use type hints
 
-### Root Level
-- `npm run dev` - Start both frontend and backend in development mode
-- `npm run build` - Build both packages
-- `npm run lint` - Lint all packages
-- `npm run test` - Run tests for all packages
+## Testing
+- Write unit tests with pytest
+- Aim for >80% coverage
 
-### Frontend (packages/frontend)
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run preview` - Preview production build
+## Documentation
+- Use docstrings for all functions
+- Keep README updated
+EOF
+```
 
-### Backend (packages/backend)
-- `npm run dev` - Start development server with hot reload
-- `npm run build` - Build TypeScript
-- `npm start` - Start production server
+### Create a Skill
+```bash
+# Create a skill
+cat > skills/code-review-checklist.md << EOF
+# Code Review Checklist
 
-## Tech Stack
+## Before Review
+- [ ] Code compiles without errors
+- [ ] All tests pass
+- [ ] No linting errors
+
+## During Review
+- [ ] Code follows style guide
+- [ ] Proper error handling
+- [ ] Adequate documentation
+- [ ] No security vulnerabilities
+
+## After Review
+- [ ] All comments addressed
+- [ ] Final approval given
+EOF
+```
+
+## 🔧 Development
+
+### Frontend Development
+```bash
+cd packages/frontend
+npm run dev      # Start dev server
+npm run build    # Build for production
+npm run lint     # Run linter
+npm run typecheck # Type check
+```
+
+### Backend Development
+```bash
+cd packages/backend
+python start.py  # Start dev server
+pytest           # Run tests
+black .          # Format code
+mypy .           # Type check
+```
+
+## 📦 Tech Stack
 
 ### Frontend
-- React 19
-- TypeScript
-- Vite
-- CSS3
+- **React 18**: UI library
+- **TypeScript**: Type safety
+- **React Router**: Navigation
+- **TailwindCSS**: Styling
+- **Lucide React**: Icons
+- **Vite**: Build tool
 
 ### Backend
-- Node.js
-- Express
-- TypeScript
-- CORS enabled
+- **FastAPI**: Web framework
+- **SQLAlchemy**: ORM
+- **SQLite**: Database
+- **Pydantic**: Data validation
+- **Uvicorn**: ASGI server
 
-### DevOps
-- Docker
-- nginx reverse proxy
-- Multi-stage builds
+## 🤝 Contributing
 
-## API Endpoints
+This is a personal knowledge base system, but contributions are welcome! Please:
 
-- `GET /api/health` - Health check endpoint
-- `GET /api/hello` - Returns a greeting message
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
 
-## Environment Variables
+## 📄 License
 
-### Backend
-- `PORT` - Server port (default: 3001)
-- `NODE_ENV` - Environment (development/production)
+MIT License - feel free to use this for your own knowledge management!
 
-## Development Workflow
+## 🙏 Acknowledgments
 
-1. Create feature branch
-2. Make changes
-3. Run tests: `npm run test`
-4. Run linter: `npm run lint`
-5. Submit pull request
-
-## License
-
-MIT
+Inspired by the Viking knowledge management system and the need for a simple, effective personal knowledge base.

@@ -139,7 +139,7 @@ interface IndexedEntry extends ToolResultEntry {
 	messageIndex: number;
 }
 
-function extractToolResults(messages: AgentMessage[]): IndexedEntry[] {
+function extractToolResults(messages: AgentMessage[], config: LifecycleConfig): IndexedEntry[] {
 	const entries: IndexedEntry[] = [];
 
 	for (let i = 0; i < messages.length; i++) {
@@ -152,6 +152,8 @@ function extractToolResults(messages: AgentMessage[]): IndexedEntry[] {
 		const toolName = (msg as unknown as { toolName?: string }).toolName ?? "unknown";
 		const timestamp = (msg as unknown as { timestamp?: number })?.timestamp ?? Date.now();
 		const size = Buffer.byteLength(content, "utf-8");
+		// Resolve priority here so clearThreshold path can use it
+		const resolvedPriority = getToolPriority(toolName, config);
 
 		entries.push({
 			id: `${i}-${toolName}`,
@@ -159,7 +161,7 @@ function extractToolResults(messages: AgentMessage[]): IndexedEntry[] {
 			content,
 			contentSize: size,
 			timestamp,
-			priority: ToolPriority.DISCARDABLE, // Set default; resolved in applyCountRule
+			priority: resolvedPriority,
 			level: "full",
 			messageIndex: i,
 		});
