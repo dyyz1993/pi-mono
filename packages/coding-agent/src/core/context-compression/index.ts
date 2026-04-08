@@ -46,6 +46,7 @@ export async function compressContext(
 	const steps: NonNullable<PipelineResult["steps"]> = {};
 
 	let currentMessages = messages;
+	let lastSuccessfulMessages = messages;
 
 	// Step -1: Cleanup orphaned files from previous sessions (runs once per pipeline)
 	try {
