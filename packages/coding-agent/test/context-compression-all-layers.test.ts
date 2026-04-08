@@ -195,10 +195,7 @@ describe("Context Compression - All Layers", () => {
 			const results = createManyToolResults("bash", 3, () => "output");
 			const messages: AgentMessage[] = [createUserMsg("debug a bug"), createAssistantMsg("working"), ...results];
 
-			const result = await compressContext(
-				messages,
-				makeConfig({ classifier: { enabled: false }, lifecycle: { keepRecent: 1 } }),
-			);
+			const result = await compressContext(messages, makeConfig({ classifier: { enabled: false }, lifecycle: { keepRecent: 1 } }));
 
 			expect(result.steps.lifecycle).toBeDefined();
 			expect(result.steps.lifecycle!.degradedCount + result.steps.lifecycle!.clearedCount).toBeGreaterThan(0);

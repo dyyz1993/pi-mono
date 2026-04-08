@@ -44,7 +44,7 @@ export function estimateTokens(messages: AgentMessage[]): number {
 						chars += ((block as { thinking?: string }).thinking ?? "").length;
 				}
 			}
-		} else if (msg.role === "toolResult" || msg.role === "tool") {
+		} else if (msg.role === "toolResult" || (msg.role as string) === "tool") {
 			const content = (msg as unknown as { content?: string | Array<{ type?: string; text?: string }> }).content;
 			if (typeof content === "string") chars += content.length;
 			else if (Array.isArray(content)) {

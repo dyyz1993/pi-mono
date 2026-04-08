@@ -5,15 +5,32 @@
  * Configuration is loaded from ~/.pi/compression-config.json
  */
 
+console.error("[ctx-compress] Extension file loading...");
+
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { compressContext, estimateTokens } from "../../packages/coding-agent/src/core/context-compression/index.js";
-import {
-	DEFAULT_COMPRESSION_PIPELINE_CONFIG,
-	STRATEGY_LABELS,
-} from "../../packages/coding-agent/src/core/context-compression/types.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+
+// Will be initialized dynamically in the extension function
+let compressContext: any;
+let estimateTokens: any;
+let DEFAULT_COMPRESSION_PIPELINE_CONFIG: any;
+let STRATEGY_LABELS: any;
+
+async function initModules() {
+	// Use absolute path to local development version
+	// __dirname = /Users/xuyingzhou/Project/temporary/pi-mono/.pi/extensions
+	// ../.. = /Users/xuyingzhou/Project/temporary/pi-mono (project root)
+	const projectRoot = path.resolve(__dirname, "../..");
+	const compressionPath = path.join(projectRoot, "packages/coding-agent/dist/core/context-compression/index.js");
+	const compressionModule = await import(`file://${compressionPath}`);
+	compressContext = compressionModule.compressContext;
+	estimateTokens = compressionModule.estimateTokens;
+	const typesModule = await import(`file://${path.join(projectRoot, "packages/coding-agent/dist/core/context-compression/types.js")}`);
+	DEFAULT_COMPRESSION_PIPELINE_CONFIG = typesModule.DEFAULT_COMPRESSION_PIPELINE_CONFIG;
+	STRATEGY_LABELS = typesModule.STRATEGY_LABELS;
+}
 
 export interface CompressionConfig {
 	minTokensToCompress: number;
@@ -65,7 +82,10 @@ function estimateSize(messages: unknown[]): number {
 	}
 }
 
-export default function contextCompressionExtension(pi: ExtensionAPI) {
+export default async function contextCompressionExtension(pi: ExtensionAPI) {
+	// Initialize dynamic imports
+	await initModules();
+
 	const config = loadConfig();
 
 	let totalCompressions = 0;
@@ -230,7 +250,10 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		totalLifecycleCleared = 0;
 		totalSummaryL3 = 0;
 		ctx.ui.setStatus("ctx-compress", undefined);
-		ctx.ui.notify("[ctx-compress] extension loaded", "info");
+		ctx.ui.notify(
+			`[ctx-compress] loaded | minTokens=${config.minTokensToCompress} minGrowth=${config.minGrowthToCompress} keepRecent=${config.keepRecent} stale=${config.staleMinutes}m`,
+			"info",
+		);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
