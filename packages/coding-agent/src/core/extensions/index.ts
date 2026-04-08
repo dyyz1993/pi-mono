@@ -132,9 +132,6 @@ export type {
 	SetModelHandler,
 	SetThinkingLevelHandler,
 	TerminalInputHandler,
-	// LLM Call
-	ExtensionLLMCallOptions,
-	ExtensionLLMSpeedLevel,
 	// Tools
 	ToolCallEvent,
 	ToolCallEventResult,
