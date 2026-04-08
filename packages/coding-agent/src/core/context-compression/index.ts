@@ -136,7 +136,7 @@ export async function compressContext(
 				steps.persistence = { persistedCount, bytesSaved };
 			}
 		} catch {
-			// Persistence failure shouldn't block other layers
+			currentMessages = lastSuccessfulMessages;
 		}
 	}
 
