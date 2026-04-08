@@ -556,6 +556,7 @@ export class ExtensionRunner {
 			getContextUsage: () => this.getContextUsageFn(),
 			compact: (options) => this.compactFn(options),
 			getSystemPrompt: () => this.getSystemPromptFn(),
+			callModel: (options) => this.callModelFn(options),
 		};
 	}
 
