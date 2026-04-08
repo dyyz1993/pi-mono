@@ -78,6 +78,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		if (messages.length < 3) return undefined;
 
 		const msgTokens = safeEstimateTokens(messages);
+		console.log(`[ctx-compress] messages=${messages.length}, tokens=${msgTokens}, threshold=${MIN_COMPRESSION_TOKENS}`);
 
 		// 阈值1：至少 40K tokens 才考虑压缩
 		if (msgTokens < MIN_COMPRESSION_TOKENS) return undefined;
