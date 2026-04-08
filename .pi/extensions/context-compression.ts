@@ -125,6 +125,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 
 			const pipelineConfig = {
 				...DEFAULT_COMPRESSION_PIPELINE_CONFIG,
+				classifier: { enabled: false },
 				lifecycle: {
 					...DEFAULT_COMPRESSION_PIPELINE_CONFIG.lifecycle!,
 					keepRecent: config.keepRecent,
