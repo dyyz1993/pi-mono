@@ -147,6 +147,14 @@ export {
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.js";
 export {
 	convertToLlm,
+	bashExecutionToText,
+	createBranchSummaryMessage,
+	createCompactionSummaryMessage,
+	createCustomMessage,
+	COMPACTION_SUMMARY_PREFIX,
+	COMPACTION_SUMMARY_SUFFIX,
+	BRANCH_SUMMARY_PREFIX,
+	BRANCH_SUMMARY_SUFFIX,
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
 	type CompactionSummaryMessage,
