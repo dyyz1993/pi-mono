@@ -547,7 +547,7 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 	});
 
 	describe("Content-aware priority adjustment", () => {
-		let _adjustPriorityByContent: (toolName: string, content: string) => ToolPriority;
+		let adjustPriorityByContent: (toolName: string, content: string) => ToolPriority;
 		const getAdjustFn = async () => {
 			try {
 				const mod = await import("../../src/core/context-compression/lifecycle.js");
