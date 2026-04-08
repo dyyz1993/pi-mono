@@ -38,7 +38,7 @@ function estimateTokens(messages: AgentMessage[]): number {
 					if (block.type === "text" && block.text) chars += block.text.length;
 					else if (block.type === "toolCall" && block.arguments) chars += block.arguments.length;
 					else if (block.type === "thinking" && (block as { thinking?: string }).thinking)
-						chars += (block as { thinking?: string }).thinking.length;
+						chars += ((block as { thinking?: string }).thinking ?? "").length;
 				}
 			}
 		} else if (msg.role === "toolResult") {
@@ -449,10 +449,15 @@ export async function applySummary(
 		if (note.formatted.length >= content.length) return msg;
 
 		summarizedCount++;
+
+		// Preserve image blocks — images are never summarized
+		const msgContent = (msg as unknown as { content?: Array<{ type?: string; [key: string]: unknown }> }).content;
+		const imageParts = Array.isArray(msgContent) ? msgContent.filter((p) => p.type === "image") : [];
+
 		return {
 			...msg,
-			content: [{ type: "text", text: note.formatted }],
-		} as AgentMessage;
+			content: [{ type: "text", text: note.formatted }, ...imageParts],
+		} as unknown as AgentMessage;
 	});
 
 	const tokensAfter = estimateTokens(modifiedMessages);

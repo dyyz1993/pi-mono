@@ -291,6 +291,35 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Perform an internal LLM call without affecting the visible agent session.
+	 * Useful for extensions to do classification, summarization, or other AI tasks
+	 * using the same model configured in the agent.
+	 *
+	 * @param options - Call options including messages and optional speed level
+	 * @returns The assistant message from the LLM
+	 */
+	callModel(options: ExtensionLLMCallOptions): Promise<AssistantMessage>;
+}
+
+export type ExtensionLLMSpeedLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface ExtensionLLMCallOptions {
+	/** Messages to send to the model */
+	messages: Array<{ role: "user" | "assistant" | "system"; content: string | { type: "text"; text: string }[] }>;
+	/** Optional thinking/speed level. Default: "off" for fastest response.
+	 * - "off": No thinking (fastest)
+	 * - "minimal": Minimal reasoning
+	 * - "low": Low reasoning effort
+	 * - "medium": Medium reasoning effort
+	 * - "high": High reasoning effort
+	 * - "xhigh": Extra high reasoning effort (only for supported models)
+	 */
+	speed?: ExtensionLLMSpeedLevel;
+	/** Optional model override. If omitted, uses the current session model. */
+	model?: Model<any>;
+	/** Optional system prompt override. If omitted, uses the session's system prompt. */
+	systemPrompt?: string;
 }
 
 /**
@@ -1417,6 +1446,7 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
+	callModel: (options: ExtensionLLMCallOptions) => Promise<AssistantMessage>;
 }
 
 /**

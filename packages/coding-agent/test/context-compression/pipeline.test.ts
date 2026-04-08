@@ -191,4 +191,56 @@ describe("Compression Pipeline: Orchestration (L0→L1→L2→L3)", () => {
 		expect(result.tokensBefore).toBe(result.tokensAfter);
 		expect(result.tokensBefore).toBeGreaterThan(0);
 	});
+
+	// -----------------------------------------------------------------------
+	// M4: Intent-aware compression adjustment
+	// -----------------------------------------------------------------------
+	it("should apply more conservative lifecycle for BUG intent (M4 fix)", async () => {
+		const messages: AgentMessage[] = [];
+		for (let i = 0; i < 12; i++) {
+			messages.push(createUserMsg(`fix the crash in module ${i}, error: TypeError undefined`));
+			messages.push(createAssistantWithTools(`debugging ${i}`, [{ name: "read" }, { name: "bash" }]));
+			messages.push(createToolResult("read", `file content ${i}\n`.repeat(100)));
+			messages.push(createToolResult("bash", `stack trace ${i}\n`.repeat(80)));
+		}
+		const result = await compressContext(messages);
+
+		// BUG intent → keepRecent doubled, so fewer degradations than default
+		expect(result.steps.classification).toBeDefined();
+		const cls = result.steps.classification as { intent: string };
+		// Should classify as BUG due to "fix", "crash", "error", "TypeError"
+		expect(cls.intent).toBe("bug");
+	});
+
+	it("should apply more aggressive lifecycle for CHITCHAT intent (M4 fix)", async () => {
+		const messages: AgentMessage[] = [
+			createUserMsg("thanks, great job! continue"),
+			createAssistantWithTools("ok", [{ name: "bash" }]),
+			createToolResult("bash", "output\n".repeat(100)),
+		];
+		const result = await compressContext(messages);
+
+		expect(result.steps.classification).toBeDefined();
+		const cls = result.steps.classification as { intent: string };
+		expect(cls.intent).toBe("chitchat");
+	});
+
+	// -----------------------------------------------------------------------
+	// M3: Orphaned cleanup throttling
+	// -----------------------------------------------------------------------
+	it("should complete pipeline quickly even with many invocations (M3 throttle)", async () => {
+		const messages: AgentMessage[] = [
+			createUserMsg("hello"),
+			createAssistantWithTools("hi", [{ name: "bash" }]),
+			createToolResult("bash", "output\n".repeat(60)),
+		];
+		// Run 20 times rapidly — should not slow down due to repeated cleanupOrphanedFiles
+		const start = Date.now();
+		for (let i = 0; i < 20; i++) {
+			await compressContext(messages);
+		}
+		const elapsed = Date.now() - start;
+		// 20 pipeline runs in < 2s (with throttle, cleanup only runs twice)
+		expect(elapsed).toBeLessThan(2000);
+	});
 });

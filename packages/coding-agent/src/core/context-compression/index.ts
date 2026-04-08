@@ -12,9 +12,20 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { classifyConversation } from "./classifier.js";
 import { applyLifecycle, estimateTokens } from "./lifecycle.js";
-import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded } from "./persistence.js";
+import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded, rollbackStats, snapshotStats } from "./persistence.js";
 import { applySummary } from "./summary.js";
-import { type CompressionPipelineConfig, DEFAULT_COMPRESSION_PIPELINE_CONFIG, type PipelineResult } from "./types.js";
+import {
+	type CompressionPipelineConfig,
+	DEFAULT_COMPRESSION_PIPELINE_CONFIG,
+	IntentCategory,
+	type LifecycleConfig,
+	type PipelineResult,
+	type SummaryConfig,
+} from "./types.js";
+
+// M3: Throttle orphaned-file scan to once every N pipeline invocations
+let orphanCleanupCallCount = 0;
+const ORPHAN_CLEANUP_INTERVAL = 10;
 
 /**
  * Run the full context compression pipeline on a message list.
@@ -50,14 +61,18 @@ export async function compressContext(
 	let currentMessages = messages;
 	let lastSuccessfulMessages = messages;
 
-	// Step -1: Cleanup orphaned files from previous sessions (runs once per pipeline)
-	try {
-		await cleanupOrphanedFiles(config.persistence);
-	} catch {
-		// Orphaned cleanup is best-effort
+	// Step -1: Cleanup orphaned files from previous sessions (throttled to once every N calls)
+	orphanCleanupCallCount++;
+	if (orphanCleanupCallCount % ORPHAN_CLEANUP_INTERVAL === 1) {
+		try {
+			await cleanupOrphanedFiles(config.persistence);
+		} catch {
+			// Orphaned cleanup is best-effort
+		}
 	}
 
-	// Step 0: Classify intent (lightweight, for metadata)
+	// Step 0: Classify intent (for downstream config adjustment)
+	let detectedIntent: IntentCategory = IntentCategory.CHITCHAT;
 	try {
 		const userTexts = currentMessages
 			.filter((m) => m.role === "user")
@@ -78,6 +93,7 @@ export async function compressContext(
 				userTexts.map((t) => ({ role: "user", text: t })),
 				config.classifier,
 			);
+			detectedIntent = classification.intent;
 			steps.classification = {
 				intent: classification.intent,
 				confidence: classification.confidence,
@@ -89,6 +105,7 @@ export async function compressContext(
 
 	// Step L0: Persist large results
 	if (config.persistence.largeThreshold > 0) {
+		const statsSnapshot = snapshotStats();
 		try {
 			let persistedCount = 0;
 			let bytesSaved = 0;
@@ -121,10 +138,14 @@ export async function compressContext(
 				if (result.persisted) {
 					persistedCount++;
 					bytesSaved += result.originalSize - Buffer.byteLength(result.stub, "utf-8");
+					// Preserve image blocks in persisted stub
+					const msgContent = (msg as unknown as { content?: Array<{ type?: string; [key: string]: unknown }> })
+						.content;
+					const imageParts = Array.isArray(msgContent) ? msgContent.filter((p) => p.type === "image") : [];
 					nextMessages.push({
 						...msg,
-						content: [{ type: "text", text: result.stub }],
-					} as AgentMessage);
+						content: [{ type: "text", text: result.stub }, ...imageParts],
+					} as unknown as AgentMessage);
 				} else {
 					nextMessages.push(msg);
 				}
@@ -139,13 +160,15 @@ export async function compressContext(
 			}
 		} catch {
 			currentMessages = lastSuccessfulMessages;
+			rollbackStats(statsSnapshot);
 		}
 	}
 
-	// Step L1+L2: Lifecycle management
+	// Step L1+L2: Lifecycle management (M4: intent-aware config adjustment)
 	if (config.lifecycle.enabled) {
 		try {
-			const lifecycleResult = await applyLifecycle(currentMessages, config.lifecycle);
+			const lifecycleConfig = adjustLifecycleForIntent(config.lifecycle, detectedIntent);
+			const lifecycleResult = await applyLifecycle(currentMessages, lifecycleConfig);
 			currentMessages = lifecycleResult.messages;
 			lastSuccessfulMessages = currentMessages;
 
@@ -160,10 +183,11 @@ export async function compressContext(
 		}
 	}
 
-	// Step L3: Zero-cost summarization
+	// Step L3: Zero-cost summarization (M4: intent-aware config adjustment)
 	if (config.summary.enabled) {
 		try {
-			const summaryResult = await applySummary(currentMessages, config.summary);
+			const summaryConfig = adjustSummaryForIntent(config.summary, detectedIntent);
+			const summaryResult = await applySummary(currentMessages, summaryConfig);
 			currentMessages = summaryResult.messages;
 			lastSuccessfulMessages = currentMessages;
 
@@ -184,6 +208,51 @@ export async function compressContext(
 		tokensAfter: estimateTokens(lastSuccessfulMessages),
 		durationMs: Date.now() - startTime,
 	};
+}
+
+// ============================================================================
+// M4: Intent-aware config adjustment
+// ============================================================================
+
+/**
+ * Adjust lifecycle config based on classified conversation intent.
+ * - BUG: conservative (keep more, clear less aggressively)
+ * - CHITCHAT: aggressive (compress more, keep fewer recent)
+ * - REQUIREMENT/EXPLORATION: normal defaults
+ */
+function adjustLifecycleForIntent(base: LifecycleConfig, intent: IntentCategory): LifecycleConfig {
+	switch (intent) {
+		case IntentCategory.BUG:
+			return { ...base, keepRecent: base.keepRecent * 2, staleMinutes: base.staleMinutes * 2 };
+		case IntentCategory.CHITCHAT:
+			return {
+				...base,
+				keepRecent: Math.max(2, Math.floor(base.keepRecent / 2)),
+				staleMinutes: Math.floor(base.staleMinutes / 2),
+			};
+		default:
+			return base;
+	}
+}
+
+/**
+ * Adjust summary config based on classified conversation intent.
+ * - BUG: raise threshold (summarize less, preserve detail)
+ * - CHITCHAT: lower threshold (summarize more aggressively)
+ */
+function adjustSummaryForIntent(base: SummaryConfig, intent: IntentCategory): SummaryConfig {
+	switch (intent) {
+		case IntentCategory.BUG:
+			return { ...base, maxLines: base.maxLines * 2, truncateLine: base.truncateLine * 2 };
+		case IntentCategory.CHITCHAT:
+			return {
+				...base,
+				maxLines: Math.max(5, Math.floor(base.maxLines / 2)),
+				truncateLine: Math.max(40, Math.floor(base.truncateLine / 2)),
+			};
+		default:
+			return base;
+	}
 }
 
 // ============================================================================

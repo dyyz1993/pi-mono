@@ -41,7 +41,7 @@ export function estimateTokens(messages: AgentMessage[]): number {
 					if (block.type === "text" && block.text) chars += block.text.length;
 					else if (block.type === "toolCall" && block.arguments) chars += block.arguments.length;
 					else if (block.type === "thinking" && (block as { thinking?: string }).thinking)
-						chars += (block as { thinking?: string }).thinking.length;
+						chars += ((block as { thinking?: string }).thinking ?? "").length;
 				}
 			}
 		} else if (msg.role === "toolResult") {
@@ -87,11 +87,11 @@ const CRITICAL_PATTERNS: RegExp[] = [
 	// Git conflicts
 	/<<<<<<<\s*HEAD/m,
 	/>>>>>>>/m,
-	// Security issues
-	/password/i,
-	/secret/i,
-	/token/i,
-	/api[_-]?key/i,
+	// Security issues — narrowed to actual credential exposures, not keyword mentions
+	/password\s*[:=]/i,
+	/secret\s*[:=]/i,
+	/(?:api[_-]?|auth[_-]?)?token\s*[:=]/i,
+	/bearer\s+[A-Za-z0-9._-]{20,}/i,
 	/AUTHORIZATION/i,
 ];
 
@@ -172,6 +172,7 @@ export function adjustPriorityByContent(toolName: string, content: string): Tool
 
 const CLEARED_MARKER = "[cleared]";
 const STUB_PREFIX = "[degraded]";
+const PERSISTED_MARKER = "output saved to disk";
 
 function createDegradedStub(entry: ToolResultEntry): string {
 	return `${STUB_PREFIX} [${entry.toolName}] (${formatSize(entry.contentSize)})`;
@@ -266,18 +267,27 @@ function extractToolResults(messages: AgentMessage[], _config: LifecycleConfig):
 function extractTextContent(msg: AgentMessage): string | null {
 	const content = (msg as unknown as { content?: string | Array<{ type?: string; text?: string }> }).content;
 	if (typeof content === "string") {
-		if (content.startsWith(CLEARED_MARKER) || content.startsWith(STUB_PREFIX)) return null;
+		if (content.startsWith(CLEARED_MARKER) || content.startsWith(STUB_PREFIX) || content.includes(PERSISTED_MARKER))
+			return null;
 		return content;
 	}
 	if (Array.isArray(content)) {
 		const textParts = content.filter((p) => p.type === "text" && p.text).map((p) => p.text);
 		if (textParts.length > 0) {
 			const joined = textParts.join("\n");
-			if (joined.startsWith(CLEARED_MARKER) || joined.startsWith(STUB_PREFIX)) return null;
+			if (joined.startsWith(CLEARED_MARKER) || joined.startsWith(STUB_PREFIX) || joined.includes(PERSISTED_MARKER))
+				return null;
 			return joined;
 		}
 	}
 	return null;
+}
+
+/** Extract image content blocks from a message — preserved across compression */
+function extractImageParts(msg: AgentMessage): Array<{ type: "image"; [key: string]: unknown }> {
+	const content = (msg as unknown as { content?: string | Array<{ type?: string; [key: string]: unknown }> }).content;
+	if (!Array.isArray(content)) return [];
+	return content.filter((p) => p.type === "image") as Array<{ type: "image"; [key: string]: unknown }>;
 }
 
 // ============================================================================
@@ -291,7 +301,11 @@ function applyTimeRule(entries: IndexedEntry[], config: LifecycleConfig): Indexe
 	for (const entry of entries) {
 		if (entry.level !== "full") continue; // Already processed
 
-		const age = now - entry.timestamp;
+		const ts = entry.timestamp;
+		// M5: Guard against invalid timestamps — 0/NaN/negative/far-future all treated as "fresh"
+		if (!Number.isFinite(ts) || ts <= 0 || ts > now + 3_600_000) continue;
+
+		const age = now - ts;
 		if (age >= staleMs) {
 			entry.level = "cleared";
 		}
@@ -344,13 +358,13 @@ function applyCountRule(entries: IndexedEntry[], config: LifecycleConfig): Index
 		return entries;
 	}
 
-	// Normal priority-based selection
+	// Normal priority-based selection — always keep most recent entries
 	let remainingSlots = keepRecent;
 	const keptCritical = critical.slice(-remainingSlots);
 	remainingSlots -= keptCritical.length;
-	const keptImportant = important.slice(0, remainingSlots > 0 ? Math.min(important.length, remainingSlots) : 0);
+	const keptImportant = remainingSlots > 0 ? important.slice(-Math.min(important.length, remainingSlots)) : [];
 	remainingSlots -= keptImportant.length;
-	const keptDiscardable = discardable.slice(0, remainingSlots > 0 ? Math.min(discardable.length, remainingSlots) : 0);
+	const keptDiscardable = remainingSlots > 0 ? discardable.slice(-Math.min(discardable.length, remainingSlots)) : [];
 
 	// Mark non-kept entries for degradation
 	const keptSet = new Set([...keptCritical, ...keptImportant, ...keptDiscardable]);
@@ -388,19 +402,22 @@ function rebuildMessages(originalMessages: AgentMessage[], entries: IndexedEntry
 
 		if (!entry || entry.level === "full") return msg;
 
+		// Preserve image blocks across compression — images are never degraded
+		const imageParts = extractImageParts(msg);
+
 		// Modify the message content based on degradation level
 		if (entry.level === "cleared") {
 			return {
 				...msg,
-				content: [{ type: "text", text: `${CLEARED_MARKER} [${entry.toolName}]` }],
-			} as AgentMessage;
+				content: [{ type: "text", text: `${CLEARED_MARKER} [${entry.toolName}]` }, ...imageParts],
+			} as unknown as AgentMessage;
 		}
 
 		// level === "stub"
 		return {
 			...msg,
-			content: [{ type: "text", text: createDegradedStub(entry) }],
-		} as AgentMessage;
+			content: [{ type: "text", text: createDegradedStub(entry) }, ...imageParts],
+		} as unknown as AgentMessage;
 	});
 }
 

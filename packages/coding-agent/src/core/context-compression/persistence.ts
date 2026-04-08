@@ -37,6 +37,16 @@ export function getPersistenceStats(): { totalPersisted: number; totalBytesSaved
 	return { ...stats };
 }
 
+/** Snapshot current stats for potential rollback on failure */
+export function snapshotStats(): { totalPersisted: number; totalBytesSaved: number; fileCount: number } {
+	return { ...stats };
+}
+
+/** Rollback stats to a previous snapshot (used when pipeline layer fails after partial persists) */
+export function rollbackStats(snapshot: { totalPersisted: number; totalBytesSaved: number; fileCount: number }): void {
+	stats = { ...snapshot };
+}
+
 // ============================================================================
 // Core: persistIfNeeded
 // ============================================================================

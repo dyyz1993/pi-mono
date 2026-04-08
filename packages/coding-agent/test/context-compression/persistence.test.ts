@@ -17,6 +17,8 @@ let readPersistedFile: (filePath: string) => Promise<string | null>;
 let cleanupOldFiles: (config: PersistenceConfig, maxAgeMs?: number) => Promise<number>;
 let getPersistenceStats: () => { totalPersisted: number; totalBytesSaved: number; fileCount: number };
 let resetStats: () => void;
+let snapshotStats: () => { totalPersisted: number; totalBytesSaved: number; fileCount: number };
+let rollbackStats: (snapshot: { totalPersisted: number; totalBytesSaved: number; fileCount: number }) => void;
 
 try {
 	const mod = await import("../../src/core/context-compression/persistence.js");
@@ -25,6 +27,8 @@ try {
 	cleanupOldFiles = mod.cleanupOldFiles;
 	getPersistenceStats = mod.getPersistenceStats;
 	resetStats = mod.resetStats;
+	snapshotStats = mod.snapshotStats;
+	rollbackStats = mod.rollbackStats;
 } catch {
 	// Module not yet implemented - tests will fail with clear error
 	persistIfNeeded = async () => {
@@ -349,5 +353,35 @@ describe("L0: Tool Result Persistence", () => {
 		expect(stats.fileCount).toBe(3);
 		// totalBytesSaved should be positive (sum of originalSize - stubSize)
 		expect(stats.totalBytesSaved).toBeGreaterThan(0);
+	});
+
+	// -----------------------------------------------------------------------
+	// 16. C3: Stats rollback on partial failure (snapshot/restore consistency)
+	// -----------------------------------------------------------------------
+	it("should rollback stats correctly when snapshot is restored (C3 fix)", async () => {
+		const config = createConfig({ cacheDir: tempDir });
+
+		// Persist 2 files successfully
+		await persistIfNeeded({ toolName: "bash", content: createLargeContent(60 * 1024) }, config);
+		await persistIfNeeded({ toolName: "grep", content: createLargeContent(70 * 1024) }, config);
+
+		const statsBefore = getPersistenceStats();
+		expect(statsBefore.totalPersisted).toBe(2);
+		expect(statsBefore.fileCount).toBe(2);
+
+		// Snapshot current state
+		const snap = snapshotStats();
+
+		// Simulate "partial failure": persist one more, then rollback
+		await persistIfNeeded({ toolName: "find", content: createLargeContent(80 * 1024) }, config);
+		const statsAfterPersist = getPersistenceStats();
+		expect(statsAfterPersist.totalPersisted).toBe(3); // incremented
+
+		// Rollback to snapshot
+		rollbackStats(snap);
+
+		const statsAfterRollback = getPersistenceStats();
+		expect(statsAfterRollback.totalPersisted).toBe(2); // rolled back
+		expect(statsAfterRollback.fileCount).toBe(2); // rolled back
 	});
 });

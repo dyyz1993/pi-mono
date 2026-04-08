@@ -30,6 +30,15 @@
 - Fixed rebuildMessages toolName case-sensitivity mismatch causing entry lookup failures
 - Fixed pipeline layer failure leaking partially-modified messages to subsequent layers (added rollback)
 - Fixed extension skipping compression when messages.length < 5 even when containing large results
+- Fixed L1 lifecycle using `.slice(0,n)` (oldest) instead of `.slice(-n)` (most recent) for IMPORTANT/DISCARDABLE priority bands, causing wrong entries to be preserved
+- Fixed all compression layers silently dropping image content blocks from tool results; images now preserved through degradation/clearing/persistence/summarization
+- Fixed L0 partial failure leaving stats object permanently corrupted (totalPersisted/fileCount inflated); added snapshotStats()/rollbackStats() for atomic rollback
+- Fixed CRITICAL_PATTERNS (`/password/i`, `/secret/i`, `/token/i`) matching bare keyword mentions without credential assignment context; narrowed to require `:` or `=` suffix
+- Fixed L1/L2 overwriting L0 persisted stubs (losing file path) because extractTextContent didn't recognize PERSISTED_MARKER format
+- Fixed cleanupOrphanedFiles scanning entire cache directory on every pipeline invocation; throttled to once per 10 calls
+- Fixed classifier computing intent but never passing it downstream; intent now adjusts lifecycle keepRecent/staleMinutes and summary maxLines/truncateLine
+- Fixed timestamp=0/NaN/negative/far-future causing immediate or never time-clearing; invalid timestamps now treated as "fresh"
+- Fixed STUBUB_PREFIX typo in lifecycle.ts extractTextContent (should be STUB_PREFIX)
 
 ## [0.52.10] - 2026-02-12
 
