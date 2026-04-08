@@ -77,8 +77,8 @@ function getToolPriority(toolName: string, config: LifecycleConfig): ToolPriorit
 // Content-aware priority adjustment
 // ============================================================================
 
-/** Patterns that indicate high-value content (should be preserved) */
-const HIGH_VALUE_PATTERNS: RegExp[] = [
+/** Patterns that indicate CRITICAL content (must preserve at all costs) */
+const CRITICAL_PATTERNS: RegExp[] = [
 	// Error/exception stack traces
 	/^Error:/m,
 	/^TypeError:/m,
@@ -86,10 +86,6 @@ const HIGH_VALUE_PATTERNS: RegExp[] = [
 	/^SyntaxError:/m,
 	/^RangeError:/m,
 	/\b(at\s+.*?)(\(\d+:\d+\))/m,
-	// Test failures
-	/FAIL\s+\d+/,
-	/failed.*\d+\s*(passed|tests?)/i,
-	/Exit code:\s*[1-9]/,
 	// Git conflicts
 	/<<<<<<<\s*HEAD/m,
 	/>>>>>>>/m,
@@ -99,6 +95,14 @@ const HIGH_VALUE_PATTERNS: RegExp[] = [
 	/token/i,
 	/api[_-]?key/i,
 	/AUTHORIZATION/i,
+];
+
+/** Patterns that indicate IMPORTANT content (should preserve but not as aggressively) */
+const IMPORTANT_PATTERNS: RegExp[] = [
+	// Test failures
+	/FAIL\s+\d+/,
+	/failed.*\d+\s*(passed|tests?)/i,
+	/Exit code:\s*[1-9]/,
 ];
 
 /** Patterns that indicate low-value content (safe to aggressively compress) */
@@ -133,9 +137,14 @@ export function adjustPriorityByContent(toolName: string, content: string): Tool
 	const trimmed = content.trim();
 	if (!trimmed || trimmed.length < 10) return basePriority;
 
-	// Check for high-value patterns → boost to CRITICAL or IMPORTANT
-	for (const pattern of HIGH_VALUE_PATTERNS) {
+	// Check for CRITICAL patterns → boost to CRITICAL
+	for (const pattern of CRITICAL_PATTERNS) {
 		if (pattern.test(trimmed)) return ToolPriority.CRITICAL;
+	}
+
+	// Check for IMPORTANT patterns → boost to IMPORTANT (but not above CRITICAL)
+	for (const pattern of IMPORTANT_PATTERNS) {
+		if (pattern.test(trimmed)) return ToolPriority.IMPORTANT;
 	}
 
 	// Check for low-value patterns → downgrade to DISCARDABLE
@@ -155,6 +164,9 @@ export function adjustPriorityByContent(toolName: string, content: string): Tool
 		}
 		// If most lines share same file extension pattern → likely grep/file listing
 		if (uniquePrefixes.size <= 2 && lines.length > 50) return ToolPriority.DISCARDABLE;
+		// If many lines all match file:line:content pattern → likely grep dump
+		const grepLikeCount = lines.filter((l) => /^\S+:\d+/.test(l)).length;
+		if (grepLikeCount > 20 && lines.length > 30) return ToolPriority.DISCARDABLE;
 	}
 
 	return basePriority;

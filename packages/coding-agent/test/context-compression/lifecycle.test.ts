@@ -551,23 +551,24 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 		const getAdjustFn = async () => {
 			try {
 				const mod = await import("../../src/core/context-compression/lifecycle.js");
-				_adjustPriorityByContent = mod.adjustPriorityByContent;
+				adjustPriorityByContent = mod.adjustPriorityByContent;
 			} catch {
-				/* use fallback */
+				/* fallback */
 			}
 		};
 
 		it("should boost error/stack trace output to CRITICAL", async () => {
+			await getAdjustFn();
 			const errorOutput = `Error: Cannot find module 'xxx'
-    at Function.resolveFilename (node:internal/modules/loader.js:...)
-    at Module._resolveFilename (node:internal/modules/loader.js:...)`;
+    at Function.resolveFilename (node:internal/modules/loader.js...)
+    at Module._resolveFilename (node:internal/modules/loader.js...)`;
 			expect(adjustPriorityByContent("bash", errorOutput)).toBe(ToolPriority.CRITICAL);
 		});
 
 		it("should boost TypeError/ReferenceError to CRITICAL", async () => {
 			await getAdjustFn();
 			const typeError = `TypeError: Cannot read property 'x' of undefined
-     at Object.<anonymous> (file.ts:42:15)`;
+      at Object.<anonymous> (file.ts:42:15)`;
 			expect(adjustPriorityByContent("bash", typeError)).toBe(ToolPriority.CRITICAL);
 		});
 
@@ -580,7 +581,8 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 			expect(adjustPriorityByContent("bash", failOutput)).toBe(ToolPriority.IMPORTANT);
 		});
 
-		it("should downgrade pure file listing to DISCARDABLE", () => {
+		it("should downgrade pure file listing to DISCARDABLE", async () => {
+			await getAdjustFn();
 			const listing = `src/index.ts
 src/App.ts
 src/utils.ts
@@ -589,7 +591,8 @@ models/User.ts`;
 			expect(adjustPriorityByContent("bash", listing)).toBe(ToolPriority.DISCARDABLE);
 		});
 
-		it("should downgrade build success logs to DISCARDABLE", () => {
+		it("should downgrade build success logs to DISCARDABLE", async () => {
+			await getAdjustFn();
 			const buildLog = `Building...
 ✓ Built in 2.3s
 Output size: 1.2MB
@@ -597,7 +600,8 @@ Done.`;
 			expect(adjustPriorityByContent("bash", buildLog)).toBe(ToolPriority.DISCARDABLE);
 		});
 
-		it("should downgrade large grep matches with no errors to DISCARDABLE", () => {
+		it("should downgrade large grep matches with no errors to DISCARDABLE", async () => {
+			await getAdjustFn();
 			const grepOutput = Array.from(
 				{ length: 100 },
 				(_, i) => `src/file${i}.ts:${i * 10}: import { foo } from 'bar'`,
@@ -605,7 +609,8 @@ Done.`;
 			expect(adjustPriorityByContent("grep", grepOutput)).toBe(ToolPriority.DISCARDABLE);
 		});
 
-		it("should keep read file content at IMPORTANT (default)", () => {
+		it("should keep read file content at IMPORTANT (default)", async () => {
+			await getAdjustFn();
 			const code = `import React from "react";
 export function App() {
   return <div>Hello</div>;
@@ -613,7 +618,8 @@ export function App() {
 			expect(adjustPriorityByContent("read", code)).toBe(ToolPriority.IMPORTANT);
 		});
 
-		it("should detect debug/log patterns and downgrade them", () => {
+		it("should detect debug/log patterns and downgrade them", async () => {
+			await getAdjustFn();
 			const log = `[DEBUG] 2024-01-01T12:00:00Z Request received
 [INFO] Processing request /api/users
 [VERBOSE] SQL query: SELECT * FROM users
@@ -621,7 +627,8 @@ export function App() {
 			expect(adjustPriorityByContent("bash", log)).toBe(ToolPriority.DISCARDABLE);
 		});
 
-		it("should detect git diff with conflicts as CRITICAL", () => {
+		it("should detect git diff with conflicts as CRITICAL", async () => {
+			await getAdjustFn();
 			const diff = `<<<<<<< HEAD
 const x = 1;
 =======
@@ -630,7 +637,8 @@ const x = 2;
 			expect(adjustPriorityByContent("git_diff", diff)).toBe(ToolPriority.CRITICAL);
 		});
 
-		it("should treat empty/whitespace-only content as DISCARDABLE", () => {
+		it("should treat empty/whitespace-only content as DISCARDABLE", async () => {
+			await getAdjustFn();
 			expect(adjustPriorityByContent("bash", "")).toBe(ToolPriority.DISCARDABLE);
 			expect(adjustPriorityByContent("bash", "   \n  \n")).toBe(ToolPriority.DISCARDABLE);
 		});
