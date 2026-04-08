@@ -209,6 +209,49 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 			expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
 		});
 
+		it("should NOT clear CRITICAL tools even in far-excess scenario", async () => {
+			const messages: AgentMessage[] = [];
+			// 20 results: mix of critical (write/edit) and discardable (bash)
+			// Only 5 kept → 15 cleared, but write/edit must survive
+			for (let i = 0; i < 8; i++) {
+				messages.push(createUserMsg(`q${i}`));
+				messages.push(createAssistantWithTools(`a${i}`, [{ name: "bash" }]));
+				messages.push(createToolResult("bash", `discardable output ${i}`.repeat(200)));
+			}
+			// Insert critical tools in the middle (older timestamps)
+			for (let i = 0; i < 4; i++) {
+				messages.push(createUserMsg(`critical_q${i}`));
+				messages.push(createAssistantWithTools(`critical_a${i}`, [{ name: "write" }]));
+				messages.push(createToolResult("write", `IMPORTANT FILE CONTENT ${i}`.repeat(200)));
+			}
+			// More discardable at the end
+			for (let i = 0; i < 8; i++) {
+				messages.push(createUserMsg(`tail_q${i}`));
+				messages.push(createAssistantWithTools(`tail_a${i}`, [{ name: "grep" }]));
+				messages.push(createToolResult("grep", `grep match ${i}`.repeat(200)));
+			}
+			const config = createLifecycleConfig({ keepRecent: 3 });
+
+			const result = await applyLifecycle(messages, config);
+
+			// Write/edit results should NOT be cleared or degraded
+			const writeResults = result.messages.filter((m) => {
+				if (m.role !== "toolResult") return false;
+				const c = m.content as Array<{ type: string; text?: string }>;
+				const text = c?.find((p) => p.type === "text")?.text ?? "";
+				return text.includes("write") && text.includes("IMPORTANT");
+			});
+			// All 4 write results should still have original content (not [cleared] or [degraded])
+			expect(writeResults.length).toBe(4);
+			for (const wr of writeResults) {
+				const c = wr.content as Array<{ type: string; text?: string }>;
+				const text = c.find((p) => p.type === "text")?.text ?? "";
+				expect(text).toContain("IMPORTANT FILE CONTENT");
+				expect(text).not.toContain("[cleared]");
+				expect(text).not.toContain("[degraded]");
+			}
+		});
+
 		it("should preserve critical tool results longer than discardable ones", async () => {
 			const messages: AgentMessage[] = [];
 			// Mix of critical and discardable tools
