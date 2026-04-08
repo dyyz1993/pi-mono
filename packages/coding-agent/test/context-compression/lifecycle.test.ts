@@ -547,28 +547,27 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 	});
 
 	describe("Content-aware priority adjustment", () => {
-		let adjustPriorityByContent: (toolName: string, content: string) => ToolPriority;
-
-		beforeAll(async () => {
+		let __adjustPriorityByContent: (toolName: string, content: string) => ToolPriority;
+		const getAdjustFn = async () => {
 			try {
 				const mod = await import("../../src/core/context-compression/lifecycle.js");
-				adjustPriorityByContent = mod.adjustPriorityByContent;
+				__adjustPriorityByContent = mod._adjustPriorityByContent;
 			} catch {
-				adjustPriorityByContent = () => ToolPriority.DISCARDABLE;
+				/* use fallback */
 			}
-		});
+		};
 
-		it("should boost error/stack trace output to CRITICAL", () => {
+		it("should boost error/stack trace output to CRITICAL", async () => {
 			const errorOutput = `Error: Cannot find module 'xxx'
     at Function.resolveFilename (node:internal/modules/loader.js:...)
     at Module._resolveFilename (node:internal/modules/loader.js:...)`;
-			expect(adjustPriorityByContent("bash", errorOutput)).toBe(ToolPriority.CRITICAL);
+			expect(_adjustPriorityByContent("bash", errorOutput)).toBe(ToolPriority.CRITICAL);
 		});
 
 		it("should boost TypeError/ReferenceError to CRITICAL", () => {
 			const typeError = `TypeError: Cannot read property 'x' of undefined
     at Object.<anonymous> (file.ts:42:15)`;
-			expect(adjustPriorityByContent("bash", typeError)).toBe(ToolPriority.CRITICAL);
+			expect(_adjustPriorityByContent("bash", typeError)).toBe(ToolPriority.CRITICAL);
 		});
 
 		it("should boost exit-code-nonzero / failure output to IMPORTANT", () => {
@@ -576,7 +575,7 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
   FAIL  ./src/component.test.ts
   Tests: 12 failed, 5 passed
   Exit code: 1`;
-			expect(adjustPriorityByContent("bash", failOutput)).toBe(ToolPriority.IMPORTANT);
+			expect(_adjustPriorityByContent("bash", failOutput)).toBe(ToolPriority.IMPORTANT);
 		});
 
 		it("should downgrade pure file listing to DISCARDABLE", () => {
@@ -585,7 +584,7 @@ src/App.ts
 src/utils.ts
 components/Button.ts
 models/User.ts`;
-			expect(adjustPriorityByContent("bash", listing)).toBe(ToolPriority.DISCARDABLE);
+			expect(_adjustPriorityByContent("bash", listing)).toBe(ToolPriority.DISCARDABLE);
 		});
 
 		it("should downgrade build success logs to DISCARDABLE", () => {
@@ -593,7 +592,7 @@ models/User.ts`;
 ✓ Built in 2.3s
 Output size: 1.2MB
 Done.`;
-			expect(adjustPriorityByContent("bash", buildLog)).toBe(ToolPriority.DISCARDABLE);
+			expect(_adjustPriorityByContent("bash", buildLog)).toBe(ToolPriority.DISCARDABLE);
 		});
 
 		it("should downgrade large grep matches with no errors to DISCARDABLE", () => {
@@ -601,7 +600,7 @@ Done.`;
 				{ length: 100 },
 				(_, i) => `src/file${i}.ts:${i * 10}: import { foo } from 'bar'`,
 			).join("\n");
-			expect(adjustPriorityByContent("grep", grepOutput)).toBe(ToolPriority.DISCARDABLE);
+			expect(_adjustPriorityByContent("grep", grepOutput)).toBe(ToolPriority.DISCARDABLE);
 		});
 
 		it("should keep read file content at IMPORTANT (default)", () => {
@@ -609,7 +608,7 @@ Done.`;
 export function App() {
   return <div>Hello</div>;
 }`;
-			expect(adjustPriorityByContent("read", code)).toBe(ToolPriority.IMPORTANT);
+			expect(_adjustPriorityByContent("read", code)).toBe(ToolPriority.IMPORTANT);
 		});
 
 		it("should detect debug/log patterns and downgrade them", () => {
@@ -617,7 +616,7 @@ export function App() {
 [INFO] Processing request /api/users
 [VERBOSE] SQL query: SELECT * FROM users
 [WARN] Slow query detected: 1200ms`;
-			expect(adjustPriorityByContent("bash", log)).toBe(ToolPriority.DISCARDABLE);
+			expect(_adjustPriorityByContent("bash", log)).toBe(ToolPriority.DISCARDABLE);
 		});
 
 		it("should detect git diff with conflicts as CRITICAL", () => {
@@ -626,18 +625,18 @@ const x = 1;
 =======
 const x = 2;
 >>>>>>> feature`;
-			expect(adjustPriorityByContent("git_diff", diff)).toBe(ToolPriority.CRITICAL);
+			expect(_adjustPriorityByContent("git_diff", diff)).toBe(ToolPriority.CRITICAL);
 		});
 
 		it("should treat empty/whitespace-only content as DISCARDABLE", () => {
-			expect(adjustPriorityByContent("bash", "")).toBe(ToolPriority.DISCARDABLE);
-			expect(adjustPriorityByContent("bash", "   \n  \n")).toBe(ToolPriority.DISCARDABLE);
+			expect(_adjustPriorityByContent("bash", "")).toBe(ToolPriority.DISCARDABLE);
+			expect(_adjustPriorityByContent("bash", "   \n  \n")).toBe(ToolPriority.DISCARDABLE);
 		});
 
 		it("should preserve explicit CRITICAL tools regardless of content", () => {
 			const writeOutput = `written 3 files, modified 15 lines`;
 			// write tool is CRITICAL by name, even trivial output stays CRITICAL
-			expect(adjustPriorityByContent("write", writeOutput)).toBe(ToolPriority.CRITICAL);
+			expect(_adjustPriorityByContent("write", writeOutput)).toBe(ToolPriority.CRITICAL);
 		});
 	});
 });
