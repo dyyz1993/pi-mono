@@ -564,13 +564,15 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 			expect(adjustPriorityByContent("bash", errorOutput)).toBe(ToolPriority.CRITICAL);
 		});
 
-		it("should boost TypeError/ReferenceError to CRITICAL", () => {
+		it("should boost TypeError/ReferenceError to CRITICAL", async () => {
+			await getAdjustFn();
 			const typeError = `TypeError: Cannot read property 'x' of undefined
-    at Object.<anonymous> (file.ts:42:15)`;
+     at Object.<anonymous> (file.ts:42:15)`;
 			expect(adjustPriorityByContent("bash", typeError)).toBe(ToolPriority.CRITICAL);
 		});
 
-		it("should boost exit-code-nonzero / failure output to IMPORTANT", () => {
+		it("should boost exit-code-nonzero / failure output to IMPORTANT", async () => {
+			await getAdjustFn();
 			const failOutput = `npm test
   FAIL  ./src/component.test.ts
   Tests: 12 failed, 5 passed
