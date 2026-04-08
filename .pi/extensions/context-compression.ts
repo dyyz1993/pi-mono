@@ -316,8 +316,8 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 		const msgTokens = safeEstimateTokens(messages, loadedModules.estimateTokens);
 		log("debug", `messages=${messages.length}, tokens=${msgTokens}, threshold=${config.minTokensToCompress}`, config);
 
-		// Check token threshold
-		if (msgTokens < config.minTokensToCompress) {
+		// Check token threshold - ensure msgTokens is valid
+		if (!msgTokens || msgTokens < config.minTokensToCompress) {
 			return undefined;
 		}
 
