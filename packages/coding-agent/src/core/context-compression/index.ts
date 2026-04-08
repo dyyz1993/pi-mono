@@ -108,7 +108,129 @@ export async function compressContext(
 		// Classification is best-effort; don't fail pipeline
 	}
 
-	// Step L0: Persist large results
+	// Step Scoring: Intelligent per-tool-result compression based on scoring
+	if (config.scoring?.enabled) {
+		try {
+			const scoringResult = await applyScoring(currentMessages, config);
+			currentMessages = scoringResult.messages;
+
+			if (
+				scoringResult.protectCount > 0 ||
+				scoringResult.persistCount > 0 ||
+				scoringResult.summaryCount > 0 ||
+				scoringResult.persistShortCount > 0 ||
+				scoringResult.dropCount > 0
+			) {
+				steps.scoring = {
+					protectCount: scoringResult.protectCount,
+					persistCount: scoringResult.persistCount,
+					summaryCount: scoringResult.summaryCount,
+					persistShortCount: scoringResult.persistShortCount,
+					dropCount: scoringResult.dropCount,
+				};
+			}
+		} catch {
+			currentMessages = lastSuccessfulMessages;
+		}
+	} else {
+		// Legacy pipeline: L0/L1/L2/L3
+		// Step L0: Persist large results
+		if (config.persistence.largeThreshold > 0) {
+			const statsSnapshot = snapshotStats();
+			try {
+				let persistedCount = 0;
+				let bytesSaved = 0;
+				const nextMessages: AgentMessage[] = [];
+
+				for (const msg of currentMessages) {
+					if (msg.role !== "toolResult") {
+						nextMessages.push(msg);
+						continue;
+					}
+
+					const content = extractToolContent(msg);
+					if (content === null) {
+						nextMessages.push(msg);
+						continue;
+					}
+
+					const toolName = (msg as unknown as { toolName?: string }).toolName ?? "unknown";
+					const size = Buffer.byteLength(content, "utf-8");
+
+					if (
+						size < config.persistence.largeThreshold ||
+						config.persistence.exemptTools.has(toolName.toLowerCase())
+					) {
+						nextMessages.push(msg);
+						continue;
+					}
+
+					const result = await persistIfNeeded({ toolName, content }, config.persistence);
+					if (result.persisted) {
+						persistedCount++;
+						bytesSaved += result.originalSize - Buffer.byteLength(result.stub, "utf-8");
+						const msgContent = (msg as unknown as { content?: Array<{ type?: string; [key: string]: unknown }> })
+							.content;
+						const imageParts = Array.isArray(msgContent) ? msgContent.filter((p) => p.type === "image") : [];
+						nextMessages.push({
+							...msg,
+							content: [{ type: "text", text: result.stub }, ...imageParts],
+						} as unknown as AgentMessage);
+					} else {
+						nextMessages.push(msg);
+					}
+				}
+
+				currentMessages = nextMessages;
+				lastSuccessfulMessages = currentMessages;
+				cleanupOldFiles(config.persistence);
+
+				if (persistedCount > 0) {
+					steps.persistence = { persistedCount, bytesSaved };
+				}
+			} catch {
+				currentMessages = lastSuccessfulMessages;
+				rollbackStats(statsSnapshot);
+			}
+		}
+
+		// Step L1+L2: Lifecycle management
+		if (config.lifecycle.enabled) {
+			try {
+				const lifecycleConfig = adjustLifecycleForIntent(config.lifecycle, detectedIntent);
+				const lifecycleResult = await applyLifecycle(currentMessages, lifecycleConfig);
+				currentMessages = lifecycleResult.messages;
+				lastSuccessfulMessages = currentMessages;
+
+				if (lifecycleResult.degradedCount > 0 || lifecycleResult.clearedCount > 0) {
+					steps.lifecycle = {
+						degradedCount: lifecycleResult.degradedCount,
+						clearedCount: lifecycleResult.clearedCount,
+					};
+				}
+			} catch {
+				currentMessages = lastSuccessfulMessages;
+			}
+		}
+
+		// Step L3: Zero-cost summarization
+		if (config.summary.enabled) {
+			try {
+				const summaryConfig = adjustSummaryForIntent(config.summary, detectedIntent);
+				const summaryResult = await applySummary(currentMessages, summaryConfig);
+				currentMessages = summaryResult.messages;
+				lastSuccessfulMessages = currentMessages;
+
+				if (summaryResult.summarizedCount > 0) {
+					steps.summary = {
+						summarizedCount: summaryResult.summarizedCount,
+					};
+				}
+			} catch {
+				currentMessages = lastSuccessfulMessages;
+			}
+		}
+	}
 	if (config.persistence.largeThreshold > 0) {
 		const statsSnapshot = snapshotStats();
 		try {
