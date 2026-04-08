@@ -249,9 +249,14 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 			const writeResults = result.messages.filter((m) => {
 				if (m.role !== "toolResult") return false;
 				const c = m.content as Array<{ type: string; text?: string }>;
-				const text = c?.find((p) => p.type === "text")?.text ?? "";
-				return text.includes("write") && text.includes("IMPORTANT");
+				if (!Array.isArray(c)) return false;
+				const text = c.find((p) => p.type === "text")?.text ?? "";
+				const hasWrite = text.includes("write");
+				const hasImportant = text.includes("IMPORTANT");
+				console.log(`[DEBUG FILTER] write=${hasWrite} important=${hasImportant} text=${text.slice(0, 60)}`);
+				return hasWrite && hasImportant;
 			});
+			console.log(`[DEBUG] writeResults.length = ${writeResults.length}`);
 			// All 4 write results should still have original content (not [cleared] or [degraded])
 			expect(writeResults.length).toBe(4);
 			for (const wr of writeResults) {
