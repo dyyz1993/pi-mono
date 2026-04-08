@@ -145,6 +145,7 @@ export async function compressContext(
 		try {
 			const lifecycleResult = await applyLifecycle(currentMessages, config.lifecycle);
 			currentMessages = lifecycleResult.messages;
+			lastSuccessfulMessages = currentMessages;
 
 			if (lifecycleResult.degradedCount > 0 || lifecycleResult.clearedCount > 0) {
 				steps.lifecycle = {
