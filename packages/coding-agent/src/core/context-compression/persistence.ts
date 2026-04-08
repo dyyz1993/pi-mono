@@ -10,10 +10,7 @@ import * as fs from "node:fs";
 import { mkdirSync } from "node:fs";
 import * as nodePath from "node:path";
 import {
-	DEFAULT_CACHE_DIR,
-	DEFAULT_LARGE_THRESHOLD,
 	DEFAULT_PERSISTENCE_CONFIG,
-	DEFAULT_STUB_PREVIEW_SIZE,
 	type PersistedResult,
 	type PersistenceConfig,
 	type ToolResultInfo,
