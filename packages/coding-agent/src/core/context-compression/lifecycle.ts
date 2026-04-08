@@ -109,7 +109,7 @@ export async function applyLifecycle(
 	const tokensBefore = estimateTokens(messages);
 
 	// Step 1: Extract tool result entries with metadata
-	const entries = extractToolResults(messages);
+	const entries = extractToolResults(messages, config);
 
 	// Step 2: Apply L2 - clear stale results
 	const afterTimeRule = applyTimeRule(entries, config);
