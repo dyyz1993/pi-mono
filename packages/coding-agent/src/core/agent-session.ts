@@ -23,7 +23,7 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
+import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
 import { isContextOverflow, modelsAreEqual, resetApiProviders, streamSimple, supportsXhigh } from "@mariozechner/pi-ai";
 import type { ExtensionLLMCallOptions } from "./extensions/index.js";
 import { getDocsPath } from "../config.js";
