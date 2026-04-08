@@ -1,20 +1,16 @@
 /**
  * Context Compression Extension
  *
- * 5-layer zero-cost context compression for pi coding agent.
  * Hooks into 'context' event to compress messages before each LLM call.
- *
- * Layers:
- *   L0: Persistence (large results -> disk, stub in context)
- *   L1: Lifecycle count (keep recent N, degrade old)
- *   L2: Lifecycle time (clear stale results)
- *   L3: Zero-cost summary (structured extraction, no LLM)
- *   Classifier: Intent classification (for logging)
+ * Supports both legacy pipeline (L0/L1/L2/L3) and new scoring-based compression.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { compressContext } from "../../packages/coding-agent/src/core/context-compression/index.js";
-import { DEFAULT_COMPRESSION_PIPELINE_CONFIG } from "../../packages/coding-agent/src/core/context-compression/types.js";
+import {
+	DEFAULT_COMPRESSION_PIPELINE_CONFIG,
+	STRATEGY_LABELS,
+} from "../../packages/coding-agent/src/core/context-compression/types.js";
 
 function estimateSize(messages: unknown[]): number {
 	try {
@@ -28,8 +24,11 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 	let totalCompressions = 0;
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
-	let totalCleared = 0;
-	let totalSummarized = 0;
+	let totalProtected = 0;
+	let totalPersist = 0;
+	let totalSummary = 0;
+	let totalPersistShort = 0;
+	let totalDrop = 0;
 
 	const updateStatus = (ctx: { ui: { setStatus: (id: string, text?: string) => void } }) => {
 		if (totalCompressions === 0) {
@@ -40,7 +39,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		const ratio = totalInputTokens > 0 ? ((saved / totalInputTokens) * 100).toFixed(0) : "0";
 		ctx.ui.setStatus(
 			"ctx-compress",
-			`压缩:${totalCompressions}次 | 节省${ratio}% | 清${totalCleared} 摘${totalSummarized}`,
+			`压缩:${totalCompressions}次 | 节省${ratio}% | 保留${totalProtected} 持久化${totalPersist} 摘要${totalSummary} 清理${totalDrop}`,
 		);
 	};
 
@@ -50,7 +49,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		if (messages.length < 3) return undefined;
 
 		const msgSize = estimateSize(messages);
-		if (msgSize < 10240) return undefined; // <10KB: not worth compressing
+		if (msgSize < 10240) return undefined;
 
 		try {
 			const sizeBefore = estimateSize(messages);
@@ -65,11 +64,12 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 			totalInputTokens += sizeBefore;
 			totalOutputTokens += sizeAfter;
 
-			if (result.steps.lifecycle) {
-				totalCleared += result.steps.lifecycle.clearedCount + result.steps.lifecycle.degradedCount;
-			}
-			if (result.steps.summary) {
-				totalSummarized += result.steps.summary.summarizedCount;
+			if (result.steps.scoring) {
+				totalProtected += result.steps.scoring.protectCount;
+				totalPersist += result.steps.scoring.persistCount;
+				totalSummary += result.steps.scoring.summaryCount;
+				totalPersistShort += result.steps.scoring.persistShortCount;
+				totalDrop += result.steps.scoring.dropCount;
 			}
 
 			const duration = result.durationMs;
@@ -79,15 +79,26 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 			let logMsg = `[ctx-compress] #${totalCompressions} (${duration}ms) ${sizeBefore}->${sizeAfter}B (-${pct}%)`;
 			const parts: string[] = [];
 
-			if (result.steps.persistence) {
-				parts.push(`persist:${result.steps.persistence.persistedCount}`);
+			if (result.steps.scoring) {
+				const s = result.steps.scoring;
+				parts.push(
+					`${STRATEGY_LABELS.protected}:${s.protectCount}`,
+					`${STRATEGY_LABELS.persist}:${s.persistCount}`,
+					`${STRATEGY_LABELS.summary}:${s.summaryCount}`,
+					`${STRATEGY_LABELS.drop}:${s.dropCount}`,
+				);
+			} else {
+				if (result.steps.persistence) {
+					parts.push(`persist:${result.steps.persistence.persistedCount}`);
+				}
+				if (result.steps.lifecycle) {
+					parts.push(`life:-${result.steps.lifecycle.degradedCount}/clr:${result.steps.lifecycle.clearedCount}`);
+				}
+				if (result.steps.summary) {
+					parts.push(`summarized:${result.steps.summary.summarizedCount}`);
+				}
 			}
-			if (result.steps.lifecycle) {
-				parts.push(`life:-${result.steps.lifecycle.degradedCount}/clr:${result.steps.lifecycle.clearedCount}`);
-			}
-			if (result.steps.summary) {
-				parts.push(`summarized:${result.steps.summary.summarizedCount}`);
-			}
+
 			if (result.steps.classification) {
 				const c = result.steps.classification as { intent: string; confidence: number };
 				parts.push(`${c.intent}`);
@@ -109,8 +120,11 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		totalCompressions = 0;
 		totalInputTokens = 0;
 		totalOutputTokens = 0;
-		totalCleared = 0;
-		totalSummarized = 0;
+		totalProtected = 0;
+		totalPersist = 0;
+		totalSummary = 0;
+		totalPersistShort = 0;
+		totalDrop = 0;
 		ctx.ui.setStatus("ctx-compress", undefined);
 		ctx.ui.notify("[ctx-compress] extension loaded", "info");
 	});

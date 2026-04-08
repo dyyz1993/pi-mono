@@ -65,6 +65,7 @@ export interface ToolResultInfo {
 	toolCallId?: string;
 	content: string;
 	timestamp?: number;
+	maxAgeMs?: number;
 }
 
 // ============================================================================

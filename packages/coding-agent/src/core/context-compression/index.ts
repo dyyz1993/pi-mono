@@ -16,15 +16,14 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { classifyConversation } from "./classifier.js";
 import { applyLifecycle, estimateTokens } from "./lifecycle.js";
 import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded, rollbackStats, snapshotStats } from "./persistence.js";
-import { type CompressionStrategy, STRATEGY_LABELS, scoreAllToolResults, scoreToolResult } from "./scoring.js";
-import { summarizeToolResult } from "./summary.js";
+import { scoreAllToolResults } from "./scoring.js";
+import { applySummary, summarizeToolResult } from "./summary.js";
 import {
 	type CompressionPipelineConfig,
 	DEFAULT_COMPRESSION_PIPELINE_CONFIG,
 	IntentCategory,
 	type LifecycleConfig,
 	type PipelineResult,
-	type ScoredToolResult,
 	type SummaryConfig,
 } from "./types.js";
 
@@ -290,9 +289,9 @@ function adjustSummaryForIntent(base: SummaryConfig, intent: IntentCategory): Su
 // Scoring: Intelligent per-tool-result compression
 // ============================================================================
 
-const SUMMARY_MARKER = "[summarized]";
+const _SUMMARY_MARKER = "[summarized]";
 const CLEARED_MARKER = "[cleared]";
-const PERSIST_SHORT_MARKER = "[persist-short]";
+const _PERSIST_SHORT_MARKER = "[persist-short]";
 
 interface ScoringApplyResult {
 	messages: AgentMessage[];
@@ -344,7 +343,7 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 					result.messages.push({
 						...msg,
 						content: [{ type: "text", text: persisted.stub }, ...imageParts],
-					} as AgentMessage);
+					} as unknown as AgentMessage);
 				} else {
 					result.messages.push(msg);
 				}
@@ -358,7 +357,7 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 					result.messages.push({
 						...msg,
 						content: [{ type: "text", text: note.formatted }],
-					} as AgentMessage);
+					} as unknown as AgentMessage);
 				} else {
 					result.messages.push(msg);
 				}
@@ -367,8 +366,8 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 
 			case "persist_short": {
 				const persisted = await persistIfNeeded(
-					{ toolName, content, timestamp: scored.timestamp },
-					{ ...config.persistence, maxAgeMs: 30 * 60 * 1000 },
+					{ toolName, content, timestamp: scored.timestamp, maxAgeMs: 30 * 60 * 1000 },
+					config.persistence,
 				);
 				if (persisted.persisted) {
 					result.persistShortCount++;
@@ -376,12 +375,12 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 					result.messages.push({
 						...msg,
 						content: [{ type: "text", text: persisted.stub }, ...imageParts],
-					} as AgentMessage);
+					} as unknown as AgentMessage);
 				} else {
 					result.messages.push({
 						...msg,
 						content: [{ type: "text", text: `${CLEARED_MARKER} [${toolName}]` }],
-					} as AgentMessage);
+					} as unknown as AgentMessage);
 					result.dropCount++;
 				}
 				break;
@@ -392,7 +391,7 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 				result.messages.push({
 					...msg,
 					content: [{ type: "text", text: `${CLEARED_MARKER} [${toolName}]` }],
-				} as AgentMessage);
+				} as unknown as AgentMessage);
 				break;
 		}
 	}
@@ -402,7 +401,9 @@ async function applyScoring(messages: AgentMessage[], config: CompressionPipelin
 
 function extractImageParts(msg: AgentMessage): Array<{ type: string; [key: string]: unknown }> {
 	const content = (msg as unknown as { content?: Array<{ type?: string; [key: string]: unknown }> }).content;
-	return Array.isArray(content) ? content.filter((p) => p.type === "image") : [];
+	return Array.isArray(content)
+		? content.filter((p): p is { type: string; [key: string]: unknown } => p.type === "image")
+		: [];
 }
 
 // ============================================================================

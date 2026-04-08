@@ -184,7 +184,7 @@ function getStrategy(normalized: number): CompressionStrategy {
 
 function getReason(
 	strategy: CompressionStrategy,
-	toolName: string,
+	_toolName: string,
 	hasCritical: boolean,
 	isWriteTool: boolean,
 	hasNewerSamePath?: boolean,
