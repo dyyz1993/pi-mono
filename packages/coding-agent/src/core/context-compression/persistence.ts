@@ -83,7 +83,7 @@ async function doPersist(
 	// Ensure cache directory exists
 	const cacheDir = config.cacheDir;
 	try {
-		mkdirSync(cacheDir, { recursive: true });
+		mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
 	} catch {
 		// Cannot create directory - fall back to truncated content
 		const fallbackStub = createFallbackStub(toolName, content, originalSize, config);
