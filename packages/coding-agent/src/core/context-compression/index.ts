@@ -171,12 +171,12 @@ export async function compressContext(
 				};
 			}
 		} catch {
-			// Summary failure is non-fatal
+			currentMessages = lastSuccessfulMessages;
 		}
 	}
 
 	return {
-		messages: currentMessages,
+		messages: lastSuccessfulMessages,
 		steps,
 		tokensBefore: 0, // Estimated at higher level if needed
 		tokensAfter: 0,
