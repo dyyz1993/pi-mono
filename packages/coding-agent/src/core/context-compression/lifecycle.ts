@@ -74,8 +74,91 @@ function getToolPriority(toolName: string, config: LifecycleConfig): ToolPriorit
 }
 
 // ============================================================================
-// Stub/cleared content templates
+// Content-aware priority adjustment
 // ============================================================================
+
+/** Patterns that indicate high-value content (should be preserved) */
+const HIGH_VALUE_PATTERNS: RegExp[] = [
+	// Error/exception stack traces
+	/^Error:/m,
+	/^TypeError:/m,
+	/^ReferenceError:/m,
+	/^SyntaxError:/m,
+	/^RangeError:/m,
+	/\b(at\s+.*?)(\(\d+:\d+\))/m,
+	// Test failures
+	/FAIL\s+\d+/,
+	/failed.*\d+\s*(passed|tests?)/i,
+	/Exit code:\s*[1-9]/,
+	// Git conflicts
+	/<<<<<<<\s*HEAD/m,
+	/>>>>>>>/m,
+	// Security issues
+	/password/i,
+	/secret/i,
+	/token/i,
+	/api[_-]?key/i,
+	/AUTHORIZATION/i,
+];
+
+/** Patterns that indicate low-value content (safe to aggressively compress) */
+const LOW_VALUE_PATTERNS: RegExp[] = [
+	// Build success
+	/Built in \d+(\.\d+)?s$/m,
+	/Done\.?\s*$/m,
+	/Output size:/m,
+	// File listings (many short lines with paths)
+	/^[\w/.]+\n[\w/.]+\n[\w/.]+$/m,
+	// Debug/log noise
+	/^\[DEBUG\]/m,
+	/^\[INFO\]/m,
+	/^\[VERBOSE\]/m,
+	/^\[WARN\].*Slow query/m,
+	/^\[TRACE\]/m,
+	// Pure whitespace or near-empty
+	/^\s*$/,
+];
+
+/**
+ * Adjust tool priority based on actual content analysis.
+ * A bash result containing an error gets boosted to CRITICAL.
+ * A bash result that's just a file listing stays DISCARDABLE.
+ */
+export function adjustPriorityByContent(toolName: string, content: string): ToolPriority {
+	const basePriority = getToolPriority(toolName, DEFAULT_LIFECYCLE_CONFIG);
+
+	// CRITICAL tools by name are always CRITICAL regardless of content
+	if (basePriority === ToolPriority.CRITICAL) return ToolPriority.CRITICAL;
+
+	const trimmed = content.trim();
+	if (!trimmed || trimmed.length < 10) return basePriority;
+
+	// Check for high-value patterns → boost to CRITICAL or IMPORTANT
+	for (const pattern of HIGH_VALUE_PATTERNS) {
+		if (pattern.test(trimmed)) return ToolPriority.CRITICAL;
+	}
+
+	// Check for low-value patterns → downgrade to DISCARDABLE
+	for (const pattern of LOW_VALUE_PATTERNS) {
+		if (pattern.test(trimmed)) return ToolPriority.DISCARDABLE;
+	}
+
+	// Heuristic: if content has many repeated similar lines (grep-style dump),
+	// and no errors, it's likely low-value
+	const lines = trimmed.split("\n");
+	if (lines.length > 30) {
+		const sample = Math.min(5, lines.length);
+		let uniquePrefixes = new Set<string>();
+		for (let i = 0; i < sample; i++) {
+			const prefix = lines[i].split(":")[0]?.split("/").pop() ?? "";
+			if (prefix) uniquePrefixes.add(prefix);
+		}
+		// If most lines share same file extension pattern → likely grep/file listing
+		if (uniquePrefixes.size <= 2 && lines.length > 50) return ToolPriority.DISCARDABLE;
+	}
+
+	return basePriority;
+}
 
 const CLEARED_MARKER = "[cleared]";
 const STUB_PREFIX = "[degraded]";
