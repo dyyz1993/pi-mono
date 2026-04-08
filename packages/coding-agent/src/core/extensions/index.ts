@@ -132,12 +132,13 @@ export type {
 	SetModelHandler,
 	SetThinkingLevelHandler,
 	TerminalInputHandler,
-} from "./types.js";
-
-// Tools
-ToolCallEvent,
-ToolCallEventResult,
-ToolDefinition,
+	// LLM Call
+	ExtensionLLMCallOptions,
+	ExtensionLLMSpeedLevel,
+	// Tools
+	ToolCallEvent,
+	ToolCallEventResult,
+	ToolDefinition,
 	// Events - Tool Execution
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
