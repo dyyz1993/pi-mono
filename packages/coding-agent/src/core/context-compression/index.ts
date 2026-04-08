@@ -12,7 +12,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { classifyConversation } from "./classifier.js";
 import { applyLifecycle } from "./lifecycle.js";
-import { cleanupOldFiles, persistIfNeeded } from "./persistence.js";
+import { cleanupOldFiles, cleanupOrphanedFiles, persistIfNeeded } from "./persistence.js";
 import { applySummary } from "./summary.js";
 import { type CompressionPipelineConfig, DEFAULT_COMPRESSION_PIPELINE_CONFIG, type PipelineResult } from "./types.js";
 
@@ -46,6 +46,13 @@ export async function compressContext(
 	const steps: NonNullable<PipelineResult["steps"]> = {};
 
 	let currentMessages = messages;
+
+	// Step -1: Cleanup orphaned files from previous sessions (runs once per pipeline)
+	try {
+		await cleanupOrphanedFiles(config.persistence);
+	} catch {
+		// Orphaned cleanup is best-effort
+	}
 
 	// Step 0: Classify intent (lightweight, for metadata)
 	try {

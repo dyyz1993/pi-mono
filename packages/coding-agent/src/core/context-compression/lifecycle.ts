@@ -285,7 +285,7 @@ function rebuildMessages(originalMessages: AgentMessage[], entries: IndexedEntry
 		if (content === null) return msg;
 
 		// Try to find by index-based ID or by position
-		let entry = entryMap.get(`${idx}-${(msg as unknown as { toolName?: string }).toolName ?? ""}`);
+		let entry = entryMap.get(`${idx}-${((msg as unknown as { toolName?: string }).toolName ?? "").toLowerCase()}`);
 		if (!entry) {
 			// Fallback: find by scanning
 			entry = entries.find((e) => e.messageIndex === idx);
