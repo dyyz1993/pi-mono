@@ -2213,7 +2213,15 @@ export class AgentSession {
 						messages: resolvedMessages,
 					};
 					const thinkingLevel: ThinkingLevel = (options.speed as ThinkingLevel) ?? "off";
-					const stream = streamSimple(model, context, { reasoning: thinkingLevel });
+					const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+					if (!auth.ok || !auth.apiKey) {
+						throw new Error(`No API key found for ${model.provider}. Use /login or set an API key.`);
+					}
+					const stream = streamSimple(model, context, {
+						reasoning: thinkingLevel,
+						apiKey: auth.apiKey,
+						headers: auth.headers,
+					});
 					return stream.result();
 				},
 			},
