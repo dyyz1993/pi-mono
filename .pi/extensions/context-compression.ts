@@ -63,17 +63,6 @@ interface CompressionResult {
 	durationMs: number;
 }
 
-interface ContextEvent {
-	messages: Array<{ role: string; content: string }>;
-}
-
-interface AgentContext {
-	ui: {
-		setStatus: (id: string, text?: string) => void;
-		notify: (message: string, level: "info" | "warning" | "error") => void;
-	};
-}
-
 interface CompressionConfig {
 	minTokensToCompress: number;
 	minGrowthToCompress: number;
@@ -288,7 +277,7 @@ function formatStatus(stats: CompressionStats): string {
 	return status;
 }
 
-function updateStatus(ctx: AgentContext, stats: CompressionStats): void {
+function updateStatus(ctx: any, stats: CompressionStats): void {
 	const status = formatStatus(stats);
 	ctx.ui.setStatus("ctx-compress", status || undefined);
 }
@@ -300,6 +289,7 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 	let loadedModules: LoadedModules;
 	try {
 		loadedModules = await loadModules();
+		console.error("[ctx-compress] Modules loaded successfully");
 	} catch (error) {
 		console.error("[ctx-compress] Failed to initialize:", error);
 		return;
@@ -309,7 +299,7 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 	const stats = createEmptyStats();
 	const compressionHistory: CompressionRecord[] = [];
 
-	pi.on("context", async (event: ContextEvent, ctx: AgentContext) => {
+	pi.on("context", async (event, ctx) => {
 		const { messages } = event;
 
 		// Check minimum message count
@@ -461,7 +451,7 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_start", async (_event, ctx: AgentContext) => {
+	pi.on("agent_start", async (_event: any, ctx: any) => {
 		resetStats(stats);
 		compressionHistory.length = 0;
 
@@ -503,7 +493,7 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_shutdown", async (_event, ctx: AgentContext) => {
+	pi.on("session_shutdown", async (_event: any, ctx: any) => {
 		// Save compression history if configured
 		if (compressionHistory.length > 0) {
 			const historyPath = path.join(os.homedir(), ".pi", "compression-history.json");
