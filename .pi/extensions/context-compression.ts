@@ -47,7 +47,10 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 	pi.on("context", async (event, ctx) => {
 		const { messages } = event;
 
-		if (messages.length < 5) return undefined;
+		if (messages.length < 3) return undefined;
+
+		const msgSize = estimateSize(messages);
+		if (msgSize < 10240) return undefined; // <10KB: not worth compressing
 
 		try {
 			const sizeBefore = estimateSize(messages);
