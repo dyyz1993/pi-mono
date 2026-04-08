@@ -145,7 +145,13 @@ export {
 } from "./core/extensions/index.js";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.js";
-export { convertToLlm } from "./core/messages.js";
+export {
+	convertToLlm,
+	type BashExecutionMessage,
+	type BranchSummaryMessage,
+	type CompactionSummaryMessage,
+	type CustomMessage,
+} from "./core/messages.js";
 export { ModelRegistry } from "./core/model-registry.js";
 export type {
 	PackageManager,
