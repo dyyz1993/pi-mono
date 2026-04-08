@@ -303,10 +303,7 @@ interface ScoringApplyResult {
 	dropCount: number;
 }
 
-async function applyScoring(
-	messages: AgentMessage[],
-	config: CompressionPipelineConfig,
-): Promise<ScoringApplyResult> {
+async function applyScoring(messages: AgentMessage[], config: CompressionPipelineConfig): Promise<ScoringApplyResult> {
 	const now = Date.now();
 	const result: ScoringApplyResult = {
 		messages: [],
