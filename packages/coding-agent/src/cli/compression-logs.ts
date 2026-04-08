@@ -333,6 +333,19 @@ export class CompressionLogsCLI {
 	}
 }
 
+/**
+ * Handle compression-logs command from main CLI
+ */
+export async function handleCompressionLogsCommand(args: string[]): Promise<boolean> {
+	if (args[0] !== "compression-logs") {
+		return false;
+	}
+
+	const cli = new CompressionLogsCLI();
+	await cli.run(args.slice(1));
+	return true;
+}
+
 // CLI entry point
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const cli = new CompressionLogsCLI();
