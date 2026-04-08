@@ -471,6 +471,38 @@ export default async function contextCompressionExtension(pi: ExtensionAPI) {
 		ctx.ui.notify(msg, "info");
 	});
 
+	// Register commands
+	pi.registerCommand("ctx-report", {
+		description: "Generate HTML compression report",
+		handler: async (_args, ctx) => {
+			const historyPath = path.join(os.homedir(), ".pi", "compression-history.json");
+			const htmlReportPath = path.join(os.homedir(), ".pi", "compression-report.html");
+
+			if (compressionHistory.length === 0) {
+				ctx.ui.notify("No compression history yet", "info");
+				return;
+			}
+
+			try {
+				const html = generateHtmlReport(compressionHistory, config);
+				fs.writeFileSync(htmlReportPath, html);
+				fs.writeFileSync(historyPath, JSON.stringify(compressionHistory, null, 2));
+				ctx.ui.notify(`Report saved to ${htmlReportPath}`, "info");
+				log("info", `Report generated: ${htmlReportPath}`, config);
+			} catch (error) {
+				ctx.ui.notify(`Failed to generate report: ${error}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("ctx-stats", {
+		description: "Show current compression stats",
+		handler: async (_args, ctx) => {
+			const status = formatStatus(stats);
+			ctx.ui.notify(`Compression stats: ${status || "no compressions yet"}`, "info");
+		},
+	});
+
 	pi.on("session_shutdown", async (_event, ctx: AgentContext) => {
 		// Save compression history if configured
 		if (compressionHistory.length > 0) {
