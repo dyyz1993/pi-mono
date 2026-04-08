@@ -169,7 +169,7 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		totalCompressions = 0;
 		totalInputTokens = 0;
 		totalOutputTokens = 0;
-		lastCompressedSize = 0;
+		lastCompressedTokens = 0;
 		lastCompressAt = 0;
 		// Scoring stats
 		totalProtected = 0;
