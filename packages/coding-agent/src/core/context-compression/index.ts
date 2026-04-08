@@ -154,7 +154,7 @@ export async function compressContext(
 				};
 			}
 		} catch {
-			// Lifecycle failure shouldn't block summary
+			currentMessages = lastSuccessfulMessages;
 		}
 	}
 
@@ -163,6 +163,7 @@ export async function compressContext(
 		try {
 			const summaryResult = await applySummary(currentMessages, config.summary);
 			currentMessages = summaryResult.messages;
+			lastSuccessfulMessages = currentMessages;
 
 			if (summaryResult.summarizedCount > 0) {
 				steps.summary = {
