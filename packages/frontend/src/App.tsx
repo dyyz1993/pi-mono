@@ -1,25 +1,46 @@
-import { useState } from "react";
-import "./App.css";
+import { useState, useEffect } from 'react'
+import './App.css'
 
-function App() {
-  const [count, setCount] = useState(0);
-
-  return (
-    <div className="App">
-      <h1>Pi - Modern Web Application</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </div>
-  );
+interface HelloResponse {
+  message: string
 }
 
-export default App;
+function App() {
+  const [message, setMessage] = useState<string>('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    fetchHello()
+  }, [])
+
+  const fetchHello = async () => {
+    setLoading(true)
+    try {
+      const response = await fetch('/api/hello')
+      const data: HelloResponse = await response.json()
+      setMessage(data.message)
+    } catch (error) {
+      setMessage('Failed to fetch from backend')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1>PI Project</h1>
+        {loading ? (
+          <p>Loading...</p>
+        ) : (
+          <p>Backend says: {message}</p>
+        )}
+        <button onClick={fetchHello}>
+          Refresh
+        </button>
+      </header>
+    </div>
+  )
+}
+
+export default App
