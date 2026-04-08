@@ -21,6 +21,8 @@ function App() {
       setMessages(prev => [...prev, assistantMessage])
     } catch (error) {
       console.error('Error:', error)
+      const errorMessage = { role: 'assistant', content: 'Sorry, an error occurred.' }
+      setMessages(prev => [...prev, errorMessage])
     } finally {
       setIsLoading(false)
     }
@@ -29,24 +31,26 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>π - AI Coding Agent</h1>
+        <h1>AI Chat Assistant</h1>
       </header>
       
       <main className="main">
         <div className="messages">
           {messages.length === 0 && (
-            <div className="welcome">
-              <h2>Welcome to Pi</h2>
-              <p>Your AI-powered coding assistant. Ask me anything about coding!</p>
+            <div className="empty-state">
+              <p>Welcome! Ask me anything about coding.</p>
             </div>
           )}
           {messages.map((msg, idx) => (
             <div key={idx} className={`message ${msg.role}`}>
-              <div className="role">{msg.role}</div>
-              <div className="content">{msg.content}</div>
+              <div className="message-content">{msg.content}</div>
             </div>
           ))}
-          {isLoading && <div className="loading">Thinking...</div>}
+          {isLoading && (
+            <div className="message assistant loading">
+              <div className="message-content">Thinking...</div>
+            </div>
+          )}
         </div>
       </main>
 
