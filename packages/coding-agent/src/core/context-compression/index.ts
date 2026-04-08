@@ -287,6 +287,128 @@ function adjustSummaryForIntent(base: SummaryConfig, intent: IntentCategory): Su
 }
 
 // ============================================================================
+// Scoring: Intelligent per-tool-result compression
+// ============================================================================
+
+const SUMMARY_MARKER = "[summarized]";
+const CLEARED_MARKER = "[cleared]";
+const PERSIST_SHORT_MARKER = "[persist-short]";
+
+interface ScoringApplyResult {
+	messages: AgentMessage[];
+	protectCount: number;
+	persistCount: number;
+	summaryCount: number;
+	persistShortCount: number;
+	dropCount: number;
+}
+
+async function applyScoring(
+	messages: AgentMessage[],
+	config: CompressionPipelineConfig,
+): Promise<ScoringApplyResult> {
+	const now = Date.now();
+	const result: ScoringApplyResult = {
+		messages: [],
+		protectCount: 0,
+		persistCount: 0,
+		summaryCount: 0,
+		persistShortCount: 0,
+		dropCount: 0,
+	};
+
+	const scoredResults = scoreAllToolResults(messages, { currentTime: now });
+
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+		const scored = scoredResults.find((s) => s.messageIndex === i);
+
+		if (msg.role !== "toolResult" || !scored) {
+			result.messages.push(msg);
+			continue;
+		}
+
+		const { score, toolName, content } = scored;
+
+		switch (score.strategy) {
+			case "protected":
+				result.messages.push(msg);
+				result.protectCount++;
+				break;
+
+			case "persist": {
+				const persisted = await persistIfNeeded(
+					{ toolName, content, timestamp: scored.timestamp },
+					config.persistence,
+				);
+				if (persisted.persisted) {
+					result.persistCount++;
+					const imageParts = extractImageParts(msg);
+					result.messages.push({
+						...msg,
+						content: [{ type: "text", text: persisted.stub }, ...imageParts],
+					} as AgentMessage);
+				} else {
+					result.messages.push(msg);
+				}
+				break;
+			}
+
+			case "summary": {
+				const note = summarizeToolResult(toolName, content, config.summary);
+				if (note.formatted.length < content.length) {
+					result.summaryCount++;
+					result.messages.push({
+						...msg,
+						content: [{ type: "text", text: note.formatted }],
+					} as AgentMessage);
+				} else {
+					result.messages.push(msg);
+				}
+				break;
+			}
+
+			case "persist_short": {
+				const persisted = await persistIfNeeded(
+					{ toolName, content, timestamp: scored.timestamp },
+					{ ...config.persistence, maxAgeMs: 30 * 60 * 1000 },
+				);
+				if (persisted.persisted) {
+					result.persistShortCount++;
+					const imageParts = extractImageParts(msg);
+					result.messages.push({
+						...msg,
+						content: [{ type: "text", text: persisted.stub }, ...imageParts],
+					} as AgentMessage);
+				} else {
+					result.messages.push({
+						...msg,
+						content: [{ type: "text", text: `${CLEARED_MARKER} [${toolName}]` }],
+					} as AgentMessage);
+					result.dropCount++;
+				}
+				break;
+			}
+
+			case "drop":
+				result.dropCount++;
+				result.messages.push({
+					...msg,
+					content: [{ type: "text", text: `${CLEARED_MARKER} [${toolName}]` }],
+				} as AgentMessage);
+				break;
+		}
+	}
+
+	return result;
+}
+
+function extractImageParts(msg: AgentMessage): Array<{ type: string; [key: string]: unknown }> {
+	const content = (msg as unknown as { content?: Array<{ type?: string; [key: string]: unknown }> }).content;
+	return Array.isArray(content) ? content.filter((p) => p.type === "image") : [];
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
