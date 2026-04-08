@@ -21,9 +21,14 @@ function estimateSize(messages: unknown[]): number {
 }
 
 export default function contextCompressionExtension(pi: ExtensionAPI) {
+	const MIN_COMPRESSION_SIZE = 40 * 1024;
+	const MIN_GROWTH_TO_COMPRESS = 20 * 1024;
+
 	let totalCompressions = 0;
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
+	let lastCompressedSize = 0;
+	let lastCompressAt = 0;
 
 	// Scoring stats
 	let totalProtected = 0;
@@ -64,7 +69,16 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		if (messages.length < 3) return undefined;
 
 		const msgSize = estimateSize(messages);
-		if (msgSize < 10240) return undefined;
+
+		// 阈值1：至少 40KB 才考虑压缩
+		if (msgSize < MIN_COMPRESSION_SIZE) return undefined;
+
+		// 阈值2：距离上次压缩至少 5 秒
+		const now = Date.now();
+		if (now - lastCompressAt < 5000) return undefined;
+
+		// 阈值3：相比上次压缩后，上下文必须增长至少 20KB
+		if (lastCompressedSize > 0 && msgSize - lastCompressedSize < MIN_GROWTH_TO_COMPRESS) return undefined;
 
 		try {
 			const sizeBefore = estimateSize(messages);
@@ -73,6 +87,10 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 
 			const stepCount = Object.keys(result.steps).length;
 			if (stepCount === 0) return undefined;
+
+			// 记录这次压缩的状态
+			lastCompressedSize = estimateSize(result.messages);
+			lastCompressAt = now;
 
 			totalCompressions++;
 			const sizeAfter = estimateSize(result.messages);
@@ -150,6 +168,8 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		totalCompressions = 0;
 		totalInputTokens = 0;
 		totalOutputTokens = 0;
+		lastCompressedSize = 0;
+		lastCompressAt = 0;
 		// Scoring stats
 		totalProtected = 0;
 		totalPersist = 0;
