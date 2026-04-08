@@ -1,37 +1,36 @@
 # Dependencies
 node_modules/
-.pnp
-.pnp.js
+.pnpm-store/
 
 # Build outputs
 dist/
 build/
-*.tsbuildinfo
+.next/
+out/
 
 # Environment variables
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Logs
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-logs/
-*.log
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-.DS_Store
+pnpm-debug.log*
 
 # Testing
 coverage/
@@ -39,8 +38,5 @@ coverage/
 
 # Misc
 .cache/
-temp/
-tmp/
-
-# Docker
-.dockerignore
+.temp/
+.tmp/
