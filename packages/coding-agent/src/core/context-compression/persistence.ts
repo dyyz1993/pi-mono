@@ -96,7 +96,7 @@ async function doPersist(
 	const filePath = nodePath.join(cacheDir, fileName);
 
 	try {
-		await fs.promises.writeFile(filePath, content, "utf-8");
+		await fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
 
 		// Track the file for cleanup/stats
 		persistedFiles.set(filePath, { toolName, size: originalSize, timestamp: Date.now() });
