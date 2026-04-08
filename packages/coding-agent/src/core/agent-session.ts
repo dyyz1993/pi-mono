@@ -2196,6 +2196,26 @@ export class AgentSession {
 					})();
 				},
 				getSystemPrompt: () => this.systemPrompt,
+				callModel: async (options: ExtensionLLMCallOptions) => {
+					const model = options.model ?? this.model;
+					if (!model) {
+						throw new Error("No model available for internal LLM call");
+					}
+					const resolvedMessages = options.messages.map((msg) => {
+						const content =
+							typeof msg.content === "string"
+								? msg.content
+								: msg.content.map((c) => (typeof c === "string" ? c : c.text)).join("");
+						return { role: msg.role, content } as Message;
+					});
+					const context: import("@mariozechner/pi-ai").Context = {
+						systemPrompt: options.systemPrompt ?? this.systemPrompt,
+						messages: resolvedMessages,
+					};
+					const thinkingLevel: ThinkingLevel = (options.speed as ThinkingLevel) ?? "off";
+					const stream = streamSimple(model, context, { reasoning: thinkingLevel });
+					return stream.result();
+				},
 			},
 			{
 				registerProvider: (name, config) => {
