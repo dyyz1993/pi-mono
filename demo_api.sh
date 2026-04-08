@@ -1,59 +1,60 @@
 #!/bin/bash
 
-# OpenViking API Demo
+# OpenViking API 演示脚本
+# 演示所有主要 API 端点的使用
 
-echo "🔍 OpenViking API Demo"
-echo "======================"
+BASE_URL="http://localhost:8000"
+
+echo "OpenViking API 演示"
+echo "=================="
 echo ""
 
-BASE_URL="http://localhost:8001"
-
-echo "1. Health Check"
-echo "---------------"
-curl -s "$BASE_URL/health" | jq '.'
+echo "1. 系统状态"
+echo "-----------"
+curl -s "$BASE_URL/api/status" | jq '.'
 echo ""
 echo ""
 
-echo "2. List All Memories"
+echo "2. Neo4j 图谱状态"
+echo "-----------------"
+curl -s "$BASE_URL/api/graph/status" | jq '.'
+echo ""
+echo ""
+
+echo "3. Qdrant 向量库状态"
 echo "--------------------"
-curl -s "$BASE_URL/api/memories" | jq '.'
+curl -s "$BASE_URL/api/qdrant/status" | jq '.'
+echo ""
 echo ""
 
-echo "3. Get User Profile"
-echo "-------------------"
-curl -s "$BASE_URL/api/memories/user/profile" | jq '.'
-echo ""
-
-echo "4. List All Resources"
-echo "---------------------"
-curl -s "$BASE_URL/api/resources" | jq '.'
-echo ""
-
-echo "5. List All Skills"
+echo "4. Qdrant 集合列表"
 echo "------------------"
-curl -s "$BASE_URL/api/skills" | jq '.'
-echo ""
-
-echo "6. Search for 'typescript'"
-echo "--------------------------"
-curl -s -X POST "$BASE_URL/api/search" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "typescript"}' | jq '.'
+curl -s "$BASE_URL/api/qdrant/collections" | jq '.'
 echo ""
 echo ""
 
-echo "7. Search for 'git'"
+echo "5. 搜索 Memories (语义搜索)"
+echo "---------------------------"
+curl -s "$BASE_URL/api/memories?q=python" | jq '.'
+echo ""
+echo ""
+
+echo "6. 搜索 All Content"
 echo "-------------------"
-curl -s -X POST "$BASE_URL/api/search" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "git"}' | jq '.'
+curl -s "$BASE_URL/api/search?q=python" | jq '.'
 echo ""
 echo ""
 
-echo "✅ Demo complete!"
+echo "7. 获取 Memories 统计"
+echo "---------------------"
+curl -s "$BASE_URL/api/memories/stats" | jq '.'
 echo ""
-echo "Try these yourself:"
-echo "  curl $BASE_URL/api/memories"
-echo "  curl $BASE_URL/api/resources"
-echo "  curl $BASE_URL/api/skills"
-echo "  curl -X POST $BASE_URL/api/search -H 'Content-Type: application/json' -d '{\"query\": \"your search\"}'"
+echo ""
+
+echo "8. 图谱查询 - 获取所有会话"
+echo "---------------------------"
+curl -s "$BASE_URL/api/graph/query?query=MATCH%20(n:Session)%20RETURN%20n%20LIMIT%205" | jq '.'
+echo ""
+echo ""
+
+echo "演示完成！"

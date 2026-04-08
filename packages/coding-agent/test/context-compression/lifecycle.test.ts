@@ -236,14 +236,6 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 
 			// Debug: show ALL toolResult contents
 			const allToolResults = result.messages.filter((m) => m.role === "toolResult");
-			console.log(
-				`[DEBUG] Total toolResults: ${allToolResults.length}, cleared: ${result.clearedCount}, degraded: ${result.degradedCount}`,
-			);
-			for (const tr of allToolResults) {
-				const c = tr.content as Array<{ type: string; text?: string }>;
-				const t = c?.find((p) => p.type === "text")?.text ?? "";
-				console.log(`[DEBUG] tool preview: ${t.slice(0, 100)}`);
-			}
 
 			// Write/edit results should NOT be cleared or degraded
 			const writeResults = result.messages.filter((m) => {
@@ -251,12 +243,8 @@ describe("L1+L2: Tool Result Lifecycle Management", () => {
 				const c = m.content as Array<{ type: string; text?: string }>;
 				if (!Array.isArray(c)) return false;
 				const text = c.find((p) => p.type === "text")?.text ?? "";
-				const hasWrite = text.includes("write");
-				const hasImportant = text.includes("IMPORTANT");
-				console.log(`[DEBUG FILTER] write=${hasWrite} important=${hasImportant} text=${text.slice(0, 60)}`);
-				return hasWrite && hasImportant;
+				return text.includes("IMPORTANT FILE CONTENT");
 			});
-			console.log(`[DEBUG] writeResults.length = ${writeResults.length}`);
 			// All 4 write results should still have original content (not [cleared] or [degraded])
 			expect(writeResults.length).toBe(4);
 			for (const wr of writeResults) {
