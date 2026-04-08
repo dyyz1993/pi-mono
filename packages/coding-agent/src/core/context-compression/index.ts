@@ -129,6 +129,7 @@ export async function compressContext(
 			}
 
 			currentMessages = nextMessages;
+			lastSuccessfulMessages = currentMessages;
 			cleanupOldFiles(config.persistence);
 
 			if (persistedCount > 0) {
