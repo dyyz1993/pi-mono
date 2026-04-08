@@ -274,6 +274,13 @@ export interface PipelineResult {
 		lifecycle?: { degradedCount: number; clearedCount: number };
 		summary?: { summarizedCount: number };
 		classification?: { intent: string; confidence: number };
+		scoring?: {
+			protectCount: number;
+			persistCount: number;
+			summaryCount: number;
+			persistShortCount: number;
+			dropCount: number;
+		};
 	};
 	tokensBefore: number;
 	tokensAfter: number;
