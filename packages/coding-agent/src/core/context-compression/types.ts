@@ -245,7 +245,7 @@ export interface ScoringConfig {
 }
 
 export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
-	enabled: true,
+	enabled: false,
 };
 
 export interface CompressionPipelineConfig {

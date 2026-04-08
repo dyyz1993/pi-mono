@@ -454,6 +454,303 @@ describe("Context Compression Extension", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// Legacy Pipeline L0/L1/L2/L3 Stats Tests
+	// -----------------------------------------------------------------------
+
+	describe("legacy pipeline L0/L1/L2/L3 stats", () => {
+		it("should accumulate L0 persistence stats", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					persistence: { persistedCount: 3, bytesSaved: 5000 },
+				},
+				durationMs: 100,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			await handler!(event, ctx);
+
+			// Second compression with more persistence
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					persistence: { persistedCount: 2, bytesSaved: 3000 },
+				},
+				durationMs: 80,
+			});
+			await handler!(event, ctx);
+
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("L0持久化"),
+			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("压缩:2次"),
+			);
+		});
+
+		it("should accumulate L1/L2 lifecycle degraded and cleared stats", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					lifecycle: { degradedCount: 4, clearedCount: 2 },
+				},
+				durationMs: 100,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			await handler!(event, ctx);
+
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("L1/2降4清2"),
+			);
+		});
+
+		it("should accumulate L3 summary stats", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					summary: { summarizedCount: 5 },
+				},
+				durationMs: 100,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			await handler!(event, ctx);
+
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("L3摘5"),
+			);
+		});
+
+		it("should show all L0/L1/L2/L3 stats combined", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					persistence: { persistedCount: 2, bytesSaved: 4000 },
+					lifecycle: { degradedCount: 3, clearedCount: 1 },
+					summary: { summarizedCount: 4 },
+				},
+				durationMs: 150,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			await handler!(event, ctx);
+
+			const lastCall = mockSetStatus.mock.calls[mockSetStatus.mock.calls.length - 1];
+			const statusText = lastCall[1] as string;
+			expect(statusText).toContain("L0持久化2");
+			expect(statusText).toContain("L1/2降3清1");
+			expect(statusText).toContain("L3摘4");
+		});
+
+		it("should reset all L0/L1/L2/L3 stats on agent_start", async () => {
+			const contextHandler = eventHandlers.get("context");
+			const agentStartHandler = eventHandlers.get("agent_start");
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			// First session
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					persistence: { persistedCount: 5, bytesSaved: 8000 },
+					lifecycle: { degradedCount: 3, clearedCount: 2 },
+					summary: { summarizedCount: 6 },
+				},
+				durationMs: 100,
+			});
+
+			await contextHandler!({ messages }, { ui: mockPI.ui });
+
+			// Verify stats accumulated
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("L0持久化5"),
+			);
+
+			// Reset
+			await agentStartHandler!({}, { ui: mockPI.ui });
+
+			// New session - first compression
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					persistence: { persistedCount: 1, bytesSaved: 1000 },
+				},
+				durationMs: 50,
+			});
+
+			await contextHandler!({ messages }, { ui: mockPI.ui });
+
+			// Stats should be reset, only showing new session stats
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("L0持久化1"),
+			);
+			// Should NOT contain old session stats
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.not.stringContaining("L0持久化5"),
+			);
+		});
+
+		it("should show scoring stats format when scoring step present", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					scoring: {
+						protectCount: 2,
+						persistCount: 3,
+						summaryCount: 4,
+						persistShortCount: 1,
+						dropCount: 5,
+					},
+				},
+				durationMs: 100,
+			});
+
+			const event = { messages };
+			const ctx = { ui: mockPI.ui };
+			await handler!(event, ctx);
+
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("保留2"),
+			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("持久化3"),
+			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("摘要4"),
+			);
+			expect(mockSetStatus).toHaveBeenLastCalledWith(
+				"ctx-compress",
+				expect.stringContaining("清理5"),
+			);
+		});
+
+		it("should accumulate scoring stats across multiple compressions", async () => {
+			const handler = eventHandlers.get("context");
+			expect(handler).toBeDefined();
+
+			const largeContent = createLargeContent(15);
+			const messages: AgentMessage[] = [
+				createUserMsg("hello"),
+				createAssistantMsg("hi"),
+				createToolResult("bash", largeContent),
+			];
+
+			// First compression
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					scoring: {
+						protectCount: 1,
+						persistCount: 2,
+						summaryCount: 1,
+						persistShortCount: 0,
+						dropCount: 3,
+					},
+				},
+				durationMs: 100,
+			});
+
+			await handler!({ messages }, { ui: mockPI.ui });
+
+			// Second compression
+			mockCompressContext.mockResolvedValueOnce({
+				messages,
+				steps: {
+					scoring: {
+						protectCount: 2,
+						persistCount: 1,
+						summaryCount: 2,
+						persistShortCount: 1,
+						dropCount: 2,
+					},
+				},
+				durationMs: 80,
+			});
+
+			await handler!({ messages }, { ui: mockPI.ui });
+
+			// Verify cumulative stats
+			const lastCall = mockSetStatus.mock.calls[mockSetStatus.mock.calls.length - 1];
+			const statusText = lastCall[1] as string;
+			expect(statusText).toContain("压缩:2次");
+			expect(statusText).toContain("保留3"); // 1 + 2
+			expect(statusText).toContain("持久化3"); // 2 + 1
+			expect(statusText).toContain("摘要3"); // 1 + 2
+			expect(statusText).toContain("清理5"); // 3 + 2
+		});
+	});
+
+	// -----------------------------------------------------------------------
 	// Edge Cases
 	// -----------------------------------------------------------------------
 

@@ -24,11 +24,20 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 	let totalCompressions = 0;
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
+
+	// Scoring stats
 	let totalProtected = 0;
 	let totalPersist = 0;
 	let totalSummary = 0;
 	let totalPersistShort = 0;
 	let totalDrop = 0;
+
+	// L0/L1/L2/L3 stats
+	let totalPersistL0 = 0;
+	let totalPersistBytesL0 = 0;
+	let totalLifecycleDegraded = 0;
+	let totalLifecycleCleared = 0;
+	let totalSummaryL3 = 0;
 
 	const updateStatus = (ctx: { ui: { setStatus: (id: string, text?: string) => void } }) => {
 		if (totalCompressions === 0) {
@@ -37,10 +46,16 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		}
 		const saved = totalInputTokens - totalOutputTokens;
 		const ratio = totalInputTokens > 0 ? ((saved / totalInputTokens) * 100).toFixed(0) : "0";
-		ctx.ui.setStatus(
-			"ctx-compress",
-			`压缩:${totalCompressions}次 | 节省${ratio}% | 保留${totalProtected} 持久化${totalPersist} 摘要${totalSummary} 清理${totalDrop}`,
-		);
+
+		let status = `压缩:${totalCompressions}次 | 节省${ratio}%`;
+
+		if (totalPersist + totalProtected + totalSummary + totalDrop > 0) {
+			status += ` | 保留${totalProtected} 持久化${totalPersist} 摘要${totalSummary} 清理${totalDrop}`;
+		} else if (totalPersistL0 + totalLifecycleDegraded + totalLifecycleCleared + totalSummaryL3 > 0) {
+			status += ` | L0持久化${totalPersistL0} L1/2降${totalLifecycleDegraded}清${totalLifecycleCleared} L3摘${totalSummaryL3}`;
+		}
+
+		ctx.ui.setStatus("ctx-compress", status);
 	};
 
 	pi.on("context", async (event, ctx) => {
@@ -70,6 +85,21 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 				totalSummary += result.steps.scoring.summaryCount;
 				totalPersistShort += result.steps.scoring.persistShortCount;
 				totalDrop += result.steps.scoring.dropCount;
+			} else {
+				// L0: Persistence
+				if (result.steps.persistence) {
+					totalPersistL0 += result.steps.persistence.persistedCount;
+					totalPersistBytesL0 += result.steps.persistence.bytesSaved;
+				}
+				// L1+L2: Lifecycle
+				if (result.steps.lifecycle) {
+					totalLifecycleDegraded += result.steps.lifecycle.degradedCount;
+					totalLifecycleCleared += result.steps.lifecycle.clearedCount;
+				}
+				// L3: Summary
+				if (result.steps.summary) {
+					totalSummaryL3 += result.steps.summary.summarizedCount;
+				}
 			}
 
 			const duration = result.durationMs;
@@ -120,11 +150,18 @@ export default function contextCompressionExtension(pi: ExtensionAPI) {
 		totalCompressions = 0;
 		totalInputTokens = 0;
 		totalOutputTokens = 0;
+		// Scoring stats
 		totalProtected = 0;
 		totalPersist = 0;
 		totalSummary = 0;
 		totalPersistShort = 0;
 		totalDrop = 0;
+		// L0/L1/L2/L3 stats
+		totalPersistL0 = 0;
+		totalPersistBytesL0 = 0;
+		totalLifecycleDegraded = 0;
+		totalLifecycleCleared = 0;
+		totalSummaryL3 = 0;
 		ctx.ui.setStatus("ctx-compress", undefined);
 		ctx.ui.notify("[ctx-compress] extension loaded", "info");
 	});
