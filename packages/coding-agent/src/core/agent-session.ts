@@ -2208,7 +2208,7 @@ export class AgentSession {
 								: msg.content.map((c) => (typeof c === "string" ? c : c.text)).join("");
 						return { role: msg.role, content } as Message;
 					});
-					const context: import("@mariozechner/pi-ai").Context = {
+					const context: Context = {
 						systemPrompt: options.systemPrompt ?? this.systemPrompt,
 						messages: resolvedMessages,
 					};
