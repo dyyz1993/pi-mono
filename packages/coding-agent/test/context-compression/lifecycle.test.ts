@@ -633,7 +633,8 @@ const x = 2;
 			expect(_adjustPriorityByContent("bash", "   \n  \n")).toBe(ToolPriority.DISCARDABLE);
 		});
 
-		it("should preserve explicit CRITICAL tools regardless of content", () => {
+		it("should preserve explicit CRITICAL tools regardless of content", async () => {
+			await getAdjustFn();
 			const writeOutput = `written 3 files, modified 15 lines`;
 			// write tool is CRITICAL by name, even trivial output stays CRITICAL
 			expect(_adjustPriorityByContent("write", writeOutput)).toBe(ToolPriority.CRITICAL);
