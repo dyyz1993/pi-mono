@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `registerChannel(name)` to `ExtensionAPI` for bidirectional Extension <-> RPC Client communication, with deferred registration support during extension loading, buffered sends/receives, and request/response via `channel.invoke()` (fork feature)
+- Added `RpcClient.channel(name)` API for client-side channel access
+- Added `ChannelManager` for managing channel lifecycle, inbound routing, and invoke resolution
+
 ### Fixed
 
 - Fixed `ctx.ui.setWorkingMessage()` to persist across loader recreation, matching the behavior of `ctx.ui.setWorkingIndicator()` ([#3566](https://github.com/badlogic/pi-mono/issues/3566))
