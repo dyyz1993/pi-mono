@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, normalize } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 
 export const ENTRYPOINT_NAME = "MEMORY.md";
 export const MAX_ENTRYPOINT_LINES = 200;
@@ -22,13 +23,30 @@ export interface MemoryHeader {
 	type: MemoryType | undefined;
 }
 
+export function getProjectRoot(cwd: string): string {
+	try {
+		const result = execSync("git rev-parse --git-common-dir", {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		}).trim();
+		if (result && isAbsolute(result)) {
+			return realpathSync(resolve(result, ".."));
+		}
+		if (result) {
+			return realpathSync(resolve(cwd, result, ".."));
+		}
+	} catch {}
+	return cwd;
+}
+
 function encodeCwd(cwd: string): string {
 	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
 export function getMemoryDir(cwd: string): string {
 	const agentDir = join(homedir(), ".pi", "agent");
-	return join(agentDir, "memory", encodeCwd(cwd));
+	return join(agentDir, "memory", encodeCwd(getProjectRoot(cwd)));
 }
 
 export function getEntrypointPath(cwd: string): string {
