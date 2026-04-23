@@ -23,8 +23,6 @@ describe("detectInstallMethod", () => {
 		);
 
 		expect(detectInstallMethod()).toBe("pnpm");
-		expect(getUpdateInstruction("@dyyz1993/pi-coding-agent")).toBe(
-			"Run: pnpm install -g @dyyz1993/pi-coding-agent",
-		);
+		expect(getUpdateInstruction("@dyyz1993/pi-coding-agent")).toBe("Run: pnpm install -g @dyyz1993/pi-coding-agent");
 	});
 });

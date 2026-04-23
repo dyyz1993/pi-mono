@@ -9,12 +9,12 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createJiti } from "@mariozechner/jiti";
 import * as _bundledPiAgentCore from "@dyyz1993/pi-agent-core";
 import * as _bundledPiAi from "@dyyz1993/pi-ai";
 import * as _bundledPiAiOauth from "@dyyz1993/pi-ai/oauth";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import * as _bundledPiTui from "@dyyz1993/pi-tui";
+import { createJiti } from "@mariozechner/jiti";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
