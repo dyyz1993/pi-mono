@@ -22,24 +22,14 @@ jobs:
         run: |
           npm install --ignore-scripts
 
-      - name: Create jiti workaround for @mariozechner -> @dyyz1993 symlinks
+      - name: Create jiti workaround - symlink @mariozechner to @dyyz1993
         run: |
           mkdir -p node_modules/@mariozechner
-          for pkg in pi-agent-core pi-ai pi-tui pi-coding-agent pi-mom pi-pods pi-web-ui; do
-            ln -sf ../@dyyz1993/$pkg node_modules/@mariozechner/$pkg 2>/dev/null || true
+          for pkg in pi-agent-core pi-ai pi-tui pi-coding-agent pi-mom pi-pods pi-web-ui pi; do
+            rm -rf "node_modules/@mariozechner/$pkg"
+            ln -sf "../@dyyz1993/$pkg" "node_modules/@mariozechner/$pkg"
           done
           ls -la node_modules/@mariozechner/
-
-      - name: Debug TypeScript types
-        run: |
-          echo "=== Node version ==="
-          node -v
-          echo "=== @types/node ==="
-          ls node_modules/@types/node/ | head -5
-          echo "=== @typescript/native-preview ==="
-          ls node_modules/@typescript/native-preview-*/lib/ 2>/dev/null | head -10
-          echo "=== Check Response type in native-preview ==="
-          grep -l "interface Response" node_modules/@typescript/native-preview-*/lib/*.d.ts 2>/dev/null
 
       - name: Build packages
         run: |
