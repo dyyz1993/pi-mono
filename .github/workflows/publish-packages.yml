@@ -46,11 +46,14 @@ jobs:
           npm pack --pack-destination=dist --workspace=packages/pods
           ls -la dist/
 
-      - name: Publish packages to npm
+      - name: Configure git to use HTTPS
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && git config --global url."https://github.com/".insteadOf "git+ssh://git@github.com/" && git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Publish tarballs to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for dir in packages/tui packages/agent packages/ai packages/coding-agent packages/mom packages/web-ui packages/pods; do
-            echo "Publishing $dir..."
-            npm publish "$dir" --access public --no-git-checks
+          for tarball in dist/*.tgz; do
+            echo "Publishing $tarball..."
+            npm publish "$tarball" --access public
           done
