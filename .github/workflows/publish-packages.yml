@@ -34,17 +34,22 @@ jobs:
         run: |
           npm run build
 
-      - name: Publish packages to npm
+      - name: Pack packages
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination=dist --workspace=packages/tui
+          npm pack --pack-destination=dist --workspace=packages/agent
+          npm pack --pack-destination=dist --workspace=packages/ai
+          npm pack --pack-destination=dist --workspace=packages/coding-agent
+          npm pack --pack-destination=dist --workspace=packages/mom
+          npm pack --pack-destination=dist --workspace=packages/web-ui
+          npm pack --pack-destination=dist --workspace=packages/pods
+          ls -la dist/
+
+      - name: Publish tarballs to npm
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          git stash
-          rm package.json
-          npm publish --workspace=packages/tui --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish --workspace=packages/agent --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish --workspace=packages/ai --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish --workspace=packages/coding-agent --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish --workspace=packages/mom --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish --workspace=packages/web-ui --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish --workspace=packages/pods --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          git stash pop
+          for tarball in dist/*.tgz; do
+            npm publish "$tarball" --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
+          done
