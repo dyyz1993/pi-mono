@@ -30,6 +30,17 @@ jobs:
           done
           ls -la node_modules/@mariozechner/
 
+      - name: Debug TypeScript types
+        run: |
+          echo "=== Node version ==="
+          node -v
+          echo "=== @types/node ==="
+          ls node_modules/@types/node/ | head -5
+          echo "=== @typescript/native-preview ==="
+          ls node_modules/@typescript/native-preview-*/lib/ 2>/dev/null | head -10
+          echo "=== Check Response type in native-preview ==="
+          grep -l "interface Response" node_modules/@typescript/native-preview-*/lib/*.d.ts 2>/dev/null
+
       - name: Build packages
         run: |
           npm run build
