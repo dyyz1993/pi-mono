@@ -46,10 +46,11 @@ jobs:
           npm pack --pack-destination=dist --workspace=packages/pods
           ls -la dist/
 
-      - name: Publish tarballs to npm
+      - name: Publish packages to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for tarball in dist/*.tgz; do
-            npm publish "$tarball" --access public --no-git-checks
+          for dir in packages/tui packages/agent packages/ai packages/coding-agent packages/mom packages/web-ui packages/pods; do
+            echo "Publishing $dir..."
+            npm publish "$dir" --access public --no-git-checks
           done
