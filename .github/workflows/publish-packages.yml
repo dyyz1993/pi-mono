@@ -51,5 +51,5 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for tarball in dist/*.tgz; do
-            npm publish "$tarball" --access public
+            npm publish "$tarball" --access public --no-git-checks
           done
