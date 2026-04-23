@@ -212,7 +212,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 					}
 					bufferedSends.length = 0;
 				},
-				reject: (err: Error) => {},
+				reject: (_err: Error) => {},
 			});
 
 			return deferred;

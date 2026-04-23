@@ -61,6 +61,9 @@ export type {
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
+	Channel,
+	ChannelDataMessage,
+	ChannelOutputFn,
 	CompactOptions,
 	ContextEvent,
 	ContextUsage,
@@ -127,13 +130,8 @@ export type {
 	WorkingIndicatorOptions,
 	WriteToolCallEvent,
 } from "./core/extensions/index.js";
-export { ChannelManager } from "./core/extensions/index.js";
-export type {
-	Channel,
-	ChannelDataMessage,
-	ChannelOutputFn,
-} from "./core/extensions/index.js";
 export {
+	ChannelManager,
 	createExtensionRuntime,
 	defineTool,
 	discoverAndLoadExtensions,
