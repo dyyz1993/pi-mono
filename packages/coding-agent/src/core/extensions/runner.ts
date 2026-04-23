@@ -282,6 +282,7 @@ export class ExtensionRunner {
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
 		this.runtime.registerChannel = actions.registerChannel;
+		this.runtime.callLLM = actions.callLLM;
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;

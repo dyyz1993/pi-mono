@@ -159,6 +159,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
+		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
 		registerChannel: (name: string) => {
 			if (runtime.resolvedChannels.has(name)) {
 				return runtime.resolvedChannels.get(name)!;

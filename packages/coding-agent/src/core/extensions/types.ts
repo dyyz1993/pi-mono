@@ -1295,6 +1295,14 @@ export interface ExtensionAPI {
 
 	/** Register a named bidirectional channel for Extension <-> RPC Client communication. */
 	registerChannel(name: string): Channel;
+
+	/**
+	 * Make an LLM call using the current session's model and auth.
+	 *
+	 * Without `tools`: single-turn complete() call, returns response text.
+	 * With `tools`: starts a temporary Agent loop with the specified built-in tools.
+	 */
+	callLLM(options: CallLLMOptions): Promise<string>;
 }
 
 // ============================================================================
@@ -1424,6 +1432,21 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
+// ============================================================================
+// callLLM
+// ============================================================================
+
+export interface CallLLMOptions {
+	systemPrompt?: string;
+	messages: { role: "user" | "assistant"; content: string }[];
+	tools?: string[];
+	maxTurns?: number;
+	maxTokens?: number;
+	signal?: AbortSignal;
+}
+
+export type CallLLMHandler = (options: CallLLMOptions) => Promise<string>;
+
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
@@ -1474,6 +1497,7 @@ export interface ExtensionActions {
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
 	registerChannel: (name: string) => Channel;
+	callLLM: CallLLMHandler;
 }
 
 /**

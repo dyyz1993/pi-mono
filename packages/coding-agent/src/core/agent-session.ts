@@ -15,9 +15,16 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@dyyz1993/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
-import { isContextOverflow, modelsAreEqual, resetApiProviders, supportsXhigh } from "@dyyz1993/pi-ai";
+import {
+	Agent,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type ThinkingLevel,
+} from "@dyyz1993/pi-agent-core";
+import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
+import { complete, isContextOverflow, modelsAreEqual, resetApiProviders, supportsXhigh } from "@dyyz1993/pi-ai";
 import { getDocsPath } from "../config.js";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
@@ -37,6 +44,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
 import {
+	type CallLLMOptions,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
@@ -73,7 +81,7 @@ import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
-import { createAllToolDefinitions } from "./tools/index.js";
+import { createAllToolDefinitions, createTool, type ToolName } from "./tools/index.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 
 // ============================================================================
@@ -2197,6 +2205,7 @@ export class AgentSession {
 					((name: string) => {
 						throw new Error(`registerChannel("${name}") is only available in RPC mode`);
 					}),
+				callLLM: (options: CallLLMOptions) => this.callLLM(options),
 			},
 			{
 				getModel: () => this.model,
@@ -2232,6 +2241,116 @@ export class AgentSession {
 				},
 			},
 		);
+	}
+
+	async callLLM(options: CallLLMOptions): Promise<string> {
+		const model = this.model;
+		if (!model) throw new Error("No model selected");
+
+		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth?.ok) {
+			throw new Error(auth?.error ?? `No API key configured for ${model.provider}`);
+		}
+		if (!auth.apiKey) {
+			throw new Error(`No API key configured for ${model.provider}`);
+		}
+
+		if (options.signal?.aborted) {
+			throw new Error("Aborted");
+		}
+
+		const messages = options.messages.map((m) => ({
+			role: m.role,
+			content: [{ type: "text" as const, text: m.content }],
+			timestamp: Date.now(),
+		})) as Message[];
+
+		if (!options.tools || options.tools.length === 0) {
+			const context: Context = {
+				systemPrompt: options.systemPrompt,
+				messages,
+			};
+			const response = await complete(model, context, {
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				maxTokens: options.maxTokens,
+				signal: options.signal,
+			});
+			return response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+		}
+
+		const toolInstances = options.tools
+			.map((name) => {
+				try {
+					return createTool(name as ToolName, this._cwd);
+				} catch {
+					return undefined;
+				}
+			})
+			.filter((t): t is AgentTool<any> => t !== undefined);
+
+		if (toolInstances.length === 0) {
+			const context: Context = {
+				systemPrompt: options.systemPrompt,
+				messages,
+			};
+			const response = await complete(model, context, {
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				maxTokens: options.maxTokens,
+				signal: options.signal,
+			});
+			return response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+		}
+
+		const agent = new Agent({
+			getApiKey: () => auth.apiKey,
+			initialState: {
+				systemPrompt: options.systemPrompt ?? "",
+				model,
+				thinkingLevel: "off",
+				tools: toolInstances,
+				messages: [],
+			},
+		});
+
+		if (options.signal?.aborted) {
+			throw new Error("Aborted");
+		}
+
+		let resultText = "";
+		const unsub = agent.subscribe((event: AgentEvent) => {
+			if (event.type === "message_end" && "message" in event) {
+				const msg = (event as { message: AgentMessage }).message;
+				if (msg.role === "assistant") {
+					const content = msg.content;
+					if (Array.isArray(content)) {
+						resultText = content
+							.filter((c): c is { type: "text"; text: string } => c.type === "text")
+							.map((c) => c.text)
+							.join("\n");
+					}
+				}
+			}
+		});
+
+		try {
+			await agent.prompt({
+				role: "user",
+				content: [{ type: "text", text: options.messages[0]?.content ?? "" }],
+				timestamp: Date.now(),
+			});
+		} finally {
+			unsub();
+		}
+
+		return resultText;
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {

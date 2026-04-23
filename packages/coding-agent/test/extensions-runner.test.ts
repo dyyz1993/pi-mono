@@ -69,6 +69,7 @@ describe("ExtensionRunner", () => {
 		registerChannel: () => {
 			throw new Error("registerChannel is only available in RPC mode");
 		},
+		callLLM: async () => "",
 	};
 
 	const extensionContextActions: ExtensionContextActions = {
