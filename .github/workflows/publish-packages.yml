@@ -48,8 +48,8 @@ jobs:
 
       - name: Publish tarballs to npm
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for tarball in dist/*.tgz; do
-            npm publish "$tarball" --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
+            npm publish "$tarball" --access public
           done
