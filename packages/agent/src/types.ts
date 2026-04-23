@@ -9,7 +9,7 @@ import type {
 	TextContent,
 	Tool,
 	ToolResultMessage,
-} from "@mariozechner/pi-ai";
+} from "@dyyz1993/pi-ai";
 import type { Static, TSchema } from "typebox";
 
 /**

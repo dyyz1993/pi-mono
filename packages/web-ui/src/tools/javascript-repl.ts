@@ -1,6 +1,6 @@
 import { i18n } from "@mariozechner/mini-lit";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { ToolResultMessage } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@dyyz1993/pi-agent-core";
+import type { ToolResultMessage } from "@dyyz1993/pi-ai";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { Code } from "lucide";

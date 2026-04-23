@@ -1,4 +1,4 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { basename, resolve as resolvePath } from "path";
 import { Type } from "typebox";
 
