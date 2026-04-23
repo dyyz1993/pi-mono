@@ -29,6 +29,7 @@ import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
 import { createSyntheticSourceInfo } from "../source-info.js";
+import type { Channel } from "./channel-types.js";
 import type {
 	Extension,
 	ExtensionAPI,
@@ -158,8 +159,68 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
+		registerChannel: (name: string) => {
+			if (runtime.resolvedChannels.has(name)) {
+				return runtime.resolvedChannels.get(name)!;
+			}
+			const existing = runtime.pendingChannelRegistrations.find((p) => p.name === name);
+			if (existing) {
+				throw new Error(`Channel "${name}" is already registered`);
+			}
+
+			const bufferedSends: unknown[] = [];
+			const bufferedHandlers: ((data: unknown) => void)[] = [];
+			let realChannel: Channel | undefined;
+
+			const deferred: Channel = {
+				name,
+				send: (data: unknown) => {
+					if (realChannel) {
+						realChannel.send(data);
+					} else {
+						bufferedSends.push(data);
+					}
+				},
+				onReceive: (handler: (data: unknown) => void) => {
+					if (realChannel) {
+						return realChannel.onReceive(handler);
+					}
+					bufferedHandlers.push(handler);
+					return () => {
+						const idx = bufferedHandlers.indexOf(handler);
+						if (idx >= 0) bufferedHandlers.splice(idx, 1);
+					};
+				},
+				invoke: (data: unknown, timeoutMs?: number) => {
+					if (realChannel) {
+						return realChannel.invoke(data, timeoutMs);
+					}
+					return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
+				},
+			};
+
+			runtime.pendingChannelRegistrations.push({
+				name,
+				resolve: (channel: Channel) => {
+					realChannel = channel;
+					for (const handler of bufferedHandlers) {
+						channel.onReceive(handler);
+					}
+					bufferedHandlers.length = 0;
+					for (const buffered of bufferedSends) {
+						channel.send(buffered);
+					}
+					bufferedSends.length = 0;
+				},
+				reject: (err: Error) => {},
+			});
+
+			return deferred;
+		},
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
+		pendingChannelRegistrations: [],
+		resolvedChannels: new Map(),
 		assertActive,
 		invalidate: (message) => {
 			state.staleMessage ??=
@@ -333,6 +394,11 @@ function createExtensionAPI(
 		},
 
 		events: eventBus,
+
+		registerChannel(name: string) {
+			runtime.assertActive();
+			return runtime.registerChannel(name);
+		},
 	} as ExtensionAPI;
 
 	return api;

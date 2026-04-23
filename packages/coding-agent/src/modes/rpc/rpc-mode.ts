@@ -13,6 +13,8 @@
 
 import * as crypto from "node:crypto";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import { ChannelManager } from "../../core/extensions/channel-manager.js";
+import type { ChannelDataMessage } from "../../core/extensions/channel-types.js";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -53,6 +55,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
 		writeRawStdout(serializeJsonLine(obj));
 	};
+
+	const channelManager = new ChannelManager((message: ChannelDataMessage) => {
+		output(message);
+	});
 
 	const success = <T extends RpcCommand["type"]>(
 		id: string | undefined,
@@ -331,6 +337,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			onError: (err) => {
 				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 			},
+			registerChannel: (name: string) => channelManager.register(name),
 		});
 
 		unsubscribe?.();
@@ -704,6 +711,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				pendingExtensionRequests.delete(response.id);
 				pending.resolve(response);
 			}
+			return;
+		}
+
+		// Handle channel data from RPC Client
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			"type" in parsed &&
+			parsed.type === "channel_data" &&
+			"name" in parsed
+		) {
+			channelManager.handleInbound(parsed as ChannelDataMessage);
 			return;
 		}
 

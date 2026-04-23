@@ -66,6 +66,9 @@ describe("ExtensionRunner", () => {
 		setModel: async () => false,
 		getThinkingLevel: () => "off",
 		setThinkingLevel: () => {},
+		registerChannel: () => {
+			throw new Error("registerChannel is only available in RPC mode");
+		},
 	};
 
 	const extensionContextActions: ExtensionContextActions = {

@@ -4,6 +4,8 @@
 
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.js";
 export type { SourceInfo } from "../source-info.js";
+export { ChannelManager } from "./channel-manager.js";
+export type { Channel, ChannelDataMessage, ChannelEntry, ChannelOutputFn } from "./channel-types.js";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,

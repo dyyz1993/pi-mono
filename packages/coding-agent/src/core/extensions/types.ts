@@ -1,3 +1,5 @@
+import type { Channel } from "./channel-types.js";
+
 /**
  * Extension system types.
  *
@@ -6,6 +8,7 @@
  * - Register LLM-callable tools
  * - Register commands, keyboard shortcuts, and CLI flags
  * - Interact with the user via UI primitives
+ * - Register bidirectional data channels for RPC Client communication
  */
 
 import type {
@@ -1289,6 +1292,9 @@ export interface ExtensionAPI {
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;
+
+	/** Register a named bidirectional channel for Extension <-> RPC Client communication. */
+	registerChannel(name: string): Channel;
 }
 
 // ============================================================================
@@ -1426,6 +1432,14 @@ export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+	/** Channel registrations queued during extension loading, processed when runner binds */
+	pendingChannelRegistrations: Array<{
+		name: string;
+		resolve: (channel: Channel) => void;
+		reject: (err: Error) => void;
+	}>;
+	/** Resolved channel instances, populated after bindCore flushes pending registrations */
+	resolvedChannels: Map<string, Channel>;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
@@ -1459,6 +1473,7 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	registerChannel: (name: string) => Channel;
 }
 
 /**

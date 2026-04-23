@@ -5,11 +5,13 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@dyyz1993/pi-agent-core";
 import type { ImageContent } from "@dyyz1993/pi-ai";
 import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.js";
 
@@ -58,6 +60,7 @@ export class RpcClient {
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
+	private channelHandlers = new Map<string, Set<(data: unknown) => void>>();
 	private stderr = "";
 
 	constructor(private options: RpcClientOptions = {}) {}
@@ -446,6 +449,58 @@ export class RpcClient {
 		return eventsPromise;
 	}
 
+	channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke"> {
+		return {
+			name,
+			send: (data: unknown) => {
+				this.writeLine({ type: "channel_data", name, data } as ChannelDataMessage);
+			},
+			onReceive: (handler: (data: unknown) => void) => {
+				let handlers = this.channelHandlers.get(name);
+				if (!handlers) {
+					handlers = new Set();
+					this.channelHandlers.set(name, handlers);
+				}
+				handlers.add(handler);
+				return () => {
+					handlers!.delete(handler);
+					if (handlers!.size === 0) this.channelHandlers.delete(name);
+				};
+			},
+			invoke: (data: unknown, timeoutMs: number = 30_000) => {
+				return new Promise((resolve, reject) => {
+					const invokeId = `inv_${randomUUID().slice(0, 8)}`;
+					const timer = setTimeout(() => {
+						reject(new Error(`Channel invoke "${name}" timed out after ${timeoutMs}ms`));
+					}, timeoutMs);
+
+					const handler = (responseData: unknown) => {
+						const d = responseData as Record<string, unknown>;
+						if (d && d.invokeId === invokeId) {
+							clearTimeout(timer);
+							const handlers = this.channelHandlers.get(name);
+							if (handlers) handlers.delete(handler);
+							resolve(responseData);
+						}
+					};
+
+					let handlers = this.channelHandlers.get(name);
+					if (!handlers) {
+						handlers = new Set();
+						this.channelHandlers.set(name, handlers);
+					}
+					handlers.add(handler);
+
+					this.writeLine({
+						type: "channel_data",
+						name,
+						data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+					} as ChannelDataMessage);
+				});
+			},
+		};
+	}
+
 	// =========================================================================
 	// Internal
 	// =========================================================================
@@ -459,6 +514,17 @@ export class RpcClient {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
+				return;
+			}
+
+			// Check if it's channel data
+			if (data.type === "channel_data" && data.name) {
+				const handlers = this.channelHandlers.get(data.name as string);
+				if (handlers) {
+					for (const handler of handlers) {
+						handler(data.data);
+					}
+				}
 				return;
 			}
 
@@ -507,9 +573,14 @@ export class RpcClient {
 			const errorResponse = response as Extract<RpcResponse, { success: false }>;
 			throw new Error(errorResponse.error);
 		}
-		// Type assertion: we trust response.data matches T based on the command sent.
-		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
+	}
+
+	private writeLine(obj: object): void {
+		if (!this.process?.stdin) {
+			throw new Error("Client not started");
+		}
+		this.process.stdin.write(serializeJsonLine(obj));
 	}
 }

@@ -165,6 +165,7 @@ export interface ExtensionBindings {
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+	registerChannel?: (name: string) => import("./extensions/channel-types.js").Channel;
 }
 
 /** Options for AgentSession.prompt() */
@@ -283,6 +284,7 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _registerChannel?: (name: string) => import("./extensions/channel-types.js").Channel;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -2033,6 +2035,10 @@ export class AgentSession {
 		if (bindings.onError !== undefined) {
 			this._extensionErrorListener = bindings.onError;
 		}
+		if (bindings.registerChannel !== undefined) {
+			this._registerChannel = bindings.registerChannel;
+			this._extensionRunner.flushPendingChannels(bindings.registerChannel);
+		}
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
@@ -2186,6 +2192,11 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				registerChannel:
+					this._registerChannel ??
+					((name: string) => {
+						throw new Error(`registerChannel("${name}") is only available in RPC mode`);
+					}),
 			},
 			{
 				getModel: () => this.model,
