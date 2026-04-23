@@ -111,7 +111,6 @@ export type {
 	SessionTreeEvent,
 	SlashCommandInfo,
 	SlashCommandSource,
-	SourceInfo,
 	TerminalInputHandler,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -127,6 +126,12 @@ export type {
 	WidgetPlacement,
 	WorkingIndicatorOptions,
 	WriteToolCallEvent,
+} from "./core/extensions/index.js";
+export { ChannelManager } from "./core/extensions/index.js";
+export type {
+	Channel,
+	ChannelDataMessage,
+	ChannelOutputFn,
 } from "./core/extensions/index.js";
 export {
 	createExtensionRuntime,
