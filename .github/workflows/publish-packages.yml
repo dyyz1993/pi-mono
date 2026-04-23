@@ -38,10 +38,10 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm publish packages/tui --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish packages/agent --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish packages/ai --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish packages/coding-agent --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish packages/mom --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish packages/web-ui --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          npm publish packages/pods --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
+          npm publish --workspace=packages/tui --access public --otp "${NPM_TOKEN}" --include-workspace-root=false --repository-url "https://github.com/dyyz1993/pi-mono"
+          npm publish --workspace=packages/agent --access public --otp "${NPM_TOKEN}" --include-workspace-root=false --repository-url "https://github.com/dyyz1993/pi-mono"
+          npm publish --workspace=packages/ai --access public --otp "${NPM_TOKEN}" --include-workspace-root=false --repository-url "https://github.com/dyyz1993/pi-mono"
+          npm publish --workspace=packages/coding-agent --access public --otp "${NPM_TOKEN}" --include-workspace-root=false --repository-url "https://github.com/dyyz1993/pi-mono"
+          npm publish --workspace=packages/mom --access public --otp "${NPM_TOKEN}" --include-workspace-root=false --repository-url "https://github.com/dyyz1993/pi-mono"
+          npm publish --workspace=packages/web-ui --access public --otp "${NPM_TOKEN}" --include-workspace-root=false --repository-url "https://github.com/dyyz1993/pi-mono"
+          npm publish --workspace=packages/pods --access public --otp "${NPM_TOKEN}" --include-workspace-root=false --repository-url "https://github.com/dyyz1993/pi-mono"
