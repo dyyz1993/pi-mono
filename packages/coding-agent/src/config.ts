@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -207,12 +207,59 @@ export function getShareViewerUrl(gistId: string): string {
 export function getAgentDir(): string {
 	const envDir = process.env[ENV_AGENT_DIR];
 	if (envDir) {
-		// Expand tilde to home directory
 		if (envDir === "~") return homedir();
 		if (envDir.startsWith("~/")) return homedir() + envDir.slice(1);
 		return envDir;
 	}
 	return join(homedir(), CONFIG_DIR_NAME, "agent");
+}
+
+/**
+ * Find the canonical git root for a directory.
+ *
+ * - For a regular repo: returns the cwd itself.
+ * For a worktree: returns the main repo path by parsing .git file.
+ * - For non-git directories: returns null.
+ */
+export function findCanonicalGitRoot(cwd: string): string | null {
+	let dir = realpathSync(cwd);
+	for (;;) {
+		const gitPath = join(dir, ".git");
+		if (!existsSync(gitPath)) {
+			const parent = dirname(dir);
+			if (parent === dir) return null;
+			dir = parent;
+			continue;
+		}
+
+		const stat = lstatSync(gitPath);
+		if (stat.isDirectory()) {
+			return dir;
+		}
+
+		if (stat.isFile()) {
+			const content = readFileSync(gitPath, "utf-8").trim();
+			const match = content.match(/^gitdir:\s*(.+)/);
+			if (!match) return null;
+			const gitdir = match[1]!.trim();
+
+			if (gitdir.includes("/worktrees/")) {
+				const commonPrefix = gitdir.replace(/\/worktrees\/[^/]+\/?$/, "");
+				let rootDir = commonPrefix;
+				if (rootDir.endsWith("/.git")) {
+					rootDir = rootDir.slice(0, -4);
+				}
+				if (!existsSync(join(rootDir, ".git"))) return null;
+				return realpathSync(rootDir);
+			}
+
+			const parent = dirname(gitdir);
+			if (!existsSync(parent)) return null;
+			return parent;
+		}
+
+		return null;
+	}
 }
 
 /** Get path to user's custom themes directory */

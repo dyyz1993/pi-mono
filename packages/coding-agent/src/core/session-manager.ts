@@ -16,7 +16,7 @@ import {
 import { readdir, readFile, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
-import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
+import { findCanonicalGitRoot, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -424,9 +424,12 @@ export function buildSessionContext(
 /**
  * Compute the default session directory for a cwd.
  * Encodes cwd into a safe directory name under ~/.pi/agent/sessions/.
+ * If the cwd is inside a git worktree, uses the canonical git root
+ * so all worktrees of the same repo share session history.
  */
 export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
-	const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+	const projectRoot = findCanonicalGitRoot(cwd) ?? cwd;
+	const safePath = `--${projectRoot.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 	const sessionDir = join(agentDir, "sessions", safePath);
 	if (!existsSync(sessionDir)) {
 		mkdirSync(sessionDir, { recursive: true });
