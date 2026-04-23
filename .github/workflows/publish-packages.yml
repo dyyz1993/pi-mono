@@ -29,7 +29,6 @@ jobs:
             rm -rf "node_modules/@mariozechner/$pkg"
             ln -sf "../@dyyz1993/$pkg" "node_modules/@mariozechner/$pkg"
           done
-          ls -la node_modules/@mariozechner/
 
       - name: Build packages
         run: |
@@ -39,13 +38,6 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          VERSION="${VERSION#v}"
-
-          cd packages/tui && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          cd ../agent && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          cd ../ai && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          cd ../coding-agent && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          cd ../mom && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          cd ../web-ui && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
-          cd ../pods && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono"
+          for pkg in tui agent ai coding-agent mom web-ui pods; do
+            (cd "packages/$pkg" && npm publish --access public --otp "${NPM_TOKEN}" --repository-url "https://github.com/dyyz1993/pi-mono" 2>&1) || echo "Failed to publish $pkg"
+          done
