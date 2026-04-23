@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-coding-agent",
-	"version": "0.69.8",
+	"version": "0.69.9",
 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"piConfig": {

@@ -4,11 +4,14 @@
 
 ### Added
 
+- Added `findCanonicalGitRoot(cwd)` to resolve the canonical git repository root, including worktree support. `getDefaultSessionDir` now uses this so all worktrees of the same repo share session history (fork feature)
 - Added `registerChannel(name)` to `ExtensionAPI` for bidirectional Extension <-> RPC Client communication, with deferred registration support during extension loading, buffered sends/receives, and request/response via `channel.invoke()` (fork feature)
 - Added `RpcClient.channel(name)` API for client-side channel access
 - Added `ChannelManager` for managing channel lifecycle, inbound routing, and invoke resolution
 
 ### Fixed
+
+- Fixed src/dist type mismatch in test imports for `agent-session-queue.test.ts`, `2023-queued-slash-command-followup.test.ts`, and `trigger-compact-extension.test.ts` (fork fix)
 
 - Fixed `ctx.ui.setWorkingMessage()` to persist across loader recreation, matching the behavior of `ctx.ui.setWorkingIndicator()` ([#3566](https://github.com/badlogic/pi-mono/issues/3566))
 - Fixed coding-agent `fs.watch` error handling for theme and git-footer watchers to retry after transient watcher failures such as `EMFILE`, avoiding startup crashes in large repos ([#3564](https://github.com/badlogic/pi-mono/issues/3564))
