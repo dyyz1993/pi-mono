@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
-import type { CallLLMOptions, ExtensionAPI } from "../../src/core/extensions/index.js";
+import type { CallLLMOptions, ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
 import { DREAM_PROMPT, EXTRACTION_PROMPT, MEMORY_SYSTEM_PROMPT, SELECT_MEMORIES_PROMPT } from "./prompts.js";
 import {
 	buildFrontmatter,
@@ -344,12 +344,24 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 	const dream = new MemoryDream();
 	let draining = false;
 	let activeExtraction: Promise<void> | null = null;
+	let ctx: ExtensionContext | null = null;
 
-	pi.on("session_start", async () => {
+	function status(text: string | undefined): void {
+		ctx?.ui.setStatus("auto-memory", text);
+	}
+
+	function notify(message: string, type?: "info" | "warning" | "error"): void {
+		ctx?.ui.notify(message, type);
+	}
+
+	pi.on("session_start", async (_event, _ctx) => {
+		ctx = _ctx;
 		await mkdir(memoryDir, { recursive: true });
+		status("memory ready");
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, _ctx) => {
+		ctx = _ctx;
 		let memoryContent = "";
 		try {
 			memoryContent = await readFile(getEntrypointPath(cwd), "utf-8");
@@ -359,16 +371,19 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 
 		const lastUserText = event.prompt ?? "";
 		if (lastUserText) {
+			status("selecting memories...");
 			prefetch.start(lastUserText, memoryDir, (opts) => pi.callLLM(opts));
 		}
 
 		return { systemPrompt: `${event.systemPrompt}\n\n${memoryPrompt}` };
 	});
 
-	pi.on("context", (event) => {
+	pi.on("context", (event, _ctx) => {
+		ctx = _ctx;
 		const memoryText = prefetch.collect();
 		if (!memoryText) return;
 
+		status("memories injected");
 		const memoryMessage: AgentMessage = {
 			role: "user",
 			content: [{ type: "text", text: `[Memory context — relevant memories]\n\n${memoryText}` }],
@@ -377,27 +392,37 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		return { messages: [...event.messages, memoryMessage] };
 	});
 
-	pi.on("tool_call", (event) => {
+	pi.on("tool_call", (event, _ctx) => {
+		ctx = _ctx;
 		const args = (event.input ?? {}) as Record<string, unknown>;
 		extractor.onToolCall(event.toolName, args, memoryDir);
 	});
 
-	pi.on("agent_end", (event) => {
+	pi.on("agent_end", (event, _ctx) => {
+		ctx = _ctx;
 		if (draining) return;
 
 		activeExtraction = (async () => {
 			try {
+				status("extracting memories...");
 				await extractor.maybeExtract(event.messages, memoryDir, (opts) => pi.callLLM(opts));
+				status("consolidating memories...");
 				await dream.maybeRun(memoryDir, (opts) => pi.callLLM(opts));
-			} catch {}
+				status("memory idle");
+			} catch (e) {
+				status("memory error");
+				notify(`Auto-memory error: ${e instanceof Error ? e.message : String(e)}`, "warning");
+			}
 		})();
 	});
 
 	pi.on("session_shutdown", async () => {
 		draining = true;
 		if (activeExtraction) {
+			status("draining memory...");
 			const timeout = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
 			await Promise.race([activeExtraction, timeout]);
 		}
+		status(undefined);
 	});
 }

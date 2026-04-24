@@ -779,8 +779,15 @@ describe("auto-memory integration", () => {
 		function createMockPi(): {
 			pi: ExtensionAPI;
 			emit: <E extends string>(event: E, ...args: any[]) => Promise<any>;
+			ctx: { ui: { setStatus: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn> } };
 		} {
 			const handlers: Record<string, ((...args: any[]) => any)[]> = {};
+
+			const mockUI = {
+				setStatus: vi.fn(),
+				notify: vi.fn(),
+			};
+			const mockCtx = { ui: mockUI } as any;
 
 			const pi = {
 				on: vi.fn((event: string, handler: (...args: any[]) => any) => {
@@ -802,12 +809,13 @@ describe("auto-memory integration", () => {
 				const fns = handlers[event] ?? [];
 				let result: any;
 				for (const fn of fns) {
-					result = await fn(...args);
+					const eventArg = args.length > 0 ? args[0] : {};
+					result = await fn(eventArg, mockCtx);
 				}
 				return result;
 			};
 
-			return { pi, emit };
+			return { pi, emit, ctx: mockCtx };
 		}
 
 		it("session_shutdown drains active extraction", async () => {
@@ -1006,6 +1014,35 @@ describe("auto-memory integration", () => {
 			});
 
 			expect((pi.callLLM as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+		});
+
+		it("shows status updates in UI via setStatus", async () => {
+			const { pi, emit, ctx } = createMockPi();
+			autoMemoryExtensionDefault(pi);
+
+			await emit("session_start");
+			expect(ctx.ui.setStatus).toHaveBeenCalledWith("auto-memory", "memory ready");
+
+			await emit("before_agent_start", {
+				type: "before_agent_start",
+				systemPrompt: "base",
+				prompt: "test",
+			});
+			expect(ctx.ui.setStatus).toHaveBeenCalledWith("auto-memory", "selecting memories...");
+
+			await emit("agent_end", {
+				type: "agent_end",
+				messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+			});
+			await emit("agent_end", {
+				type: "agent_end",
+				messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
+			});
+			await new Promise((r) => setTimeout(r, 50));
+			expect(ctx.ui.setStatus).toHaveBeenCalledWith("auto-memory", "extracting memories...");
+
+			await emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+			expect(ctx.ui.setStatus).toHaveBeenCalledWith("auto-memory", undefined);
 		});
 	});
 
