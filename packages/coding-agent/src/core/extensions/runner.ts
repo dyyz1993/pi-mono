@@ -377,6 +377,10 @@ export class ExtensionRunner {
 		this.runtime.registerChannel = registerChannel;
 	}
 
+	updateRegisterChannel(registerChannel: (name: string) => import("./channel-types.js").Channel): void {
+		this.runtime.registerChannel = registerChannel;
+	}
+
 	setUIContext(uiContext?: ExtensionUIContext): void {
 		this.uiContext = uiContext ?? noOpUIContext;
 	}
