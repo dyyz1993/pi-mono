@@ -13,7 +13,15 @@ import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.js";
+import type {
+	RpcCommand,
+	RpcExtension,
+	RpcResponse,
+	RpcSessionState,
+	RpcSkill,
+	RpcSlashCommand,
+	RpcTool,
+} from "./rpc-types.js";
 
 // ============================================================================
 // Types
@@ -391,6 +399,21 @@ export class RpcClient {
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		const response = await this.send({ type: "get_commands" });
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
+	}
+
+	async getSkills(): Promise<RpcSkill[]> {
+		const response = await this.send({ type: "get_skills" });
+		return this.getData<{ skills: RpcSkill[] }>(response).skills;
+	}
+
+	async getExtensions(): Promise<RpcExtension[]> {
+		const response = await this.send({ type: "get_extensions" });
+		return this.getData<{ extensions: RpcExtension[] }>(response).extensions;
+	}
+
+	async getTools(): Promise<RpcTool[]> {
+		const response = await this.send({ type: "get_tools" });
+		return this.getData<{ tools: RpcTool[] }>(response).tools;
 	}
 
 	// =========================================================================

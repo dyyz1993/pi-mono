@@ -27,20 +27,27 @@ import { type Theme, theme } from "../interactive/theme/theme.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type {
 	RpcCommand,
+	RpcExtension,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
+	RpcSkill,
 	RpcSlashCommand,
+	RpcTool,
 } from "./rpc-types.js";
 
 // Re-export types for consumers
 export type {
 	RpcCommand,
+	RpcExtension,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
+	RpcSkill,
+	RpcSlashCommand,
+	RpcTool,
 } from "./rpc-types.js";
 
 /**
@@ -611,6 +618,46 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_messages": {
 				return success(id, "get_messages", { messages: session.messages });
+			}
+
+			// =================================================================
+			// Resources (skills, extensions, tools)
+			// =================================================================
+
+			case "get_skills": {
+				const { skills } = session.resourceLoader.getSkills();
+				const rpcSkills: RpcSkill[] = skills.map((s) => ({
+					name: s.name,
+					description: s.description,
+					filePath: s.filePath,
+					baseDir: s.baseDir,
+					sourceInfo: s.sourceInfo,
+					disableModelInvocation: s.disableModelInvocation,
+				}));
+				return success(id, "get_skills", { skills: rpcSkills });
+			}
+
+			case "get_extensions": {
+				const { extensions } = session.resourceLoader.getExtensions();
+				const rpcExtensions: RpcExtension[] = extensions.map((e) => ({
+					path: e.path,
+					resolvedPath: e.resolvedPath,
+					sourceInfo: e.sourceInfo,
+					toolNames: Array.from(e.tools.keys()),
+					commandNames: Array.from(e.commands.keys()),
+				}));
+				return success(id, "get_extensions", { extensions: rpcExtensions });
+			}
+
+			case "get_tools": {
+				const allTools = session.extensionRunner.getAllRegisteredTools();
+				const rpcTools: RpcTool[] = allTools.map((t) => ({
+					name: t.definition.name,
+					label: t.definition.label,
+					description: t.definition.description,
+					sourceInfo: t.sourceInfo,
+				}));
+				return success(id, "get_tools", { tools: rpcTools });
 			}
 
 			// =================================================================

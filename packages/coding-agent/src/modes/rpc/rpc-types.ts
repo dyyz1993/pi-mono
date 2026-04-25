@@ -66,7 +66,12 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+
+	// Resources
+	| { id?: string; type: "get_skills" }
+	| { id?: string; type: "get_extensions" }
+	| { id?: string; type: "get_tools" };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -81,6 +86,33 @@ export interface RpcSlashCommand {
 	/** What kind of command this is */
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
+	sourceInfo: SourceInfo;
+}
+
+/** A loaded skill */
+export interface RpcSkill {
+	name: string;
+	description: string;
+	filePath: string;
+	baseDir: string;
+	sourceInfo: SourceInfo;
+	disableModelInvocation: boolean;
+}
+
+/** A loaded extension */
+export interface RpcExtension {
+	path: string;
+	resolvedPath: string;
+	sourceInfo: SourceInfo;
+	toolNames: string[];
+	commandNames: string[];
+}
+
+/** A registered tool */
+export interface RpcTool {
+	name: string;
+	label: string;
+	description: string;
 	sourceInfo: SourceInfo;
 }
 
@@ -200,6 +232,33 @@ export type RpcResponse =
 			command: "get_commands";
 			success: true;
 			data: { commands: RpcSlashCommand[] };
+	  }
+
+	// Skills
+	| {
+			id?: string;
+			type: "response";
+			command: "get_skills";
+			success: true;
+			data: { skills: RpcSkill[] };
+	  }
+
+	// Extensions
+	| {
+			id?: string;
+			type: "response";
+			command: "get_extensions";
+			success: true;
+			data: { extensions: RpcExtension[] };
+	  }
+
+	// Tools
+	| {
+			id?: string;
+			type: "response";
+			command: "get_tools";
+			success: true;
+			data: { tools: RpcTool[] };
 	  }
 
 	// Error response (any command can fail)
