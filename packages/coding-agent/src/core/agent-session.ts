@@ -129,7 +129,8 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "custom_entry"; customType: string; data?: unknown; id: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -2046,6 +2047,7 @@ export class AgentSession {
 		if (bindings.registerChannel !== undefined) {
 			this._registerChannel = bindings.registerChannel;
 			this._extensionRunner.flushPendingChannels(bindings.registerChannel);
+			this._extensionRunner.updateRegisterChannel(bindings.registerChannel);
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
@@ -2177,7 +2179,8 @@ export class AgentSession {
 					});
 				},
 				appendEntry: (customType, data) => {
-					this.sessionManager.appendCustomEntry(customType, data);
+					const id = this.sessionManager.appendCustomEntry(customType, data);
+					this._emit({ type: "custom_entry", customType, data, id });
 				},
 				setSessionName: (name) => {
 					this.sessionManager.appendSessionInfo(name);
@@ -2285,6 +2288,8 @@ export class AgentSession {
 		const toolInstances = options.tools
 			.map((name) => {
 				try {
+					const registered = this._toolRegistry.get(name);
+					if (registered) return registered;
 					return createTool(name as ToolName, this._cwd);
 				} catch {
 					return undefined;
