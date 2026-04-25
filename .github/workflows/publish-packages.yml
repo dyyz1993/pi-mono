@@ -20,11 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install --ignore-scripts
-
-      - name: Install platform-specific native modules
-        run: |
-          npm install @parcel/watcher-linux-x64-glibc --no-save --ignore-scripts
+          npm install
 
       - name: Create jiti workaround - symlink @mariozechner to @dyyz1993
         run: |
