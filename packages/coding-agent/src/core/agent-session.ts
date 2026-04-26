@@ -2183,7 +2183,17 @@ export class AgentSession {
 					this._emit({ type: "custom_entry", customType, data, id });
 				},
 				setSessionName: (name) => {
+					const oldName = this.sessionManager.getSessionName();
+					const trimmed = name.trim();
+					if (oldName === trimmed) return;
 					this.sessionManager.appendSessionInfo(name);
+					runner.emit({ type: "session_rename", oldName, newName: trimmed }).catch((err) => {
+						runner.emitError({
+							extensionPath: "<runtime>",
+							event: "session_rename",
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
 				},
 				getSessionName: () => {
 					return this.sessionManager.getSessionName();

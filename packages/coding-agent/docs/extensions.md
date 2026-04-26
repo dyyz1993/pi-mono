@@ -9,6 +9,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
 - **Event interception** - Block or modify tool calls, inject context, customize compaction
+- **UI interception** - Intercept `ctx.ui.confirm/select/input` calls from any extension, respond remotely
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
@@ -24,6 +25,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 - Interactive tools (questions, wizards, custom dialogs)
 - Stateful tools (todo lists, connection pools)
 - External integrations (file watchers, webhooks, CI triggers)
+- Remote approval (forward UI dialogs to a remote service, hold until response)
 - Games while you wait (see `snake.ts` example)
 
 See [examples/extensions/](../examples/extensions/) for working implementations.
@@ -41,6 +43,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
   - [Session Events](#session-events)
   - [Agent Events](#agent-events)
   - [Tool Events](#tool-events)
+  - [UI Interception Events](#ui-interception-events)
 - [ExtensionContext](#extensioncontext)
 - [ExtensionCommandContext](#extensioncommandcontext)
 - [ExtensionAPI Methods](#extensionapi-methods)
@@ -456,6 +459,18 @@ pi.on("session_shutdown", async (event, ctx) => {
 });
 ```
 
+#### session_rename
+
+Fired when the session display name is changed via `pi.setSessionName()`. Not emitted if the new name matches the current name.
+
+```typescript
+pi.on("session_rename", async (event, ctx) => {
+  // event.oldName - previous name, or undefined if there was none
+  // event.newName - the new name (empty string clears the name)
+  console.log(`Session renamed: "${event.oldName}" -> "${event.newName}"`);
+});
+```
+
 ### Agent Events
 
 #### before_agent_start
@@ -814,6 +829,95 @@ pi.on("input", async (event, ctx) => {
 - `handled` - skip agent entirely (first handler to return this wins)
 
 Transforms chain across handlers. See [input-transform.ts](../examples/extensions/input-transform.ts).
+
+### UI Interception Events
+
+Intercept `ctx.ui.confirm()`, `ctx.ui.select()`, and `ctx.ui.input()` calls from **any extension** or the agent itself. This allows a single extension to take over all UI dialogs -- for example, to forward permission requests to a remote service and wait for a response.
+
+Without UI interception, each extension calls `ctx.ui.confirm()` independently and the results are invisible to other extensions. With UI interception, one extension can observe and respond to all UI dialogs on behalf of the user.
+
+#### ui_confirm
+
+Fired when any code calls `ctx.ui.confirm()`. Return `{ action: "responded", confirmed }` to answer the dialog without showing it to the user. Return `undefined` to fall through to the original UI.
+
+```typescript
+pi.on("ui_confirm", async (event, ctx) => {
+  // event.title   - dialog title
+  // event.message - dialog message
+  // event.signal  - AbortSignal if the caller provided one
+  // event.timeout - timeout in ms if the caller provided one
+
+  // Example: forward all confirmations to a remote service
+  const response = await fetch("https://my-server/api/confirm", {
+    method: "POST",
+    body: JSON.stringify({ title: event.title, message: event.message }),
+  });
+  const decision = await response.json();
+
+  return { action: "responded", confirmed: decision.allowed };
+});
+```
+
+**Results:**
+- `{ action: "responded", confirmed: boolean }` - answer the dialog immediately (first handler to respond wins)
+- `undefined` - pass through to the original UI implementation
+
+#### ui_select
+
+Fired when any code calls `ctx.ui.select()`. Return `{ action: "responded", value }` to provide a selection without showing the UI.
+
+```typescript
+pi.on("ui_select", async (event, ctx) => {
+  // event.title   - dialog title
+  // event.options - string[] of selectable options
+  // event.signal  - AbortSignal if provided
+  // event.timeout - timeout in ms if provided
+
+  // Example: only intercept dangerous permission selects
+  if (event.title.includes("Dangerous")) {
+    const choice = await askRemote(event);
+    return { action: "responded", value: choice };
+  }
+
+  return undefined; // let other UI selects pass through normally
+});
+```
+
+**Results:**
+- `{ action: "responded", value: string | undefined }` - answer the select (undefined = dismissed)
+- `undefined` - pass through to the original UI
+
+#### ui_input
+
+Fired when any code calls `ctx.ui.input()`. Return `{ action: "responded", value }` to provide input text.
+
+```typescript
+pi.on("ui_input", async (event, ctx) => {
+  // event.title       - dialog title
+  // event.placeholder - placeholder text if provided
+  // event.signal      - AbortSignal if provided
+  // event.timeout     - timeout in ms if provided
+
+  return undefined; // pass through to normal UI
+});
+```
+
+**Results:**
+- `{ action: "responded", value: string | undefined }` - provide the input (undefined = cancelled)
+- `undefined` - pass through to the original UI
+
+#### Short-circuit behavior
+
+All three events use first-responder semantics: the first handler to return `{ action: "responded" }` wins. Remaining handlers are not called. If no handler responds, the original UI implementation runs (TUI dialog, RPC protocol, or no-op depending on the mode).
+
+If a handler throws, the error is reported via the error listener and the next handler is tried. If all handlers fail, the original UI runs as fallback.
+
+#### Use cases
+
+- **Remote permission control** -- forward all `confirm`/`select` dialogs to a web dashboard or mobile app, hold the agent until the operator responds
+- **Audit logging** -- record all UI interactions without intercepting them (return `undefined` after logging)
+- **Headless automation** -- auto-approve or auto-deny dialogs based on rules, enabling unattended operation
+- **Custom approval workflows** -- require multiple approvers, time-based auto-approval, or integration with ticketing systems
 
 ## ExtensionContext
 
@@ -1292,7 +1396,7 @@ pi.on("session_start", async (_event, ctx) => {
 
 ### pi.setSessionName(name)
 
-Set the session display name (shown in session selector instead of first message).
+Set the session display name (shown in session selector instead of first message). Emits a `session_rename` event to all extensions if the name actually changed.
 
 ```typescript
 pi.setSessionName("Refactor auth module");
@@ -2527,6 +2631,7 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `message-renderer.ts` | Custom message rendering | `registerMessageRenderer`, `sendMessage` |
 | `event-bus.ts` | Inter-extension events | `pi.events` |
 | **Session Metadata** |||
+| `auto-session-title.ts` | Auto-generate session titles | `callLLM`, `setSessionName`, `on("turn_end")`, `on("session_rename")` |
 | `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |
 | `bookmark.ts` | Bookmark entries for /tree | `setLabel` |
 | **Misc** |||

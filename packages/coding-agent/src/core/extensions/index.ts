@@ -153,6 +153,12 @@ export type {
 	TurnEndEvent,
 	TurnStartEvent,
 	// Events - User Bash
+	UIConfirmEvent,
+	UIConfirmEventResult,
+	UIInputEvent,
+	UIInputEventResult,
+	UISelectEvent,
+	UISelectEventResult,
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,

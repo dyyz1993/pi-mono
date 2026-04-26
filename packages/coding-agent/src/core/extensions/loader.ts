@@ -400,6 +400,11 @@ function createExtensionAPI(
 			runtime.assertActive();
 			return runtime.registerChannel(name);
 		},
+
+		callLLM(options) {
+			runtime.assertActive();
+			return runtime.callLLM(options);
+		},
 	} as ExtensionAPI;
 
 	return api;

@@ -8,9 +8,13 @@
 - Added `registerChannel(name)` to `ExtensionAPI` for bidirectional Extension <-> RPC Client communication, with deferred registration support during extension loading, buffered sends/receives, and request/response via `channel.invoke()` (fork feature)
 - Added `RpcClient.channel(name)` API for client-side channel access
 - Added `ChannelManager` for managing channel lifecycle, inbound routing, and invoke resolution
+- Added `callLLM()` to `ExtensionAPI` for extensions to invoke LLM completions with custom prompts
+- Added `session_rename` event to `ExtensionAPI.on()`, fired when `setSessionName()` changes the session display name, with `oldName`/`newName` payload
+- Added `auto-session-title` example extension that generates session names from conversation context using `callLLM`
 
 ### Fixed
 
+- Fixed `createExtensionAPI()` in `loader.ts` missing `callLLM` implementation, which caused runtime errors when extensions tried to use it
 - Fixed src/dist type mismatch in test imports for `agent-session-queue.test.ts`, `2023-queued-slash-command-followup.test.ts`, and `trigger-compact-extension.test.ts` (fork fix)
 
 - Fixed `ctx.ui.setWorkingMessage()` to persist across loader recreation, matching the behavior of `ctx.ui.setWorkingIndicator()` ([#3566](https://github.com/badlogic/pi-mono/issues/3566))

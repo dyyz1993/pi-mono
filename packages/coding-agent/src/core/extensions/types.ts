@@ -554,6 +554,15 @@ export interface SessionShutdownEvent {
 	targetSessionFile?: string;
 }
 
+/** Fired when the session display name is changed via pi.setSessionName(). */
+export interface SessionRenameEvent {
+	type: "session_rename";
+	/** The previous session name, or undefined if there was none. */
+	oldName: string | undefined;
+	/** The new session name. Empty string explicitly clears the name. */
+	newName: string;
+}
+
 /** Preparation data for tree navigation */
 export interface TreePreparation {
 	targetId: string;
@@ -592,6 +601,7 @@ export type SessionEvent =
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
 	| SessionShutdownEvent
+	| SessionRenameEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
 
@@ -754,6 +764,40 @@ export type InputEventResult =
 	| { action: "continue" }
 	| { action: "transform"; text: string; images?: ImageContent[] }
 	| { action: "handled" };
+
+// ============================================================================
+// UI Interception Events
+// ============================================================================
+
+export interface UIConfirmEvent {
+	type: "ui_confirm";
+	title: string;
+	message: string;
+	signal?: AbortSignal;
+	timeout?: number;
+}
+
+export type UIConfirmEventResult = { action: "responded"; confirmed: boolean } | undefined;
+
+export interface UISelectEvent {
+	type: "ui_select";
+	title: string;
+	options: string[];
+	signal?: AbortSignal;
+	timeout?: number;
+}
+
+export type UISelectEventResult = { action: "responded"; value: string | undefined } | undefined;
+
+export interface UIInputEvent {
+	type: "ui_input";
+	title: string;
+	placeholder?: string;
+	signal?: AbortSignal;
+	timeout?: number;
+}
+
+export type UIInputEventResult = { action: "responded"; value: string | undefined } | undefined;
 
 // ============================================================================
 // Tool Events
@@ -1084,6 +1128,7 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
+	on(event: "session_rename", handler: ExtensionHandler<SessionRenameEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
@@ -1108,6 +1153,9 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+	on(event: "ui_confirm", handler: ExtensionHandler<UIConfirmEvent, UIConfirmEventResult>): void;
+	on(event: "ui_select", handler: ExtensionHandler<UISelectEvent, UISelectEventResult>): void;
+	on(event: "ui_input", handler: ExtensionHandler<UIInputEvent, UIInputEventResult>): void;
 
 	// =========================================================================
 	// Tool Registration

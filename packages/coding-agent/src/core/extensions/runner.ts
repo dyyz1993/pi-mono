@@ -51,6 +51,12 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
+	UIConfirmEvent,
+	UIConfirmEventResult,
+	UIInputEvent,
+	UIInputEventResult,
+	UISelectEvent,
+	UISelectEventResult,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.js";
@@ -220,6 +226,7 @@ export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
+	private uiContextOriginal: ExtensionUIContext | undefined;
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
@@ -253,6 +260,7 @@ export class ExtensionRunner {
 		this.extensions = extensions;
 		this.runtime = runtime;
 		this.uiContext = noOpUIContext;
+		this.uiContextOriginal = undefined;
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
@@ -382,7 +390,8 @@ export class ExtensionRunner {
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext): void {
-		this.uiContext = uiContext ?? noOpUIContext;
+		this.uiContextOriginal = uiContext;
+		this.uiContext = this.wrapUIForInterception(uiContext ?? noOpUIContext);
 	}
 
 	getUIContext(): ExtensionUIContext {
@@ -390,7 +399,7 @@ export class ExtensionRunner {
 	}
 
 	hasUI(): boolean {
-		return this.uiContext !== noOpUIContext;
+		return this.uiContextOriginal !== undefined && this.uiContextOriginal !== noOpUIContext;
 	}
 
 	getExtensionPaths(): string[] {
@@ -836,6 +845,87 @@ export class ExtensionRunner {
 		}
 
 		return undefined;
+	}
+
+	private wrapUIForInterception(original: ExtensionUIContext): ExtensionUIContext {
+		return {
+			...original,
+			confirm: async (title, message, opts) => {
+				if (!this.hasHandlers("ui_confirm")) return original.confirm(title, message, opts);
+				const result = await this.emitUIEvent<UIConfirmEventResult>("ui_confirm", {
+					type: "ui_confirm",
+					title,
+					message,
+					signal: opts?.signal,
+					timeout: opts?.timeout,
+				});
+				if (result?.action === "responded") return result.confirmed;
+				return original.confirm(title, message, opts);
+			},
+			select: async (title, options, opts) => {
+				if (!this.hasHandlers("ui_select")) return original.select(title, options, opts);
+				const result = await this.emitUIEvent<UISelectEventResult>("ui_select", {
+					type: "ui_select",
+					title,
+					options,
+					signal: opts?.signal,
+					timeout: opts?.timeout,
+				});
+				if (result?.action === "responded") return result.value;
+				return original.select(title, options, opts);
+			},
+			input: async (title, placeholder, opts) => {
+				if (!this.hasHandlers("ui_input")) return original.input(title, placeholder, opts);
+				const result = await this.emitUIEvent<UIInputEventResult>("ui_input", {
+					type: "ui_input",
+					title,
+					placeholder,
+					signal: opts?.signal,
+					timeout: opts?.timeout,
+				});
+				if (result?.action === "responded") return result.value;
+				return original.input(title, placeholder, opts);
+			},
+		};
+	}
+
+	private async emitUIEvent<TResult extends { action: "responded" } | undefined>(
+		eventName: string,
+		event: { type: string },
+	): Promise<TResult | undefined> {
+		const ctx = this.createContext();
+
+		for (const ext of this.extensions) {
+			for (const handler of ext.handlers.get(eventName) ?? []) {
+				try {
+					const result = (await handler(event, ctx)) as TResult | undefined;
+					if (result?.action === "responded") return result;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: eventName,
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return undefined;
+	}
+
+	async emitUIConfirm(event: UIConfirmEvent): Promise<UIConfirmEventResult | undefined> {
+		return this.emitUIEvent<UIConfirmEventResult>("ui_confirm", event);
+	}
+
+	async emitUISelect(event: UISelectEvent): Promise<UISelectEventResult | undefined> {
+		return this.emitUIEvent<UISelectEventResult>("ui_select", event);
+	}
+
+	async emitUIInput(event: UIInputEvent): Promise<UIInputEventResult | undefined> {
+		return this.emitUIEvent<UIInputEventResult>("ui_input", event);
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {

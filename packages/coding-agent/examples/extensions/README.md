@@ -116,6 +116,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 
 | Extension | Description |
 |-----------|-------------|
+| `auto-session-title.ts` | Auto-generate session titles from the first user message via `callLLM`, `setSessionName`, `on("turn_end")`, `on("session_rename")` |
 | `session-name.ts` | Name sessions for the session selector via `setSessionName` |
 | `bookmark.ts` | Bookmark entries with labels for `/tree` navigation via `setLabel` |
 
