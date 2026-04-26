@@ -141,7 +141,7 @@ async function main() {
 	log("SETUP", "harness 创建完成");
 
 	// ── Step 2: 第一次对话 → 应该触发自动命名 + session_rename ──
-	console.log("\n" + "-".repeat(60));
+	console.log(`\n${"-".repeat(60)}`);
 	log("STEP1", "=== 第一轮对话 (应该触发 session_rename) ===");
 
 	harness.setResponses([
@@ -154,7 +154,7 @@ async function main() {
 	log("STEP1", "prompt() 完成");
 
 	// ── Step 3: 检查结果 ──
-	console.log("\n" + "-".repeat(60));
+	console.log(`\n${"-".repeat(60)}`);
 	log("RESULT", "=== 第一轮结果 ===");
 
 	const nameAfterFirst = harness.sessionManager.getSessionName();
@@ -165,7 +165,7 @@ async function main() {
 	}
 
 	// ── Step 4: 第二次对话 → 不应该触发 session_rename ──
-	console.log("\n" + "-".repeat(60));
+	console.log(`\n${"-".repeat(60)}`);
 	log("STEP2", "=== 第二轮对话 (不应该再触发 session_rename) ===");
 
 	harness.setResponses([fauxAssistantMessage("好的，继续修。")]);
@@ -173,7 +173,7 @@ async function main() {
 	await harness.session.prompt("继续修");
 	log("STEP2", "prompt() 完成");
 
-	console.log("\n" + "-".repeat(60));
+	console.log(`\n${"-".repeat(60)}`);
 	log("RESULT", "=== 第二轮结果 ===");
 
 	const nameAfterSecond = harness.sessionManager.getSessionName();
@@ -181,7 +181,7 @@ async function main() {
 	log("RESULT", `session_rename 事件数: ${renameEvents.length} (应仍为 1)`);
 
 	// ── Step 5: 最终汇总 ──
-	console.log("\n" + "=".repeat(60));
+	console.log(`\n${"=".repeat(60)}`);
 	log("SUMMARY", "=== 最终汇总 ===");
 	log("SUMMARY", `session name: "${nameAfterSecond}"`);
 	log("SUMMARY", `session_rename 事件总数: ${renameEvents.length}`);
