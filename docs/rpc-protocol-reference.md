@@ -165,12 +165,55 @@ await client.waitForIdle();
 
 ### 4.6 资源查询（Resources）
 
-| 命令 | 说明 | 详细文档 |
-|------|------|---------|
-| `get_skills` | 获取已加载技能 | [rpc-commands-resources.md](rpc/rpc-commands-resources.md) |
-| `get_extensions` | 获取已加载扩展 | 同上 |
-| `get_tools` | 获取已注册工具 | 同上 |
-| `get_commands` | 获取可用命令 | 同上 |
+| 命令 | 说明 | 作用域 | 详细文档 |
+|------|------|--------|---------|
+| `get_skills` | 获取已加载技能 | 项目 | [rpc-commands-resources.md](rpc/rpc-commands-resources.md) |
+| `get_extensions` | 获取已加载扩展 | 项目 | 同上 |
+| `get_tools` | 获取已注册工具 | 会话 | 同上 |
+| `get_commands` | 获取可用命令 | 项目 | 同上 |
+
+### 4.7 设置管理（Settings）
+
+| 命令 | 说明 | 作用域 | 详细文档 |
+|------|------|--------|---------|
+| `get_settings` | 获取设置（支持 scope: global/project） | 跨层级 | [rpc-commands-config.md](rpc/rpc-commands-config.md) |
+| `set_settings` | 修改设置（运行时覆盖） | 全局 | 同上 |
+
+### 4.8 上下文与提示（Context & Prompt）
+
+| 命令 | 说明 | 作用域 | 详细文档 |
+|------|------|--------|---------|
+| `get_context_usage` | 获取上下文窗口使用率 | 会话 | [rpc-commands-config.md](rpc/rpc-commands-config.md) |
+| `get_system_prompt` | 获取实际注入的 system prompt | 会话 | 同上 |
+| `get_agents_files` | 获取 AGENTS.md 内容 | 项目 | 同上 |
+
+### 4.9 工具管理（Tool Management）
+
+| 命令 | 说明 | 作用域 | 详细文档 |
+|------|------|--------|---------|
+| `get_active_tools` | 获取当前启用的工具名称列表 | 会话 | [rpc-commands-config.md](rpc/rpc-commands-config.md) |
+| `set_active_tools` | 动态启用/禁用工具 | 会话 | 同上 |
+
+### 4.10 排队管理（Queue）
+
+| 命令 | 说明 | 作用域 | 详细文档 |
+|------|------|--------|---------|
+| `get_queue` | 获取排队中的 steer/followUp 消息 | 会话 | [rpc-commands-config.md](rpc/rpc-commands-config.md) |
+| `clear_queue` | 清空排队消息 | 会话 | 同上 |
+
+### 4.11 扩展 Flag（Extension Flags）
+
+| 命令 | 说明 | 作用域 | 详细文档 |
+|------|------|--------|---------|
+| `get_flags` | 获取扩展注册的 flag 定义 | 项目 | [rpc-commands-config.md](rpc/rpc-commands-config.md) |
+| `get_flag_values` | 获取 flag 当前值 | 项目 | 同上 |
+| `set_flag` | 设置 flag 值 | 项目 | 同上 |
+
+### 4.12 重载（Reload）
+
+| 命令 | 说明 | 作用域 | 详细文档 |
+|------|------|--------|---------|
+| `reload` | 重载扩展/技能/设置资源 | 项目 | [rpc-commands-config.md](rpc/rpc-commands-config.md) |
 
 ---
 

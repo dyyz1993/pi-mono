@@ -67,6 +67,19 @@ interface RpcResponseBase {
 | `get_extensions` | `{ extensions: RpcExtension[] }` | |
 | `get_tools` | `{ tools: RpcTool[] }` | |
 | `get_commands` | `{ commands: RpcSlashCommand[] }` | |
+| `get_settings` | `Settings` | 见 [rpc-commands-config.md](rpc-commands-config.md) |
+| `set_settings` | 无 | |
+| `get_context_usage` | `RpcContextUsage` | |
+| `get_system_prompt` | `{ systemPrompt, appendSystemPrompt }` | |
+| `get_agents_files` | `{ agentsFiles: Array<{path, content}> }` | |
+| `get_active_tools` | `{ toolNames: string[] }` | |
+| `set_active_tools` | 无 | |
+| `get_queue` | `{ steering: string[], followUp: string[] }` | |
+| `clear_queue` | `{ steering: string[], followUp: string[] }` | |
+| `get_flags` | `{ flags: RpcExtensionFlag[] }` | |
+| `get_flag_values` | `{ values: Record<string, boolean \| string> }` | |
+| `set_flag` | 无 | |
+| `reload` | 无 | |
 
 ---
 

@@ -697,6 +697,110 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_commands", { commands });
 			}
 
+			case "get_settings": {
+				const scope = command.scope;
+				let data: import("../../core/settings-manager.js").Settings;
+				if (scope === "global") {
+					data = session.settingsManager.getGlobalSettings();
+				} else if (scope === "project") {
+					data = session.settingsManager.getProjectSettings();
+				} else {
+					data = session.settingsManager.getGlobalSettings();
+				}
+				return success(id, "get_settings", data);
+			}
+
+			case "set_settings": {
+				session.settingsManager.applyOverrides(command.settings);
+				return success(id, "set_settings");
+			}
+
+			case "get_context_usage": {
+				const usage = session.getContextUsage();
+				if (!usage) {
+					return success(id, "get_context_usage", {
+						tokens: null,
+						contextWindow: session.model?.contextWindow ?? 0,
+						percent: null,
+					});
+				}
+				return success(id, "get_context_usage", usage);
+			}
+
+			case "get_system_prompt": {
+				const systemPrompt = session.resourceLoader.getSystemPrompt() ?? "";
+				const appendSystemPrompt = session.resourceLoader.getAppendSystemPrompt();
+				return success(id, "get_system_prompt", { systemPrompt, appendSystemPrompt });
+			}
+
+			case "get_active_tools": {
+				const toolNames = session.getActiveToolNames();
+				return success(id, "get_active_tools", { toolNames });
+			}
+
+			case "set_active_tools": {
+				session.setActiveToolsByName(command.toolNames);
+				return success(id, "set_active_tools");
+			}
+
+			case "get_queue": {
+				return success(id, "get_queue", {
+					steering: [...session.getSteeringMessages()],
+					followUp: [...session.getFollowUpMessages()],
+				});
+			}
+
+			case "clear_queue": {
+				const cleared = session.clearQueue();
+				return success(id, "clear_queue", cleared);
+			}
+
+			case "get_flags": {
+				const flagsMap = session.extensionRunner.getFlags();
+				const flags: Array<{
+					name: string;
+					description?: string;
+					type: "boolean" | "string";
+					default?: boolean | string;
+					extensionPath: string;
+				}> = [];
+				for (const [name, flag] of flagsMap) {
+					flags.push({
+						name,
+						description: flag.description,
+						type: flag.type,
+						default: flag.default,
+						extensionPath: flag.extensionPath,
+					});
+				}
+				return success(id, "get_flags", { flags });
+			}
+
+			case "get_flag_values": {
+				const valuesMap = session.extensionRunner.getFlagValues();
+				const values: Record<string, boolean | string> = {};
+				for (const [name, value] of valuesMap) {
+					values[name] = value;
+				}
+				return success(id, "get_flag_values", { values });
+			}
+
+			case "set_flag": {
+				session.extensionRunner.setFlagValue(command.name, command.value);
+				return success(id, "set_flag");
+			}
+
+			case "reload": {
+				await session.reload();
+				session = runtimeHost.session;
+				return success(id, "reload");
+			}
+
+			case "get_agents_files": {
+				const result = session.resourceLoader.getAgentsFiles();
+				return success(id, "get_agents_files", { agentsFiles: result.agentsFiles });
+			}
+
 			default: {
 				const unknownCommand = command as { type: string };
 				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);

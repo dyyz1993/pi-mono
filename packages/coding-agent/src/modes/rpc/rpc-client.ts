@@ -15,7 +15,9 @@ import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type {
 	RpcCommand,
+	RpcContextUsage,
 	RpcExtension,
+	RpcExtensionFlag,
 	RpcResponse,
 	RpcSessionState,
 	RpcSkill,
@@ -414,6 +416,67 @@ export class RpcClient {
 	async getTools(): Promise<RpcTool[]> {
 		const response = await this.send({ type: "get_tools" });
 		return this.getData<{ tools: RpcTool[] }>(response).tools;
+	}
+
+	async getSettings(scope?: "global" | "project"): Promise<Record<string, unknown>> {
+		const response = await this.send({ type: "get_settings", scope });
+		return this.getData<Record<string, unknown>>(response);
+	}
+
+	async setSettings(settings: Record<string, unknown>, scope?: "global" | "project"): Promise<void> {
+		await this.send({ type: "set_settings", settings, scope });
+	}
+
+	async getContextUsage(): Promise<RpcContextUsage> {
+		const response = await this.send({ type: "get_context_usage" });
+		return this.getData<RpcContextUsage>(response);
+	}
+
+	async getSystemPrompt(): Promise<{ systemPrompt: string; appendSystemPrompt: string[] }> {
+		const response = await this.send({ type: "get_system_prompt" });
+		return this.getData<{ systemPrompt: string; appendSystemPrompt: string[] }>(response);
+	}
+
+	async getActiveTools(): Promise<string[]> {
+		const response = await this.send({ type: "get_active_tools" });
+		return this.getData<{ toolNames: string[] }>(response).toolNames;
+	}
+
+	async setActiveTools(toolNames: string[]): Promise<void> {
+		await this.send({ type: "set_active_tools", toolNames });
+	}
+
+	async getQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		const response = await this.send({ type: "get_queue" });
+		return this.getData<{ steering: string[]; followUp: string[] }>(response);
+	}
+
+	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		const response = await this.send({ type: "clear_queue" });
+		return this.getData<{ steering: string[]; followUp: string[] }>(response);
+	}
+
+	async getFlags(): Promise<RpcExtensionFlag[]> {
+		const response = await this.send({ type: "get_flags" });
+		return this.getData<{ flags: RpcExtensionFlag[] }>(response).flags;
+	}
+
+	async getFlagValues(): Promise<Record<string, boolean | string>> {
+		const response = await this.send({ type: "get_flag_values" });
+		return this.getData<{ values: Record<string, boolean | string> }>(response).values;
+	}
+
+	async setFlag(name: string, value: boolean | string): Promise<void> {
+		await this.send({ type: "set_flag", name, value });
+	}
+
+	async reload(): Promise<void> {
+		await this.send({ type: "reload" });
+	}
+
+	async getAgentsFiles(): Promise<Array<{ path: string; content: string }>> {
+		const response = await this.send({ type: "get_agents_files" });
+		return this.getData<{ agentsFiles: Array<{ path: string; content: string }> }>(response).agentsFiles;
 	}
 
 	// =========================================================================

@@ -10,6 +10,8 @@ import type { ImageContent, Model } from "@dyyz1993/pi-ai";
 import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { ExtensionFlag } from "../../core/extensions/types.js";
+import type { Settings } from "../../core/settings-manager.js";
 import type { SourceInfo } from "../../core/source-info.js";
 
 // ============================================================================
@@ -71,7 +73,36 @@ export type RpcCommand =
 	// Resources
 	| { id?: string; type: "get_skills" }
 	| { id?: string; type: "get_extensions" }
-	| { id?: string; type: "get_tools" };
+	| { id?: string; type: "get_tools" }
+
+	// Settings
+	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
+	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
+
+	// Context usage
+	| { id?: string; type: "get_context_usage" }
+
+	// System prompt
+	| { id?: string; type: "get_system_prompt" }
+
+	// Active tools
+	| { id?: string; type: "get_active_tools" }
+	| { id?: string; type: "set_active_tools"; toolNames: string[] }
+
+	// Queue
+	| { id?: string; type: "get_queue" }
+	| { id?: string; type: "clear_queue" }
+
+	// Flags
+	| { id?: string; type: "get_flags" }
+	| { id?: string; type: "get_flag_values" }
+	| { id?: string; type: "set_flag"; name: string; value: boolean | string }
+
+	// Reload
+	| { id?: string; type: "reload" }
+
+	// Agents files
+	| { id?: string; type: "get_agents_files" };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -114,6 +145,24 @@ export interface RpcTool {
 	label: string;
 	description: string;
 	sourceInfo: SourceInfo;
+}
+
+// ============================================================================
+// RPC Types for new commands
+// ============================================================================
+
+export interface RpcContextUsage {
+	tokens: number | null;
+	contextWindow: number;
+	percent: number | null;
+}
+
+export interface RpcExtensionFlag {
+	name: string;
+	description?: string;
+	type: "boolean" | "string";
+	default?: boolean | string;
+	extensionPath: string;
 }
 
 // ============================================================================
@@ -259,6 +308,89 @@ export type RpcResponse =
 			command: "get_tools";
 			success: true;
 			data: { tools: RpcTool[] };
+	  }
+
+	// Settings
+	| {
+			id?: string;
+			type: "response";
+			command: "get_settings";
+			success: true;
+			data: Settings;
+	  }
+	| { id?: string; type: "response"; command: "set_settings"; success: true }
+
+	// Context usage
+	| {
+			id?: string;
+			type: "response";
+			command: "get_context_usage";
+			success: true;
+			data: RpcContextUsage;
+	  }
+
+	// System prompt
+	| {
+			id?: string;
+			type: "response";
+			command: "get_system_prompt";
+			success: true;
+			data: { systemPrompt: string; appendSystemPrompt: string[] };
+	  }
+
+	// Active tools
+	| {
+			id?: string;
+			type: "response";
+			command: "get_active_tools";
+			success: true;
+			data: { toolNames: string[] };
+	  }
+	| { id?: string; type: "response"; command: "set_active_tools"; success: true }
+
+	// Queue
+	| {
+			id?: string;
+			type: "response";
+			command: "get_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "clear_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+
+	// Flags
+	| {
+			id?: string;
+			type: "response";
+			command: "get_flags";
+			success: true;
+			data: { flags: RpcExtensionFlag[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_flag_values";
+			success: true;
+			data: { values: Record<string, boolean | string> };
+	  }
+	| { id?: string; type: "response"; command: "set_flag"; success: true }
+
+	// Reload
+	| { id?: string; type: "response"; command: "reload"; success: true }
+
+	// Agents files
+	| {
+			id?: string;
+			type: "response";
+			command: "get_agents_files";
+			success: true;
+			data: { agentsFiles: Array<{ path: string; content: string }> };
 	  }
 
 	// Error response (any command can fail)
