@@ -891,7 +891,7 @@ export class ExtensionRunner {
 
 	private async emitUIEvent<TResult extends { action: "responded" } | undefined>(
 		eventName: string,
-		event: { type: string },
+		event: Record<string, unknown>,
 	): Promise<TResult | undefined> {
 		const ctx = this.createContext();
 
