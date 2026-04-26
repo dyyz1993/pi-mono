@@ -130,7 +130,8 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "custom_entry"; customType: string; data?: unknown; id: string };
+	| { type: "custom_entry"; customType: string; data?: unknown; id: string }
+	| { type: "session_rename"; oldName: string | undefined; newName: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -2187,6 +2188,7 @@ export class AgentSession {
 					const trimmed = name.trim();
 					if (oldName === trimmed) return;
 					this.sessionManager.appendSessionInfo(name);
+					this._emit({ type: "session_rename", oldName, newName: trimmed });
 					runner.emit({ type: "session_rename", oldName, newName: trimmed }).catch((err) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
