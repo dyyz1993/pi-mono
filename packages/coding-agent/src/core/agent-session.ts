@@ -519,18 +519,12 @@ export class AgentSession {
 			}
 		}
 
-		// Emit to extensions first
-		await this._emitExtensionEvent(event);
-
-		// Notify all listeners
-		this._emit(event);
-
-		// Handle session persistence
+		// Handle session persistence BEFORE emitting for message_end,
+		// so we can inject the entry ID into the event for RPC clients.
 		if (event.type === "message_end") {
-			// Check if this is a custom message from extensions
+			let entryId: string | undefined;
 			if (event.message.role === "custom") {
-				// Persist as CustomMessageEntry
-				this.sessionManager.appendCustomMessageEntry(
+				entryId = this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
@@ -541,10 +535,11 @@ export class AgentSession {
 				event.message.role === "assistant" ||
 				event.message.role === "toolResult"
 			) {
-				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				entryId = this.sessionManager.appendMessage(event.message);
 			}
-			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
+			if (entryId) {
+				(event as Record<string, unknown>).entryId = entryId;
+			}
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
@@ -567,6 +562,12 @@ export class AgentSession {
 				}
 			}
 		}
+
+		// Emit to extensions first
+		await this._emitExtensionEvent(event);
+
+		// Notify all listeners
+		this._emit(event);
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end" && this._lastAssistantMessage) {
@@ -654,6 +655,7 @@ export class AgentSession {
 			const extensionEvent: MessageEndEvent = {
 				type: "message_end",
 				message: event.message,
+				entryId: (event as Record<string, unknown>).entryId as string | undefined,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_start") {
@@ -2082,8 +2084,7 @@ export class AgentSession {
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
-		path: string;
-		metadata: { source: string; scope: "temporary"; origin: "top-level"; baseDir?: string };
+		path: string;source: string; scope: "temporary"; origin: "top-level"; baseDir?: string ;
 	}> {
 		return entries.map((entry) => {
 			const source = this.getExtensionSourceLabel(entry.extensionPath);

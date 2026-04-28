@@ -322,6 +322,13 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Asynchronously inject a response to a pending UI event.
+	 * Use with the `ui` event: capture event.id, return undefined from handler,
+	 * then call respondUI(id, result) when the response arrives (e.g. from a remote service).
+	 * First response wins (original UI or respondUI), subsequent calls are ignored.
+	 */
+	respondUI(id: string, result: UIEventResult): void;
 }
 
 /**
@@ -684,6 +691,7 @@ export interface MessageUpdateEvent {
 export interface MessageEndEvent {
 	type: "message_end";
 	message: AgentMessage;
+	entryId?: string;
 }
 
 /** Fired when a tool starts executing */
@@ -769,35 +777,20 @@ export type InputEventResult =
 // UI Interception Events
 // ============================================================================
 
-export interface UIConfirmEvent {
-	type: "ui_confirm";
+export interface UIEvent {
+	type: "ui";
+	id: string;
+	method: "confirm" | "select" | "input" | "notify";
 	title: string;
-	message: string;
-	signal?: AbortSignal;
-	timeout?: number;
-}
-
-export type UIConfirmEventResult = { action: "responded"; confirmed: boolean } | undefined;
-
-export interface UISelectEvent {
-	type: "ui_select";
-	title: string;
-	options: string[];
-	signal?: AbortSignal;
-	timeout?: number;
-}
-
-export type UISelectEventResult = { action: "responded"; value: string | undefined } | undefined;
-
-export interface UIInputEvent {
-	type: "ui_input";
-	title: string;
+	message?: string;
+	options?: string[];
 	placeholder?: string;
+	notifyType?: "info" | "warning" | "error";
 	signal?: AbortSignal;
 	timeout?: number;
 }
 
-export type UIInputEventResult = { action: "responded"; value: string | undefined } | undefined;
+export type UIEventResult = { action: "responded"; confirmed?: boolean; value?: string } | undefined;
 
 // ============================================================================
 // Tool Events
@@ -1153,9 +1146,7 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
-	on(event: "ui_confirm", handler: ExtensionHandler<UIConfirmEvent, UIConfirmEventResult>): void;
-	on(event: "ui_select", handler: ExtensionHandler<UISelectEvent, UISelectEventResult>): void;
-	on(event: "ui_input", handler: ExtensionHandler<UIInputEvent, UIInputEventResult>): void;
+	on(event: "ui", handler: ExtensionHandler<UIEvent, UIEventResult>): void;
 
 	// =========================================================================
 	// Tool Registration
