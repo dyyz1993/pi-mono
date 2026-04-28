@@ -2084,7 +2084,8 @@ export class AgentSession {
 	}
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
-		path: string;source: string; scope: "temporary"; origin: "top-level"; baseDir?: string ;
+		path: string;
+		metadata: { source: string; scope: "temporary"; origin: "top-level"; baseDir?: string };
 	}> {
 		return entries.map((entry) => {
 			const source = this.getExtensionSourceLabel(entry.extensionPath);
