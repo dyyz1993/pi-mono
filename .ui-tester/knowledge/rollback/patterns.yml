@@ -1,0 +1,70 @@
+# Module: rollback
+# Reusable operation sequences for testing rollback functionality
+
+rollback_message_flow:
+  description: "Test rolling back the latest assistant message"
+  steps:
+    - action: verify
+      description: "Confirm messages exist before rollback (snapshot shows user + assistant cards)"
+    - action: click
+      selector: "button:has-text('回滚消息')"
+      description: "Click '回滚消息' on the LATEST assistant message card"
+      target: "last assistant card in conversation"
+    - action: wait
+      ms: 2000
+      description: "Wait for UI to update after rollback"
+    - action: screenshot
+      description: "Capture post-rollback state"
+    - action: verify
+      description: "Messages BEFORE rollback point remain visible"
+    - action: verify
+      description: "Messages AFTER rollback point are GONE"
+    - action: verify
+      description: "No orphaned entries floating without context"
+
+rollback_all_flow:
+  description: "Test rolling back ALL messages to empty state"
+  steps:
+    - action: verify
+      description: "Confirm multiple messages exist (snapshot shows user + assistant cards)"
+    - action: click
+      selector: "button:has-text('回滚全部')"
+      description: "Click '回滚全部' on any assistant message card"
+    - action: wait
+      ms: 2000
+      description: "Wait for UI to update"
+    - action: screenshot
+      description: "Capture post-rollback-all state"
+    - action: verify
+      description: "ALL user/assistant messages disappear"
+    - action: verify
+      description: "Clean empty state with '开始对话吧' placeholder"
+    - action: verify
+      description: "No rollback buttons visible (no message cards exist)"
+
+send_message_flow:
+  description: "Send a message and wait for response"
+  steps:
+    - action: fill
+      selector: "textarea[placeholder*='输入消息']"
+      description: "Type message text"
+    - action: check
+      condition: "send button becomes enabled"
+    - action: click
+      selector: "button[title='发送']"
+      description: "Click send"
+    - action: wait
+      ms: 25000
+      description: "Wait for agent response (can take 20-30s for tool calls)"
+    - action: check
+      condition: "send button re-enabled (response complete)"
+
+tips:
+  - "Agent responses can be slow (20-60s) especially when using tools; use long waits"
+  - "Send button disabled while agent is processing — check via JS eval if snapshot is stale"
+  - "Rollback buttons appear on each assistant MessageCard header (Fork, 回滚消息, 回滚全部, 折叠)"
+  - "After '回滚消息', only messages up to that point remain; later messages removed cleanly"
+  - "After '回滚全部', session returns to empty '开始对话吧' state with no orphaned entries"
+  - "Browser session may navigate to about:blank on timeout; always reconnect and re-open URL"
+  - "Snapshot refs become stale after DOM mutations; always re-snapshot before interacting"
+  - "Use JS eval for checking send/stop button states when snapshot reports stale data"

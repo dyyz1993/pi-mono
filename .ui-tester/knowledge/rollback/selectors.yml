@@ -1,0 +1,26 @@
+# Module: rollback
+# Site: http://localhost:5173 (pi-agent-chat WebUI)
+# Last updated: 2026-04-29
+
+chat_page:
+  url: "http://localhost:5173"
+  new_session_button: "button[title='新建会话']"
+  message_input: "textarea[placeholder*='输入消息']"
+  send_button: "button[title='发送']"
+  stop_button: "button[title='停止']"
+  
+message_card:
+  # Header action buttons on assistant MessageCard
+  fork_button: "button:has-text('Fork')"
+  rollback_message_button: "button:has-text('回滚消息')"
+  rollback_all_button: "button:has-text('回滚全部')"
+  collapse_button: "button:has-text('折叠')"
+  copy_button: "button:has-text('复制')"
+
+sidebar:
+  session_list: "ul, [class*=sidenav], [class*=sidebar]"
+  search_input: "input[placeholder*='搜索会话']"
+  session_item: "li, [class*=session-item]"
+
+empty_state:
+  placeholder_text: "开始对话吧"

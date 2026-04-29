@@ -1,0 +1,21 @@
+---
+paths:
+  - "**/src/**/extensions/**/*.ts"
+  - "**/packages/coding-agent/src/**/*.ts"
+description: "PI 扩展开发规范"
+severity: "critical"
+scope: "project"
+whenToUse: "编写或修改 PI 扩展代码时触发"
+---
+
+# PI 扩展开发规范
+
+## 核心规则
+- 扩展必须实现 `Extension` 接口的 `register()` 方法
+- 禁止在扩展中直接修改全局状态，通过 hook 参数传递上下文
+- 所有 channel 通信必须使用定义好的事件类型
+- 扩展注册的 tools/commands 必须有唯一 name 前缀
+- 工具调用必须包含错误处理（try/catch），禁止裸 await
+
+## 触发路径
+匹配 `src/extensions/` 和 `packages/coding-agent/src/` 下的 .ts 文件。
