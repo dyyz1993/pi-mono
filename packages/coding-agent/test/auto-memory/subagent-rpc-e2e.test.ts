@@ -20,13 +20,7 @@ function makeClient(projectDir: string): RpcClient {
 		cwd: projectDir,
 		provider: PROVIDER,
 		model: MODEL,
-		args: [
-			"--no-extensions",
-			"-e", subagentExtPath,
-			"-e", bashExtPath,
-			"-e", todoExtPath,
-			"--no-session",
-		],
+		args: ["--no-extensions", "-e", subagentExtPath, "-e", bashExtPath, "-e", todoExtPath, "--no-session"],
 	});
 }
 
@@ -69,8 +63,8 @@ describe.skipIf(!hasModelConfig)("SubAgent RPC E2E", () => {
 		try {
 			const events = await client.promptAndWait(
 				"你【必须且只能】使用 subagent 工具来完成此任务，禁止直接调用 bash。\n\n" +
-				"调用方式：subagent(description='count numbers', instruction='请使用 bash 工具执行命令：for i in $(seq 1 100); do echo $i; sleep 0.2; done')\n\n" +
-				"请立即执行，不要解释。",
+					"调用方式：subagent(description='count numbers', instruction='请使用 bash 工具执行命令：for i in $(seq 1 100); do echo $i; sleep 0.2; done')\n\n" +
+					"请立即执行，不要解释。",
 				undefined,
 				120_000,
 			);
@@ -81,9 +75,7 @@ describe.skipIf(!hasModelConfig)("SubAgent RPC E2E", () => {
 
 			expect(events.length).toBeGreaterThan(0);
 
-			const subagentStartEvents = subagentChannelEvents.filter(
-				(d: any) => d?.event?.type === "subagent_start",
-			);
+			const subagentStartEvents = subagentChannelEvents.filter((d: any) => d?.event?.type === "subagent_start");
 			console.log(`✅ subagent_start events: ${subagentStartEvents.length}`);
 			expect(subagentStartEvents.length).toBe(1);
 			console.log(`   description: ${(subagentStartEvents[0] as any).event.description}`);
@@ -108,9 +100,7 @@ describe.skipIf(!hasModelConfig)("SubAgent RPC E2E", () => {
 			const numbersInResult = bashResult.match(/\b\d+\b/g);
 			console.log(`✅ Numbers in bash output: ${numbersInResult?.length ?? 0} (expected ~100)`);
 
-			const agentEndEvents = subagentChannelEvents.filter(
-				(d: any) => d?.event?.type === "agent_end",
-			);
+			const agentEndEvents = subagentChannelEvents.filter((d: any) => d?.event?.type === "agent_end");
 			expect(agentEndEvents.length).toBeGreaterThan(0);
 			console.log(`✅ agent_end event received in sub-agent`);
 		} finally {

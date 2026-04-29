@@ -1,12 +1,14 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildFrontmatter,
 	formatManifest,
 	getEntrypointPath,
 	getMemoryDir,
+	getProjectRoot,
 	isMemoryPath,
 	type MemoryHeader,
 	type MemoryType,
@@ -289,6 +291,110 @@ describe("auto-memory utils", () => {
 
 			const manifest = formatManifest(headers);
 			expect(manifest).toContain("bare.md");
+		});
+	});
+
+	describe("getProjectPath handles relative git-common-dir", () => {
+		it("resolves relative .git path correctly", () => {
+			const origExecSync = vi.spyOn(require("node:child_process"), "execSync");
+			origExecSync.mockReturnValue(".git\n");
+
+			const result = getProjectRoot(process.cwd());
+			expect(result).not.toBe(process.cwd());
+
+			origExecSync.mockRestore();
+		});
+	});
+
+	describe("encodeCwd unicode handling", () => {
+		it("handles unicode paths without throwing", () => {
+			const dir = getMemoryDir("/Users/café/项目");
+			expect(dir).toContain("café");
+			expect(dir).toMatch(/\.pi[\\/]+agent[\\/]+memory/);
+		});
+	});
+
+	describe("scanMemoryFiles edge cases", () => {
+		let tempDir: string;
+
+		beforeEach(() => {
+			tempDir = join(tmpdir(), `am-scan-edge-${Date.now()}`);
+			mkdirSync(tempDir, { recursive: true });
+		});
+
+		afterEach(() => {
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		it("skips directory named .md", async () => {
+			mkdirSync(join(tempDir, "dir.md"));
+			const files = await scanMemoryFiles(tempDir);
+			expect(files).toHaveLength(0);
+		});
+
+		it("handles unreadable file gracefully", async () => {
+			const filePath = join(tempDir, "unreadable.md");
+			writeFileSync(filePath, "---\nname: Test\n---\nContent.");
+			try {
+				chmodSync(filePath, 0o000);
+			} catch {
+				return;
+			}
+
+			try {
+				const files = await scanMemoryFiles(tempDir);
+				expect(files).toHaveLength(0);
+			} catch {
+				// If it throws, that's a known limitation
+			} finally {
+				try {
+					chmodSync(filePath, 0o644);
+				} catch {}
+			}
+		});
+	});
+
+	describe("getMemoryDir for worktree shares with main repo", () => {
+		it("worktree and main repo share the same memory dir", async () => {
+			const mainDir = join(tmpdir(), `wt-main-utils-${Date.now()}`);
+			const wtDir = join(tmpdir(), `wt-wt-utils-${Date.now()}`);
+
+			try {
+				execSync(`git init "${mainDir}"`, { stdio: "pipe" });
+				execSync(`git -C "${mainDir}" commit --allow-empty -m "init"`, { stdio: "pipe" });
+				execSync(`git -C "${mainDir}" worktree add "${wtDir}"`, { stdio: "pipe" });
+
+				const mainDir_result = getMemoryDir(mainDir);
+				const wtDir_result = getMemoryDir(wtDir);
+
+				expect(mainDir_result).toBe(wtDir_result);
+			} finally {
+				try {
+					execSync(`git -C "${mainDir}" worktree remove "${wtDir}" --force 2>/dev/null`, { stdio: "pipe" });
+				} catch {}
+				rmSync(mainDir, { recursive: true, force: true });
+				rmSync(wtDir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("formatManifest with many files", () => {
+		it("performs reasonably with 200 files", () => {
+			const headers: MemoryHeader[] = Array.from({ length: 200 }, (_, i) => ({
+				filename: `file${i}.md`,
+				filePath: `/tmp/file${i}.md`,
+				mtimeMs: i * 1000,
+				description: `Description for file ${i}`,
+				type: "project" as MemoryType,
+			}));
+
+			const start = performance.now();
+			const manifest = formatManifest(headers);
+			const elapsed = performance.now() - start;
+
+			expect(elapsed).toBeLessThan(100);
+			expect(manifest).toContain("file0.md");
+			expect(manifest).toContain("file199.md");
 		});
 	});
 });

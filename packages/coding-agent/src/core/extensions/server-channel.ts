@@ -67,10 +67,7 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 		});
 	}
 
-	handle<K extends MethodKeys<T>>(
-		method: K,
-		fn: (params: MethodParams<T, K>) => MethodReturn<T, K>,
-	): void {
+	handle<K extends MethodKeys<T>>(method: K, fn: (params: MethodParams<T, K>) => MethodReturn<T, K>): void {
 		this.methodHandlers.set(method, fn as (params: unknown) => unknown);
 	}
 

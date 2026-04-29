@@ -13,7 +13,7 @@ export const MAX_MEMORY_BYTES_PER_FILE = 8000;
 export const DREAM_MIN_HOURS = 24;
 export const DREAM_MIN_SESSIONS = 5;
 
-export type MemoryType = "user" | "feedback" | "project" | "reference";
+export type MemoryType = "user" | "feedback" | "project" | "reference" | "bookmark";
 
 export interface MemoryHeader {
 	filename: string;
@@ -21,6 +21,8 @@ export interface MemoryHeader {
 	mtimeMs: number;
 	description: string | null;
 	type: MemoryType | undefined;
+	sourceSession?: string | null;
+	tags?: string[] | null;
 }
 
 export function getProjectRoot(cwd: string): string {
@@ -53,6 +55,10 @@ export function getEntrypointPath(cwd: string): string {
 	return join(getMemoryDir(cwd), ENTRYPOINT_NAME);
 }
 
+export function getSubagentDir(cwd: string): string {
+	return join(getMemoryDir(cwd), "..", "subagent");
+}
+
 export function isMemoryPath(absolutePath: string, cwd: string): boolean {
 	const memoryDir = normalize(getMemoryDir(cwd));
 	const normalized = normalize(absolutePath);
@@ -60,7 +66,7 @@ export function isMemoryPath(absolutePath: string, cwd: string): boolean {
 }
 
 export function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
-	const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "");
 
 	if (!normalized.startsWith("---")) {
 		return { frontmatter: {}, body: normalized };
@@ -88,8 +94,26 @@ export function parseFrontmatter(content: string): { frontmatter: Record<string,
 	return { frontmatter, body };
 }
 
+export function isBookmarkType(header: MemoryHeader): boolean {
+	return header.type === "bookmark";
+}
+
 export function buildFrontmatter(fields: { name: string; description: string; type: MemoryType }): string {
 	return `---\nname: ${fields.name}\ndescription: ${fields.description}\ntype: ${fields.type}\n---`;
+}
+
+export interface BookmarkFrontmatterFields {
+	name: string;
+	description: string;
+	sourceSession: string;
+	sourceMessageIds: string[];
+	tags: string[];
+	createdAt: string;
+}
+
+export function buildBookmarkFrontmatter(fields: BookmarkFrontmatterFields): string {
+	const tagsStr = fields.tags.join(", ");
+	return `---\nname: ${fields.name}\ndescription: ${fields.description}\ntype: bookmark\nsourceSession: ${fields.sourceSession}\nsourceMessageIds: ${fields.sourceMessageIds.join(", ")}\ntags: [${tagsStr}]\ncreatedAt: ${fields.createdAt}\n---`;
 }
 
 export function truncateEntrypoint(raw: string): { content: string; wasTruncated: boolean } {
@@ -146,6 +170,14 @@ export async function scanMemoryFiles(memoryDir: string): Promise<MemoryHeader[]
 			mtimeMs: stat.mtimeMs,
 			description: frontmatter.description ?? null,
 			type: frontmatter.type as MemoryType | undefined,
+			sourceSession: frontmatter.sourceSession ?? null,
+			tags: frontmatter.tags
+				? frontmatter.tags
+						.replace(/^\[|\]$/g, "")
+						.split(",")
+						.map((t) => t.trim())
+						.filter(Boolean)
+				: null,
 		});
 	}
 

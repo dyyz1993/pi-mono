@@ -12,10 +12,10 @@ import type {
 	MatchRecord,
 	ParsedRule,
 	RuleDetail,
+	RuleSeverity,
 	RulesChannelContract,
 	RulesChannelEvent,
 	RulesConfig,
-	RuleSeverity,
 	ScannedDir,
 	SnapshotPayload,
 } from "./types.js";
@@ -35,10 +35,10 @@ export type {
 	ReloadedPayload,
 	RuleDetail,
 	RuleFrontmatter,
-	RulesChannelContract,
-	RulesChannelEvent,
 	RuleScope,
 	RuleSeverity,
+	RulesChannelContract,
+	RulesChannelEvent,
 	RulesConfig,
 	ScannedDir,
 	SnapshotPayload,
@@ -336,7 +336,9 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 				ruleNames: scopeRules.map((r) => r.name),
 			}));
 
-		channel.emit("snapshot", buildSnapshot(
+			channel.emit(
+				"snapshot",
+				buildSnapshot(
 					[],
 					[
 						{
@@ -367,11 +369,11 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 		const unconditional = getUnconditionalRules();
 
 		if (unconditional.length === 0) {
-		channel.emit("injected", {
-			type: "injected",
-			ruleNames: [],
-			systemPromptLength: event.systemPrompt.length,
-		});
+			channel.emit("injected", {
+				type: "injected",
+				ruleNames: [],
+				systemPromptLength: event.systemPrompt.length,
+			});
 			return undefined;
 		}
 

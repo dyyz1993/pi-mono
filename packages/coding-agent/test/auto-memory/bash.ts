@@ -166,7 +166,7 @@ export default function (pi: ExtensionAPI) {
 				emit({ type: "list", processes: [...activeBg, ...hist], timestamp: Date.now() });
 			}
 
-				if (msg.action === "kill" && msg.toolCallId) {
+			if (msg.action === "kill" && msg.toolCallId) {
 				const m = managed.get(msg.toolCallId);
 				if (m?.proc.pid) {
 					killProcessTree(m.proc.pid);

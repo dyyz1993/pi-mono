@@ -1,4 +1,4 @@
-import { ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
@@ -234,11 +234,17 @@ describe("subagent", () => {
 			subagentExtensionDefault(pi);
 			const tool = registeredTools.get("subagent")!;
 
-			await tool.execute("call-1", {
-				description: "test",
-				instruction: "do stuff",
-				model: "claude-sonnet-4",
-			}, undefined, undefined, { cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any);
+			await tool.execute(
+				"call-1",
+				{
+					description: "test",
+					instruction: "do stuff",
+					model: "claude-sonnet-4",
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any,
+			);
 
 			expect(spawnCalls.length).toBe(1);
 			const modelIdx = spawnCalls[0].indexOf("--model");
@@ -252,10 +258,16 @@ describe("subagent", () => {
 			subagentExtensionDefault(pi);
 			const tool = registeredTools.get("subagent")!;
 
-			await tool.execute("call-2", {
-				description: "test",
-				instruction: "do stuff",
-			}, undefined, undefined, { cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any);
+			await tool.execute(
+				"call-2",
+				{
+					description: "test",
+					instruction: "do stuff",
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any,
+			);
 
 			expect(spawnCalls.length).toBe(1);
 			const modelIdx = spawnCalls[0].indexOf("--model");
@@ -269,10 +281,16 @@ describe("subagent", () => {
 			subagentExtensionDefault(pi);
 			const tool = registeredTools.get("subagent")!;
 
-			await tool.execute("call-3", {
-				description: "test",
-				instruction: "do stuff",
-			}, undefined, undefined, { cwd: "/tmp", model: undefined } as any);
+			await tool.execute(
+				"call-3",
+				{
+					description: "test",
+					instruction: "do stuff",
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp", model: undefined } as any,
+			);
 
 			expect(spawnCalls.length).toBe(1);
 			expect(spawnCalls[0]).not.toContain("--model");
@@ -284,11 +302,17 @@ describe("subagent", () => {
 			subagentExtensionDefault(pi);
 			const tool = registeredTools.get("subagent")!;
 
-			await tool.execute("call-4", {
-				description: "test",
-				instruction: "do stuff",
-				model: "gpt-4o",
-			}, undefined, undefined, { cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any);
+			await tool.execute(
+				"call-4",
+				{
+					description: "test",
+					instruction: "do stuff",
+					model: "gpt-4o",
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any,
+			);
 
 			expect(spawnCalls.length).toBe(1);
 			const modelIdx = spawnCalls[0].indexOf("--model");

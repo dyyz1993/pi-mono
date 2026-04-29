@@ -44,8 +44,8 @@ describe("UI Interception E2E", () => {
 						});
 					},
 					(pi) => {
-						pi.on("ui_confirm", async (event) => {
-							if (event.message === "May I proceed?") {
+						pi.on("ui", async (event) => {
+							if (event.method === "confirm" && event.message === "May I proceed?") {
 								return { action: "responded" as const, confirmed: true };
 							}
 							return undefined;
@@ -85,8 +85,11 @@ describe("UI Interception E2E", () => {
 						});
 					},
 					(pi) => {
-						pi.on("ui_confirm", async () => {
-							return { action: "responded" as const, confirmed: false };
+						pi.on("ui", async (event) => {
+							if (event.method === "confirm") {
+								return { action: "responded" as const, confirmed: false };
+							}
+							return undefined;
 						});
 					},
 				],
@@ -123,8 +126,11 @@ describe("UI Interception E2E", () => {
 						});
 					},
 					(pi) => {
-						pi.on("ui_select", async () => {
-							return { action: "responded" as const, value: "Green" };
+						pi.on("ui", async (event) => {
+							if (event.method === "select") {
+								return { action: "responded" as const, value: "Green" };
+							}
+							return undefined;
 						});
 					},
 				],
@@ -163,7 +169,10 @@ describe("UI Interception E2E", () => {
 						});
 					},
 					(pi) => {
-						pi.on("ui_confirm", async () => undefined);
+						pi.on("ui", async (event) => {
+							if (event.method === "confirm") return undefined;
+							return undefined;
+						});
 					},
 				],
 			});
@@ -232,7 +241,10 @@ describe("UI Interception E2E", () => {
 						});
 					},
 					(pi) => {
-						pi.on("ui_select", async () => undefined);
+						pi.on("ui", async (event) => {
+							if (event.method === "select") return undefined;
+							return undefined;
+						});
 					},
 				],
 			});
@@ -284,7 +296,7 @@ describe("UI Interception E2E", () => {
 	});
 
 	describe("no interceptor, original UI handles everything", () => {
-		it("confirm goes directly to original UI (no ui_confirm handler)", async () => {
+		it("confirm goes directly to original UI (no ui handler for confirm)", async () => {
 			const harness = await createHarness({
 				extensionFactories: [
 					(pi) => {

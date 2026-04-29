@@ -1,10 +1,30 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentMessage } from "@dyyz1993/pi-agent-core";
+import type { AgentMessage, AgentToolResult } from "@dyyz1993/pi-agent-core";
+import { Type } from "typebox";
 import type { CallLLMOptions, ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
-import { DREAM_PROMPT, EXTRACTION_PROMPT, MEMORY_SYSTEM_PROMPT, SELECT_MEMORIES_PROMPT } from "./prompts.js";
 import {
+	addHistoryEntry,
+	applyPurification,
+	evaluateRules,
+	getGlobalMemoryDir,
+	type HistoryEntry,
+	loadSkipWordStore,
+	type PurificationResult,
+	type SkipRule,
+	type SkipWordStore,
+	saveSkipWordStore,
+} from "./prefetch-rules.js";
+import {
+	BOOKMARK_SUMMARY_PROMPT,
+	DREAM_PROMPT,
+	EXTRACTION_PROMPT,
+	MEMORY_SYSTEM_PROMPT,
+	SELECT_MEMORIES_PROMPT,
+} from "./prompts.js";
+import {
+	buildBookmarkFrontmatter,
 	buildFrontmatter,
 	DREAM_MIN_HOURS,
 	DREAM_MIN_SESSIONS,
@@ -12,6 +32,7 @@ import {
 	formatManifest,
 	getEntrypointPath,
 	getMemoryDir,
+	isBookmarkType,
 	MAX_MEMORY_BYTES_PER_FILE,
 	MAX_RELEVANT_MEMORIES,
 	type MemoryHeader,
@@ -43,10 +64,33 @@ function serializeMessages(messages: AgentMessage[], options?: { lastN?: number 
 		.join("\n");
 }
 
+function buildPrefetchUserMessage(query: string, manifest: string, rules: SkipRule[], history: HistoryEntry[]): string {
+	const rulesSummary = rules
+		.map((r) => {
+			const builtin = r.builtin ? " (builtin)" : "";
+			return `{ "pattern": "${r.pattern}", "mode": "${r.mode}", "action": "${r.action}" }${builtin}`;
+		})
+		.join("\n");
+
+	const historySummary = JSON.stringify(
+		history.map((h) => ({
+			query: h.query,
+			selected: h.selected,
+			skipped: h.skipped,
+			skip_hits: h.skip_hits,
+			guard_hits: h.guard_hits,
+		})),
+	);
+
+	return `## 当前查询\n${query}\n\n## 可用文件\n${manifest}\n\n## 当前规则库\n${rulesSummary}\n\n## 最近 Prefetch 历史\n${historySummary}`;
+}
+
 class MemoryPrefetch {
 	private promise: Promise<string> | null = null;
 	private settled = false;
 	private result: string | null = null;
+	private lastSelected: string[] = [];
+	private store: SkipWordStore | null = null;
 
 	start(query: string, memoryDir: string, callLLM: CallLLMFn): void {
 		this.settled = false;
@@ -62,40 +106,97 @@ class MemoryPrefetch {
 		return this.settled ? this.result : null;
 	}
 
+	private ensureStore(): SkipWordStore {
+		if (!this.store) {
+			this.store = loadSkipWordStore(getGlobalMemoryDir());
+		}
+		return this.store;
+	}
+
 	private async run(query: string, memoryDir: string, callLLM: CallLLMFn): Promise<string> {
 		try {
+			let store = this.ensureStore();
+			const { shouldSkip, skipHits, guardHits } = evaluateRules(query, store.rules);
+
+			if (shouldSkip) {
+				store = addHistoryEntry(store, {
+					query: query.slice(0, 200),
+					selected: this.lastSelected,
+					skipped: true,
+					skip_hits: skipHits,
+					guard_hits: guardHits,
+					timestamp: Date.now(),
+				});
+				this.store = store;
+				await saveSkipWordStore(getGlobalMemoryDir(), this.store);
+
+				if (this.lastSelected.length === 0) return "";
+				return await this.readFiles(this.lastSelected, memoryDir);
+			}
+
 			const memories = await scanMemoryFiles(memoryDir);
 			if (memories.length === 0) return "";
 
 			const manifest = formatManifest(memories);
-			const selected = await callLLM({
+			const recentHistory = store.history.slice(-5);
+
+			const llmResult = await callLLM({
 				systemPrompt: SELECT_MEMORIES_PROMPT,
-				messages: [{ role: "user", content: `Query: ${query}\n\nAvailable:\n${manifest}` }],
+				messages: [
+					{
+						role: "user",
+						content: buildPrefetchUserMessage(query, manifest, store.rules, recentHistory),
+					},
+				],
 			});
 
-			let parsed: { selected: string[] };
+			let parsed: { selected?: string[]; purification?: PurificationResult };
 			try {
-				parsed = JSON.parse(selected);
+				parsed = JSON.parse(llmResult);
 			} catch {
 				return "";
 			}
 
-			const filenames = parsed.selected ?? [];
-			const resolved = filenames
-				.slice(0, MAX_RELEVANT_MEMORIES)
-				.map((name: string) => memories.find((m) => m.filename === name))
-				.filter((m): m is MemoryHeader => m !== undefined);
+			const selected = (parsed.selected ?? []).slice(0, MAX_RELEVANT_MEMORIES);
+			this.lastSelected = selected;
 
-			const parts = await Promise.all(
-				resolved.map(async (m) => {
-					const content = await readFile(m.filePath, "utf-8");
-					return `### ${m.filename}\n${content}`;
-				}),
-			);
-			return parts.join("\n\n");
+			if (parsed.purification && typeof parsed.purification === "object") {
+				try {
+					store = applyPurification(store, parsed.purification);
+				} catch {}
+			}
+
+			store = addHistoryEntry(store, {
+				query: query.slice(0, 200),
+				selected,
+				skipped: false,
+				skip_hits: skipHits,
+				guard_hits: guardHits,
+				timestamp: Date.now(),
+			});
+			this.store = store;
+			await saveSkipWordStore(getGlobalMemoryDir(), this.store);
+
+			if (selected.length === 0) return "";
+
+			return await this.readFiles(selected, memoryDir);
 		} catch {
 			return "";
 		}
+	}
+
+	private async readFiles(filenames: string[], memoryDir: string): Promise<string> {
+		const memories = await scanMemoryFiles(memoryDir);
+		const parts: string[] = [];
+		for (const name of filenames) {
+			const header = memories.find((m) => m.filename === name);
+			if (!header) continue;
+			try {
+				const content = await readFile(header.filePath, "utf-8");
+				parts.push(`### ${name}\n${content}`);
+			} catch {}
+		}
+		return parts.join("\n\n");
 	}
 }
 
@@ -115,45 +216,61 @@ class MemoryExtractor {
 		}
 	}
 
-	async maybeExtract(messages: AgentMessage[], memoryDir: string, callLLM: CallLLMFn): Promise<void> {
+	async maybeExtract(
+		messages: AgentMessage[],
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<{ created: string[]; updated: string[] } | null> {
 		if (this.inProgress) {
 			this.pendingMessages = messages;
-			return;
+			return null;
 		}
 
 		if (this.mainAgentWroteMemory) {
 			this.mainAgentWroteMemory = false;
 			this.turnsSinceLastExtraction = 0;
-			return;
+			return null;
 		}
 
 		this.turnsSinceLastExtraction++;
-		if (this.turnsSinceLastExtraction < 2) return;
+		if (this.turnsSinceLastExtraction < 2) return null;
 		this.turnsSinceLastExtraction = 0;
 
-		await this.runExtraction(messages, memoryDir, callLLM);
+		return await this.runExtraction(messages, memoryDir, callLLM);
 	}
 
-	private async runExtraction(messages: AgentMessage[], memoryDir: string, callLLM: CallLLMFn): Promise<void> {
+	private async runExtraction(
+		messages: AgentMessage[],
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<{ created: string[]; updated: string[] } | null> {
 		this.inProgress = true;
 		try {
 			const recent = serializeMessages(messages, { lastN: 20 });
 			const manifest = formatManifest(await scanMemoryFiles(memoryDir));
 
-			const result = await callLLM({
+			const llmResult = await callLLM({
 				systemPrompt: EXTRACTION_PROMPT(manifest),
-				messages: [{ role: "user", content: `Recent conversation:\n${recent}\n\nExisting memories:\n${manifest}` }],
+				messages: [
+					{
+						role: "user",
+						content: `Recent conversation:\n${recent}\n\nExisting memories:\n${manifest}`,
+					},
+				],
 			});
 
-			let parsed: { actions: ExtractionAction[] };
+			let parsed: { actions?: Array<Record<string, string>> };
 			try {
-				parsed = JSON.parse(result);
+				parsed = JSON.parse(llmResult);
 			} catch {
-				return;
+				return null;
 			}
 
-			if (!parsed.actions?.length) return;
-			await this.applyActions(parsed.actions, memoryDir);
+			const actions = parsed.actions ?? [];
+			if (actions.length === 0) return null;
+
+			const result = await this.applyActions(actions, memoryDir);
+			return result;
 		} finally {
 			this.inProgress = false;
 			if (this.pendingMessages) {
@@ -164,41 +281,125 @@ class MemoryExtractor {
 		}
 	}
 
-	private async applyActions(actions: ExtractionAction[], memoryDir: string): Promise<void> {
+	private async applyActions(
+		actions: Array<Record<string, string>>,
+		memoryDir: string,
+	): Promise<{ created: string[]; updated: string[] }> {
+		const created: string[] = [];
+		const updated: string[] = [];
 		for (const action of actions) {
-			if (action.op === "create" && action.filename && action.content) {
-				const fm = buildFrontmatter({
-					name: action.name ?? action.filename,
-					description: action.description ?? "",
-					type: (action.type as MemoryType) ?? "project",
-				});
-				const filePath = join(memoryDir, action.filename);
-				const body = action.content.slice(0, MAX_MEMORY_BYTES_PER_FILE);
-				await writeFile(filePath, `${fm}\n\n${body}`);
-			} else if (action.op === "update" && action.filename && action.append) {
-				const filePath = join(memoryDir, action.filename);
-				if (existsSync(filePath)) {
-					const existing = await readFile(filePath, "utf-8");
-					await writeFile(filePath, existing + action.append);
-				}
+			const op = action.op;
+
+			if (op === "create") {
+				const filename = action.filename;
+				const content = action.content ?? "";
+				if (!filename || !content) continue;
+
+				const name = action.name ?? filename;
+				const description = action.description ?? "";
+				const type = (action.type as MemoryType) ?? "project";
+				const fm = buildFrontmatter({ name, description, type });
+				const body = content.slice(0, MAX_MEMORY_BYTES_PER_FILE);
+				await writeFile(join(memoryDir, filename), `${fm}\n\n${body}`);
+				created.push(filename);
+			} else if (op === "update") {
+				const filename = action.filename;
+				const append = action.append;
+				if (!filename || !append) continue;
+
+				const filePath = join(memoryDir, filename);
+				if (!existsSync(filePath)) continue;
+
+				const existing = await readFile(filePath, "utf-8");
+				await writeFile(filePath, existing + append);
+				updated.push(filename);
 			}
 		}
 		await updateMemoryIndex(memoryDir);
+		return { created, updated };
 	}
 }
 
-type ExtractionAction = {
-	op: "create" | "update" | "skip";
-	filename?: string;
-	name?: string;
-	description?: string;
-	type?: string;
-	content?: string;
-	append?: string;
-};
+class BookmarkCreator {
+	registerTool(pi: ExtensionAPI): void {
+		pi.registerTool({
+			name: "create_bookmark",
+			label: "create_bookmark",
+			description:
+				"Create a bookmark memory file from analyzed content. Use this tool to save a structured bookmark with title, description, summary and tags.",
+			parameters: Type.Object({
+				title: Type.String({ description: "Bookmark title, concise and descriptive" }),
+				description: Type.String({ description: "One-line description of the bookmark" }),
+				summary: Type.String({ description: "Detailed summary of the bookmarked content" }),
+				tags: Type.Array(Type.String(), { description: "Relevant tags for categorization" }),
+			}),
+			execute: async (
+				_toolCallId: string,
+				_params: { title: string; description: string; summary: string; tags: string[] },
+				_signal?: AbortSignal,
+				_onUpdate?: unknown,
+				_ctx?: ExtensionContext,
+			): Promise<AgentToolResult<void>> => {
+				return { content: [{ type: "text", text: "Not used in JSON mode" }], details: undefined };
+			},
+		});
+	}
+
+	async create(
+		messageContent: string,
+		sessionId: string,
+		messageIds: string[],
+		memoryDir: string,
+		callLLM: (opts: CallLLMOptions) => Promise<string>,
+	): Promise<{ filename: string; filePath: string } | null> {
+		try {
+			const manifest = formatManifest((await scanMemoryFiles(memoryDir)).filter((m) => isBookmarkType(m)));
+
+			const llmResult = await callLLM({
+				systemPrompt: BOOKMARK_SUMMARY_PROMPT(messageContent, manifest),
+				messages: [{ role: "user", content: "Create a bookmark summary for this content." }],
+			});
+
+			let parsed: { title?: string; description?: string; summary?: string; tags?: string[] };
+			try {
+				parsed = JSON.parse(llmResult);
+			} catch {
+				return null;
+			}
+
+			if (!parsed.title) return null;
+
+			const safeTitle = parsed.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_").slice(0, 50);
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const filename = `${timestamp}_${safeTitle}.md`;
+			const filePath = join(memoryDir, filename);
+
+			const fm = buildBookmarkFrontmatter({
+				name: parsed.title,
+				description: parsed.description ?? "",
+				sourceSession: sessionId,
+				sourceMessageIds: messageIds,
+				tags: parsed.tags ?? [],
+				createdAt: new Date().toISOString(),
+			});
+
+			const body = `## ${parsed.title}\n\n${parsed.summary ?? ""}\n\n---\n\n## \u539F\u59CB\u5185\u5BB9\u9884\u89C8\n\n> ${messageContent.slice(0, 500)}${messageContent.length > 500 ? "..." : ""}`;
+
+			await writeFile(filePath, `${fm}\n\n${body}`);
+			await updateMemoryIndex(memoryDir);
+
+			return { filename, filePath };
+		} catch {
+			return null;
+		}
+	}
+}
 
 class MemoryDream {
-	async maybeRun(memoryDir: string, callLLM: CallLLMFn): Promise<void> {
+	async maybeRun(
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<{ merges: number; deletions: number; updates: number } | null> {
 		const lockPath = join(memoryDir, ".consolidate-lock");
 
 		if (!existsSync(lockPath)) {
@@ -206,24 +407,34 @@ class MemoryDream {
 			await utimes(lockPath, new Date(0), new Date(0));
 		}
 
-		const lockStat = await stat(lockPath);
+		let lockStat: Awaited<typeof stat>;
+		try {
+			lockStat = await stat(lockPath);
+		} catch {
+			return null;
+		}
 		const hoursSince = (Date.now() - lockStat.mtimeMs) / 3_600_000;
-		if (hoursSince < DREAM_MIN_HOURS) return;
+		if (hoursSince < DREAM_MIN_HOURS) return null;
 
 		const sessionCount = await countSessionsSince(memoryDir, lockStat.mtimeMs);
-		if (sessionCount < DREAM_MIN_SESSIONS) return;
+		if (sessionCount < DREAM_MIN_SESSIONS) return null;
 
 		try {
-			await this.runDream(memoryDir, callLLM);
+			const result = await this.runDream(memoryDir, callLLM);
 			await utimes(lockPath, new Date(), new Date());
+			return result;
 		} catch {
 			await utimes(lockPath, new Date(lockStat.mtimeMs), new Date(lockStat.mtimeMs));
+			return null;
 		}
 	}
 
-	private async runDream(memoryDir: string, callLLM: CallLLMFn): Promise<void> {
+	private async runDream(
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<{ merges: number; deletions: number; updates: number } | null> {
 		const memories = await scanMemoryFiles(memoryDir);
-		if (memories.length === 0) return;
+		if (memories.length === 0) return null;
 
 		const allContent = await readAllMemories(memories);
 		const entrypointPath = join(memoryDir, ENTRYPOINT_NAME);
@@ -232,24 +443,66 @@ class MemoryDream {
 			indexContent = await readFile(entrypointPath, "utf-8");
 		} catch {}
 
-		const result = await callLLM({
+		const llmResult = await callLLM({
 			systemPrompt: DREAM_PROMPT(allContent, indexContent, memoryDir),
-			messages: [{ role: "user", content: "Perform dream consolidation." }],
+			messages: [
+				{
+					role: "user",
+					content: "Perform dream consolidation. Analyze memories and decide what to merge, delete, or update.",
+				},
+			],
 		});
 
-		let parsed: DreamResult;
+		let parsed: {
+			merges?: Array<{ sources?: string[]; target?: string; content?: string }>;
+			deletions?: string[];
+			updates?: Array<{ filename?: string; newContent?: string }>;
+			newIndex?: string;
+		};
 		try {
-			parsed = JSON.parse(result);
+			parsed = JSON.parse(llmResult);
 		} catch {
-			return;
+			return null;
 		}
 
-		await this.applyDreamActions(parsed, memoryDir);
+		return await this.applyDreamActions(parsed, memoryDir);
 	}
 
-	private async applyDreamActions(parsed: DreamResult, memoryDir: string): Promise<void> {
-		if (parsed.deletions?.length) {
+	private async applyDreamActions(
+		parsed: {
+			merges?: Array<{ sources?: string[]; target?: string; content?: string }>;
+			deletions?: string[];
+			updates?: Array<{ filename?: string; newContent?: string }>;
+			newIndex?: string;
+		},
+		memoryDir: string,
+	): Promise<{ merges: number; deletions: number; updates: number }> {
+		const allHeaders = await scanMemoryFiles(memoryDir);
+		const bookmarkSet = new Set(allHeaders.filter(isBookmarkType).map((h) => h.filename));
+
+		if (parsed.merges) {
+			for (const merge of parsed.merges) {
+				if (!merge.sources || !merge.target || merge.content === undefined) continue;
+
+				const sources = merge.sources;
+				const hasBookmark = sources.some((s) => bookmarkSet.has(s));
+				const hasNonBookmark = sources.some((s) => !bookmarkSet.has(s));
+				if (hasBookmark && hasNonBookmark) continue;
+
+				await writeFile(join(memoryDir, merge.target), merge.content);
+				for (const source of sources) {
+					if (source === merge.target) continue;
+					const sourcePath = join(memoryDir, source);
+					if (existsSync(sourcePath)) {
+						await unlink(sourcePath);
+					}
+				}
+			}
+		}
+
+		if (parsed.deletions) {
 			for (const filename of parsed.deletions) {
+				if (bookmarkSet.has(filename)) continue;
 				const filePath = join(memoryDir, filename);
 				if (existsSync(filePath)) {
 					await unlink(filePath);
@@ -257,43 +510,25 @@ class MemoryDream {
 			}
 		}
 
-		if (parsed.merges?.length) {
-			for (const merge of parsed.merges) {
-				if (merge.sources && merge.target && merge.content) {
-					const targetPath = join(memoryDir, merge.target);
-					await writeFile(targetPath, merge.content);
-					for (const source of merge.sources) {
-						const sourcePath = join(memoryDir, source);
-						if (existsSync(sourcePath) && source !== merge.target) {
-							await unlink(sourcePath);
-						}
-					}
-				}
-			}
-		}
-
-		if (parsed.updates?.length) {
+		if (parsed.updates) {
 			for (const update of parsed.updates) {
-				if (update.filename && update.newContent) {
-					const filePath = join(memoryDir, update.filename);
-					await writeFile(filePath, update.newContent);
-				}
+				if (!update.filename || !update.newContent) continue;
+				await writeFile(join(memoryDir, update.filename), update.newContent);
 			}
 		}
 
-		if (parsed.newIndex) {
+		const mergeCount = parsed.merges?.length ?? 0;
+		const deletionCount = parsed.deletions?.length ?? 0;
+		const updateCount = parsed.updates?.length ?? 0;
+
+		if (parsed.newIndex !== undefined) {
 			const { content } = truncateEntrypoint(parsed.newIndex);
 			await writeFile(join(memoryDir, ENTRYPOINT_NAME), content);
 		}
+
+		return { merges: mergeCount, deletions: deletionCount, updates: updateCount };
 	}
 }
-
-type DreamResult = {
-	merges?: { sources: string[]; target: string; content: string }[];
-	deletions?: string[];
-	updates?: { filename: string; newContent: string }[];
-	newIndex?: string;
-};
 
 async function readAllMemories(memories: MemoryHeader[]): Promise<string> {
 	const parts = await Promise.all(
@@ -334,7 +569,15 @@ async function countSessionsSince(memoryDir: string, _sinceMs: number): Promise<
 	}
 }
 
-export { MemoryPrefetch, MemoryExtractor, MemoryDream, serializeMessages, updateMemoryIndex, type CallLLMFn };
+export {
+	MemoryPrefetch,
+	MemoryExtractor,
+	MemoryDream,
+	BookmarkCreator,
+	serializeMessages,
+	updateMemoryIndex,
+	type CallLLMFn,
+};
 
 export default function autoMemoryExtension(pi: ExtensionAPI): void {
 	const cwd = process.cwd();
@@ -342,26 +585,30 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 	const prefetch = new MemoryPrefetch();
 	const extractor = new MemoryExtractor();
 	const dream = new MemoryDream();
+	const bookmarkCreator = new BookmarkCreator();
 	let draining = false;
 	let activeExtraction: Promise<void> | null = null;
 	let ctx: ExtensionContext | null = null;
 
-	function status(text: string | undefined): void {
-		ctx?.ui.setStatus("auto-memory", text);
+	bookmarkCreator.registerTool(pi);
+
+	const memoryChannel = pi.registerChannel("memory");
+
+	function status(msg?: string): void {
+		ctx?.ui.setStatus("auto-memory", msg);
 	}
 
 	function notify(message: string, type?: "info" | "warning" | "error"): void {
 		ctx?.ui.notify(message, type);
 	}
 
-	pi.on("session_start", async (_event, _ctx) => {
-		ctx = _ctx;
+	pi.on("session_start", async (_event, context) => {
+		ctx = context as ExtensionContext;
 		await mkdir(memoryDir, { recursive: true });
 		status("memory ready");
 	});
 
-	pi.on("before_agent_start", async (event, _ctx) => {
-		ctx = _ctx;
+	pi.on("before_agent_start", async (event) => {
 		let memoryContent = "";
 		try {
 			memoryContent = await readFile(getEntrypointPath(cwd), "utf-8");
@@ -372,42 +619,66 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		const lastUserText = event.prompt ?? "";
 		if (lastUserText) {
 			status("selecting memories...");
+			pi.appendEntry("memory_prefetch", {
+				query: lastUserText.slice(0, 200),
+				memoryDir,
+				availableFiles: (await scanMemoryFiles(memoryDir)).length,
+			});
 			prefetch.start(lastUserText, memoryDir, (opts) => pi.callLLM(opts));
 		}
 
 		return { systemPrompt: `${event.systemPrompt}\n\n${memoryPrompt}` };
 	});
 
-	pi.on("context", (event, _ctx) => {
-		ctx = _ctx;
+	pi.on("context", (event) => {
 		const memoryText = prefetch.collect();
 		if (!memoryText) return;
 
 		status("memories injected");
-		const memoryMessage: AgentMessage = {
-			role: "user",
-			content: [{ type: "text", text: `[Memory context — relevant memories]\n\n${memoryText}` }],
+		pi.appendEntry("memory_prefetch_result", {
+			summary: "Injected relevant memories",
+			snippet: memoryText.slice(0, 500),
+			injectedBytes: memoryText.length,
+		});
+
+		const memoryMessage = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: `[Memory context — relevant memories]\n\n${memoryText}` }],
 			timestamp: Date.now(),
 		};
 		return { messages: [...event.messages, memoryMessage] };
 	});
 
-	pi.on("tool_call", (event, _ctx) => {
-		ctx = _ctx;
+	pi.on("tool_call", (event) => {
 		const args = (event.input ?? {}) as Record<string, unknown>;
 		extractor.onToolCall(event.toolName, args, memoryDir);
 	});
 
-	pi.on("agent_end", (event, _ctx) => {
-		ctx = _ctx;
+	pi.on("agent_end", (event) => {
 		if (draining) return;
-
 		activeExtraction = (async () => {
 			try {
 				status("extracting memories...");
-				await extractor.maybeExtract(event.messages, memoryDir, (opts) => pi.callLLM(opts));
+				const extractResult = await extractor.maybeExtract(event.messages, memoryDir, (opts) => pi.callLLM(opts));
+				if (extractResult) {
+					pi.appendEntry("memory_extract", {
+						status: "completed",
+						created: extractResult.created,
+						updated: extractResult.updated,
+					});
+				}
+
 				status("consolidating memories...");
-				await dream.maybeRun(memoryDir, (opts) => pi.callLLM(opts));
+				const dreamResult = await dream.maybeRun(memoryDir, (opts) => pi.callLLM(opts));
+				if (dreamResult) {
+					pi.appendEntry("memory_dream", {
+						status: "completed",
+						merges: dreamResult.merges,
+						deletions: dreamResult.deletions,
+						updates: dreamResult.updates,
+					});
+				}
+
 				status("memory idle");
 			} catch (e) {
 				status("memory error");
@@ -424,5 +695,72 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 			await Promise.race([activeExtraction, timeout]);
 		}
 		status(undefined);
+	});
+
+	memoryChannel.onReceive(async (raw) => {
+		const data = raw as {
+			type: string;
+			projectPath?: string;
+			sourceSessionId?: string;
+			sourceMessageIds?: string[];
+			content?: string;
+		};
+
+		if (data.type === "list") {
+			try {
+				const memories = await scanMemoryFiles(memoryDir);
+				const files = memories.map((m) => ({
+					filename: m.filename,
+					filePath: m.filePath,
+					description: m.description ?? null,
+					type: m.type ?? null,
+					mtimeMs: m.mtimeMs,
+				}));
+				let entrypointContent: string | null = null;
+				try {
+					entrypointContent = await readFile(getEntrypointPath(cwd), "utf-8");
+				} catch {}
+				memoryChannel.send({ type: "list_result", files, entrypointContent, memoryDir });
+			} catch {
+				memoryChannel.send({ type: "list_result", files: [], entrypointContent: null, memoryDir });
+			}
+			return;
+		}
+
+		if (data.type === "user_remember" && data.content) {
+			memoryChannel.send({ type: "bookmark_creating" });
+			try {
+				const result = await bookmarkCreator.create(
+					data.content,
+					data.sourceSessionId ?? "",
+					data.sourceMessageIds ?? [],
+					memoryDir,
+					(opts) => pi.callLLM(opts),
+				);
+				if (result) {
+					pi.appendEntry("memory_created", result);
+					const updatedMemories = await scanMemoryFiles(memoryDir);
+					memoryChannel.send({
+						type: "memory_updated",
+						files: updatedMemories.map((m) => ({
+							filename: m.filename,
+							filePath: m.filePath,
+							description: m.description ?? null,
+							type: m.type ?? null,
+							mtimeMs: m.mtimeMs,
+						})),
+					});
+				} else {
+					pi.appendEntry("memory_failed", { reason: "LLM failed" });
+					memoryChannel.send({ type: "memory_update_failed", reason: "LLM failed" });
+				}
+			} catch (e) {
+				const errMsg = e instanceof Error ? e.message : String(e);
+				pi.appendEntry("memory_failed", { reason: errMsg });
+				notify(`Bookmark error: ${errMsg}`, "warning");
+				memoryChannel.send({ type: "memory_update_failed", reason: "Error" });
+			}
+			return;
+		}
 	});
 }

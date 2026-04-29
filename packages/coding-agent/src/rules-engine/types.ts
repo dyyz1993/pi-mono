@@ -143,12 +143,7 @@ export interface UnloadedPayload {
 	reason: string;
 }
 
-export type RulesChannelEvent =
-	| SnapshotPayload
-	| MatchedPayload
-	| InjectedPayload
-	| ReloadedPayload
-	| UnloadedPayload;
+export type RulesChannelEvent = SnapshotPayload | MatchedPayload | InjectedPayload | ReloadedPayload | UnloadedPayload;
 
 export interface RulesChannelContract {
 	methods: {
