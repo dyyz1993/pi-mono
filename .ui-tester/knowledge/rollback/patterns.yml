@@ -59,6 +59,20 @@ send_message_flow:
     - action: check
       condition: "send button re-enabled (response complete)"
 
+jsonl_fallback:
+  description: "Rollback works correctly when session has no live pi subprocess (JSONL mode)"
+  behavior: |
+    When a session is loaded from JSONL storage (no live process, sidebar shows '空闲'):
+    - '回滚消息' filters messages by tree position using stored JSONL data
+    - '回滚全部' clears all messages and returns to empty state
+    - NO 'Client not found' error is shown
+    - NO 'agent.getTree' or 'agent.navigateTree' errors in console
+    - UI updates are identical to live-process rollback
+  verification_method: |
+    Install fetch/console.error interceptors before rollback action.
+    Check DOM for error text after action.
+    Verify session shows '空闲' in sidebar before testing fallback.
+
 tips:
   - "Agent responses can be slow (20-60s) especially when using tools; use long waits"
   - "Send button disabled while agent is processing — check via JS eval if snapshot is stale"
@@ -68,3 +82,5 @@ tips:
   - "Browser session may navigate to about:blank on timeout; always reconnect and re-open URL"
   - "Snapshot refs become stale after DOM mutations; always re-snapshot before interacting"
   - "Use JS eval for checking send/stop button states when snapshot reports stale data"
+  - "JSONL fallback: sessions show '空闲' in sidebar = no live process, rollback still works perfectly"
+  - "Page reload restores sessions from JSONL storage with all messages intact"

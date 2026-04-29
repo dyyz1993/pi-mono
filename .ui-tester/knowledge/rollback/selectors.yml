@@ -1,6 +1,6 @@
 # Module: rollback
 # Site: http://localhost:5173 (pi-agent-chat WebUI)
-# Last updated: 2026-04-29
+# Last updated: 2026-04-29 (updated: fallback test session)
 
 chat_page:
   url: "http://localhost:5173"
@@ -8,6 +8,11 @@ chat_page:
   message_input: "textarea[placeholder*='输入消息']"
   send_button: "button[title='发送']"
   stop_button: "button[title='停止']"
+
+# Session status indicators (sidebar)
+session_status:
+  idle_label: "空闲"           # Session has no live pi subprocess (JSONL mode)
+  active_processing: "停止"     # Agent is actively processing
   
 message_card:
   # Header action buttons on assistant MessageCard
