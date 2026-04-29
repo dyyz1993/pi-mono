@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Model } from "@dyyz1993/pi-ai";
 import type { KeyId } from "@dyyz1993/pi-tui";
@@ -51,12 +52,8 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
-	UIConfirmEvent,
-	UIConfirmEventResult,
-	UIInputEvent,
-	UIInputEventResult,
-	UISelectEvent,
-	UISelectEventResult,
+	UIEvent,
+	UIEventResult,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.js";
@@ -249,6 +246,7 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private pendingUIResponses: Map<string, (result: UIEventResult) => void> = new Map();
 
 	constructor(
 		extensions: Extension[],
@@ -664,6 +662,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
 			},
+			respondUI: (id, result) => {
+				runner.assertActive();
+				runner.respondUI(id, result);
+			},
 		};
 	}
 
@@ -847,56 +849,105 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
+	private createAsyncUIPromise<T>(id: string, extract: (result: UIEventResult) => T): Promise<T> | undefined {
+		if (!this.hasHandlers("ui")) return undefined;
+		return new Promise<T>((resolve) => {
+			this.pendingUIResponses.set(id, (result) => {
+				this.pendingUIResponses.delete(id);
+				resolve(extract(result));
+			});
+		});
+	}
+
 	private wrapUIForInterception(original: ExtensionUIContext): ExtensionUIContext {
 		return {
 			...original,
 			confirm: async (title, message, opts) => {
-				if (!this.hasHandlers("ui_confirm")) return original.confirm(title, message, opts);
-				const result = await this.emitUIEvent<UIConfirmEventResult>("ui_confirm", {
-					type: "ui_confirm",
+				if (!this.hasHandlers("ui")) return original.confirm(title, message, opts);
+				const id = randomUUID();
+				const asyncPromise = this.createAsyncUIPromise<boolean>(id, (r) =>
+					r?.action === "responded" && r.confirmed !== undefined ? r.confirmed : false,
+				);
+				const result = await this.emitUIEvent<UIEventResult>({
+					type: "ui",
+					id,
+					method: "confirm",
 					title,
 					message,
 					signal: opts?.signal,
 					timeout: opts?.timeout,
 				});
-				if (result?.action === "responded") return result.confirmed;
-				return original.confirm(title, message, opts);
+				if (result?.action === "responded" && result.confirmed !== undefined) {
+					this.pendingUIResponses.delete(id);
+					return result.confirmed;
+				}
+				return Promise.race([original.confirm(title, message, opts), asyncPromise!]);
 			},
 			select: async (title, options, opts) => {
-				if (!this.hasHandlers("ui_select")) return original.select(title, options, opts);
-				const result = await this.emitUIEvent<UISelectEventResult>("ui_select", {
-					type: "ui_select",
+				if (!this.hasHandlers("ui")) return original.select(title, options, opts);
+				const id = randomUUID();
+				const asyncPromise = this.createAsyncUIPromise<string | undefined>(id, (r) =>
+					r?.action === "responded" ? r.value : undefined,
+				);
+				const result = await this.emitUIEvent<UIEventResult>({
+					type: "ui",
+					id,
+					method: "select",
 					title,
 					options,
 					signal: opts?.signal,
 					timeout: opts?.timeout,
 				});
-				if (result?.action === "responded") return result.value;
-				return original.select(title, options, opts);
+				if (result?.action === "responded") {
+					this.pendingUIResponses.delete(id);
+					return result.value;
+				}
+				return Promise.race([original.select(title, options, opts), asyncPromise!]);
 			},
 			input: async (title, placeholder, opts) => {
-				if (!this.hasHandlers("ui_input")) return original.input(title, placeholder, opts);
-				const result = await this.emitUIEvent<UIInputEventResult>("ui_input", {
-					type: "ui_input",
+				if (!this.hasHandlers("ui")) return original.input(title, placeholder, opts);
+				const id = randomUUID();
+				const asyncPromise = this.createAsyncUIPromise<string | undefined>(id, (r) =>
+					r?.action === "responded" ? r.value : undefined,
+				);
+				const result = await this.emitUIEvent<UIEventResult>({
+					type: "ui",
+					id,
+					method: "input",
 					title,
 					placeholder,
 					signal: opts?.signal,
 					timeout: opts?.timeout,
 				});
-				if (result?.action === "responded") return result.value;
-				return original.input(title, placeholder, opts);
+				if (result?.action === "responded") {
+					this.pendingUIResponses.delete(id);
+					return result.value;
+				}
+				return Promise.race([original.input(title, placeholder, opts), asyncPromise!]);
+			},
+			notify: (message, notifyType) => {
+				if (this.hasHandlers("ui")) {
+					this.emitUIEvent<UIEventResult>({
+						type: "ui",
+						id: randomUUID(),
+						method: "notify",
+						title: message,
+						message,
+						notifyType,
+					}).catch(() => {});
+				}
+				return original.notify(message, notifyType);
 			},
 		};
 	}
 
 	private async emitUIEvent<TResult extends { action: "responded" } | undefined>(
-		eventName: string,
-		event: UIConfirmEvent | UISelectEvent | UIInputEvent,
+		event: UIEvent,
 	): Promise<TResult | undefined> {
 		const ctx = this.createContext();
 
 		for (const ext of this.extensions) {
-			for (const handler of ext.handlers.get(eventName) ?? []) {
+			for (const handler of ext.handlers.get("ui") ?? []) {
 				try {
 					const result = (await handler(event, ctx)) as TResult | undefined;
 					if (result?.action === "responded") return result;
@@ -905,7 +956,7 @@ export class ExtensionRunner {
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
 						extensionPath: ext.path,
-						event: eventName,
+						event: "ui",
 						error: message,
 						stack,
 					});
@@ -916,16 +967,16 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	async emitUIConfirm(event: UIConfirmEvent): Promise<UIConfirmEventResult | undefined> {
-		return this.emitUIEvent<UIConfirmEventResult>("ui_confirm", event);
+	async emitUI(event: UIEvent): Promise<UIEventResult | undefined> {
+		return this.emitUIEvent<UIEventResult>(event);
 	}
 
-	async emitUISelect(event: UISelectEvent): Promise<UISelectEventResult | undefined> {
-		return this.emitUIEvent<UISelectEventResult>("ui_select", event);
-	}
-
-	async emitUIInput(event: UIInputEvent): Promise<UIInputEventResult | undefined> {
-		return this.emitUIEvent<UIInputEventResult>("ui_input", event);
+	respondUI(id: string, result: UIEventResult): void {
+		const resolve = this.pendingUIResponses.get(id);
+		if (resolve) {
+			this.pendingUIResponses.delete(id);
+			resolve(result);
+		}
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {

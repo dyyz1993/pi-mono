@@ -152,13 +152,9 @@ export type {
 	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
-	// Events - User Bash
-	UIConfirmEvent,
-	UIConfirmEventResult,
-	UIInputEvent,
-	UIInputEventResult,
-	UISelectEvent,
-	UISelectEventResult,
+	// Events - UI
+	UIEvent,
+	UIEventResult,
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,

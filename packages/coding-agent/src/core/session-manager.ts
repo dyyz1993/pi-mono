@@ -785,6 +785,12 @@ export class SessionManager {
 		return this.persist;
 	}
 
+	flush(): void {
+		if (!this.persist || !this.sessionFile) return;
+		this._rewriteFile();
+		this.flushed = true;
+	}
+
 	getCwd(): string {
 		return this.cwd;
 	}
@@ -1171,7 +1177,7 @@ export class SessionManager {
 	 * Returns the new session file path, or undefined if not persisting.
 	 */
 	createBranchedSession(leafId: string): string | undefined {
-		const previousSessionFile = this.sessionFile;
+		const _previousSessionFile = this.sessionFile;
 		const path = this.getBranch(leafId);
 		if (path.length === 0) {
 			throw new Error(`Entry ${leafId} not found`);
@@ -1191,7 +1197,6 @@ export class SessionManager {
 			id: newSessionId,
 			timestamp,
 			cwd: this.cwd,
-			parentSession: this.persist ? previousSessionFile : undefined,
 		};
 
 		// Collect labels for entries in the path

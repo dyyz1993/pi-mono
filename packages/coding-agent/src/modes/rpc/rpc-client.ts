@@ -350,8 +350,16 @@ export class RpcClient {
 	 * Fork from a specific message.
 	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
 	 */
-	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
-		const response = await this.send({ type: "fork", entryId });
+	async fork(
+		entryId: string,
+		options?: { position?: "before" | "at" },
+	): Promise<{ text: string; cancelled: boolean; newSessionFile?: string; newSessionId?: string }> {
+		const response = await this.send({ type: "fork", entryId, position: options?.position });
+		return this.getData(response);
+	}
+
+	async navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "navigate_tree", targetId, summarize: options?.summarize });
 		return this.getData(response);
 	}
 
@@ -393,6 +401,27 @@ export class RpcClient {
 	async getMessages(): Promise<AgentMessage[]> {
 		const response = await this.send({ type: "get_messages" });
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
+	}
+
+	async getTree(): Promise<Array<{ id: string; parentId: string | null; type: string; label?: string }>> {
+		const response = await this.send({ type: "get_tree" });
+		const data = this.getData<{
+			entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+			leafId?: string | null;
+		}>(response);
+		return data.entries;
+	}
+
+	async getTreeWithLeaf(): Promise<{
+		entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+		leafId: string | null;
+	}> {
+		const response = await this.send({ type: "get_tree" });
+		const data = this.getData<{
+			entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+			leafId?: string | null;
+		}>(response);
+		return { entries: data.entries, leafId: data.leafId ?? null };
 	}
 
 	/**
@@ -607,8 +636,18 @@ export class RpcClient {
 			if (data.type === "channel_data" && data.name) {
 				const handlers = this.channelHandlers.get(data.name as string);
 				if (handlers) {
+					const payload = data.data as Record<string, unknown> | undefined;
+					const invokeId = payload?.invokeId as string | undefined;
+
 					for (const handler of handlers) {
-						handler(data.data);
+						const result = handler(data.data);
+						if (invokeId && result !== undefined) {
+							this.writeLine({
+								type: "channel_data",
+								name: data.name,
+								data: { ...(typeof result === "object" ? result : { value: result }), invokeId },
+							} as ChannelDataMessage);
+						}
 					}
 				}
 				return;

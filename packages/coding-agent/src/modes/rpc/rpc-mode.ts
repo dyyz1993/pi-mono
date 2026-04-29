@@ -574,11 +574,29 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "fork": {
-				const result = await runtimeHost.fork(command.entryId);
+				const previousName = session.sessionManager.getSessionName();
+				const forkPosition = (command as any).position === "at" ? { position: "at" as const } : undefined;
+				const result = await runtimeHost.fork(command.entryId, forkPosition);
 				if (!result.cancelled) {
+					const newName = previousName ? `fork: ${previousName}` : "fork";
+					session = runtimeHost.session;
+					session.sessionManager.appendSessionInfo(newName);
+					session.sessionManager.flush();
 					await rebindSession();
 				}
-				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
+				return success(id, "fork", {
+					text: result.selectedText,
+					cancelled: result.cancelled,
+					newSessionFile: session.sessionManager.getSessionFile(),
+					newSessionId: session.sessionManager.getSessionId(),
+				});
+			}
+
+			case "navigate_tree": {
+				const navResult = await session.navigateTree(command.targetId, {
+					summarize: command.summarize ?? false,
+				});
+				return success(id, "navigate_tree", { cancelled: navResult.cancelled });
 			}
 
 			case "clone": {
@@ -618,6 +636,22 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_messages": {
 				return success(id, "get_messages", { messages: session.messages });
+			}
+
+			case "get_tree": {
+				const entries = session.sessionManager.getEntries();
+				const treeEntries = entries.map((e) => ({
+					id: e.id,
+					parentId: e.parentId,
+					type: e.type,
+					label:
+						e.type === "message"
+							? (e as any).message?.role
+							: e.type === "custom"
+								? (e as any).customType
+								: undefined,
+				}));
+				return success(id, "get_tree", { entries: treeEntries, leafId: session.sessionManager.getLeafId() });
 			}
 
 			// =================================================================

@@ -57,7 +57,8 @@ export type RpcCommand =
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
-	| { id?: string; type: "fork"; entryId: string }
+	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
+	| { id?: string; type: "navigate_tree"; targetId: string; summarize?: boolean }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
@@ -65,6 +66,7 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
+	| { id?: string; type: "get_tree" }
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
@@ -272,6 +274,13 @@ export type RpcResponse =
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_tree";
+			success: true;
+			data: { entries: Array<{ id: string; parentId: string | null; type: string; label?: string }> };
+	  }
 
 	// Commands
 	| {

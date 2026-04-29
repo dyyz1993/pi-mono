@@ -832,89 +832,89 @@ Transforms chain across handlers. See [input-transform.ts](../examples/extension
 
 ### UI Interception Events
 
-Intercept `ctx.ui.confirm()`, `ctx.ui.select()`, and `ctx.ui.input()` calls from **any extension** or the agent itself. This allows a single extension to take over all UI dialogs -- for example, to forward permission requests to a remote service and wait for a response.
+Intercept `ctx.ui.confirm()`, `ctx.ui.select()`, and `ctx.ui.input()` calls from **any extension** or the agent itself. This allows a single extension to observe and respond to all UI dialogs -- for example, to forward permission requests to a remote service and wait for a response.
 
 Without UI interception, each extension calls `ctx.ui.confirm()` independently and the results are invisible to other extensions. With UI interception, one extension can observe and respond to all UI dialogs on behalf of the user.
 
-#### ui_confirm
+#### ui
 
-Fired when any code calls `ctx.ui.confirm()`. Return `{ action: "responded", confirmed }` to answer the dialog without showing it to the user. Return `undefined` to fall through to the original UI.
-
-```typescript
-pi.on("ui_confirm", async (event, ctx) => {
-  // event.title   - dialog title
-  // event.message - dialog message
-  // event.signal  - AbortSignal if the caller provided one
-  // event.timeout - timeout in ms if the caller provided one
-
-  // Example: forward all confirmations to a remote service
-  const response = await fetch("https://my-server/api/confirm", {
-    method: "POST",
-    body: JSON.stringify({ title: event.title, message: event.message }),
-  });
-  const decision = await response.json();
-
-  return { action: "responded", confirmed: decision.allowed };
-});
-```
-
-**Results:**
-- `{ action: "responded", confirmed: boolean }` - answer the dialog immediately (first handler to respond wins)
-- `undefined` - pass through to the original UI implementation
-
-#### ui_select
-
-Fired when any code calls `ctx.ui.select()`. Return `{ action: "responded", value }` to provide a selection without showing the UI.
+Fired when any code calls `ctx.ui.confirm()`, `ctx.ui.select()`, or `ctx.ui.input()`. The `method` field distinguishes which UI call triggered the event.
 
 ```typescript
-pi.on("ui_select", async (event, ctx) => {
-  // event.title   - dialog title
-  // event.options - string[] of selectable options
-  // event.signal  - AbortSignal if provided
-  // event.timeout - timeout in ms if provided
+pi.on("ui", async (event, ctx) => {
+  // event.id       - unique identifier for this UI request
+  // event.method   - "confirm" | "select" | "input" | "notify"
+  // event.title    - dialog title (for notify, this is the message)
+  // event.message  - dialog message (confirm only)
+  // event.options  - string[] of options (select only)
+  // event.placeholder - placeholder text (input only)
+  // event.notifyType - "info" | "warning" | "error" (notify only)
+  // event.signal   - AbortSignal if the caller provided one
+  // event.timeout  - timeout in ms if the caller provided one
 
-  // Example: only intercept dangerous permission selects
-  if (event.title.includes("Dangerous")) {
+  // Example: intercept all confirmations and forward to a remote service
+  if (event.method === "confirm") {
+    const response = await fetch("https://my-server/api/confirm", {
+      method: "POST",
+      body: JSON.stringify({ id: event.id, title: event.title, message: event.message }),
+    });
+    const decision = await response.json();
+    return { action: "responded", confirmed: decision.allowed };
+  }
+
+  // Example: intercept select dialogs with a remote decision
+  if (event.method === "select" && event.title.includes("Dangerous")) {
     const choice = await askRemote(event);
     return { action: "responded", value: choice };
   }
 
-  return undefined; // let other UI selects pass through normally
+  // Example: forward notifications to a remote service (return value is ignored for notify)
+  if (event.method === "notify") {
+    sendToRemote({ type: "notification", message: event.message, level: event.notifyType });
+    return undefined; // original notify still fires
+  }
+
+  return undefined; // pass through to the original UI
 });
 ```
 
 **Results:**
-- `{ action: "responded", value: string | undefined }` - answer the select (undefined = dismissed)
-- `undefined` - pass through to the original UI
-
-#### ui_input
-
-Fired when any code calls `ctx.ui.input()`. Return `{ action: "responded", value }` to provide input text.
-
-```typescript
-pi.on("ui_input", async (event, ctx) => {
-  // event.title       - dialog title
-  // event.placeholder - placeholder text if provided
-  // event.signal      - AbortSignal if provided
-  // event.timeout     - timeout in ms if provided
-
-  return undefined; // pass through to normal UI
-});
-```
-
-**Results:**
-- `{ action: "responded", value: string | undefined }` - provide the input (undefined = cancelled)
-- `undefined` - pass through to the original UI
+- `{ action: "responded", confirmed: boolean }` - answer a confirm dialog (first handler to respond wins)
+- `{ action: "responded", value: string | undefined }` - answer a select or input dialog (undefined = dismissed/cancelled)
+- `undefined` - pass through to the original UI implementation
+- For `notify`, the return value is ignored. The original `notify` always fires regardless.
 
 #### Short-circuit behavior
 
-All three events use first-responder semantics: the first handler to return `{ action: "responded" }` wins. Remaining handlers are not called. If no handler responds, the original UI implementation runs (TUI dialog, RPC protocol, or no-op depending on the mode).
+The `ui` event uses first-responder semantics: the first handler to return `{ action: "responded" }` wins. Remaining handlers are not called. If no handler responds, the original UI implementation runs (TUI dialog, RPC protocol, or no-op depending on the mode).
 
 If a handler throws, the error is reported via the error listener and the next handler is tried. If all handlers fail, the original UI runs as fallback.
 
+#### ctx.respondUI(id, result) -- async response injection
+
+When a handler returns `undefined`, the original UI is invoked -- but the handler can also capture the `event.id` and call `ctx.respondUI(id, result)` later to inject a response asynchronously. This creates a **race** between the original UI and the async response: first one wins, the other is ignored.
+
+```typescript
+pi.on("ui", async (event, ctx) => {
+  if (event.method === "confirm") {
+    // Forward to remote service (fire-and-forget)
+    sendToRemote({ id: event.id, message: event.message });
+    // Return undefined to let original UI also show
+    return undefined;
+  }
+});
+
+// When remote responds (e.g. via channel, webhook, etc.):
+someChannel.onReceive((response) => {
+  ctx.respondUI(response.id, { action: "responded", confirmed: response.allowed });
+});
+```
+
+If the user responds from the TUI first, the `respondUI` call is ignored. If the remote service responds first, the TUI dialog is cancelled. First response wins.
+
 #### Use cases
 
-- **Remote permission control** -- forward all `confirm`/`select` dialogs to a web dashboard or mobile app, hold the agent until the operator responds
+- **Remote permission control** -- forward all `confirm`/`select` dialogs to a web dashboard or mobile app, race with the local UI
 - **Audit logging** -- record all UI interactions without intercepting them (return `undefined` after logging)
 - **Headless automation** -- auto-approve or auto-deny dialogs based on rules, enabling unattended operation
 - **Custom approval workflows** -- require multiple approvers, time-based auto-approval, or integration with ticketing systems

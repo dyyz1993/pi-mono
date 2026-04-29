@@ -14,7 +14,8 @@
 - [5. 响应格式与流式事件](#5-响应格式与流式事件)
 - [6. Extension UI 交互协议](#6-extension-ui-交互协议)
 - [7. SessionManager 与会话文件格式](#7-sessionmanager-与会话文件格式)
-- [8. 历史数据、WebUI 展示与源码索引](#8-历史数据webui-展示与源码索引)
+- [8. LSP Extension](#8-lsp-extension)
+- [9. 历史数据、WebUI 展示与源码索引](#9-历史数据webui-展示与源码索引)
 
 ---
 
@@ -253,7 +254,26 @@ await client.waitForIdle();
 
 ---
 
-## 8. 历史数据、WebUI 展示与源码索引
+## 8. LSP Extension
+
+详见：[rpc-extension-lsp.md](rpc/rpc-extension-lsp.md)
+
+包含：
+- 扩展架构与模块职责
+- 配置文件格式（JSON/YAML）与服务器定义
+- `lsp` 工具：diagnostics、definition、references、hover、symbols、rename、status、reload
+- `lsp_health` 工具（向后兼容健康检查）
+- `/lsp` 和 `/lsp-status` 命令
+- Channel 事件协议（startup_begin/complete、server_ready/error、status_changed、diagnostics_update、mode_changed）
+- 诊断模式（agent_end / edit_write / disabled）
+- 生命周期钩子（session_start、session_shutdown、agent_end、tool_result write-through）
+- 文件追踪器（LRU 管理）
+- 传输层（JSON-RPC over stdio、lspmux 代理、多服务器路由）
+- 完整源码文件索引
+
+---
+
+## 9. 历史数据、WebUI 展示与源码索引
 
 详见：[rpc-data-guide.md](rpc/rpc-data-guide.md)
 
