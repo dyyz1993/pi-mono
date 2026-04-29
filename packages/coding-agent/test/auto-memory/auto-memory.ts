@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { AgentMessage, AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { Type } from "typebox";
 import type { CallLLMOptions, ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
+import { ServerChannel } from "../../src/core/extensions/server-channel.js";
 import {
 	addHistoryEntry,
 	applyPurification,
@@ -592,7 +593,8 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 
 	bookmarkCreator.registerTool(pi);
 
-	const memoryChannel = pi.registerChannel("memory");
+	const rawMemoryChannel = pi.registerChannel("memory");
+	const memoryChannel = new ServerChannel(rawMemoryChannel);
 
 	function status(msg?: string): void {
 		ctx?.ui.setStatus("auto-memory", msg);
@@ -697,70 +699,64 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		status(undefined);
 	});
 
-	memoryChannel.onReceive(async (raw) => {
-		const data = raw as {
-			type: string;
-			projectPath?: string;
+	memoryChannel.handle("list", async () => {
+		try {
+			const memories = await scanMemoryFiles(memoryDir);
+			const files = memories.map((m) => ({
+				filename: m.filename,
+				filePath: m.filePath,
+				description: m.description ?? null,
+				type: m.type ?? null,
+				mtimeMs: m.mtimeMs,
+			}));
+			let entrypointContent: string | null = null;
+			try {
+				entrypointContent = await readFile(getEntrypointPath(cwd), "utf-8");
+			} catch {}
+			return { type: "list_result", files, entrypointContent, memoryDir };
+		} catch {
+			return { type: "list_result", files: [], entrypointContent: null, memoryDir };
+		}
+	});
+
+	memoryChannel.handle("userRemember", async (params) => {
+		const data = params as {
 			sourceSessionId?: string;
 			sourceMessageIds?: string[];
 			content?: string;
 		};
-
-		if (data.type === "list") {
-			try {
-				const memories = await scanMemoryFiles(memoryDir);
-				const files = memories.map((m) => ({
-					filename: m.filename,
-					filePath: m.filePath,
-					description: m.description ?? null,
-					type: m.type ?? null,
-					mtimeMs: m.mtimeMs,
-				}));
-				let entrypointContent: string | null = null;
-				try {
-					entrypointContent = await readFile(getEntrypointPath(cwd), "utf-8");
-				} catch {}
-				memoryChannel.send({ type: "list_result", files, entrypointContent, memoryDir });
-			} catch {
-				memoryChannel.send({ type: "list_result", files: [], entrypointContent: null, memoryDir });
+		memoryChannel.emit("bookmark_creating", { type: "bookmark_creating" });
+		try {
+			const result = await bookmarkCreator.create(
+				data.content ?? "",
+				data.sourceSessionId ?? "",
+				data.sourceMessageIds ?? [],
+				memoryDir,
+				(opts) => pi.callLLM(opts),
+			);
+			if (result) {
+				pi.appendEntry("memory_created", result);
+				const updatedMemories = await scanMemoryFiles(memoryDir);
+				memoryChannel.emit("memory_updated", {
+					type: "memory_updated",
+					files: updatedMemories.map((m) => ({
+						filename: m.filename,
+						filePath: m.filePath,
+						description: m.description ?? null,
+						type: m.type ?? null,
+						mtimeMs: m.mtimeMs,
+					})),
+				});
+			} else {
+				pi.appendEntry("memory_failed", { reason: "LLM failed" });
+				memoryChannel.emit("memory_update_failed", { type: "memory_update_failed", reason: "LLM failed" });
 			}
-			return;
+		} catch (e) {
+			const errMsg = e instanceof Error ? e.message : String(e);
+			pi.appendEntry("memory_failed", { reason: errMsg });
+			notify(`Bookmark error: ${errMsg}`, "warning");
+			memoryChannel.emit("memory_update_failed", { type: "memory_update_failed", reason: "Error" });
 		}
-
-		if (data.type === "user_remember" && data.content) {
-			memoryChannel.send({ type: "bookmark_creating" });
-			try {
-				const result = await bookmarkCreator.create(
-					data.content,
-					data.sourceSessionId ?? "",
-					data.sourceMessageIds ?? [],
-					memoryDir,
-					(opts) => pi.callLLM(opts),
-				);
-				if (result) {
-					pi.appendEntry("memory_created", result);
-					const updatedMemories = await scanMemoryFiles(memoryDir);
-					memoryChannel.send({
-						type: "memory_updated",
-						files: updatedMemories.map((m) => ({
-							filename: m.filename,
-							filePath: m.filePath,
-							description: m.description ?? null,
-							type: m.type ?? null,
-							mtimeMs: m.mtimeMs,
-						})),
-					});
-				} else {
-					pi.appendEntry("memory_failed", { reason: "LLM failed" });
-					memoryChannel.send({ type: "memory_update_failed", reason: "LLM failed" });
-				}
-			} catch (e) {
-				const errMsg = e instanceof Error ? e.message : String(e);
-				pi.appendEntry("memory_failed", { reason: errMsg });
-				notify(`Bookmark error: ${errMsg}`, "warning");
-				memoryChannel.send({ type: "memory_update_failed", reason: "Error" });
-			}
-			return;
-		}
+		return { ok: true };
 	});
 }

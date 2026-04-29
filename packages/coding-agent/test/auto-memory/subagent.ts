@@ -16,6 +16,7 @@ import * as path from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@dyyz1993/pi-agent-core";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
+import { ServerChannel } from "../../src/core/extensions/server-channel.js";
 import { getSubagentDir } from "./utils.js";
 
 export interface SubagentParams {
@@ -211,7 +212,8 @@ export function runSubagent(
 }
 
 export default function subagentExtension(pi: ExtensionAPI): void {
-	const channel = pi.registerChannel("subagent");
+	const rawChannel = pi.registerChannel("subagent");
+	const channel = new ServerChannel(rawChannel);
 
 	pi.registerTool({
 		name: "subagent",
@@ -254,7 +256,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 			const wrappedChannel = {
 				send: (data: unknown) => {
-					channel.send(data);
+					rawChannel.send(data);
 					const payload = data as { event: Record<string, unknown> };
 					if (payload.event) {
 						details.events.push(payload.event);
@@ -273,7 +275,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			};
 
 			try {
-				channel.send({ event: { type: "subagent_start", toolCallId, description, instruction }, sessionId });
+				channel.emit("subagent_start", {
+					event: { type: "subagent_start", toolCallId, description, instruction },
+					sessionId,
+				});
 
 				const effectiveModel = model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
 				const args: string[] = ["--mode", "json", "-p", "--no-extensions", "--session", sessionPath];

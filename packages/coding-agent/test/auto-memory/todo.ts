@@ -13,6 +13,7 @@ import { StringEnum } from "@dyyz1993/pi-ai";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
+import { ServerChannel } from "../../src/core/extensions/server-channel.js";
 
 export interface Todo {
 	id: number;
@@ -54,11 +55,6 @@ const TodoParams = Type.Object({
 	priority: Type.Optional(StringEnum(["high", "medium", "low"] as const)),
 });
 
-function emitChannel(channel: { send: (data: unknown) => void } | null, action: string, todos: Todo[]): void {
-	if (!channel) return;
-	channel.send({ action, todos, timestamp: Date.now() } satisfies TodoChannelEvent);
-}
-
 function persistEntry(pi: ExtensionAPI, action: string, todos: Todo[], nextId: number): void {
 	pi.appendEntry("todo", { action, todos: [...todos], nextId, timestamp: Date.now() });
 }
@@ -92,12 +88,7 @@ function updateWidget(ctx: ExtensionContext | undefined, todos: Todo[]): void {
 export default function (pi: ExtensionAPI) {
 	let todos: Todo[] = [];
 	let nextId = 1;
-	let channel: {
-		name: string;
-		send: (data: unknown) => void;
-		onReceive: (handler: (data: unknown) => void) => () => void;
-		invoke: (data: unknown, timeoutMs?: number) => Promise<unknown>;
-	} | null = null;
+	let channel: ServerChannel | null = null;
 
 	const reconstructState = (ctx: ExtensionContext): void => {
 		todos = [];
@@ -126,9 +117,10 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		channel = pi.registerChannel("todo");
+		const rawChannel = pi.registerChannel("todo");
+		channel = new ServerChannel(rawChannel);
 		reconstructState(ctx);
-		emitChannel(channel, "restored", todos);
+		channel.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
@@ -143,7 +135,7 @@ export default function (pi: ExtensionAPI) {
 			switch (params.action) {
 				case "list": {
 					const active = todos.filter((t) => !t.deleted);
-					emitChannel(channel, "list", todos);
+					channel?.emit("list", { action: "list", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "list", todos, nextId);
 					updateWidget(ctx, todos);
 					return {
@@ -161,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 
 				case "add": {
 					if (!params.text) {
-						emitChannel(channel, "error", todos);
+						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 						persistEntry(pi, "add_error", todos, nextId);
 						return {
 							content: [{ type: "text", text: "Error: text required for add" }],
@@ -178,7 +170,7 @@ export default function (pi: ExtensionAPI) {
 						todos.push(newTodo);
 						added.push(newTodo);
 					}
-					emitChannel(channel, "add", todos);
+					channel?.emit("add", { action: "add", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "add", todos, nextId);
 					updateWidget(ctx, todos);
 					if (added.length === 1) {
@@ -197,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 
 				case "toggle": {
 					if (params.id === undefined) {
-						emitChannel(channel, "error", todos);
+						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 						persistEntry(pi, "toggle_error", todos, nextId);
 						return {
 							content: [{ type: "text", text: "Error: id required for toggle" }],
@@ -206,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					const todo = todos.find((t) => t.id === params.id);
 					if (!todo) {
-						emitChannel(channel, "error", todos);
+						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 						persistEntry(pi, "toggle_notfound", todos, nextId);
 						return {
 							content: [{ type: "text", text: `Todo #${params.id} not found` }],
@@ -219,7 +211,7 @@ export default function (pi: ExtensionAPI) {
 						};
 					}
 					todo.done = !todo.done;
-					emitChannel(channel, "toggle", todos);
+					channel?.emit("toggle", { action: "toggle", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "toggle", todos, nextId);
 					updateWidget(ctx, todos);
 					return {
@@ -230,7 +222,7 @@ export default function (pi: ExtensionAPI) {
 
 				case "remove": {
 					if (params.id === undefined) {
-						emitChannel(channel, "error", todos);
+						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 						persistEntry(pi, "remove_error", todos, nextId);
 						return {
 							content: [{ type: "text", text: "Error: id required for remove" }],
@@ -239,7 +231,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					const todo = todos.find((t) => t.id === params.id);
 					if (!todo) {
-						emitChannel(channel, "error", todos);
+						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 						persistEntry(pi, "remove_notfound", todos, nextId);
 						return {
 							content: [{ type: "text", text: `Todo #${params.id} not found` }],
@@ -247,7 +239,7 @@ export default function (pi: ExtensionAPI) {
 						};
 					}
 					todo.deleted = true;
-					emitChannel(channel, "remove", todos);
+					channel?.emit("remove", { action: "remove", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "remove", todos, nextId);
 					updateWidget(ctx, todos);
 					return {
@@ -260,7 +252,7 @@ export default function (pi: ExtensionAPI) {
 					const count = todos.length;
 					todos = [];
 					nextId = 1;
-					emitChannel(channel, "clear", []);
+					channel?.emit("clear", { action: "clear", todos: [], timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "clear", [], 1);
 					updateWidget(ctx, todos);
 					return {
@@ -270,7 +262,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				default: {
-					emitChannel(channel, "error", todos);
+					channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					return {
 						content: [{ type: "text", text: `Unknown action: ${params.action}` }],
 						details: {

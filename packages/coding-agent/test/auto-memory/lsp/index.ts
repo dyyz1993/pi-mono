@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../../src/core/extensions/index.js";
+import { ServerChannel } from "../../../src/core/extensions/server-channel.js";
 import { createFileTracker } from "./client/file-tracker.js";
 import { createLspRuntimeRegistry } from "./client/registry.js";
 import { createLspConfigResolver } from "./config/resolver.js";
@@ -30,11 +31,6 @@ export interface LspChannelEvent {
 	totalServers?: number;
 }
 
-function emitLspEvent(channel: { send: (data: unknown) => void } | null, payload: LspChannelEvent): void {
-	if (!channel) return;
-	channel.send(payload);
-}
-
 export default function lspExtension(pi: ExtensionAPI): void {
 	const runtime = createLspRuntimeRegistry();
 	const configResolver = createLspConfigResolver();
@@ -46,7 +42,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	const writeThroughHooks = createWriteThroughHooks(runtime, {}, mode, fileTracker);
 	const agentEndHook = createAgentEndHook(runtime, mode, fileTracker, (results: FileDiagnostics[]) => {
 		for (const { filePath, diagnostics } of results) {
-			emitLspEvent(lspChannel, {
+			lspChannel?.emit("diagnostics_update", {
 				event: "diagnostics_update",
 				timestamp: Date.now(),
 				filePath,
@@ -80,39 +76,35 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	});
 
 	let idleCleanupTimer: ReturnType<typeof setTimeout> | undefined;
-	let lspChannel: {
-		name: string;
-		send: (data: unknown) => void;
-		onReceive: (handler: (data: unknown) => void) => () => void;
-	} | null = null;
+	let lspChannel: ServerChannel | null = null;
 
 	toolRouter.register(pi);
 	writeThroughHooks.register(pi);
 	agentEndHook.register(pi);
 
 	pi.on("session_start", async (_event: any, ctx: any) => {
-		lspChannel = pi.registerChannel("lsp");
+		const raw = pi.registerChannel("lsp");
 
-		if (lspChannel) {
-			lspChannel.onReceive((incoming: any) => {
-				const msg = incoming as { action?: string; mode?: string };
-				if (msg.action === "setMode" && msg.mode) {
-					const validModes: DiagnosticsModeName[] = ["agent_end", "edit_write", "disabled"];
-					if (validModes.includes(msg.mode as DiagnosticsModeName)) {
-						mode.set(msg.mode as DiagnosticsModeName);
-						emitLspEvent(lspChannel, {
-							event: "mode_changed",
-							timestamp: Date.now(),
-							mode: mode.get(),
-						});
-					}
-				}
+		if (raw) {
+			lspChannel = new ServerChannel(raw);
+
+			lspChannel.handle("setMode", (params) => {
+				const { mode: newMode } = params as { mode: string };
+				const validModes: DiagnosticsModeName[] = ["agent_end", "edit_write", "disabled"];
+				if (!validModes.includes(newMode as DiagnosticsModeName)) return { ok: false };
+				mode.set(newMode as DiagnosticsModeName);
+				lspChannel?.emit("mode_changed", {
+					event: "mode_changed",
+					timestamp: Date.now(),
+					mode: mode.get(),
+				});
+				return { ok: true, mode: mode.get() };
 			});
 		}
 
 		const config = configResolver.resolve();
 
-		emitLspEvent(lspChannel, {
+		lspChannel?.emit("startup_begin", {
 			event: "startup_begin",
 			timestamp: Date.now(),
 			servers: config.servers.map((s) => ({ name: s.name, state: "starting", fileTypes: s.fileTypes })),
@@ -123,7 +115,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		const status = runtime.getStatus();
 
 		for (const srv of status.servers) {
-			emitLspEvent(lspChannel, {
+			lspChannel?.emit("server_ready", {
 				event:
 					srv.status.state === "ready"
 						? "server_ready"
@@ -136,12 +128,12 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			});
 		}
 
-		emitLspEvent(lspChannel, {
+		lspChannel?.emit("status_changed", {
 			event: "status_changed",
 			timestamp: Date.now(),
 			servers: status.servers,
 		});
-		emitLspEvent(lspChannel, {
+		lspChannel?.emit("startup_complete", {
 			event: "startup_complete",
 			timestamp: Date.now(),
 			servers: status.servers,
@@ -233,7 +225,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			}
 
 			mode.set(trimmed as DiagnosticsModeName);
-			emitLspEvent(lspChannel, {
+			lspChannel?.emit("mode_changed", {
 				event: "mode_changed",
 				timestamp: Date.now(),
 				mode: mode.get(),
