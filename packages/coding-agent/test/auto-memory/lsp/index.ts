@@ -88,7 +88,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		if (raw) {
 			lspChannel = new ServerChannel(raw);
 
-			lspChannel.handle("setMode", (params) => {
+			lspChannel.handle("lsp.setMode", (params) => {
 				const { mode: newMode } = params as { mode: string };
 				const validModes: DiagnosticsModeName[] = ["agent_end", "edit_write", "disabled"];
 				if (!validModes.includes(newMode as DiagnosticsModeName)) return { ok: false };

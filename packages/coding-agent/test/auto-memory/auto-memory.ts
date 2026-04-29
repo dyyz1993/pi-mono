@@ -699,7 +699,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		status(undefined);
 	});
 
-	memoryChannel.handle("list", async () => {
+	memoryChannel.handle("memory.list", async () => {
 		try {
 			const memories = await scanMemoryFiles(memoryDir);
 			const files = memories.map((m) => ({
@@ -719,7 +719,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	memoryChannel.handle("userRemember", async (params) => {
+	memoryChannel.handle("memory.userRemember", async (params) => {
 		const data = params as {
 			sourceSessionId?: string;
 			sourceMessageIds?: string[];
