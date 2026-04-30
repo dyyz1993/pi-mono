@@ -130,7 +130,7 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "custom_entry"; customType: string; data?: unknown; id: string }
+	| { type: "custom_entry"; customType: string; data?: unknown; id: string; display?: boolean }
 	| { type: "session_rename"; oldName: string | undefined; newName: string };
 
 /** Listener function for agent session events */
@@ -2181,9 +2181,9 @@ export class AgentSession {
 						});
 					});
 				},
-				appendEntry: (customType, data) => {
-					const id = this.sessionManager.appendCustomEntry(customType, data);
-					this._emit({ type: "custom_entry", customType, data, id });
+				appendEntry: (customType, data, options) => {
+					const id = this.sessionManager.appendCustomEntry(customType, data, options);
+					this._emit({ type: "custom_entry", customType, data, id, display: options?.display });
 				},
 				setSessionName: (name) => {
 					const oldName = this.sessionManager.getSessionName();
@@ -2816,7 +2816,13 @@ export class AgentSession {
 	 */
 	async navigateTree(
 		targetId: string,
-		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
+		options: {
+			summarize?: boolean;
+			customInstructions?: string;
+			replaceInstructions?: boolean;
+			label?: string;
+			skipFiles?: boolean;
+		} = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
 		const oldLeafId = this.sessionManager.getLeafId();
 
@@ -2984,12 +2990,45 @@ export class AgentSession {
 			oldLeafId,
 			summaryEntry,
 			fromExtension: summaryText ? fromExtension : undefined,
+			skipFiles: options.skipFiles,
 		});
 
 		// Emit to custom tools
 
 		this._branchSummaryAbortController = undefined;
 		return { editorText, cancelled: false, summaryEntry };
+	}
+
+	async previewRollback(targetId: string): Promise<{ restored: string[]; deleted: string[] }> {
+		const oldLeafId = this.sessionManager.getLeafId();
+
+		let newLeafId: string | null;
+		const targetEntry = this.sessionManager.getEntry(targetId);
+		if (!targetEntry) {
+			throw new Error(`Entry ${targetId} not found`);
+		}
+
+		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
+			newLeafId = targetEntry.parentId;
+		} else if (targetEntry.type === "custom_message") {
+			newLeafId = targetEntry.parentId;
+		} else {
+			newLeafId = targetId;
+		}
+
+		const result = await this._extensionRunner.emit({
+			type: "session_tree",
+			newLeafId,
+			oldLeafId,
+			preview: true,
+		} as import("./extensions/types.js").SessionTreeEvent);
+
+		return (
+			(result as unknown as import("./extensions/types.js").SessionTreePreviewResult) ?? {
+				restored: [],
+				deleted: [],
+			}
+		);
 	}
 
 	/**

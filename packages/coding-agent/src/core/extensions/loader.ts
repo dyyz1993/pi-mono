@@ -330,9 +330,9 @@ function createExtensionAPI(
 			runtime.sendUserMessage(content, options);
 		},
 
-		appendEntry(customType: string, data?: unknown): void {
+		appendEntry(customType: string, data?: unknown, options?: { display?: boolean }): void {
 			runtime.assertActive();
-			runtime.appendEntry(customType, data);
+			runtime.appendEntry(customType, data, options);
 		},
 
 		setSessionName(name: string): void {

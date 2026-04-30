@@ -78,7 +78,7 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 	const rawChannel = pi.registerChannel("rules-engine");
 	const channel = new ServerChannel<RulesChannelContract>(rawChannel);
 
-	channel.handle("getSnapshot", (params) => {
+	channel.handle("rules.getSnapshot", (params) => {
 		const unconditional = getUnconditionalRules();
 		const conditional = getConditionalRules();
 		const matchHistory = rebuildMatchHistory(lastMessages);
@@ -356,12 +356,6 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 				),
 			);
 
-			pi.appendEntry("rules", {
-				action: "loaded",
-				ruleCount: rules.length,
-				scannedDirs,
-				timestamp: Date.now(),
-			});
 		}
 	});
 
@@ -489,11 +483,6 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		channel.emit("unloaded", { type: "unloaded", reason: "session_shutdown" });
-		pi.appendEntry("rules", {
-			action: "unloaded",
-			reason: "session_shutdown",
-			timestamp: Date.now(),
-		});
 		ctx.ui.setStatus("rules-engine", undefined);
 	});
 }

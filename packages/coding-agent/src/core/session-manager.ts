@@ -99,6 +99,12 @@ export interface CustomEntry<T = unknown> extends SessionEntryBase {
 	type: "custom";
 	customType: string;
 	data?: T;
+	/**
+	 * Controls UI rendering. Defaults to true.
+	 * - true: rendered as a visible card in the chat
+	 * - false: hidden from chat (still persisted in session JSON)
+	 */
+	display?: boolean;
 }
 
 /** Label entry for user-defined bookmarks/markers on entries. */
@@ -903,11 +909,12 @@ export class SessionManager {
 	}
 
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-	appendCustomEntry(customType: string, data?: unknown): string {
+	appendCustomEntry(customType: string, data?: unknown, options?: { display?: boolean }): string {
 		const entry: CustomEntry = {
 			type: "custom",
 			customType,
 			data,
+			display: options?.display,
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),

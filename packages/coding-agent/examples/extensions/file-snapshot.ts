@@ -290,7 +290,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 				snapshotTreeHash,
 				diff: hasChanges ? diff : null,
 				turnIndex,
-			} satisfies StepSnapshot);
+			} satisfies StepSnapshot, { display: false });
 			lastCommittedTreeHash = snapshotTreeHash || null;
 		}
 
@@ -298,6 +298,8 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_tree", async (event: SessionTreeEvent, ctx: ExtensionContext) => {
+		if (event.skipFiles) return;
+
 		const targetId = event.newLeafId;
 		const s = getStore(ctx);
 		const entries = ctx.sessionManager.getEntries();
@@ -325,11 +327,11 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 		const targetFiles = targetTreeHash ? s.readTree(targetTreeHash) : new Map<string, string>();
 		const currentFiles = currentTreeHash2 ? s.readTree(currentTreeHash2) : new Map<string, string>();
 
-		const toRestore = new Map<string, string>();
+		const toRestore: string[] = [];
 		for (const [path, content] of targetFiles) {
 			const current = currentFiles.get(path);
 			if (current !== content) {
-				toRestore.set(path, content);
+				toRestore.push(path);
 			}
 		}
 
@@ -340,7 +342,11 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 			}
 		}
 
-		if (toRestore.size === 0 && toDelete.length === 0) return;
+		if (toRestore.length === 0 && toDelete.length === 0) return;
+
+		if (event.preview) {
+			return { restored: toRestore.sort(), deleted: toDelete.sort() };
+		}
 
 		const preRollbackFiles = s.scanWorkingDir(ctx.cwd);
 		const preRollbackTreeHash = preRollbackFiles.size > 0 ? s.writeTree(preRollbackFiles) : "";
@@ -348,10 +354,10 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 		pi.appendEntry("unrevert-point", {
 			preRollbackTreeHash,
 			rolledBackToLeaf: targetId ?? "",
-			restoredFiles: [...toRestore.keys()],
+			restoredFiles: toRestore,
 		} satisfies UnrevertPoint);
 
-		restoreFiles(ctx.cwd, toRestore);
+		restoreFiles(ctx.cwd, new Map(toRestore.map((p) => [p, targetFiles.get(p)!])));
 		deleteFiles(ctx.cwd, toDelete);
 	});
 }

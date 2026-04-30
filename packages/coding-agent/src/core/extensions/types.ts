@@ -599,6 +599,13 @@ export interface SessionTreeEvent {
 	oldLeafId: string | null;
 	summaryEntry?: BranchSummaryEntry;
 	fromExtension?: boolean;
+	skipFiles?: boolean;
+	preview?: boolean;
+}
+
+export interface SessionTreePreviewResult {
+	restored: string[];
+	deleted: string[];
 }
 
 export type SessionEvent =
@@ -1213,7 +1220,7 @@ export interface ExtensionAPI {
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	appendEntry<T = unknown>(customType: string, data?: T, options?: { display?: boolean }): void;
 
 	// =========================================================================
 	// Session Metadata
@@ -1442,7 +1449,7 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp" },
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: { display?: boolean }) => void;
 
 export type SetSessionNameHandler = (name: string) => void;
 
