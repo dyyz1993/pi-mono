@@ -198,6 +198,12 @@ export function createExtensionRuntime(): ExtensionRuntime {
 					}
 					return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
 				},
+				call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
+					if (realChannel) {
+						return realChannel.call(method, params, timeoutMs);
+					}
+					return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
+				},
 			};
 
 			runtime.pendingChannelRegistrations.push({

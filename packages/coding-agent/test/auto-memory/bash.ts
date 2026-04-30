@@ -73,6 +73,12 @@ import {
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	cwd: Type.Optional(
+		Type.String({
+			description:
+				"Working directory for the command. Defaults to the agent's current working directory. Use this to run commands in a specific project or directory without cd.",
+		}),
+	),
 });
 
 export interface BashProcess {
@@ -147,122 +153,129 @@ export default function (pi: ExtensionAPI) {
 		deletedIds.clear();
 		channel.emit("list", { type: "list", processes: [], timestamp: Date.now() } satisfies BashChannelEvent);
 
-		rawChannel.onReceive((data) => {
-			const msg = data as { action?: string; toolCallId?: string };
-			if (!msg?.action) return;
+		channel.handle("list", () => {
+			const activeBg = Array.from(managed.values())
+				.filter((m) => m.backgrounded)
+				.map((m) => m.proc);
+			const hist = history.filter((p) => !deletedIds.has(p.toolCallId));
+			return {
+				type: "list",
+				processes: [...activeBg, ...hist],
+				timestamp: Date.now(),
+			} satisfies BashChannelEvent;
+		});
 
-			if (msg.action === "list") {
-				const activeBg = Array.from(managed.values())
-					.filter((m) => m.backgrounded)
-					.map((m) => m.proc);
-				const hist = history.filter((p) => !deletedIds.has(p.toolCallId));
-				channel?.emit("list", {
-					type: "list",
-					processes: [...activeBg, ...hist],
+		channel.handle("kill", (params) => {
+			const msg = params as { toolCallId?: string };
+			if (!msg?.toolCallId) return;
+			const m = managed.get(msg.toolCallId);
+			if (m?.proc.pid) {
+				killProcessTree(m.proc.pid);
+				m.proc.status = "terminated";
+				m.proc.endedAt = Date.now();
+				m.resolved = true;
+				m.killedByUser = true;
+				const durationMs = m.proc.endedAt - m.proc.startedAt;
+				if (m.logStream) m.logStream.end();
+				channel?.emit("terminated", {
+					type: "terminated",
+					toolCallId: msg.toolCallId,
+					pid: m.proc.pid,
+					processes: Array.from(managed.values()).map((x) => x.proc),
 					timestamp: Date.now(),
 				} satisfies BashChannelEvent);
-			}
-
-			if (msg.action === "kill" && msg.toolCallId) {
-				const m = managed.get(msg.toolCallId);
-				if (m?.proc.pid) {
-					killProcessTree(m.proc.pid);
-					m.proc.status = "terminated";
-					m.proc.endedAt = Date.now();
-					m.resolved = true;
-					m.killedByUser = true;
-					const durationMs = m.proc.endedAt - m.proc.startedAt;
-					if (m.logStream) m.logStream.end();
-					channel?.emit("terminated", {
-						type: "terminated",
-						toolCallId: msg.toolCallId,
-						pid: m.proc.pid,
-						processes: Array.from(managed.values()).map((x) => x.proc),
-						timestamp: Date.now(),
-					} satisfies BashChannelEvent);
-					m.resolve({
-						content: [
-							{
-								type: "text",
-								text: `${m.proc.output || "(no output)"}\n\n[User cancelled after ${formatDuration(durationMs)}, PID: ${m.proc.pid}${m.proc.logPath ? `. Log: ${m.proc.logPath}` : ""}]`,
-							},
-						],
-						details: {
-							terminated: {
-								reason: "user_cancel",
-								pid: m.proc.pid,
-								command: m.proc.command,
-								startedAt: m.proc.startedAt,
-								endedAt: m.proc.endedAt,
-								durationMs,
-								logPath: m.proc.logPath,
-							},
+				m.resolve({
+					content: [
+						{
+							type: "text",
+							text: `${m.proc.output || "(no output)"}\n\n[User cancelled after ${formatDuration(durationMs)}, PID: ${m.proc.pid}${m.proc.logPath ? `. Log: ${m.proc.logPath}` : ""}]`,
 						},
-					});
-				}
-			}
-
-			if (msg.action === "background" && msg.toolCallId) {
-				const m = managed.get(msg.toolCallId);
-				if (m) {
-					m.proc.status = "background";
-					m.resolved = true;
-					m.backgrounded = true;
-					m.outputSubscribed = false;
-					createLogStream(m);
-					const durationMs = Date.now() - m.proc.startedAt;
-					channel?.emit("background", {
-						type: "background",
-						toolCallId: msg.toolCallId,
-						pid: m.proc.pid,
-						data: m.proc.output.slice(-2000),
-						processes: Array.from(managed.values()).map((x) => x.proc),
-						timestamp: Date.now(),
-					} satisfies BashChannelEvent);
-					const outputText = m.proc.output || "(no output yet)";
-					m.resolve({
-						content: [
-							{
-								type: "text",
-								text: `${outputText}\n\n[Moved to background after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}${m.proc.logPath ? `. Log: ${m.proc.logPath}` : ""}. Use the Shell panel in the sidebar to monitor or kill the process.]`,
-							},
-						],
-						details: {
-							background: {
-								pid: m.proc.pid,
-								command: m.proc.command,
-								startedAt: m.proc.startedAt,
-								durationMs,
-								logPath: m.proc.logPath,
-								detached: false,
-							},
+					],
+					details: {
+						terminated: {
+							reason: "user_cancel",
+							pid: m.proc.pid,
+							command: m.proc.command,
+							startedAt: m.proc.startedAt,
+							endedAt: m.proc.endedAt,
+							durationMs,
+							logPath: m.proc.logPath,
 						},
-					});
-				}
+					},
+				});
 			}
+		});
 
-			if (msg.action === "subscribe_output" && msg.toolCallId) {
-				const m = managed.get(msg.toolCallId);
-				if (m?.backgrounded) m.outputSubscribed = true;
+		channel.handle("background", (params) => {
+			const msg = params as { toolCallId?: string };
+			if (!msg?.toolCallId) return;
+			const m = managed.get(msg.toolCallId);
+			if (m) {
+				m.proc.status = "background";
+				m.resolved = true;
+				m.backgrounded = true;
+				m.outputSubscribed = false;
+				createLogStream(m);
+				const durationMs = Date.now() - m.proc.startedAt;
+				channel?.emit("background", {
+					type: "background",
+					toolCallId: msg.toolCallId,
+					pid: m.proc.pid,
+					data: m.proc.output.slice(-2000),
+					processes: Array.from(managed.values()).map((x) => x.proc),
+					timestamp: Date.now(),
+				} satisfies BashChannelEvent);
+				const outputText = m.proc.output || "(no output yet)";
+				m.resolve({
+					content: [
+						{
+							type: "text",
+							text: `${outputText}\n\n[Moved to background after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}${m.proc.logPath ? `. Log: ${m.proc.logPath}` : ""}. Use the Shell panel in the sidebar to monitor or kill the process.]`,
+						},
+					],
+					details: {
+						background: {
+							pid: m.proc.pid,
+							command: m.proc.command,
+							startedAt: m.proc.startedAt,
+							durationMs,
+							logPath: m.proc.logPath,
+							detached: false,
+						},
+					},
+				});
 			}
+		});
 
-			if (msg.action === "unsubscribe_output" && msg.toolCallId) {
-				const m = managed.get(msg.toolCallId);
-				if (m) m.outputSubscribed = false;
-			}
+		channel.handle("subscribe_output", (params) => {
+			const msg = params as { toolCallId?: string };
+			if (!msg?.toolCallId) return;
+			const m = managed.get(msg.toolCallId);
+			if (m?.backgrounded) m.outputSubscribed = true;
+		});
 
-			if (msg.action === "remove" && msg.toolCallId) {
-				deletedIds.add(msg.toolCallId);
-				managed.delete(msg.toolCallId);
-				const idx = history.findIndex((p) => p.toolCallId === msg.toolCallId);
-				if (idx >= 0) history.splice(idx, 1);
-			}
+		channel.handle("unsubscribe_output", (params) => {
+			const msg = params as { toolCallId?: string };
+			if (!msg?.toolCallId) return;
+			const m = managed.get(msg.toolCallId);
+			if (m) m.outputSubscribed = false;
+		});
 
-			if (msg.action === "write_stdin" && msg.toolCallId && msg.data) {
-				const m = managed.get(msg.toolCallId);
-				if (m?.stdin && !m.stdin.destroyed) {
-					m.stdin.write(msg.data);
-				}
+		channel.handle("remove", (params) => {
+			const msg = params as { toolCallId?: string };
+			if (!msg?.toolCallId) return;
+			deletedIds.add(msg.toolCallId);
+			managed.delete(msg.toolCallId);
+			const idx = history.findIndex((p) => p.toolCallId === msg.toolCallId);
+			if (idx >= 0) history.splice(idx, 1);
+		});
+
+		channel.handle("write_stdin", (params) => {
+			const msg = params as { toolCallId?: string; data?: string };
+			if (!msg?.toolCallId || !msg?.data) return;
+			const m = managed.get(msg.toolCallId);
+			if (m?.stdin && !m.stdin.destroyed) {
+				m.stdin.write(msg.data);
 			}
 		});
 	});
@@ -270,18 +283,18 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Supports optional timeout (seconds) and custom working directory (cwd).`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
 		async execute(
 			toolCallId: string,
-			{ command, timeout }: { command: string; timeout?: number },
+			{ command, timeout, cwd: cwdParam }: { command: string; timeout?: number; cwd?: string },
 			signal?: AbortSignal,
 			onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 			_ctx?: ExtensionContext,
 		): Promise<AgentToolResult<BashToolDetails>> {
 			return new Promise((resolve, reject) => {
-				const cwd = _ctx?.cwd ?? process.cwd();
+				const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
 				const { shell, args } = getShellConfig();
 				if (!existsSync(cwd)) {
 					reject(new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`));

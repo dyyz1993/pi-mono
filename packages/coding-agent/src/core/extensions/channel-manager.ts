@@ -23,6 +23,23 @@ export class ChannelManager {
 		};
 		this.channels.set(name, entry);
 
+		const invokeImpl = (data: unknown, timeoutMs: number = DEFAULT_INVOKE_TIMEOUT): Promise<unknown> => {
+			return new Promise((resolve, reject) => {
+				const invokeId = `inv_${randomUUID().slice(0, 8)}`;
+				const timer = setTimeout(() => {
+					entry.pendingInvokes.delete(invokeId);
+					reject(new Error(`Channel invoke "${name}" timed out after ${timeoutMs}ms`));
+				}, timeoutMs);
+
+				entry.pendingInvokes.set(invokeId, { resolve, reject, timer });
+				this.outputFn({
+					type: "channel_data",
+					name,
+					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+				});
+			});
+		};
+
 		return {
 			name,
 			send: (data: unknown) => {
@@ -34,21 +51,10 @@ export class ChannelManager {
 					entry.handlers.delete(handler);
 				};
 			},
-			invoke: (data: unknown, timeoutMs: number = DEFAULT_INVOKE_TIMEOUT) => {
-				return new Promise((resolve, reject) => {
-					const invokeId = `inv_${randomUUID().slice(0, 8)}`;
-					const timer = setTimeout(() => {
-						entry.pendingInvokes.delete(invokeId);
-						reject(new Error(`Channel invoke "${name}" timed out after ${timeoutMs}ms`));
-					}, timeoutMs);
-
-					entry.pendingInvokes.set(invokeId, { resolve, reject, timer });
-					this.outputFn({
-						type: "channel_data",
-						name,
-						data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
-					});
-				});
+			invoke: invokeImpl,
+			call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
+				const payload = { ...params, __call: method };
+				return invokeImpl(payload, timeoutMs ?? DEFAULT_INVOKE_TIMEOUT);
 			},
 		};
 	}

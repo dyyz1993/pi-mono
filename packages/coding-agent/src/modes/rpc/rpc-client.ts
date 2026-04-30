@@ -71,7 +71,11 @@ export class RpcClient {
 		new Map();
 	private requestId = 0;
 	private channelHandlers = new Map<string, Set<(data: unknown) => void>>();
+	private remoteToolCallHandlers: Array<
+		(call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void
+	> = [];
 	private stderr = "";
+	private readyResolve: (() => void) | null = null;
 
 	constructor(private options: RpcClientOptions = {}) {}
 
@@ -113,8 +117,18 @@ export class RpcClient {
 			this.handleLine(line);
 		});
 
-		// Wait a moment for process to initialize
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		// Wait for first stdout line (agent ready)
+		await new Promise<void>((resolve, reject) => {
+			this.readyResolve = resolve;
+			const timeout = setTimeout(() => {
+				this.readyResolve = null;
+				reject(new Error(`Agent process did not become ready. Stderr: ${this.stderr}`));
+			}, 15000);
+			this.readyResolve = () => {
+				clearTimeout(timeout);
+				resolve();
+			};
+		});
 
 		if (this.process.exitCode !== null) {
 			throw new Error(`Agent process exited immediately with code ${this.process.exitCode}. Stderr: ${this.stderr}`);
@@ -358,8 +372,21 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
-	async navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<{ cancelled: boolean }> {
-		const response = await this.send({ type: "navigate_tree", targetId, summarize: options?.summarize });
+	async navigateTree(
+		targetId: string,
+		options?: { summarize?: boolean; skipFiles?: boolean },
+	): Promise<{ cancelled: boolean }> {
+		const response = await this.send({
+			type: "navigate_tree",
+			targetId,
+			summarize: options?.summarize,
+			skipFiles: options?.skipFiles,
+		});
+		return this.getData(response);
+	}
+
+	async previewRollback(targetId: string): Promise<{ restored: string[]; deleted: string[] }> {
+		const response = await this.send({ type: "rollback_preview", targetId });
 		return this.getData(response);
 	}
 
@@ -508,6 +535,31 @@ export class RpcClient {
 		return this.getData<{ agentsFiles: Array<{ path: string; content: string }> }>(response).agentsFiles;
 	}
 
+	async registerRemoteTool(tool: { name: string; description: string; parameters: object }): Promise<void> {
+		await this.send({ type: "register_remote_tool", tool });
+	}
+
+	async unregisterRemoteTool(name: string): Promise<void> {
+		await this.send({ type: "unregister_remote_tool", name });
+	}
+
+	sendRemoteToolResult(
+		toolCallId: string,
+		result: { content: Array<{ type: string; text: string }>; isError: boolean },
+	): void {
+		this.writeLine({ type: "remote_tool_result", toolCallId, result });
+	}
+
+	onRemoteToolCall(
+		handler: (call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void,
+	): () => void {
+		this.remoteToolCallHandlers.push(handler);
+		return () => {
+			const index = this.remoteToolCallHandlers.indexOf(handler);
+			if (index !== -1) this.remoteToolCallHandlers.splice(index, 1);
+		};
+	}
+
 	// =========================================================================
 	// Helpers
 	// =========================================================================
@@ -564,7 +616,39 @@ export class RpcClient {
 		return eventsPromise;
 	}
 
-	channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke"> {
+	channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke" | "call"> {
+		const invokeImpl = (data: unknown, timeoutMs: number = 30_000): Promise<unknown> => {
+			return new Promise((resolve, reject) => {
+				const invokeId = `inv_${randomUUID().slice(0, 8)}`;
+				const timer = setTimeout(() => {
+					reject(new Error(`Channel invoke "${name}" timed out after ${timeoutMs}ms`));
+				}, timeoutMs);
+
+				const handler = (responseData: unknown) => {
+					const d = responseData as Record<string, unknown>;
+					if (d && d.invokeId === invokeId) {
+						clearTimeout(timer);
+						const handlers = this.channelHandlers.get(name);
+						if (handlers) handlers.delete(handler);
+						resolve(responseData);
+					}
+				};
+
+				let handlers = this.channelHandlers.get(name);
+				if (!handlers) {
+					handlers = new Set();
+					this.channelHandlers.set(name, handlers);
+				}
+				handlers.add(handler);
+
+				this.writeLine({
+					type: "channel_data",
+					name,
+					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+				} as ChannelDataMessage);
+			});
+		};
+
 		return {
 			name,
 			send: (data: unknown) => {
@@ -582,36 +666,10 @@ export class RpcClient {
 					if (handlers!.size === 0) this.channelHandlers.delete(name);
 				};
 			},
-			invoke: (data: unknown, timeoutMs: number = 30_000) => {
-				return new Promise((resolve, reject) => {
-					const invokeId = `inv_${randomUUID().slice(0, 8)}`;
-					const timer = setTimeout(() => {
-						reject(new Error(`Channel invoke "${name}" timed out after ${timeoutMs}ms`));
-					}, timeoutMs);
-
-					const handler = (responseData: unknown) => {
-						const d = responseData as Record<string, unknown>;
-						if (d && d.invokeId === invokeId) {
-							clearTimeout(timer);
-							const handlers = this.channelHandlers.get(name);
-							if (handlers) handlers.delete(handler);
-							resolve(responseData);
-						}
-					};
-
-					let handlers = this.channelHandlers.get(name);
-					if (!handlers) {
-						handlers = new Set();
-						this.channelHandlers.set(name, handlers);
-					}
-					handlers.add(handler);
-
-					this.writeLine({
-						type: "channel_data",
-						name,
-						data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
-					} as ChannelDataMessage);
-				});
+			invoke: invokeImpl,
+			call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
+				const payload = { ...params, __call: method };
+				return invokeImpl(payload, timeoutMs ?? 30_000);
 			},
 		};
 	}
@@ -623,6 +681,13 @@ export class RpcClient {
 	private handleLine(line: string): void {
 		try {
 			const data = JSON.parse(line);
+
+			if (this.readyResolve && data.type === "ready") {
+				const resolve = this.readyResolve;
+				this.readyResolve = null;
+				resolve();
+				return;
+			}
 
 			// Check if it's a response to a pending request
 			if (data.type === "response" && data.id && this.pendingRequests.has(data.id)) {
@@ -649,6 +714,14 @@ export class RpcClient {
 							} as ChannelDataMessage);
 						}
 					}
+				}
+				return;
+			}
+
+			// Check if it's a remote tool call
+			if (data.type === "remote_tool_call" && data.toolCallId && data.toolName) {
+				for (const handler of this.remoteToolCallHandlers) {
+					handler({ toolCallId: data.toolCallId, toolName: data.toolName, args: data.args ?? {} });
 				}
 				return;
 			}

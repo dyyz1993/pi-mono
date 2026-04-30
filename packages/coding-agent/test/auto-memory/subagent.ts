@@ -256,7 +256,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 			const wrappedChannel = {
 				send: (data: unknown) => {
-					rawChannel.send(data);
+					channel.emit("event", data);
 					const payload = data as { event: Record<string, unknown> };
 					if (payload.event) {
 						details.events.push(payload.event);
