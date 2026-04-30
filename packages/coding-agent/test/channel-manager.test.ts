@@ -16,6 +16,7 @@ describe("ChannelManager", () => {
 		expect(typeof ch.send).toBe("function");
 		expect(typeof ch.onReceive).toBe("function");
 		expect(typeof ch.invoke).toBe("function");
+		expect(typeof ch.call).toBe("function");
 	});
 
 	it("throws on duplicate channel name", () => {
@@ -108,5 +109,49 @@ describe("ChannelManager", () => {
 
 		cm.handleInbound({ type: "channel_data", name: "b", data: "for-b" });
 		expect(h2).toHaveBeenCalledWith("for-b");
+	});
+
+	describe("call()", () => {
+		it("sends payload with __call field and resolves on response", async () => {
+			const ch = cm.register("rpc");
+
+			const callPromise = ch.call("config_list", { projectPath: "/foo" }, 5000);
+
+			expect(output).toHaveBeenCalledTimes(1);
+			const sent = output.mock.calls[0][0];
+			expect(sent.type).toBe("channel_data");
+			expect(sent.name).toBe("rpc");
+			expect(sent.data.__call).toBe("config_list");
+			expect(sent.data.projectPath).toBe("/foo");
+			expect(sent.data.invokeId).toMatch(/^inv_/);
+
+			cm.handleInbound({
+				type: "channel_data",
+				name: "rpc",
+				data: { invokeId: sent.data.invokeId, projects: ["a", "b"] },
+			});
+
+			const result = await callPromise;
+			expect(result).toEqual({ invokeId: sent.data.invokeId, projects: ["a", "b"] });
+		});
+
+		it("rejects on timeout", async () => {
+			vi.useFakeTimers();
+			const ch = cm.register("rpc");
+			const promise = ch.call("config_list", {}, 100);
+
+			vi.advanceTimersByTime(150);
+			await expect(promise).rejects.toThrow(/timed out/);
+			vi.useRealTimers();
+		});
+
+		it("uses default timeout when not specified", async () => {
+			const ch = cm.register("rpc");
+			ch.call("config_list", {});
+
+			expect(output).toHaveBeenCalledTimes(1);
+			const sent = output.mock.calls[0][0];
+			expect(sent.data.__call).toBe("config_list");
+		});
 	});
 });

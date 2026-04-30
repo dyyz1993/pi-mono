@@ -196,17 +196,15 @@ Channel 名称: `"rules-engine"`
 
 ### 4.2 面板 → 插件 (拉取/命令)
 
-面板通过 `channel.send()` 发送命令, 插件通过 `channel.onReceive()` 接收。
+面板通过 `channel.call()` 发送 RPC 命令, 插件通过 `ServerChannel.handle()` 接收。
 
-当前支持的 inbound 命令:
+当前支持的方法:
 
-| 命令 | data 结构 | 说明 |
-|------|-----------|------|
-| `list` | `{ "action": "list" }` | 触发规则列表刷新 (插件可响应推送) |
-| `check` | `{ "action": "check", "path": "src/index.ts" }` | 检查指定路径匹配的规则 |
-| `reload` | `{ "action": "reload" }` | 强制重新扫描磁盘规则文件 |
+| 方法 | params 结构 | 说明 |
+|------|------------|------|
+| `rules.getSnapshot` | `{ cwd?: string }` | 获取规则快照 (包含规则列表、匹配历史、生命周期日志) |
 
-> **扩展点**: UI 集成方可以定义更多 inbound 命令, 只需在插件的 `channel.onReceive()` handler 中扩展 switch/case。
+> **扩展点**: UI 集成方可以定义更多 RPC 方法, 只需在插件的 `channel.handle("method", fn)` 中注册。
 
 ### 4.3 使用示例 (RPC Client 端)
 
@@ -216,26 +214,19 @@ const client = new RpcClient();
 // 获取 channel
 const rulesChannel = client.channel("rules-engine");
 
-// 监听推送
+// 监听推送事件 (服务端通过 ServerChannel.emit() 主动推送)
 rulesChannel.onReceive((data) => {
-  if (data.type === "session_start") {
+  if (data.type === "snapshot") {
     updateRulesPanel(data.rules);
     updateStats(data.totalRules, data.unconditional, data.conditional);
   }
-  if (data.type === "before_agent_start") {
-    showPromptSize(data.systemPromptLength);
-  }
-  if (data.type === "agent_end") {
-    markIdle();
-  }
-  if (data.type === "session_shutdown") {
-    clearPanel();
+  if (data.type === "injected") {
+    showInjectedRules(data.injectedRuleNames);
   }
 });
 
-// 发送命令
-rulesChannel.send({ action: "list" });
-rulesChannel.send({ action: "check", path: "src/index.ts" });
+// RPC 调用 (自动注入 __call 路由字段)
+const snapshot = await rulesChannel.call("rules.getSnapshot", { cwd: "/path/to/project" });
 ```
 
 ## 5. 数据模型

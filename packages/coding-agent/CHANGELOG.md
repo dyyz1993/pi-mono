@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `Channel.call(method, params, timeoutMs?)` for type-safe RPC request-response with automatic `__call` routing, implemented in `RpcClient.channel()`, `ChannelManager.register()`, and deferred channels
+- Exported `ServerChannel` and `ChannelContract` from `packages/coding-agent/src/core/extensions/index.ts` for public use
+
+### Changed
+
+- Migrated `bash.ts`, `subagent.ts`, `subagent-v2/index.ts` extensions from raw `channel.onReceive()`/`channel.send()` to `ServerChannel.handle()`/`ServerChannel.emit()` for proper method routing and type safety
+- Deprecated `Channel.send()` and `Channel.onReceive()` — use `call()` for request-response, `ServerChannel.handle()`/`emit()` on the server side, and `onReceive` only for subscribing to server-push event streams
+
 ## [0.69.11] - 2026-04-26
 
 ### Added

@@ -1157,7 +1157,7 @@ const events = await client.promptAndWait("Reply with just 'hello'", undefined, 
 ### `channel()` - 获取 Channel 对象
 
 ```typescript
-channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke">
+channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke" | "call">
 ```
 
 扩展间双向通信通道。
@@ -1165,16 +1165,19 @@ channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke">
 ```typescript
 const ch = client.channel("my-channel");
 
-// 监听消息
+// 监听服务端推送事件
 const unsub = ch.onReceive((data) => {
   console.log("Received:", data);
 });
 
-// 发送消息
+// 单向发送消息（fire-and-forget）
 ch.send({ action: "ping" });
 
-// RPC 调用（等待响应）
-const response = await ch.invoke({ action: "query" }, 30000);
+// RPC 调用（等待响应）— 使用 call() 自动注入 __call 路由字段
+const response = await ch.call("query", { param: "value" }, 30000);
+
+// 低级 invoke（需手动指定 __call，推荐使用 call() 代替）
+// const response = await ch.invoke({ __call: "query", param: "value" }, 30000);
 
 // 取消监听
 unsub();

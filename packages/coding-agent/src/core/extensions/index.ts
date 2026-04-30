@@ -21,6 +21,8 @@ export type {
 	SwitchSessionHandler,
 } from "./runner.js";
 export { ExtensionRunner } from "./runner.js";
+export type { ChannelContract } from "./server-channel.js";
+export { ServerChannel } from "./server-channel.js";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
@@ -129,6 +131,7 @@ export type {
 	// Events - Session
 	SessionStartEvent,
 	SessionTreeEvent,
+	SessionTreePreviewResult,
 	SetActiveToolsHandler,
 	SetLabelHandler,
 	SetModelHandler,
