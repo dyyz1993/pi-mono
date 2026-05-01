@@ -78,7 +78,7 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 	const rawChannel = pi.registerChannel("rules-engine");
 	const channel = new ServerChannel<RulesChannelContract>(rawChannel);
 
-	channel.handle("rules.getSnapshot", (params) => {
+	channel.handle("getSnapshot", (params) => {
 		const unconditional = getUnconditionalRules();
 		const conditional = getConditionalRules();
 		const matchHistory = rebuildMatchHistory(lastMessages);
