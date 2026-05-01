@@ -112,6 +112,7 @@ export type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SessionTreeEvent,
+	SessionTreePreviewResult,
 	SlashCommandInfo,
 	SlashCommandSource,
 	TerminalInputHandler,
@@ -218,6 +219,7 @@ export {
 	type ImageSettings,
 	type PackageSource,
 	type RetrySettings,
+	type Settings,
 	SettingsManager,
 } from "./core/settings-manager.js";
 // Skills
@@ -290,6 +292,7 @@ export {
 	type ModelInfo,
 	type PrintModeOptions,
 	RpcClient,
+	type RpcClientAPI,
 	type RpcClientOptions,
 	type RpcCommand,
 	type RpcEventListener,
@@ -297,6 +300,7 @@ export {
 	type RpcSessionState,
 	runPrintMode,
 	runRpcMode,
+	type TreeEntry,
 } from "./modes/index.js";
 // UI components for extensions
 export {

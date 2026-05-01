@@ -58,7 +58,8 @@ export type RpcCommand =
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
 	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
-	| { id?: string; type: "navigate_tree"; targetId: string; summarize?: boolean }
+	| { id?: string; type: "navigate_tree"; targetId: string; summarize?: boolean; skipFiles?: boolean }
+	| { id?: string; type: "rollback_preview"; targetId: string }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
@@ -103,7 +104,17 @@ export type RpcCommand =
 	| { id?: string; type: "reload" }
 
 	// Agents files
-	| { id?: string; type: "get_agents_files" };
+	| { id?: string; type: "get_agents_files" }
+
+	// Remote tools
+	| { id?: string; type: "register_remote_tool"; tool: { name: string; description: string; parameters: object } }
+	| { id?: string; type: "unregister_remote_tool"; name: string }
+	| {
+			id?: string;
+			type: "remote_tool_result";
+			toolCallId: string;
+			result: { content: Array<{ type: string; text: string }>; isError: boolean };
+	  };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -183,6 +194,16 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+}
+
+/**
+ * Entry in the session tree.
+ */
+export interface TreeEntry {
+	id: string;
+	parentId: string | null;
+	type: string;
+	label?: string;
 }
 
 // ============================================================================
@@ -401,6 +422,10 @@ export type RpcResponse =
 			data: { agentsFiles: Array<{ path: string; content: string }> };
 	  }
 
+	// Remote tools
+	| { id?: string; type: "response"; command: "register_remote_tool"; success: true }
+	| { id?: string; type: "response"; command: "unregister_remote_tool"; success: true }
+
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
 
@@ -455,6 +480,14 @@ export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
+
+/** Emitted when a remote tool is called by the child LLM */
+export interface RpcRemoteToolCall {
+	type: "remote_tool_call";
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+}
 
 // ============================================================================
 // Helper type for extracting command types

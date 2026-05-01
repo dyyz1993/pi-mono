@@ -12,6 +12,7 @@ import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.js";
+import type { Settings } from "../../core/settings-manager.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type {
 	RpcCommand,
@@ -23,6 +24,7 @@ import type {
 	RpcSkill,
 	RpcSlashCommand,
 	RpcTool,
+	TreeEntry,
 } from "./rpc-types.js";
 
 // ============================================================================
@@ -48,6 +50,8 @@ export interface RpcClientOptions {
 	model?: string;
 	/** Additional CLI arguments */
 	args?: string[];
+	/** Session-scoped variables passed to extensions via ctx.variables */
+	variables?: Record<string, string>;
 }
 
 export interface ModelInfo {
@@ -58,6 +62,15 @@ export interface ModelInfo {
 }
 
 export type RpcEventListener = (event: AgentEvent) => void;
+
+// ============================================================================
+// Type exports
+// ============================================================================
+
+/**
+ * Entry in the session tree.
+ */
+export type { TreeEntry } from "./rpc-types.js";
 
 // ============================================================================
 // RPC Client
@@ -100,9 +113,16 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
+		const mergedEnv: Record<string, string> = { ...process.env, ...this.options.env } as Record<string, string>;
+		if (this.options.variables) {
+			for (const [key, value] of Object.entries(this.options.variables)) {
+				mergedEnv[`PI_VARIABLE_${key.toUpperCase()}`] = value;
+			}
+		}
+
 		this.process = spawn("node", [cliPath, ...args], {
 			cwd: this.options.cwd,
-			env: { ...process.env, ...this.options.env },
+			env: mergedEnv,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 
@@ -430,22 +450,22 @@ export class RpcClient {
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
 	}
 
-	async getTree(): Promise<Array<{ id: string; parentId: string | null; type: string; label?: string }>> {
+	async getTree(): Promise<TreeEntry[]> {
 		const response = await this.send({ type: "get_tree" });
 		const data = this.getData<{
-			entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+			entries: TreeEntry[];
 			leafId?: string | null;
 		}>(response);
 		return data.entries;
 	}
 
 	async getTreeWithLeaf(): Promise<{
-		entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+		entries: TreeEntry[];
 		leafId: string | null;
 	}> {
 		const response = await this.send({ type: "get_tree" });
 		const data = this.getData<{
-			entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+			entries: TreeEntry[];
 			leafId?: string | null;
 		}>(response);
 		return { entries: data.entries, leafId: data.leafId ?? null };
@@ -474,12 +494,12 @@ export class RpcClient {
 		return this.getData<{ tools: RpcTool[] }>(response).tools;
 	}
 
-	async getSettings(scope?: "global" | "project"): Promise<Record<string, unknown>> {
+	async getSettings(scope?: "global" | "project"): Promise<Settings> {
 		const response = await this.send({ type: "get_settings", scope });
-		return this.getData<Record<string, unknown>>(response);
+		return this.getData<Settings>(response);
 	}
 
-	async setSettings(settings: Record<string, unknown>, scope?: "global" | "project"): Promise<void> {
+	async setSettings(settings: Partial<Settings>, scope?: "global" | "project"): Promise<void> {
 		await this.send({ type: "set_settings", settings, scope });
 	}
 
