@@ -2,10 +2,10 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ParsedRule } from "../../src/rules-engine/types.js";
+import type { ParsedRule } from "../../extensions/rules-engine/types.js";
 
-let buildSystemPromptSection: (rules: ParsedRule[], sources: string[]) => string;
-let buildToolContextSection: (rules: ParsedRule[], targetPath: string) => string;
+let buildSystemReminderSection: (rules: ParsedRule[], sources: string[]) => string;
+let buildToolReminderSection: (rules: ParsedRule[], targetPath: string) => string;
 let buildCompactContext: (rules: ParsedRule[]) => string;
 
 function createMockRule(overrides: Partial<ParsedRule> = {}): ParsedRule {
@@ -16,22 +16,22 @@ function createMockRule(overrides: Partial<ParsedRule> = {}): ParsedRule {
 		content: "This is a test rule body.",
 		scope: "project",
 		source: ".claude/rules",
-		frontmatter: { paths: [], severity: "medium" },
+		frontmatter: { globs: [], severity: "medium" },
 		isUnconditional: true,
 		...overrides,
 	};
 }
 
 try {
-	const mod = await import("../../src/rules-engine/injector.js");
-	buildSystemPromptSection = mod.buildSystemPromptSection;
-	buildToolContextSection = mod.buildToolContextSection;
+	const mod = await import("../../extensions/rules-engine/injector.js");
+	buildSystemReminderSection = mod.buildSystemReminderSection;
+	buildToolReminderSection = mod.buildToolReminderSection;
 	buildCompactContext = mod.buildCompactContext;
 } catch {
-	buildSystemPromptSection = () => {
+	buildSystemReminderSection = () => {
 		throw new Error("not implemented yet");
 	};
-	buildToolContextSection = () => {
+	buildToolReminderSection = () => {
 		throw new Error("not implemented yet");
 	};
 	buildCompactContext = () => {
@@ -39,26 +39,27 @@ try {
 	};
 }
 
-describe("RulesEngine/Injector: system prompt section", () => {
-	describe("buildSystemPromptSection: unconditional rules", () => {
-		it("should format a single unconditional rule", () => {
+describe("RulesEngine/Injector: system-reminder format", () => {
+	describe("buildSystemReminderSection: unconditional rules", () => {
+		it("should wrap content in <system-reminder> tags", () => {
 			const rules = [createMockRule({ name: "global-rule", title: "Global Rule", content: "Always do X." })];
-			const result = buildSystemPromptSection(rules, [".claude/rules"]);
+			const result = buildSystemReminderSection(rules, [".claude/rules"]);
+			expect(result).toContain("<system-reminder>");
+			expect(result).toContain("</system-reminder>");
 			expect(result).toContain("Global Rule");
 			expect(result).toContain("Always do X.");
-			expect(result).toContain(".claude/rules");
 		});
 
-		it("should format multiple unconditional rules", () => {
+		it("should include source directory in header", () => {
 			const rules = [
 				createMockRule({ name: "rule-a", title: "Rule A", content: "Content A" }),
 				createMockRule({ name: "rule-b", title: "Rule B", content: "Content B" }),
 			];
-			const result = buildSystemPromptSection(rules, [".claude/rules"]);
+			const result = buildSystemReminderSection(rules, [".claude/rules", ".opencode/rules"]);
+			expect(result).toContain(".claude/rules");
+			expect(result).toContain(".opencode/rules");
 			expect(result).toContain("Rule A");
-			expect(result).toContain("Content A");
 			expect(result).toContain("Rule B");
-			expect(result).toContain("Content B");
 		});
 
 		it("should include description when present", () => {
@@ -67,33 +68,35 @@ describe("RulesEngine/Injector: system prompt section", () => {
 					name: "desc-rule",
 					title: "Described Rule",
 					content: "Body",
-					frontmatter: { description: "A described rule", severity: "medium" },
+					frontmatter: { globs: [], description: "A described rule", severity: "medium" },
 				}),
 			];
-			const result = buildSystemPromptSection(rules, [".claude/rules"]);
+			const result = buildSystemReminderSection(rules, [".claude/rules"]);
 			expect(result).toContain("A described rule");
 		});
 
 		it("should return empty string for empty rules array", () => {
-			const result = buildSystemPromptSection([], []);
+			const result = buildSystemReminderSection([], []);
 			expect(result).toBe("");
 		});
 	});
 });
 
-describe("RulesEngine/Injector: tool context section", () => {
-	describe("buildToolContextSection: conditional rules", () => {
-		it("should format matching rules with target path", () => {
+describe("RulesEngine/Injector: tool reminder section", () => {
+	describe("buildToolReminderSection: conditional rules", () => {
+		it("should wrap matched rules in <system-reminder> tags with target path", () => {
 			const rules = [
 				createMockRule({
 					name: "ts-rule",
 					title: "TypeScript Rule",
 					content: "Use strict mode.",
-					frontmatter: { paths: ["src/**/*.ts"], severity: "high" },
+					frontmatter: { globs: ["src/**/*.ts"], severity: "high" },
 					isUnconditional: false,
 				}),
 			];
-			const result = buildToolContextSection(rules, "src/index.ts");
+			const result = buildToolReminderSection(rules, "src/index.ts");
+			expect(result).toContain("<system-reminder>");
+			expect(result).toContain("</system-reminder>");
 			expect(result).toContain("TypeScript Rule");
 			expect(result).toContain("Use strict mode.");
 			expect(result).toContain("src/index.ts");
@@ -105,17 +108,17 @@ describe("RulesEngine/Injector: tool context section", () => {
 					name: "critical-rule",
 					title: "Critical Rule",
 					content: "Never do X.",
-					frontmatter: { paths: ["**/*"], severity: "critical" },
+					frontmatter: { globs: ["**/*"], severity: "critical" },
 					isUnconditional: false,
 				}),
 			];
-			const result = buildToolContextSection(rules, "any-file.ts");
+			const result = buildToolReminderSection(rules, "any-file.ts");
 			expect(result).toContain("Critical Rule");
 			expect(result).toContain("[critical]");
 		});
 
 		it("should return empty string for empty rules array", () => {
-			const result = buildToolContextSection([], "file.ts");
+			const result = buildToolReminderSection([], "file.ts");
 			expect(result).toBe("");
 		});
 	});
@@ -139,7 +142,7 @@ describe("RulesEngine/Injector: compact context", () => {
 					name: "desc",
 					title: "Described",
 					content: "Body",
-					frontmatter: { description: "Short desc", severity: "medium" },
+					frontmatter: { globs: [], description: "Short desc", severity: "medium" },
 				}),
 			];
 			const result = buildCompactContext(rules);
@@ -152,7 +155,7 @@ describe("RulesEngine/Injector: compact context", () => {
 					name: "nodesc",
 					title: "No Desc",
 					content: "First line of body\nSecond line",
-					frontmatter: { severity: "medium" },
+					frontmatter: { globs: [], severity: "medium" },
 				}),
 			];
 			const result = buildCompactContext(rules);
@@ -166,11 +169,218 @@ describe("RulesEngine/Injector: compact context", () => {
 	});
 });
 
-describe("RulesEngine/Injector: idempotency", () => {
+describe("buildSystemReminderSection: alias exports", () => {
+	it("buildSystemPromptSection should be an alias for buildSystemReminderSection", async () => {
+		const mod = await import("../../extensions/rules-engine/injector.js");
+		expect(mod.buildSystemPromptSection).toBe(mod.buildSystemReminderSection);
+	});
+
+	it("buildToolContextSection should be an alias for buildToolReminderSection", async () => {
+		const mod = await import("../../extensions/rules-engine/injector.js");
+		expect(mod.buildToolContextSection).toBe(mod.buildToolReminderSection);
+	});
+});
+
+describe("buildSystemReminderSection: tag structure", () => {
+	it("should start with <system-reminder> and end with </system-reminder>", () => {
+		const rules = [createMockRule({ name: "r", title: "R", content: "Body" })];
+		const result = buildSystemReminderSection(rules, []);
+		expect(result).toMatch(/^<system-reminder>[\s\S]*<\/system-reminder>$/s);
+	});
+
+	it("should include source directories in header", () => {
+		const rules = [createMockRule({ name: "r", title: "R", content: "Body" })];
+		const result = buildSystemReminderSection(rules, [".claude/rules", ".opencode/rules"]);
+		expect(result).toContain(".claude/rules");
+		expect(result).toContain(".opencode/rules");
+	});
+
+	it("should include rule name and title in format 'Rule: name — title'", () => {
+		const rules = [createMockRule({ name: "test-rule", title: "Test Rule Title", content: "Body" })];
+		const result = buildSystemReminderSection(rules, []);
+		expect(result).toContain("Rule: test-rule — Test Rule Title");
+	});
+
+	it("should not include > line when description is absent", () => {
+		const rules = [
+			createMockRule({
+				name: "node",
+				title: "Node",
+				content: "Body",
+				frontmatter: { globs: [], severity: "medium" },
+			}),
+		];
+		const result = buildSystemReminderSection(rules, []);
+		expect(result).not.toContain("> undefined");
+	});
+});
+
+describe("buildToolReminderSection: severity icon mapping", () => {
+	it("should use 🔴 for critical severity", async () => {
+		const rules = [
+			createMockRule({
+				name: "crit",
+				title: "Critical",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "critical" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🔴");
+		expect(result).toContain("[critical]");
+	});
+
+	it("should use 🟠 for high severity", async () => {
+		const rules = [
+			createMockRule({
+				name: "high",
+				title: "High",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "high" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🟠");
+		expect(result).toContain("[high]");
+	});
+
+	it("should use 🟡 for medium severity", async () => {
+		const rules = [
+			createMockRule({
+				name: "med",
+				title: "Medium",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "medium" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🟡");
+		expect(result).toContain("[medium]");
+	});
+
+	it("should use 🔵 for low severity", async () => {
+		const rules = [
+			createMockRule({
+				name: "low",
+				title: "Low",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "low" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🔵");
+		expect(result).toContain("[low]");
+	});
+
+	it("should use 💡 for hint severity", async () => {
+		const rules = [
+			createMockRule({
+				name: "hint",
+				title: "Hint",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "hint" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("💡");
+	});
+
+	it("should use default 🟡 for unknown severity", async () => {
+		const rules = [
+			createMockRule({
+				name: "unknown",
+				title: "Unknown",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "unknown" as any },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🟡");
+	});
+
+	it("should use 🟠 for high severity", () => {
+		const rules = [
+			createMockRule({
+				name: "high",
+				title: "High",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "high" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🟠");
+		expect(result).toContain("[high]");
+	});
+
+	it("should use 🟡 for medium severity", () => {
+		const rules = [
+			createMockRule({
+				name: "med",
+				title: "Medium",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "medium" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🟡");
+		expect(result).toContain("[medium]");
+	});
+
+	it("should use 🔵 for low severity", () => {
+		const rules = [
+			createMockRule({
+				name: "low",
+				title: "Low",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "low" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🔵");
+		expect(result).toContain("[low]");
+	});
+
+	it("should use 💡 for hint severity", () => {
+		const rules = [
+			createMockRule({
+				name: "hint",
+				title: "Hint",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "hint" },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("💡");
+		expect(result).toContain("[hint]");
+	});
+
+	it("should use default 🟡 for unknown severity", () => {
+		const rules = [
+			createMockRule({
+				name: "unknown",
+				title: "Unknown",
+				content: "Body",
+				frontmatter: { globs: ["**/*"], severity: "unknown" as any },
+				isUnconditional: false,
+			}),
+		];
+		const result = buildToolReminderSection(rules, "any-file.ts");
+		expect(result).toContain("🟡");
+	});
 	it("should produce identical output for same input on repeated calls", () => {
 		const rules = [createMockRule({ name: "r1", title: "Rule", content: "Body" })];
-		const result1 = buildSystemPromptSection(rules, [".claude/rules"]);
-		const result2 = buildSystemPromptSection(rules, [".claude/rules"]);
+		const result1 = buildSystemReminderSection(rules, [".claude/rules"]);
+		const result2 = buildSystemReminderSection(rules, [".claude/rules"]);
 		expect(result1).toBe(result2);
 	});
 });

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import fileSnapshotFactory from "../../examples/extensions/file-snapshot.ts";
+import fileSnapshotFactory from "../../extensions/file-snapshot/index.ts";
 import { createHarness, type Harness } from "./harness.js";
 
 function readFile(tempDir: string, relativePath: string): string {

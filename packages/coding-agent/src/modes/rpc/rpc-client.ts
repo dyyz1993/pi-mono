@@ -550,6 +550,10 @@ export class RpcClient {
 		await this.send({ type: "reload" });
 	}
 
+	async setCwd(cwd: string): Promise<void> {
+		await this.send({ type: "set_cwd", cwd });
+	}
+
 	async getAgentsFiles(): Promise<Array<{ path: string; content: string }>> {
 		const response = await this.send({ type: "get_agents_files" });
 		return this.getData<{ agentsFiles: Array<{ path: string; content: string }> }>(response).agentsFiles;

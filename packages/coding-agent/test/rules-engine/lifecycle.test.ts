@@ -58,7 +58,7 @@ async function createRulesRuntime(
 
 	let rulesEngineModule: any;
 	try {
-		rulesEngineModule = await import("../../src/rules-engine/index.js");
+		rulesEngineModule = await import("../../extensions/rules-engine/index.js");
 	} catch {
 		throw new Error("rules-engine/index.js not found");
 	}
@@ -174,7 +174,7 @@ describe("Rules Engine: full lifecycle integration", () => {
 				tempDir,
 				{
 					"global-rule.md": "---\n---\n# Always Active\nDo X always.",
-					"ts-rule.md": '---\npaths: "**/*.ts"\nseverity: high\n---\n# TypeScript Rule\nUse strict mode.',
+					"ts-rule.md": '---\nglobs: "**/*.ts"\nseverity: high\n---\n# TypeScript Rule\nUse strict mode.',
 				},
 				channelOutput,
 			);
@@ -269,7 +269,7 @@ describe("Rules Engine: full lifecycle integration", () => {
 			const env = await createRulesRuntime(
 				tempDir,
 				{
-					"ts-only.md": '---\npaths: "**/*.ts"\n---\n# TS Only\nOnly for TS files.',
+					"ts-only.md": '---\nglobs: "**/*.ts"\n---\n# TS Only\nOnly for TS files.',
 				},
 				channelOutput,
 			);
@@ -423,7 +423,7 @@ describe("Rules Engine: full lifecycle integration", () => {
 				tempDir,
 				{
 					"critical.md": "---\nseverity: critical\n---\n# Critical Rule\nNever do X.",
-					"cond.md": '---\npaths: "src/**/*.{ts,tsx}"\nseverity: high\n---\n# TS/TSX Rule\nUse strict.',
+					"cond.md": '---\nglobs: "src/**/*.{ts,tsx}"\nseverity: high\n---\n# TS/TSX Rule\nUse strict.',
 					"global.md": "---\n---\n# Global Guideline\nBe concise.",
 				},
 				channelOutput,
@@ -452,7 +452,7 @@ describe("Rules Engine: full lifecycle integration", () => {
 
 			const condRule = data.rules.find((r: any) => r.name === "cond");
 			expect(condRule.severity).toBe("high");
-			expect(condRule.paths).toEqual(["src/**/*.{ts,tsx}"]);
+			expect(condRule.globs).toEqual(["src/**/*.{ts,tsx}"]);
 		});
 	});
 

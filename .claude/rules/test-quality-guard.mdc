@@ -1,11 +1,10 @@
 ---
-paths:
+globs:
   - "**/*.test.ts"
   - "**/*.spec.ts"
   - "**/test/**/*.ts"
 description: "测试质量守则"
 severity: "high"
-scope: "project"
 whenToUse: "编写或修改测试文件时生效"
 ---
 

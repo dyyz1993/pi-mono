@@ -231,6 +231,7 @@ export class ExtensionRunner {
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private isIdleFn: () => boolean = () => true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
+	private getSessionSignalFn: () => AbortSignal = () => AbortSignal.abort();
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
@@ -289,11 +290,14 @@ export class ExtensionRunner {
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
 		this.runtime.registerChannel = actions.registerChannel;
 		this.runtime.callLLM = actions.callLLM;
+		this.runtime.callLLMStructured = actions.callLLMStructured;
+		this.runtime.background = actions.background;
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
 		this.isIdleFn = contextActions.isIdle;
 		this.getSignalFn = contextActions.getSignal;
+		this.getSessionSignalFn = contextActions.getSessionSignal;
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
@@ -637,6 +641,10 @@ export class ExtensionRunner {
 			get signal() {
 				runner.assertActive();
 				return runner.getSignalFn();
+			},
+			get sessionSignal() {
+				runner.assertActive();
+				return runner.getSessionSignalFn();
 			},
 			abort: () => {
 				runner.assertActive();

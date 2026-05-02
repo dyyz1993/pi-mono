@@ -7,7 +7,7 @@ import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const AUTO_MEMORY_PATH = join(__dirname, "auto-memory/auto-memory.ts");
+const AUTO_MEMORY_PATH = join(__dirname, "..", "extensions", "auto-memory", "index.ts");
 const CLI_PATH = join(__dirname, "../dist/cli.js");
 
 let eventCount = 0;

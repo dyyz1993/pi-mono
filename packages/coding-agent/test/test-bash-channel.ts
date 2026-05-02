@@ -6,7 +6,7 @@ import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const bashExtensionPath = resolve(join(__dirname, "auto-memory/bash.ts"));
+const bashExtensionPath = resolve(join(__dirname, "..", "extensions", "bash-ext", "index.ts"));
 
 const hasApiKey =
 	!!process.env.ANTHROPIC_API_KEY ||

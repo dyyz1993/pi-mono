@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesAnyGlob, matchGlob } from "../../src/rules-engine/matcher.js";
+import { matchesAnyGlob, matchGlob } from "../../extensions/rules-engine/matcher.js";
 
 describe("Rules Engine: conditional rule matching", () => {
 	it("should match *.ts glob for .ts files", () => {

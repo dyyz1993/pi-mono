@@ -1,4 +1,4 @@
-import bashExt from "./test/auto-memory/bash.ts";
+import bashExt from "./extensions/bash-ext/index.ts";
 
 console.log("Extension loaded OK, type:", typeof bashExt);
 

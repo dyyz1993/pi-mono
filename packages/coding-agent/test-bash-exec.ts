@@ -1,4 +1,4 @@
-import bashExt from "./test/auto-memory/bash.ts";
+import bashExt from "./extensions/bash-ext/index.ts";
 
 const events: string[] = [];
 const mockPi = {

@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 let parseFrontmatter: (content: string) => { data: Record<string, unknown>; body: string };
-let parseRuleFile: (filePath: string, content: string) => import("../../src/rules-engine/types.js").ParsedRule;
+let parseRuleFile: (filePath: string, content: string) => import("../../extensions/rules-engine/types.js").ParsedRule;
 
 try {
-	const matcherMod = await import("../../src/rules-engine/matcher.js");
-	const loaderMod = await import("../../src/rules-engine/loader.js");
+	const matcherMod = await import("../../extensions/rules-engine/matcher.js");
+	const loaderMod = await import("../../extensions/rules-engine/loader.js");
 	parseFrontmatter = loaderMod.parseFrontmatter;
 	parseRuleFile = loaderMod.parseRuleFile;
 } catch {
@@ -29,10 +29,22 @@ describe("RulesEngine/Loader: frontmatter parsing", () => {
 			expect(result.body).toBe("# Title\nBody text");
 		});
 
-		it("should parse paths as comma-separated string", () => {
+		it("should parse globs as comma-separated string", () => {
+			const content = "---\nglobs: **/*.ts, **/*.tsx\n---\n# Rule";
+			const result = parseFrontmatter(content);
+			expect(result.data.globs).toEqual(["**/*.ts", "**/*.tsx"]);
+		});
+
+		it("should parse paths as comma-separated string (backward compat)", () => {
 			const content = "---\npaths: src/**/*.ts, test/**/*.ts\n---\n# Rule";
 			const result = parseFrontmatter(content);
 			expect(result.data.paths).toEqual(["src/**/*.ts", "test/**/*.ts"]);
+		});
+
+		it("should not split commas inside braces in globs", () => {
+			const content = '---\nglobs: "src/**/*.{ts,tsx}"\n---\n# Rule';
+			const result = parseFrontmatter(content);
+			expect(result.data.globs).toEqual(["src/**/*.{ts,tsx}"]);
 		});
 
 		it("should not split commas inside braces in paths", () => {
@@ -42,9 +54,15 @@ describe("RulesEngine/Loader: frontmatter parsing", () => {
 		});
 
 		it("should handle mixed paths with braces and plain globs", () => {
-			const content = "---\npaths: src/**/*.{ts,tsx}, *.css\n---\n# Rule";
+			const content = "---\nglobs: src/**/*.{ts,tsx}, *.css\n---\n# Rule";
 			const result = parseFrontmatter(content);
-			expect(result.data.paths).toEqual(["src/**/*.{ts,tsx}", "*.css"]);
+			expect(result.data.globs).toEqual(["src/**/*.{ts,tsx}", "*.css"]);
+		});
+
+		it("should parse globs as JSON array", () => {
+			const content = '---\nglobs: ["src/**/*.ts", "test/**/*.ts"]\n---\n# Rule';
+			const result = parseFrontmatter(content);
+			expect(result.data.globs).toEqual(["src/**/*.ts", "test/**/*.ts"]);
 		});
 
 		it("should parse paths as JSON array", () => {
@@ -77,6 +95,12 @@ describe("RulesEngine/Loader: frontmatter parsing", () => {
 			const content = "---\npaths: null\n---\n# Rule";
 			const result = parseFrontmatter(content);
 			expect(result.data.paths).toBeNull();
+		});
+
+		it("should parse globs as YAML list", () => {
+			const content = "---\nglobs:\n  - '**/*.ts'\n  - '**/*.tsx'\n---\n# Rule";
+			const result = parseFrontmatter(content);
+			expect(result.data.globs).toEqual(["**/*.ts", "**/*.tsx"]);
 		});
 	});
 
@@ -138,16 +162,29 @@ describe("RulesEngine/Loader: parseRuleFile", () => {
 	});
 
 	it("should classify as unconditional when paths is **", () => {
-		const content = '---\npaths: "**"\n---\n# Global Rule';
+		const content = '---\nglobs: "**"\n---\n# Global Rule';
 		const rule = parseRuleFile("/test/rule.md", content);
 		expect(rule.isUnconditional).toBe(true);
 	});
 
-	it("should classify as conditional when paths has specific globs", () => {
+	it("should classify as conditional when globs has specific patterns", () => {
+		const content = "---\nglobs: src/**/*.ts\n---\n# TS Rule";
+		const rule = parseRuleFile("/test/rule.md", content);
+		expect(rule.isUnconditional).toBe(false);
+		expect(rule.frontmatter.globs).toEqual(["src/**/*.ts"]);
+	});
+
+	it("should fall back to paths when globs is absent", () => {
 		const content = "---\npaths: src/**/*.ts\n---\n# TS Rule";
 		const rule = parseRuleFile("/test/rule.md", content);
 		expect(rule.isUnconditional).toBe(false);
-		expect(rule.frontmatter.paths).toEqual(["src/**/*.ts"]);
+		expect(rule.frontmatter.globs).toEqual(["src/**/*.ts"]);
+	});
+
+	it("should prefer globs over paths when both present", () => {
+		const content = "---\nglobs: **/*.ts\npaths: **/*.js\n---\n# Rule";
+		const rule = parseRuleFile("/test/rule.md", content);
+		expect(rule.frontmatter.globs).toEqual(["**/*.ts"]);
 	});
 
 	it("should parse severity from frontmatter", () => {
@@ -174,10 +211,16 @@ describe("RulesEngine/Loader: parseRuleFile", () => {
 		expect(rule.filePath).toBe("/some/path/rule.md");
 	});
 
-	it("should parse multiple paths from comma-separated string", () => {
-		const content = "---\npaths: src/**/*.ts, test/**/*.ts, *.config.ts\n---\n# Multi Path Rule";
+	it("should parse multiple globs from comma-separated string", () => {
+		const content = "---\nglobs: src/**/*.ts, test/**/*.ts, *.config.ts\n---\n# Multi Path Rule";
 		const rule = parseRuleFile("/test/rule.md", content);
-		expect(rule.frontmatter.paths).toEqual(["src/**/*.ts", "test/**/*.ts", "*.config.ts"]);
+		expect(rule.frontmatter.globs).toEqual(["src/**/*.ts", "test/**/*.ts", "*.config.ts"]);
+	});
+
+	it("should handle .mdc file extension for name", () => {
+		const content = "---\nglobs: **/*.ts\n---\n# TS Rule";
+		const rule = parseRuleFile("/test/my-rule.mdc", content);
+		expect(rule.name).toBe("my-rule");
 	});
 });
 
@@ -194,7 +237,7 @@ describe("RulesEngine/Loader: directory scanning", () => {
 	});
 
 	it("should load rules from a directory with .md files", async () => {
-		const { loadRules } = await import("../../src/rules-engine/loader.js");
+		const { loadRules } = await import("../../extensions/rules-engine/loader.js");
 		writeFileSync(join(tempDir, "rule1.md"), "---\n---\n# Rule 1\nContent 1");
 		writeFileSync(join(tempDir, "rule2.md"), "---\n---\n# Rule 2\nContent 2");
 
@@ -205,7 +248,7 @@ describe("RulesEngine/Loader: directory scanning", () => {
 	});
 
 	it("should ignore non-.md files", async () => {
-		const { loadRules } = await import("../../src/rules-engine/loader.js");
+		const { loadRules } = await import("../../extensions/rules-engine/loader.js");
 		writeFileSync(join(tempDir, "rule.md"), "---\n---\n# Rule");
 		writeFileSync(join(tempDir, "notes.txt"), "Not a rule");
 		writeFileSync(join(tempDir, "config.json"), "{}");
@@ -215,7 +258,7 @@ describe("RulesEngine/Loader: directory scanning", () => {
 	});
 
 	it("should recursively scan subdirectories", async () => {
-		const { loadRules } = await import("../../src/rules-engine/loader.js");
+		const { loadRules } = await import("../../extensions/rules-engine/loader.js");
 		mkdirSync(join(tempDir, "sub"), { recursive: true });
 		writeFileSync(join(tempDir, "root-rule.md"), "---\n---\n# Root");
 		writeFileSync(join(tempDir, "sub", "nested-rule.md"), "---\n---\n# Nested");
@@ -225,9 +268,9 @@ describe("RulesEngine/Loader: directory scanning", () => {
 	});
 
 	it("should classify rules into unconditional and conditional", async () => {
-		const { loadRules } = await import("../../src/rules-engine/loader.js");
+		const { loadRules } = await import("../../extensions/rules-engine/loader.js");
 		writeFileSync(join(tempDir, "global.md"), "---\n---\n# Global");
-		writeFileSync(join(tempDir, "ts-rule.md"), '---\npaths: "**/*.ts"\n---\n# TS Rule');
+		writeFileSync(join(tempDir, "ts-rule.md"), '---\nglobs: "**/*.ts"\n---\n# TS Rule');
 
 		const cache = loadRules(tempDir);
 		expect(cache.unconditional).toHaveLength(1);
@@ -237,7 +280,7 @@ describe("RulesEngine/Loader: directory scanning", () => {
 	});
 
 	it("should return empty cache for non-existent directory", async () => {
-		const { loadRules } = await import("../../src/rules-engine/loader.js");
+		const { loadRules } = await import("../../extensions/rules-engine/loader.js");
 		const cache = loadRules(join(tempDir, "nonexistent"));
 		expect(cache.rules).toHaveLength(0);
 		expect(cache.unconditional).toHaveLength(0);
@@ -245,12 +288,105 @@ describe("RulesEngine/Loader: directory scanning", () => {
 	});
 
 	it("should set loadedAt timestamp", async () => {
-		const { loadRules } = await import("../../src/rules-engine/loader.js");
+		const { loadRules } = await import("../../extensions/rules-engine/loader.js");
 		writeFileSync(join(tempDir, "rule.md"), "---\n---\n# Rule");
 		const before = Date.now();
 		const cache = loadRules(tempDir);
 		const after = Date.now();
 		expect(cache.loadedAt).toBeGreaterThanOrEqual(before);
 		expect(cache.loadedAt).toBeLessThanOrEqual(after);
+	});
+
+	describe("parseRuleFile: advanced frontmatter fields", () => {
+		it("should parse notifyOnMatch as string 'true'", () => {
+			const content = "---\nnotifyOnMatch: 'true'\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.notifyOnMatch).toBe(true);
+		});
+
+		it("should parse notifyOnMatch as boolean true", () => {
+			const content = "---\nnotifyOnMatch: true\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.notifyOnMatch).toBe(true);
+		});
+
+		it("should parse skipInPrompt field", () => {
+			const content = "---\nskipInPrompt: true\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.skipInPrompt).toBe(true);
+		});
+
+		it("should parse allowedTools as single string into array", () => {
+			const content = "---\nallowedTools: Bash\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.allowedTools).toEqual(["Bash"]);
+		});
+
+		it("should parse whenToUse field", () => {
+			const content = "---\nwhenToUse: When editing TypeScript files\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.whenToUse).toBe("When editing TypeScript files");
+		});
+	});
+
+	describe("parseRuleFile: .mdc file extension handling", () => {
+		it("should extract name from .mdc file", () => {
+			const content = "---\nglobs: **/*.ts\n---\n# TS Rule";
+			const rule = parseRuleFile("/test/my-rule.mdc", content);
+			expect(rule.name).toBe("my-rule");
+		});
+
+		it("should extract name from .md file", () => {
+			const content = "---\nglobs: **/*.ts\n---\n# TS Rule";
+			const rule = parseRuleFile("/test/another-rule.md", content);
+			expect(rule.name).toBe("another-rule");
+		});
+	});
+
+	describe("parseRuleFile: paths alias complete behavior", () => {
+		it("should set both frontmatter.globs and frontmatter.paths when only globs is provided", () => {
+			const content = "---\nglobs: **/*.ts\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.globs).toEqual(["**/*.ts"]);
+			expect(rule.frontmatter.paths).toEqual(["**/*.ts"]);
+		});
+
+		it("should set both frontmatter.globs and frontmatter.paths when both provided", () => {
+			const content = "---\nglobs: **/*.ts\npaths: **/*.js\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.globs).toEqual(["**/*.ts"]);
+			expect(rule.frontmatter.paths).toEqual(["**/*.js"]);
+		});
+
+		it("should not set frontmatter.paths when only globs is provided", () => {
+			const content = "---\nglobs: **/*.ts\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.paths).toBeUndefined();
+		});
+
+		it("should set both when only paths is provided (backward compat)", () => {
+			const content = "---\npaths: **/*.js\n---\n# Rule";
+			const rule = parseRuleFile("/test/rule.md", content);
+			expect(rule.frontmatter.globs).toEqual(["**/*.js"]);
+			expect(rule.frontmatter.paths).toEqual(["**/*.js"]);
+		});
+	});
+
+	describe("loadRules: .mdc file support", () => {
+		it("should load .mdc files", async () => {
+			const { loadRules } = await import("../../extensions/rules-engine/loader.js");
+			writeFileSync(join(tempDir, "mdc-rule.mdc"), "---\nglobs: **/*.ts\n---\n# MDC Rule");
+			const cache = loadRules(tempDir);
+			expect(cache.rules).toHaveLength(1);
+			expect(cache.rules.some((r: any) => r.title === "MDC Rule")).toBe(true);
+		});
+
+		it("should load both .md and .mdc files", async () => {
+			const { loadRules } = await import("../../extensions/rules-engine/loader.js");
+			writeFileSync(join(tempDir, "md-rule.md"), "---\n---\n# MD Rule");
+			writeFileSync(join(tempDir, "mdc-rule.mdc"), "---\n---\n# MDC Rule");
+			const cache = loadRules(tempDir);
+			expect(cache.rules).toHaveLength(2);
+		});
 	});
 });

@@ -114,10 +114,12 @@ export interface LabelEntry extends SessionEntryBase {
 	label: string | undefined;
 }
 
-/** Session metadata entry (e.g., user-defined display name). */
+/** Session metadata entry (e.g., user-defined display name, working directory override). */
 export interface SessionInfoEntry extends SessionEntryBase {
 	type: "session_info";
 	name?: string;
+	/** Override the session's working directory. When set, takes precedence over header cwd. */
+	cwd?: string;
 }
 
 /**
@@ -190,6 +192,7 @@ export interface SessionInfo {
 export type ReadonlySessionManager = Pick<
 	SessionManager,
 	| "getCwd"
+	| "getEffectiveCwd"
 	| "getSessionDir"
 	| "getSessionId"
 	| "getSessionFile"
@@ -579,12 +582,16 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let firstMessage = "";
 		const allMessages: string[] = [];
 		let name: string | undefined;
+		let effectiveCwd: string | undefined;
 
 		for (const entry of entries) {
-			// Extract session name (use latest, including explicit clears)
+			// Extract session name and cwd override (use latest, including explicit clears)
 			if (entry.type === "session_info") {
 				const infoEntry = entry as SessionInfoEntry;
 				name = infoEntry.name?.trim() || undefined;
+				if (infoEntry.cwd) {
+					effectiveCwd = infoEntry.cwd;
+				}
 			}
 
 			if (entry.type !== "message") continue;
@@ -603,7 +610,8 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			}
 		}
 
-		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
+		const cwd =
+			effectiveCwd ?? (typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "");
 		const parentSessionPath = (header as SessionHeader).parentSession;
 
 		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
@@ -798,7 +806,7 @@ export class SessionManager {
 	}
 
 	getCwd(): string {
-		return this.cwd;
+		return this.getEffectiveCwd();
 	}
 
 	getSessionDir(): string {
@@ -923,17 +931,37 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** Append a session info entry (e.g., display name). Returns entry id. */
-	appendSessionInfo(name: string): string {
+	/** Append a session info entry (e.g., display name, cwd override). Returns entry id. */
+	appendSessionInfo(name?: string, cwd?: string): string {
 		const entry: SessionInfoEntry = {
 			type: "session_info",
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
-			name: name.trim(),
 		};
+		if (name !== undefined) {
+			entry.name = name.trim();
+		}
+		if (cwd !== undefined) {
+			entry.cwd = cwd;
+		}
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	/** Get the effective cwd, considering session_info overrides. */
+	getEffectiveCwd(): string {
+		const entries = this.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "session_info") {
+				const infoEntry = entry as SessionInfoEntry;
+				if (infoEntry.cwd) {
+					return infoEntry.cwd;
+				}
+			}
+		}
+		return this.cwd;
 	}
 
 	/** Get the current session name from the latest session_info entry, if any. */

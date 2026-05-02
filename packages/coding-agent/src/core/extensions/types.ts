@@ -310,6 +310,8 @@ export interface ExtensionContext {
 	isIdle(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
+	/** Signal that aborts on session shutdown. Available in ALL events, including agent_end. */
+	readonly sessionSignal: AbortSignal;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */
@@ -1349,6 +1351,12 @@ export interface ExtensionAPI {
 	 * With `tools`: starts a temporary Agent loop with the specified built-in tools.
 	 */
 	callLLM(options: CallLLMOptions): Promise<string>;
+
+	callLLMStructured<T extends TSchema>(options: CallLLMStructuredOptions & { schema: T }): Promise<Static<T>>;
+
+	forkAgent(prompt: string, options?: ForkAgentOptions): Promise<ForkAgentResult>;
+
+	background<T>(fn: (signal: AbortSignal) => Promise<T>): BackgroundTask<T>;
 }
 
 // ============================================================================
@@ -1493,6 +1501,46 @@ export interface CallLLMOptions {
 
 export type CallLLMHandler = (options: CallLLMOptions) => Promise<string>;
 
+export interface CallLLMStructuredOptions extends Omit<CallLLMOptions, "tools"> {
+	schema: TSchema;
+	maxRetries?: number;
+}
+
+export interface CallLLMStructuredError extends Error {
+	raw: string;
+	reason: "json_parse" | "schema_validation";
+}
+
+export type CallLLMStructuredHandler = (options: CallLLMStructuredOptions) => Promise<unknown>;
+
+export interface ForkAgentOptions {
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	tools?: string[];
+	writePaths?: string[];
+	bash?: "deny" | "readonly";
+	maxTurns?: number;
+	maxTokens?: number;
+	signal?: AbortSignal;
+	shareContext?: boolean;
+}
+
+export interface ForkAgentResult {
+	text: string;
+	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+}
+
+export type ForkAgentHandler = (prompt: string, options?: ForkAgentOptions) => Promise<ForkAgentResult>;
+
+export type BackgroundHandler = <T>(fn: (signal: AbortSignal) => Promise<T>) => BackgroundTask<T>;
+
+export interface BackgroundTask<T> {
+	readonly id: string;
+	readonly signal: AbortSignal;
+	readonly promise: Promise<T>;
+	cancel(): void;
+}
+
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
@@ -1544,6 +1592,9 @@ export interface ExtensionActions {
 	setThinkingLevel: SetThinkingLevelHandler;
 	registerChannel: (name: string) => Channel;
 	callLLM: CallLLMHandler;
+	callLLMStructured: CallLLMStructuredHandler;
+	forkAgent: ForkAgentHandler;
+	background: BackgroundHandler;
 }
 
 /**
@@ -1554,6 +1605,7 @@ export interface ExtensionContextActions {
 	getModel: () => Model<any> | undefined;
 	isIdle: () => boolean;
 	getSignal: () => AbortSignal | undefined;
+	getSessionSignal: () => AbortSignal;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;

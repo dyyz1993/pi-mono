@@ -70,12 +70,25 @@ describe("ExtensionRunner", () => {
 			throw new Error("registerChannel is only available in RPC mode");
 		},
 		callLLM: async () => "",
+		callLLMStructured: async () => ({}),
+		forkAgent: async () => ({ text: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } }),
+		background: <T>(fn: (signal: AbortSignal) => Promise<T>) => {
+			const controller = new AbortController();
+			const promise = fn(controller.signal);
+			return {
+				id: "test",
+				signal: controller.signal,
+				promise: promise as Promise<unknown> as Promise<T>,
+				cancel: () => controller.abort(),
+			};
+		},
 	};
 
 	const extensionContextActions: ExtensionContextActions = {
 		getModel: () => undefined,
 		isIdle: () => true,
 		getSignal: () => undefined,
+		getSessionSignal: () => AbortSignal.abort(),
 		abort: () => {},
 		hasPendingMessages: () => false,
 		shutdown: () => {},

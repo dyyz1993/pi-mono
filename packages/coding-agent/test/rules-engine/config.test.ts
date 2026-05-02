@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-let loadConfig: (projectDir: string) => Promise<import("../../src/rules-engine/types.js").RulesConfig>;
+let loadConfig: (projectDir: string) => Promise<import("../../extensions/rules-engine/types.js").RulesConfig>;
 let resolveDirs: (
 	projectDir: string,
-	config: import("../../src/rules-engine/types.js").RulesConfig,
+	config: import("../../extensions/rules-engine/types.js").RulesConfig,
 ) => Array<{ scope: string; dir: string; source: string }>;
 
 try {
-	const mod = await import("../../src/rules-engine/config.js");
+	const mod = await import("../../extensions/rules-engine/config.js");
 	loadConfig = mod.loadConfig;
 	resolveDirs = mod.resolveDirs;
 } catch {

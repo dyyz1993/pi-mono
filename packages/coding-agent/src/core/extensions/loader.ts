@@ -160,6 +160,11 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
 		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
+		callLLMStructured: () => Promise.reject(new Error("Extension runtime not initialized")),
+		forkAgent: () => Promise.reject(new Error("Extension runtime not initialized")),
+		background: <T>(_fn: (signal: AbortSignal) => Promise<T>) => {
+			throw new Error("Extension runtime not initialized");
+		},
 		registerChannel: (name: string) => {
 			if (runtime.resolvedChannels.has(name)) {
 				return runtime.resolvedChannels.get(name)!;
@@ -410,6 +415,16 @@ function createExtensionAPI(
 		callLLM(options) {
 			runtime.assertActive();
 			return runtime.callLLM(options);
+		},
+
+		callLLMStructured(options) {
+			runtime.assertActive();
+			return runtime.callLLMStructured(options);
+		},
+
+		forkAgent(prompt, options) {
+			runtime.assertActive();
+			return runtime.forkAgent(prompt, options);
 		},
 	} as ExtensionAPI;
 

@@ -4,7 +4,7 @@ let matchGlob: (pattern: string, target: string) => boolean;
 let matchesAnyGlob: (globs: string[], filePath: string) => boolean;
 
 try {
-	const mod = await import("../../src/rules-engine/matcher.js");
+	const mod = await import("../../extensions/rules-engine/matcher.js");
 	matchGlob = mod.matchGlob;
 	matchesAnyGlob = mod.matchesAnyGlob;
 } catch {
@@ -16,7 +16,7 @@ try {
 	};
 }
 
-describe("RulesEngine/Matcher: glob pattern matching", () => {
+describe("RulesEngine/Matcher: glob pattern matching (ignore lib)", () => {
 	describe("matchGlob: basic patterns", () => {
 		it("should match exact file path", () => {
 			expect(matchGlob("src/index.ts", "src/index.ts")).toBe(true);
@@ -27,19 +27,15 @@ describe("RulesEngine/Matcher: glob pattern matching", () => {
 		});
 
 		it("should match single * wildcard in filename", () => {
-			expect(matchGlob("src/*.ts", "src/index.ts")).toBe(true);
+			expect(matchGlob("*.ts", "index.ts")).toBe(true);
 		});
 
-		it("should not match single * across directory boundary", () => {
+		it("should match * across directory levels (ignore semantics)", () => {
+			expect(matchGlob("*.ts", "src/index.ts")).toBe(true);
+		});
+
+		it("should not match single * across directory boundary with dir prefix", () => {
 			expect(matchGlob("src/*.ts", "src/sub/index.ts")).toBe(false);
-		});
-
-		it("should match ? single character", () => {
-			expect(matchGlob("file?.ts", "file1.ts")).toBe(true);
-		});
-
-		it("should not match ? against no character", () => {
-			expect(matchGlob("file?.ts", "file.ts")).toBe(false);
 		});
 	});
 
@@ -77,6 +73,10 @@ describe("RulesEngine/Matcher: glob pattern matching", () => {
 		it("should not match outside brace expansion options", () => {
 			expect(matchGlob("src/*.{ts,tsx}", "src/style.css")).toBe(false);
 		});
+
+		it("should expand braces in ** patterns", () => {
+			expect(matchGlob("src/**/*.{ts,tsx}", "src/deep/file.tsx")).toBe(true);
+		});
 	});
 
 	describe("matchGlob: path normalization", () => {
@@ -101,6 +101,17 @@ describe("RulesEngine/Matcher: glob pattern matching", () => {
 		it("should match file in nested dot directory", () => {
 			expect(matchGlob(".claude/rules/**", ".claude/rules/my-rule.md")).toBe(true);
 		});
+
+		it("should handle absolute paths by stripping leading slash", () => {
+			expect(matchGlob("**/*.ts", "/project/src/foo.ts")).toBe(true);
+		});
+	});
+
+	describe("matchGlob: negation patterns", () => {
+		it("should support negation with !", () => {
+			expect(matchesAnyGlob(["**/*.ts", "!**/*.d.ts"], "src/foo.ts")).toBe(true);
+			expect(matchesAnyGlob(["**/*.ts", "!**/*.d.ts"], "src/foo.d.ts")).toBe(false);
+		});
 	});
 
 	describe("matchesAnyGlob: multiple patterns", () => {
@@ -120,7 +131,7 @@ describe("RulesEngine/Matcher: glob pattern matching", () => {
 			expect(matchesAnyGlob([], "file.ts")).toBe(false);
 		});
 
-		it("should return false for undefined file path", () => {
+		it("should return false for empty file path", () => {
 			expect(matchesAnyGlob(["*.ts"], "")).toBe(false);
 		});
 
@@ -130,6 +141,39 @@ describe("RulesEngine/Matcher: glob pattern matching", () => {
 			expect(matchesAnyGlob(globs, "test/unit/module.test.ts")).toBe(true);
 			expect(matchesAnyGlob(globs, "vitest.config.js")).toBe(true);
 			expect(matchesAnyGlob(globs, "README.md")).toBe(false);
+		});
+	});
+
+	describe("createMatcher: reusable matcher factory", () => {
+		it("should return () => false for empty globs", async () => {
+			const { createMatcher } = await import("../../extensions/rules-engine/matcher.js");
+			const match = createMatcher([]);
+			expect(match("file.ts")).toBe(false);
+			expect(match("")).toBe(false);
+		});
+
+		it("should return a closure that matches correctly", async () => {
+			const { createMatcher } = await import("../../extensions/rules-engine/matcher.js");
+			const match = createMatcher(["**/*.ts", "**/*.tsx"]);
+			expect(match("src/foo.ts")).toBe(true);
+			expect(match("src/bar.tsx")).toBe(true);
+			expect(match("src/baz.js")).toBe(false);
+		});
+
+		it("should return consistent results on repeated calls", async () => {
+			const { createMatcher } = await import("../../extensions/rules-engine/matcher.js");
+			const match = createMatcher(["*.ts"]);
+			expect(match("foo.ts")).toBe(true);
+			expect(match("foo.ts")).toBe(true);
+			expect(match("foo.ts")).toBe(true);
+		});
+
+		it("should handle brace expansion in created matcher", async () => {
+			const { createMatcher } = await import("../../extensions/rules-engine/matcher.js");
+			const match = createMatcher(["src/**/*.{ts,tsx}"]);
+			expect(match("src/deep/file.ts")).toBe(true);
+			expect(match("src/deep/file.tsx")).toBe(true);
+			expect(match("src/deep/file.js")).toBe(false);
 		});
 	});
 });

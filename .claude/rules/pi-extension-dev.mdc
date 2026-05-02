@@ -1,10 +1,9 @@
 ---
-paths:
+globs:
   - "**/src/**/extensions/**/*.ts"
   - "**/packages/coding-agent/src/**/*.ts"
 description: "PI 扩展开发规范"
 severity: "critical"
-scope: "project"
 whenToUse: "编写或修改 PI 扩展代码时触发"
 ---
 

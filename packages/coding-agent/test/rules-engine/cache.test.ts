@@ -5,12 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 let getRules: (
 	projectDir: string,
-	config: import("../../src/rules-engine/types.js").RulesConfig,
-) => Promise<import("../../src/rules-engine/types.js").ParsedRule[]>;
+	config: import("../../extensions/rules-engine/types.js").RulesConfig,
+) => Promise<import("../../extensions/rules-engine/types.js").ParsedRule[]>;
 let invalidateCache: () => void;
 
 try {
-	const mod = await import("../../src/rules-engine/cache.js");
+	const mod = await import("../../extensions/rules-engine/cache.js");
 	getRules = mod.getRules;
 	invalidateCache = mod.invalidateCache;
 } catch {

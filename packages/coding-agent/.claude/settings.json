@@ -1,0 +1,66 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "x-pi-id": "no-verify",
+            "if": "Bash(*--no-verify*)",
+            "command": "echo 'Blocked: --no-verify is not allowed' >&2 && exit 2"
+          },
+          {
+            "type": "command",
+            "x-pi-id": "no-force-push",
+            "if": "Bash(git push*--force*)",
+            "command": "echo 'Blocked: force push is not allowed' >&2 && exit 2"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "x-pi-id": "protect-architecture",
+            "if": "Edit(*tsconfig.json)",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"架构文件 tsconfig.json 修改需要确认\"}}'"
+          },
+          {
+            "type": "command",
+            "x-pi-id": "protect-architecture",
+            "if": "Edit(*eslint.config*)",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"ESLint 配置修改需要确认\"}}'"
+          },
+          {
+            "type": "command",
+            "x-pi-id": "protect-architecture",
+            "if": "Edit(*package.json)",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"package.json 修改需要确认，这会影响项目依赖\"}}'"
+          },
+          {
+            "type": "command",
+            "x-pi-id": "protect-architecture",
+            "if": "Edit(*vite.config*)",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"构建配置修改需要确认\"}}'"
+          },
+          {
+            "type": "command",
+            "if": "Edit(*src/config.ts*)",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"src/config.ts 修改需要确认\"}}'",
+            "x-pi-id": "protect-architecture",
+            "x-pi-file": "src/config.ts"
+          },
+          {
+            "type": "command",
+            "if": "Edit(*docs/api/**)",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"docs/api/ 修改需要确认\"}}'",
+            "x-pi-id": "protect-architecture",
+            "x-pi-file": "docs/api/"
+          }
+        ],
+        "matcher": "Edit|Write"
+      }
+    ]
+  }
+}

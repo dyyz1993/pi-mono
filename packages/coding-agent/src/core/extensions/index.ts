@@ -6,6 +6,7 @@ export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.js"
 export type { SourceInfo } from "../source-info.js";
 export { ChannelManager } from "./channel-manager.js";
 export type { Channel, ChannelDataMessage, ChannelEntry, ChannelOutputFn } from "./channel-types.js";
+export { ClientChannel } from "./client-channel.js";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
@@ -21,7 +22,14 @@ export type {
 	SwitchSessionHandler,
 } from "./runner.js";
 export { ExtensionRunner } from "./runner.js";
-export type { ChannelContract } from "./server-channel.js";
+export type {
+	ChannelContract,
+	EventData,
+	EventKeys,
+	MethodKeys,
+	MethodParams,
+	MethodReturn,
+} from "./server-channel.js";
 export { ServerChannel } from "./server-channel.js";
 export type {
 	AfterProviderResponseEvent,
@@ -34,6 +42,8 @@ export type {
 	// App keybindings (for custom editors)
 	AppKeybinding,
 	AutocompleteProviderFactory,
+	BackgroundHandler,
+	BackgroundTask,
 	// Events - Tool (ToolCallEvent types)
 	BashToolCallEvent,
 	BashToolResultEvent,
@@ -44,6 +54,9 @@ export type {
 	BuildSystemPromptOptions,
 	CallLLMHandler,
 	CallLLMOptions,
+	CallLLMStructuredError,
+	CallLLMStructuredHandler,
+	CallLLMStructuredOptions,
 	// Context
 	CompactOptions,
 	// Events - Agent
@@ -79,6 +92,9 @@ export type {
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,
+	ForkAgentHandler,
+	ForkAgentOptions,
+	ForkAgentResult,
 	GetActiveToolsHandler,
 	GetAllToolsHandler,
 	GetCommandsHandler,
