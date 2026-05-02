@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-pods",
-	"version": "0.69.17",
+	"version": "0.69.22",
 	"description": "CLI tool for managing vLLM deployments on GPU pods",
 	"type": "module",
 	"bin": {
