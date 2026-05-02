@@ -173,7 +173,7 @@ async function main() {
 
 	await new Promise((r) => setTimeout(r, 2000));
 
-	console.log("\n" + "=".repeat(60));
+	console.log(`\n${"=".repeat(60)}`);
 	console.log(`Total events: ${eventCount}`);
 	console.log(`agent_end: ${gotAgentEnd}`);
 	console.log(`bookmark_created (memory_updated): ${gotBookmarkResult}`);

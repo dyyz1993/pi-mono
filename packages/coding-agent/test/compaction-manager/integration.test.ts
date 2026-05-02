@@ -121,7 +121,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const contextHandler = handlers["context"][0];
+		const contextHandler = handlers.context[0];
 		const oldTimestamp = Date.now() - 120 * 60 * 1000;
 		const messages: AgentMessage[] = [
 			{
@@ -147,7 +147,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const contextHandler = handlers["context"][0];
+		const contextHandler = handlers.context[0];
 		const messages: AgentMessage[] = [
 			{
 				role: "toolResult",
@@ -168,7 +168,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const turnEndHandler = handlers["turn_end"][0];
+		const turnEndHandler = handlers.turn_end[0];
 		const ctx = createMockCtx({
 			getContextUsage: vi.fn(() => ({
 				tokens: 160000,
@@ -185,7 +185,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const turnEndHandler = handlers["turn_end"][0];
+		const turnEndHandler = handlers.turn_end[0];
 		const ctx = createMockCtx({
 			getContextUsage: vi.fn(() => ({
 				tokens: 190000,
@@ -202,7 +202,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const turnEndHandler = handlers["turn_end"][0];
+		const turnEndHandler = handlers.turn_end[0];
 		const ctx = createMockCtx({
 			getContextUsage: vi.fn(() => ({
 				tokens: 50000,
@@ -219,8 +219,8 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const agentStartHandler = handlers["agent_start"][0];
-		const turnEndHandler = handlers["turn_end"][0];
+		const agentStartHandler = handlers.agent_start[0];
+		const turnEndHandler = handlers.turn_end[0];
 
 		const ctxHigh = createMockCtx({
 			getContextUsage: vi.fn(() => ({
@@ -250,7 +250,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const handler = handlers["after_provider_response"][0];
+		const handler = handlers.after_provider_response[0];
 		const ctx = createMockCtx();
 
 		await handler({ status: 429 }, ctx);
@@ -261,7 +261,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const handler = handlers["after_provider_response"][0];
+		const handler = handlers.after_provider_response[0];
 		const ctx = createMockCtx();
 
 		await handler({ status: 503 }, ctx);
