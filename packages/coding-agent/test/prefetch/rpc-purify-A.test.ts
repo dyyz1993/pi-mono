@@ -252,7 +252,7 @@ describe.skipIf(!hasApiKey)(
 					const store = readStoreSnapshot();
 					const lastEntry = store.history[store.history.length - 1];
 
-					if (lastEntry && lastEntry.skipped) {
+					if (lastEntry?.skipped) {
 						expect(lastEntry.skipped).toBe(true);
 					} else {
 						expect(store.history.length).toBeGreaterThanOrEqual(0);

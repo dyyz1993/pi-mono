@@ -644,7 +644,7 @@ async function runConfirmDenyScenario(): Promise<boolean> {
 }
 
 async function main() {
-	console.log("\n" + "=".repeat(60));
+	console.log(`\n${"=".repeat(60)}`);
 	console.log("  Message Bridge E2E Verification");
 	console.log(`  Bridge: ${BRIDGE_URL}`);
 	console.log(`  Session: ${SESSION_ID}`);

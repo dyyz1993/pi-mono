@@ -372,7 +372,7 @@ function generateMermaidDiagrams() {
 }
 
 async function main() {
-	console.log("\n" + "=".repeat(60));
+	console.log(`\n${"=".repeat(60)}`);
 	console.log("  UI Interception E2E Verification (with respondUI)");
 	console.log("=".repeat(60));
 

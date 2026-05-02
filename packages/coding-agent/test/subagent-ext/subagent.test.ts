@@ -16,7 +16,7 @@ const mockChild = new EventEmitter() as ChildProcess;
 (mockChild as any).kill = vi.fn();
 
 vi.mock("node:child_process", () => ({
-	spawn: (cmd: string, args: string[]) => {
+	spawn: (_cmd: string, args: string[]) => {
 		spawnCalls.push(args);
 		process.nextTick(() => mockChild.emit("exit", 0));
 		return mockChild;
