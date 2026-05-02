@@ -23,9 +23,25 @@
 			"@mariozechner/pi-web-ui": ["./packages/web-ui/src/index.ts"],
 			"@mariozechner/pi-web-ui/*": ["./packages/web-ui/src/*"],
 			"@mariozechner/pi-agent-old": ["./packages/agent-old/src/index.ts"],
-			"@mariozechner/pi-agent-old/*": ["./packages/agent-old/src/*"]
+			"@mariozechner/pi-agent-old/*": ["./packages/agent-old/src/*"],
+			"@dyyz1993/pi-ai": ["./packages/ai/src/index.ts"],
+			"@dyyz1993/pi-ai/oauth": ["./packages/ai/src/oauth.ts"],
+			"@dyyz1993/pi-ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],
+			"@dyyz1993/pi-agent-core": ["./packages/agent/src/index.ts"],
+			"@dyyz1993/pi-agent-core/*": ["./packages/agent/src/*"],
+			"@dyyz1993/pi-coding-agent": ["./packages/coding-agent/src/index.ts"],
+			"@dyyz1993/pi-coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
+			"@dyyz1993/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
+			"@dyyz1993/pi-mom": ["./packages/mom/src/index.ts"],
+			"@dyyz1993/pi-mom/*": ["./packages/mom/src/*"],
+			"@dyyz1993/pi": ["./packages/pods/src/index.ts"],
+			"@dyyz1993/pi/*": ["./packages/pods/src/*"],
+			"@dyyz1993/pi-tui": ["./packages/tui/src/index.ts"],
+			"@dyyz1993/pi-tui/*": ["./packages/tui/src/*"],
+			"@dyyz1993/pi-web-ui": ["./packages/web-ui/src/index.ts"],
+			"@dyyz1993/pi-web-ui/*": ["./packages/web-ui/src/*"]
 		}
 	},
-	"include": ["packages/*/src/**/*", "packages/*/test/**/*", "packages/coding-agent/examples/**/*"],
-	"exclude": ["packages/web-ui/**/*", "**/dist/**"]
+	"include": ["packages/*/src/**/*"],
+	"exclude": ["packages/web-ui/**/*", "**/dist/**", "packages/coding-agent/extensions/**/*"]
 }
