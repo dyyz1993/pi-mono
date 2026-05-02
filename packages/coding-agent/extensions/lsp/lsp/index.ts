@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI, ExtensionCommandContext } from "../../../src/core/extensions/index.js";
-import { ServerChannel } from "../../../src/core/extensions/server-channel.js";
+import { type ExtensionAPI, type ExtensionCommandContext, ServerChannel } from "@dyyz1993/pi-coding-agent";
 import { createFileTracker } from "./client/file-tracker.js";
 import { createLspRuntimeRegistry } from "./client/registry.js";
 import { createLspConfigResolver } from "./config/resolver.js";

@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI } from "../../../src/core/extensions/index.js";
+import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { createFileTracker } from "./client/file-tracker.js";
 import { createDiagnosticsMode, type DiagnosticsModeName } from "./hooks/diagnostics-mode.js";
 import lspExtensionDefault, { type LspChannelEvent } from "./index.js";

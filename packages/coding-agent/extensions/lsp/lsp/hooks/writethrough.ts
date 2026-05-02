@@ -1,7 +1,7 @@
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "../../../../src/core/extensions/index.js";
+import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@dyyz1993/pi-coding-agent";
 import type { FileTracker } from "../client/file-tracker.js";
 import type { LspRuntimeRegistry } from "../client/registry.js";
 import {

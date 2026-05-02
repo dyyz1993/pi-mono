@@ -2,7 +2,7 @@ import { readFile as fsReadFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Static, Type } from "@sinclair/typebox";
-import type { ExtensionAPI } from "../../../../src/core/extensions/index.js";
+import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import type { LspRuntimeRegistry } from "../client/registry.js";
 import type { ResolvedLspConfig } from "../config/resolver.js";
 import { extractPullDiagnostics, languageIdFromPath } from "../utils/lsp-helpers.js";

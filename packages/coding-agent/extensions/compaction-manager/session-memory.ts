@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { CompactionPreparation, CompactionResult } from "../../src/core/compaction/index.js";
+import type { CompactionPreparation, CompactionResult } from "@dyyz1993/pi-coding-agent";
 
 export type { CompactionPreparation, CompactionResult };
 

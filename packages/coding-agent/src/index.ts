@@ -28,6 +28,7 @@ export {
 	type BranchPreparation,
 	type BranchSummaryResult,
 	type CollectEntriesResult,
+	type CompactionPreparation,
 	type CompactionResult,
 	type CutPointResult,
 	calculateContextTokens,
@@ -61,6 +62,7 @@ export type {
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
+	CallLLMOptions,
 	Channel,
 	ChannelDataMessage,
 	ChannelOutputFn,
@@ -145,6 +147,7 @@ export {
 	isReadToolResult,
 	isToolCallEventType,
 	isWriteToolResult,
+	ServerChannel,
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.js";
@@ -352,8 +355,15 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.js";
+export { waitForChildProcess } from "./utils/child-process.js";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";
 // Shell utilities
-export { getShellConfig } from "./utils/shell.js";
+export {
+	getShellConfig,
+	getShellEnv,
+	killProcessTree,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "./utils/shell.js";

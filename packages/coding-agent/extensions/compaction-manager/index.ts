@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "../../src/core/extensions/index.js";
+import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { DEFAULT_CONFIG } from "./config.js";
 import { microcompactMessages } from "./microcompact.js";
 import { buildMemorySummary, readMemoryFiles } from "./session-memory.js";

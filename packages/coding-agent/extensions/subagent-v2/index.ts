@@ -6,14 +6,14 @@ import { StringEnum } from "@dyyz1993/pi-ai";
 import {
 	type ExtensionAPI,
 	getMarkdownTheme,
+	RpcClient,
+	ServerChannel,
 	type Theme,
 	type ThemeColor,
 	withFileMutationQueue,
 } from "@dyyz1993/pi-coding-agent";
 import { type Component, Container, Markdown, Spacer, Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
-import { ServerChannel } from "../../src/core/extensions/server-channel.js";
-import { RpcClient } from "../../src/modes/rpc/rpc-client.js";
 import { type AgentScope, discoverAgents } from "../subagent/agents.js";
 
 const STEER_GRACE_MS = 30_000;

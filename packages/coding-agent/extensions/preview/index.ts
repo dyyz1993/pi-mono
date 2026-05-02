@@ -3,7 +3,7 @@ import { extname, isAbsolute, resolve } from "node:path";
 import type { AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
+import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 
 export type ResourceType = "image" | "url" | "html" | "pdf" | "video" | "audio" | "markdown" | "text";
 

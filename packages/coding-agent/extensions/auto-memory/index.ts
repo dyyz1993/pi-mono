@@ -3,8 +3,8 @@ import { mkdir, readFile, stat, unlink, utimes, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import type { AgentMessage, AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { Type } from "typebox";
-import type { CallLLMOptions, ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
-import { ServerChannel } from "../../src/core/extensions/server-channel.js";
+import type { CallLLMOptions, ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
+import { ServerChannel } from "@dyyz1993/pi-coding-agent";
 
 function stripMarkdownCodeBlock(text: string): string {
 	let cleaned = text.trim();

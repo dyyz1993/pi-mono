@@ -28,10 +28,19 @@ import { join } from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@dyyz1993/pi-agent-core";
 import { spawn } from "child_process";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
-import { ServerChannel } from "../../src/core/extensions/server-channel.js";
-import type { BashToolDetails as _BashToolDetails } from "../../src/core/tools/index.js";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "../../src/core/tools/index.js";
+import type { BashToolDetails as _BashToolDetails, ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	ServerChannel,
+	getShellConfig,
+	getShellEnv,
+	killProcessTree,
+	truncateTail,
+	untrackDetachedChildPid,
+	trackDetachedChildPid,
+	waitForChildProcess,
+} from "@dyyz1993/pi-coding-agent";
 
 interface TerminatedDetails {
 	reason: string;
@@ -59,16 +68,6 @@ type BashToolDetails = _BashToolDetails & {
 	terminated?: TerminatedDetails;
 	background?: BackgroundDetails;
 };
-
-import { truncateTail } from "../../src/core/tools/truncate.js";
-import { waitForChildProcess } from "../../src/utils/child-process.js";
-import {
-	getShellConfig,
-	getShellEnv,
-	killProcessTree,
-	trackDetachedChildPid,
-	untrackDetachedChildPid,
-} from "../../src/utils/shell.js";
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),

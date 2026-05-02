@@ -1,6 +1,6 @@
 import { Type } from "@dyyz1993/pi-ai";
 import { defineTool, type ExtensionAPI } from "@dyyz1993/pi-coding-agent";
-import { ServerChannel } from "../../src/core/extensions/server-channel.js";
+import { ServerChannel } from "@dyyz1993/pi-coding-agent";
 import { getRules, invalidateCache } from "./cache.js";
 import { loadConfig } from "./config.js";
 import { buildSystemReminderSection, buildToolReminderSection } from "./injector.js";
@@ -20,7 +20,7 @@ import type {
 	SnapshotPayload,
 } from "./types.js";
 
-export { ServerChannel } from "../../src/core/extensions/server-channel.js";
+export { ServerChannel } from "@dyyz1993/pi-coding-agent";
 export { getRules, invalidateCache } from "./cache.js";
 export { loadConfig, resolveDirs } from "./config.js";
 export { buildCompactContext, buildSystemReminderSection, buildToolReminderSection, buildSystemPromptSection, buildToolContextSection } from "./injector.js";

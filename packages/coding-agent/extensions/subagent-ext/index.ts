@@ -15,8 +15,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@dyyz1993/pi-agent-core";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
-import { ServerChannel } from "../../src/core/extensions/server-channel.js";
+import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
+import { ServerChannel } from "@dyyz1993/pi-coding-agent";
 import { getSubagentDir } from "../auto-memory/utils.js";
 
 export interface SubagentParams {
@@ -25,6 +25,11 @@ export interface SubagentParams {
 	instruction: string;
 	cwd?: string;
 	model?: string;
+	maxTurns?: number;
+	thinkingLevel?: string;
+	extensions?: string[];
+	permissionMode?: string;
+	tools?: string[];
 }
 
 export interface SubagentSessionInfo {
@@ -61,6 +66,13 @@ const SubagentParamsSchema = Type.Object({
 	instruction: Type.String({ description: "The task instruction to execute" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the sub-agent process" })),
 	model: Type.Optional(Type.String({ description: "Model to use (e.g. 'sonnet', 'gpt-4o')" })),
+	maxTurns: Type.Optional(Type.Number({ description: "Maximum number of agent turns" })),
+	thinkingLevel: Type.Optional(Type.String({ description: "Thinking level: off, minimal, low, medium, high, xhigh" })),
+	extensions: Type.Optional(Type.Array(Type.String(), { description: "Extension paths to load in the child process" })),
+	permissionMode: Type.Optional(
+		Type.String({ description: "Permission mode: auto, acceptEdits, plan, dontAsk, always-allow, always-deny" }),
+	),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Tool names to enable" })),
 });
 
 export function parseJsonLine(line: string): unknown | null {
@@ -234,7 +246,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			_onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
 			ctx: ExtensionContext,
 		): Promise<AgentToolResult<SubagentDetails>> {
-			const { systemPrompt, description, instruction, cwd, model } = params;
+			const { systemPrompt, description, instruction, cwd, model, maxTurns, thinkingLevel, extensions, tools } = params;
 			const sessionId = randomUUID().slice(0, 8);
 			const effectiveCwd = cwd ?? ctx.cwd;
 			const sessionDir = getSubagentDir(effectiveCwd);
@@ -280,9 +292,19 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					sessionId,
 				});
 
-				const effectiveModel = model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
-				const args: string[] = ["--mode", "json", "-p", "--no-extensions", "--session", sessionPath];
-				if (effectiveModel) args.push("--model", effectiveModel);
+			const effectiveModel = model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
+			const useExtensions = extensions && extensions.length > 0;
+			const baseArgs: string[] = ["--mode", "json", "-p"];
+			if (!useExtensions) baseArgs.push("--no-extensions");
+			baseArgs.push("--session", sessionPath);
+			if (effectiveModel) baseArgs.push("--model", effectiveModel);
+			if (maxTurns && maxTurns > 0) baseArgs.push("--max-turns", String(maxTurns));
+			if (thinkingLevel) baseArgs.push("--thinking", thinkingLevel);
+			if (tools && tools.length > 0) baseArgs.push("--tools", tools.join(","));
+			if (useExtensions) {
+				for (const ext of extensions!) baseArgs.push("-e", ext);
+			}
+			const args = baseArgs;
 				if (systemPrompt?.trim()) {
 					const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-prompt-"));
 					tmpPromptPath = path.join(tmpDir, "system-prompt.md");

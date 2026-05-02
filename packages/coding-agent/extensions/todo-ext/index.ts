@@ -12,8 +12,8 @@ import type { AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { StringEnum } from "@dyyz1993/pi-ai";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/index.js";
-import { ServerChannel } from "../../src/core/extensions/server-channel.js";
+import { ServerChannel } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 
 export interface Todo {
 	id: number;
