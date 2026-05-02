@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-tui",
-	"version": "0.69.22",
+	"version": "0.69.23",
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"type": "module",
 	"main": "dist/index.js",
