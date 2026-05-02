@@ -236,6 +236,9 @@ export interface RpcClientAPI {
 	// Reload
 	reload(): Promise<void>;
 
+	// Set Cwd
+	setCwd(cwd: string): Promise<void>;
+
 	// Agents files
 	getAgentsFiles(): Promise<AgentsFile[]>;
 

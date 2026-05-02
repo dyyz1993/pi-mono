@@ -103,6 +103,9 @@ export type RpcCommand =
 	// Reload
 	| { id?: string; type: "reload" }
 
+	// Set Cwd
+	| { id?: string; type: "set_cwd"; cwd: string }
+
 	// Agents files
 	| { id?: string; type: "get_agents_files" }
 
@@ -412,6 +415,9 @@ export type RpcResponse =
 
 	// Reload
 	| { id?: string; type: "response"; command: "reload"; success: true }
+
+	// Set Cwd
+	| { id?: string; type: "response"; command: "set_cwd"; success: true }
 
 	// Agents files
 	| {

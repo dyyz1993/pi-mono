@@ -371,6 +371,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	await rebindSession();
 	registerSignalHandlers();
+	output({ type: "ready" });
 
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {
@@ -828,6 +829,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				await session.reload();
 				session = runtimeHost.session;
 				return success(id, "reload");
+			}
+
+			case "set_cwd": {
+				await session.setCwd(command.cwd);
+				return success(id, "set_cwd");
 			}
 
 			case "get_agents_files": {
