@@ -305,25 +305,30 @@ describe("Ask Tools E2E", () => {
 		});
 	});
 
-	describe("ask-multiselect", () => {
-		it("returns selected items via UI handler (multiple)", async () => {
+	describe("ask-select (multiple)", () => {
+		it("returns selected items via UI handler (multiple=true)", async () => {
 			const harness = await createHarness({
 				extensionFactories: [
 					(pi: any) => {
 						pi.registerTool({
-							name: "ask-multiselect",
-							label: "Ask Multiselect",
-							description: "Asks to pick multiple options",
+							name: "ask-select",
+							label: "Ask Select",
+							description: "Asks to pick options",
 							parameters: Type.Object({
 								title: Type.String(),
 								options: Type.Array(Type.String()),
+								multiple: Type.Optional(Type.Boolean()),
 							}),
 							execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
-								const choices = await ctx.ui.select(params.title, params.options, { multiple: true });
-								if (!choices || !Array.isArray(choices) || choices.length === 0) {
-									return { content: [{ type: "text", text: "User selected: (none)" }] };
+								const isMultiple = params.multiple === true;
+								const result = await ctx.ui.select(params.title, params.options, { multiple: isMultiple });
+								if (isMultiple) {
+									if (!result || !Array.isArray(result) || result.length === 0) {
+										return { content: [{ type: "text", text: "User selected: (none)" }] };
+									}
+									return { content: [{ type: "text", text: `User selected: ${(result as string[]).join(", ")}` }] };
 								}
-								return { content: [{ type: "text", text: `User selected: ${choices.join(", ")}` }] };
+								return { content: [{ type: "text", text: `User selected: ${(result as string) ?? "(cancelled)"}` }] };
 							},
 						});
 					},
@@ -341,7 +346,7 @@ describe("Ask Tools E2E", () => {
 
 			harness.setResponses([
 				fauxAssistantMessage(
-					[fauxToolCall("ask-multiselect", { title: "Colors", options: ["Red", "Green", "Blue"] })],
+					[fauxToolCall("ask-select", { title: "Colors", options: ["Red", "Green", "Blue"], multiple: true })],
 					{ stopReason: "toolUse" },
 				),
 				(context: any) => fauxAssistantMessage(extractToolResultText(context)),
@@ -351,24 +356,29 @@ describe("Ask Tools E2E", () => {
 			expect(getAssistantTexts(harness)).toContain("User selected: Red, Blue");
 		});
 
-		it("returns none when user selects nothing", async () => {
+		it("returns none when user selects nothing (multiple=true)", async () => {
 			const harness = await createHarness({
 				extensionFactories: [
 					(pi: any) => {
 						pi.registerTool({
-							name: "ask-multiselect",
-							label: "Ask Multiselect",
-							description: "Asks to pick multiple options",
+							name: "ask-select",
+							label: "Ask Select",
+							description: "Asks to pick options",
 							parameters: Type.Object({
 								title: Type.String(),
 								options: Type.Array(Type.String()),
+								multiple: Type.Optional(Type.Boolean()),
 							}),
 							execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
-								const choices = await ctx.ui.select(params.title, params.options, { multiple: true });
-								if (!choices || !Array.isArray(choices) || choices.length === 0) {
-									return { content: [{ type: "text", text: "User selected: (none)" }] };
+								const isMultiple = params.multiple === true;
+								const result = await ctx.ui.select(params.title, params.options, { multiple: isMultiple });
+								if (isMultiple) {
+									if (!result || !Array.isArray(result) || result.length === 0) {
+										return { content: [{ type: "text", text: "User selected: (none)" }] };
+									}
+									return { content: [{ type: "text", text: `User selected: ${(result as string[]).join(", ")}` }] };
 								}
-								return { content: [{ type: "text", text: `User selected: ${choices.join(", ")}` }] };
+								return { content: [{ type: "text", text: `User selected: ${(result as string) ?? "(cancelled)"}` }] };
 							},
 						});
 					},
@@ -385,9 +395,10 @@ describe("Ask Tools E2E", () => {
 			harnesses.push(harness);
 
 			harness.setResponses([
-				fauxAssistantMessage([fauxToolCall("ask-multiselect", { title: "Items", options: ["A", "B"] })], {
-					stopReason: "toolUse",
-				}),
+				fauxAssistantMessage(
+					[fauxToolCall("ask-select", { title: "Items", options: ["A", "B"], multiple: true })],
+					{ stopReason: "toolUse" },
+				),
 				(context: any) => fauxAssistantMessage(extractToolResultText(context)),
 			]);
 

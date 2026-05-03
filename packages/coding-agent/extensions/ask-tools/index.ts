@@ -1,8 +1,9 @@
 /**
  * Ask Tools Extension
  *
- * 注册 ask-confirm / ask-select / ask-multiselect / ask-input / ask-editor / ask-notify 工具，
+ * 注册 ask-confirm / ask-select / ask-input / ask-editor / ask-notify 工具，
  * 内部调用 ctx.ui.confirm / select / input / editor / notify 触发 UI 交互。
+ * ask-select 支持 multiple 参数切换单选/多选模式。
  * 配合 message-bridge 扩展使用时，confirm/select/input/editor 调用会被推送到 Bridge。
  */
 
@@ -28,38 +29,24 @@ export default function askToolsExtension(pi: any) {
 	pi.registerTool({
 		name: "ask-select",
 		label: "Ask Select",
-		description: "Asks the user to select one option from a list. Use when you need the user to make a choice.",
-		parameters: Type.Object({
-			title: Type.String({ description: "Short title for the selection" }),
-			options: Type.Array(Type.String(), { description: "List of options to choose from" }),
-		}),
-		execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
-			const choice = await ctx.ui.select(params.title, params.options);
-			return {
-				content: [{ type: "text", text: `User selected: ${choice ?? "(cancelled)"}` }],
-			};
-		},
-	});
-
-	pi.registerTool({
-		name: "ask-multiselect",
-		label: "Ask Multiselect",
 		description:
-			"Asks the user to select multiple options from a list (checkbox style). Use when you need the user to pick one or more options.",
+			"Asks the user to select option(s) from a list. By default single-select (returns one choice). Set multiple=true to allow selecting multiple options (checkbox style).",
 		parameters: Type.Object({
 			title: Type.String({ description: "Short title for the selection" }),
 			options: Type.Array(Type.String(), { description: "List of options to choose from" }),
+			multiple: Type.Optional(Type.Boolean({ description: "Allow multi-select (checkbox mode). Default: false (single select)." })),
 		}),
 		execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
-			const choices = await ctx.ui.select(params.title, params.options, { multiple: true });
-			if (!choices || !Array.isArray(choices) || choices.length === 0) {
-				return {
-					content: [{ type: "text", text: "User selected: (none)" }],
-				};
+			const isMultiple = params.multiple === true;
+			const result = await ctx.ui.select(params.title, params.options, { multiple: isMultiple });
+			if (isMultiple) {
+				if (!result || !Array.isArray(result) || result.length === 0) {
+					return { content: [{ type: "text", text: "User selected: (none)" }] };
+				}
+				return { content: [{ type: "text", text: `User selected: ${result.join(", ")}` }] };
 			}
-			return {
-				content: [{ type: "text", text: `User selected: ${choices.join(", ")}` }],
-			};
+			const choice = result as string | undefined;
+			return { content: [{ type: "text", text: `User selected: ${choice ?? "(cancelled)"}` }] };
 		},
 	});
 
