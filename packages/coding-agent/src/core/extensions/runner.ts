@@ -894,7 +894,8 @@ export class ExtensionRunner {
 			select: async (title, options, opts) => {
 				if (!this.hasHandlers("ui")) return original.select(title, options, opts);
 				const id = randomUUID();
-				const asyncPromise = this.createAsyncUIPromise<string | undefined>(id, (r) =>
+				const multiple = opts?.multiple;
+				const asyncPromise = this.createAsyncUIPromise<string | string[] | undefined>(id, (r) =>
 					r?.action === "responded" ? r.value : undefined,
 				);
 				const result = await this.emitUIEvent<UIEventResult>({
@@ -903,11 +904,15 @@ export class ExtensionRunner {
 					method: "select",
 					title,
 					options,
+					multiple,
 					signal: opts?.signal,
 					timeout: opts?.timeout,
 				});
 				if (result?.action === "responded") {
 					this.pendingUIResponses.delete(id);
+					if (multiple && result.value !== undefined) {
+						return Array.isArray(result.value) ? result.value : [result.value];
+					}
 					return result.value;
 				}
 				return Promise.race([original.select(title, options, opts), asyncPromise!]);

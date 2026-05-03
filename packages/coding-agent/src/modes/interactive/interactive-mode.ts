@@ -1936,7 +1936,7 @@ export class InteractiveMode {
 		title: string,
 		options: string[],
 		opts?: ExtensionUIDialogOptions,
-	): Promise<string | undefined> {
+	): Promise<string | string[] | undefined> {
 		return new Promise((resolve) => {
 			if (opts?.signal?.aborted) {
 				resolve(undefined);
@@ -1952,7 +1952,7 @@ export class InteractiveMode {
 			this.extensionSelector = new ExtensionSelectorComponent(
 				title,
 				options,
-				(option) => {
+				(option: string | string[]) => {
 					opts?.signal?.removeEventListener("abort", onAbort);
 					this.hideExtensionSelector();
 					resolve(option);
@@ -1962,7 +1962,7 @@ export class InteractiveMode {
 					this.hideExtensionSelector();
 					resolve(undefined);
 				},
-				{ tui: this.ui, timeout: opts?.timeout },
+				{ tui: this.ui, timeout: opts?.timeout, multiple: opts?.multiple },
 			);
 
 			this.editorContainer.clear();

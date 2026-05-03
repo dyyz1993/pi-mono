@@ -67,9 +67,9 @@ function buildConfirmQuestion(title: string, message?: string): Record<string, u
 	return { type: "confirm", question };
 }
 
-function buildSelectQuestion(title: string, options: string[]): Record<string, unknown> {
+function buildSelectQuestion(title: string, options: string[], multiple?: boolean): Record<string, unknown> {
 	return {
-		type: "radio",
+		type: multiple ? "checkbox" : "radio",
 		question: title,
 		options: options.map((label) => ({ label, description: "" })),
 	};
@@ -99,6 +99,25 @@ function parseSelectAnswer(answer: string): string {
 	} catch {
 		return trimmed;
 	}
+}
+
+function parseMultiSelectAnswer(answer: string, options: string[]): string[] {
+	const trimmed = answer.trim();
+	try {
+		const parsed = JSON.parse(trimmed);
+		if (Array.isArray(parsed)) {
+			return parsed.map(String).filter((v) => options.includes(v));
+		}
+	} catch {}
+	const colonIdx = trimmed.indexOf("】:");
+	if (colonIdx !== -1) {
+		const value = trimmed.slice(colonIdx + 2).trim();
+		return value
+			.split(",")
+			.map((s) => s.trim())
+			.filter((v) => options.includes(v));
+	}
+	return options.includes(trimmed) ? [trimmed] : [];
 }
 
 function extractMessageText(message: unknown): string {
@@ -134,11 +153,17 @@ export default function messageBridgeExtension(pi: any) {
 
 		if (event.method === "select") {
 			const options: string[] = event.options ?? [];
-			const question = buildSelectQuestion(event.title, options);
+			const multiple: boolean = event.multiple === true;
+			const question = buildSelectQuestion(event.title, options, multiple);
 			pushAndWait(question, sessionId)
 				.then((answer) => {
-					const value = parseSelectAnswer(answer);
-					ctx.respondUI(event.id, { action: "responded", value });
+					if (multiple) {
+						const values = parseMultiSelectAnswer(answer, options);
+						ctx.respondUI(event.id, { action: "responded", value: values });
+					} else {
+						const value = parseSelectAnswer(answer);
+						ctx.respondUI(event.id, { action: "responded", value });
+					}
 				})
 				.catch(() => {});
 			return undefined;

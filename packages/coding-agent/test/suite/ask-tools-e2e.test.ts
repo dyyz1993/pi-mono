@@ -305,6 +305,97 @@ describe("Ask Tools E2E", () => {
 		});
 	});
 
+	describe("ask-multiselect", () => {
+		it("returns selected items via UI handler (multiple)", async () => {
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi: any) => {
+						pi.registerTool({
+							name: "ask-multiselect",
+							label: "Ask Multiselect",
+							description: "Asks to pick multiple options",
+							parameters: Type.Object({
+								title: Type.String(),
+								options: Type.Array(Type.String()),
+							}),
+							execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
+								const choices = await ctx.ui.select(params.title, params.options, { multiple: true });
+								if (!choices || !Array.isArray(choices) || choices.length === 0) {
+									return { content: [{ type: "text", text: "User selected: (none)" }] };
+								}
+								return { content: [{ type: "text", text: `User selected: ${choices.join(", ")}` }] };
+							},
+						});
+					},
+					(pi: any) => {
+						pi.on("ui", async (event: any) => {
+							if (event.method === "select" && event.multiple) {
+								return { action: "responded", value: ["Red", "Blue"] };
+							}
+							return undefined;
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+
+			harness.setResponses([
+				fauxAssistantMessage(
+					[fauxToolCall("ask-multiselect", { title: "Colors", options: ["Red", "Green", "Blue"] })],
+					{ stopReason: "toolUse" },
+				),
+				(context: any) => fauxAssistantMessage(extractToolResultText(context)),
+			]);
+
+			await harness.session.prompt("pick colors");
+			expect(getAssistantTexts(harness)).toContain("User selected: Red, Blue");
+		});
+
+		it("returns none when user selects nothing", async () => {
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi: any) => {
+						pi.registerTool({
+							name: "ask-multiselect",
+							label: "Ask Multiselect",
+							description: "Asks to pick multiple options",
+							parameters: Type.Object({
+								title: Type.String(),
+								options: Type.Array(Type.String()),
+							}),
+							execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
+								const choices = await ctx.ui.select(params.title, params.options, { multiple: true });
+								if (!choices || !Array.isArray(choices) || choices.length === 0) {
+									return { content: [{ type: "text", text: "User selected: (none)" }] };
+								}
+								return { content: [{ type: "text", text: `User selected: ${choices.join(", ")}` }] };
+							},
+						});
+					},
+					(pi: any) => {
+						pi.on("ui", async (event: any) => {
+							if (event.method === "select" && event.multiple) {
+								return { action: "responded", value: [] };
+							}
+							return undefined;
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+
+			harness.setResponses([
+				fauxAssistantMessage([fauxToolCall("ask-multiselect", { title: "Items", options: ["A", "B"] })], {
+					stopReason: "toolUse",
+				}),
+				(context: any) => fauxAssistantMessage(extractToolResultText(context)),
+			]);
+
+			await harness.session.prompt("pick items");
+			expect(getAssistantTexts(harness)).toContain("User selected: (none)");
+		});
+	});
+
 	describe("ask-notify", () => {
 		it("fires notify and returns result", async () => {
 			const notifyCalls: Array<{ message: string; type?: string }> = [];

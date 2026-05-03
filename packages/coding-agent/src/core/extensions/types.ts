@@ -90,10 +90,9 @@ export type { AppKeybinding, KeybindingsManager } from "../keybindings.js";
 
 /** Options for extension UI dialogs. */
 export interface ExtensionUIDialogOptions {
-	/** AbortSignal to programmatically dismiss the dialog. */
 	signal?: AbortSignal;
-	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
 	timeout?: number;
+	multiple?: boolean;
 }
 
 /** Placement for extension widgets. */
@@ -125,7 +124,7 @@ export type AutocompleteProviderFactory = (current: AutocompleteProvider) => Aut
  */
 export interface ExtensionUIContext {
 	/** Show a selector and return the user's choice. */
-	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | string[] | undefined>;
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
@@ -796,6 +795,7 @@ export interface UIEvent {
 	placeholder?: string;
 	prefill?: string;
 	notifyType?: "info" | "warning" | "error";
+	multiple?: boolean;
 	signal?: AbortSignal;
 	timeout?: number;
 }

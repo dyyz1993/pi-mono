@@ -1,9 +1,9 @@
 /**
  * Ask Tools Extension
  *
- * 注册 ask-confirm / ask-select / ask-input / ask-editor / ask-notify 工具，
+ * 注册 ask-confirm / ask-select / ask-multiselect / ask-input / ask-editor / ask-notify 工具，
  * 内部调用 ctx.ui.confirm / select / input / editor / notify 触发 UI 交互。
- * 配合 message-bridge 扩展使用时，confirm/select/input 调用会被推送到 Bridge。
+ * 配合 message-bridge 扩展使用时，confirm/select/input/editor 调用会被推送到 Bridge。
  */
 
 import { Type } from "typebox";
@@ -37,6 +37,28 @@ export default function askToolsExtension(pi: any) {
 			const choice = await ctx.ui.select(params.title, params.options);
 			return {
 				content: [{ type: "text", text: `User selected: ${choice ?? "(cancelled)"}` }],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "ask-multiselect",
+		label: "Ask Multiselect",
+		description:
+			"Asks the user to select multiple options from a list (checkbox style). Use when you need the user to pick one or more options.",
+		parameters: Type.Object({
+			title: Type.String({ description: "Short title for the selection" }),
+			options: Type.Array(Type.String(), { description: "List of options to choose from" }),
+		}),
+		execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
+			const choices = await ctx.ui.select(params.title, params.options, { multiple: true });
+			if (!choices || !Array.isArray(choices) || choices.length === 0) {
+				return {
+					content: [{ type: "text", text: "User selected: (none)" }],
+				};
+			}
+			return {
+				content: [{ type: "text", text: `User selected: ${choices.join(", ")}` }],
 			};
 		},
 	});
