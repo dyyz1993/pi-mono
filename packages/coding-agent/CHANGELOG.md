@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `ask-editor` tool to ask-tools extension (multi-line text editor via `ctx.ui.editor()`)
+- Added `ask-notify` tool to ask-tools extension (fire-and-forget notification via `ctx.ui.notify()`)
+- Added `multiple` option to `ask-select` tool for multi-select (checkbox) support via `ctx.ui.select(title, options, { multiple: true })`
+- Added `editor` UI interception in `ExtensionRunner` (was missing, now `ctx.ui.editor()` calls are intercepted like confirm/select/input)
+- Added checkbox multi-select mode to `ExtensionSelectorComponent` (Space to toggle, Enter to confirm)
+- Added `multiple` field to `UIEvent` and `ExtensionUIDialogOptions` types
+- Added `parseMultiSelectAnswer` to message-bridge for parsing array answers from remote
+- Added `editor` method interception to message-bridge extension
+
+### Changed
+
+- Merged `ask-multiselect` into `ask-select` with optional `multiple` parameter (single tool handles both modes)
+- `ctx.ui.select()` return type changed from `string | undefined` to `string | string[] | undefined`
+- Message-bridge `select` event now uses `type: "checkbox"` for multi-select and `type: "radio"` for single-select
+
 ## [0.69.16] - 2026-05-01
 
 ### Added
