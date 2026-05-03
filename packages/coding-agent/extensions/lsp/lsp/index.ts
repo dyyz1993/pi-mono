@@ -19,7 +19,8 @@ export interface LspChannelEvent {
 		| "startup_complete"
 		| "server_starting"
 		| "server_ready"
-		| "server_error";
+		| "server_error"
+		| "language_activated";
 	timestamp: number;
 	servers?: unknown[];
 	diagnostics?: unknown;
@@ -28,6 +29,7 @@ export interface LspChannelEvent {
 	error?: string;
 	serverName?: string;
 	totalServers?: number;
+	languages?: string[];
 }
 
 export default function lspExtension(pi: ExtensionAPI): void {
@@ -81,7 +83,14 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	writeThroughHooks.register(pi);
 	agentEndHook.register(pi);
 
-	pi.on("session_start", async (_event: any, ctx: any) => {
+		function getActiveLanguages(): string[] {
+			const status = runtime.getStatus();
+			return status.servers
+				.filter((s) => s.status.state === "ready")
+				.flatMap((s) => s.fileTypes ?? []);
+		}
+
+		pi.on("session_start", async (_event: any, ctx: any) => {
 		const raw = pi.registerChannel("lsp");
 
 		if (raw) {
@@ -98,6 +107,10 @@ export default function lspExtension(pi: ExtensionAPI): void {
 					mode: mode.get(),
 				});
 				return { ok: true, mode: mode.get() };
+			});
+
+			lspChannel.handle("getActiveLanguages", () => {
+				return { languages: getActiveLanguages() };
 			});
 		}
 
@@ -125,6 +138,15 @@ export default function lspExtension(pi: ExtensionAPI): void {
 				serverName: srv.name,
 				servers: [srv],
 			});
+
+			if (srv.status.state === "ready" && srv.fileTypes && srv.fileTypes.length > 0) {
+				lspChannel?.emit("language_activated", {
+					event: "language_activated",
+					timestamp: Date.now(),
+					serverName: srv.name,
+					languages: srv.fileTypes,
+				});
+			}
 		}
 
 		lspChannel?.emit("status_changed", {

@@ -24,6 +24,7 @@ import autoMemoryExtensionDefault, {
 	updateMemoryIndex,
 } from "../../extensions/auto-memory/index.js";
 import { DREAM_PROMPT, MEMORY_SYSTEM_PROMPT } from "../../extensions/auto-memory/prompts.js";
+import type { SkipWordStore } from "../../extensions/auto-memory/skip-rules.js";
 import {
 	buildBookmarkFrontmatter,
 	buildFrontmatter,
@@ -37,7 +38,6 @@ import {
 	scanMemoryFiles,
 	truncateEntrypoint,
 } from "../../extensions/auto-memory/utils.js";
-import type { SkipWordStore } from "../../extensions/prefetch/index.js";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
 import { createHarness, type Harness } from "../suite/harness.js";
 

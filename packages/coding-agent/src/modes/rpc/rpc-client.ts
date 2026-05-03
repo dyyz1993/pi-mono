@@ -574,6 +574,10 @@ export class RpcClient {
 		this.writeLine({ type: "remote_tool_result", toolCallId, result });
 	}
 
+	respondUI(requestId: string, response: Record<string, unknown>): void {
+		this.writeLine({ type: "extension_ui_response", id: requestId, ...response });
+	}
+
 	onRemoteToolCall(
 		handler: (call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void,
 	): () => void {

@@ -3,7 +3,6 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { getMemoryDir } from "../../extensions/auto-memory/utils.js";
 import {
 	evaluateRules,
 	getGlobalMemoryDir,
@@ -11,7 +10,8 @@ import {
 	loadSkipWordStore,
 	type SkipRule,
 	type SkipWordStore,
-} from "../../extensions/prefetch/index.js";
+} from "../../extensions/auto-memory/skip-rules.js";
+import { getMemoryDir } from "../../extensions/auto-memory/utils.js";
 import { RpcClient } from "../../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

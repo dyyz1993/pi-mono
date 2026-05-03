@@ -289,6 +289,7 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
+	private _toolCallVariables?: Record<string, string>;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -402,6 +403,7 @@ export class AgentSession {
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
 					input: args as Record<string, unknown>,
+					variables: this._toolCallVariables,
 				});
 			} catch (err) {
 				if (err instanceof Error) {
@@ -773,6 +775,14 @@ export class AgentSession {
 	/** Current thinking level */
 	get thinkingLevel(): ThinkingLevel {
 		return this.agent.state.thinkingLevel;
+	}
+
+	set toolCallVariables(vars: Record<string, string> | undefined) {
+		this._toolCallVariables = vars;
+	}
+
+	get toolCallVariables(): Record<string, string> | undefined {
+		return this._toolCallVariables;
 	}
 
 	/** Whether agent is currently streaming a response */

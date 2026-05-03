@@ -29,7 +29,7 @@ import {
 	type SkipRule,
 	type SkipWordStore,
 	saveSkipWordStore,
-} from "../prefetch/index.js";
+} from "./skip-rules.js";
 import {
 	BOOKMARK_SUMMARY_PROMPT,
 	DREAM_PROMPT,
@@ -99,21 +99,43 @@ function buildPrefetchUserMessage(query: string, manifest: string, rules: SkipRu
 	return `## 当前查询\n${query}\n\n## 可用文件\n${manifest}\n\n## 当前规则库\n${rulesSummary}\n\n## 最近 Prefetch 历史\n${historySummary}`;
 }
 
+interface PrefetchDebugInfo {
+	selectedFiles: string[];
+	durationMs: number;
+	layer: "skip" | "llm" | "none";
+	skipHits: Array<{ pattern: string; mode: string }>;
+	guardHits: Array<{ pattern: string; mode: string }>;
+	availableFiles: number;
+	query: string;
+}
+
 class MemoryPrefetch {
 	private promise: Promise<string> | null = null;
 	private settled = false;
 	private result: string | null = null;
 	private lastSelected: string[] = [];
+	private resultEntryWritten = false;
 	private store: SkipWordStore | null = null;
+	private _debugInfo: PrefetchDebugInfo | null = null;
+
+	get debugInfo(): PrefetchDebugInfo | null {
+		return this._debugInfo;
+	}
 
 	start(query: string, memoryDir: string, callLLM: CallLLMFn): void {
 		this.settled = false;
 		this.result = null;
+		this._debugInfo = null;
+		this.resultEntryWritten = false;
 		this.promise = this.run(query, memoryDir, callLLM);
 		void this.promise.then((r) => {
 			this.result = r;
 			this.settled = true;
 		});
+	}
+
+	get started(): boolean {
+		return this.promise !== null;
 	}
 
 	collect(): string | null {
@@ -142,27 +164,54 @@ class MemoryPrefetch {
 			let store = this.ensureStore();
 			const { shouldSkip, skipHits, guardHits } = evaluateRules(query, store.rules);
 
-			if (shouldSkip) {
-				store = addHistoryEntry(store, {
-					query: query.slice(0, 200),
-					selected: this.lastSelected,
-					skipped: true,
-					skip_hits: skipHits,
-					guard_hits: guardHits,
-					timestamp: Date.now(),
-				});
-				this.store = store;
-				await saveSkipWordStore(getGlobalMemoryDir(), this.store);
+			const matchedRules = store.rules
+				.filter((r) => skipHits.includes(r.pattern) || guardHits.includes(r.pattern))
+				.map((r) => ({ pattern: r.pattern, mode: r.mode, action: r.action }));
+			const matchedSkip = matchedRules.filter((r) => r.action === "skip").map(({ pattern, mode }) => ({ pattern, mode }));
+			const matchedGuard = matchedRules.filter((r) => r.action !== "skip").map(({ pattern, mode }) => ({ pattern, mode }));
 
-				if (this.lastSelected.length === 0) return "";
-				return await this.readFiles(this.lastSelected, memoryDir);
-			}
+		if (shouldSkip) {
+			this._debugInfo = {
+				selectedFiles: this.lastSelected,
+				durationMs: 0,
+				layer: "skip",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: 0,
+				query: query.slice(0, 200),
+			};
+			store = addHistoryEntry(store, {
+				query: query.slice(0, 200),
+				selected: this.lastSelected,
+				skipped: true,
+				skip_hits: skipHits,
+				guard_hits: guardHits,
+				timestamp: Date.now(),
+			});
+			this.store = store;
+			await saveSkipWordStore(getGlobalMemoryDir(), this.store);
 
-			const memories = await scanMemoryFiles(memoryDir);
-			if (memories.length === 0) return "";
+			if (this.lastSelected.length === 0) return "";
+			return await this.readFiles(this.lastSelected, memoryDir);
+		}
+
+		const memories = await scanMemoryFiles(memoryDir);
+		if (memories.length === 0) {
+			this._debugInfo = {
+				selectedFiles: [],
+				durationMs: 0,
+				layer: "none",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: 0,
+				query: query.slice(0, 200),
+			};
+			return "";
+		}
 
 			const manifest = formatManifest(memories);
 			const recentHistory = store.history.slice(-5);
+			const startTime = Date.now();
 
 			const llmResult = await callLLM({
 				systemPrompt: SELECT_MEMORIES_PROMPT,
@@ -178,6 +227,15 @@ class MemoryPrefetch {
 			try {
 				parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
 			} catch {
+				this._debugInfo = {
+					selectedFiles: [],
+					durationMs: Date.now() - startTime,
+					layer: "llm",
+					skipHits: matchedSkip,
+					guardHits: matchedGuard,
+					availableFiles: memories.length,
+					query: query.slice(0, 200),
+				};
 				return "";
 			}
 
@@ -201,10 +259,29 @@ class MemoryPrefetch {
 			this.store = store;
 			await saveSkipWordStore(getGlobalMemoryDir(), this.store);
 
+			this._debugInfo = {
+				selectedFiles: selected,
+				durationMs: Date.now() - startTime,
+				layer: "llm",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: memories.length,
+				query: query.slice(0, 200),
+			};
+
 			if (selected.length === 0) return "";
 
 			return await this.readFiles(selected, memoryDir);
 		} catch {
+			this._debugInfo = {
+				selectedFiles: [],
+				durationMs: 0,
+				layer: "error",
+				skipHits: [],
+				guardHits: [],
+				availableFiles: 0,
+				query: query.slice(0, 200),
+			};
 			return "";
 		}
 	}
@@ -673,14 +750,25 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 
 	pi.on("context", async (event) => {
 		const memoryText = await prefetch.awaitResult();
-		if (!memoryText) return;
+		const debug = prefetch.debugInfo;
 
-		status("memories injected");
-		pi.appendEntry("memory_prefetch_result", {
-			summary: "Injected relevant memories",
-			snippet: memoryText.slice(0, 500),
-			injectedBytes: memoryText.length,
-		});
+		if (!prefetch.resultEntryWritten && prefetch.started) {
+			prefetch.resultEntryWritten = true;
+			status(memoryText ? "memories injected" : "no memories found");
+			pi.appendEntry("memory_prefetch_result", {
+				summary: memoryText ? "Injected relevant memories" : "No relevant memories",
+				snippet: memoryText ? memoryText.slice(0, 500) : "",
+				injectedBytes: memoryText ? memoryText.length : 0,
+				selectedFiles: debug?.selectedFiles ?? [],
+				durationMs: debug?.durationMs ?? 0,
+				layer: debug?.layer ?? "unknown",
+				skipHits: debug?.skipHits ?? [],
+				guardHits: debug?.guardHits ?? [],
+				availableFiles: debug?.availableFiles ?? 0,
+			});
+		}
+
+		if (!memoryText) return;
 
 		const memoryMessage = {
 			role: "user" as const,

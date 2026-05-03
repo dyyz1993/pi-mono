@@ -933,6 +933,25 @@ export class ExtensionRunner {
 				}
 				return Promise.race([original.input(title, placeholder, opts), asyncPromise!]);
 			},
+			editor: async (title, prefill) => {
+				if (!this.hasHandlers("ui")) return original.editor(title, prefill);
+				const id = randomUUID();
+				const asyncPromise = this.createAsyncUIPromise<string | undefined>(id, (r) =>
+					r?.action === "responded" ? r.value : undefined,
+				);
+				const result = await this.emitUIEvent<UIEventResult>({
+					type: "ui",
+					id,
+					method: "editor",
+					title,
+					prefill,
+				});
+				if (result?.action === "responded") {
+					this.pendingUIResponses.delete(id);
+					return result.value;
+				}
+				return Promise.race([original.editor(title, prefill), asyncPromise!]);
+			},
 			notify: (message, notifyType) => {
 				if (this.hasHandlers("ui")) {
 					this.emitUIEvent<UIEventResult>({

@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryPrefetch } from "../../extensions/auto-memory/index.js";
-import { buildFrontmatter } from "../../extensions/auto-memory/utils.js";
 import {
 	evaluateRules,
 	getDefaultStore,
@@ -12,7 +11,8 @@ import {
 	type PurificationResult,
 	type SkipWordStore,
 	saveSkipWordStore,
-} from "../../extensions/prefetch/index.js";
+} from "../../extensions/auto-memory/skip-rules.js";
+import { buildFrontmatter } from "../../extensions/auto-memory/utils.js";
 import type { CallLLMOptions } from "../../src/core/extensions/index.js";
 
 let tempDir: string;

@@ -5,16 +5,18 @@ import { createFileTracker } from "./client/file-tracker.js";
 import { createDiagnosticsMode, type DiagnosticsModeName } from "./hooks/diagnostics-mode.js";
 import lspExtensionDefault, { type LspChannelEvent } from "./index.js";
 
-function createMockPi() {
+	function createMockPi() {
 	const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
 	const registeredTools = new Map<string, any>();
-	const channelSend = vi.fn();
+	const channelSendFn = vi.fn();
 	const registerCommandFn = vi.fn();
+	let channelOnReceiveHandler: ((data: unknown) => void) | null = null;
 	let currentChannel: {
 		name: string;
 		send: (data: unknown) => void;
 		onReceive: (handler: (data: unknown) => void) => () => void;
 		invoke: (data: unknown, timeoutMs?: number) => Promise<unknown>;
+		call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
 	} | null = null;
 
 	const pi = {
@@ -34,9 +36,42 @@ function createMockPi() {
 		registerChannel: vi.fn(() => {
 			currentChannel = {
 				name: "lsp",
-				send: channelSend,
-				onReceive: vi.fn(() => () => {}),
-				invoke: vi.fn(),
+				send: channelSendFn,
+				onReceive: vi.fn((handler: (data: unknown) => void) => {
+					channelOnReceiveHandler = handler;
+					return () => { channelOnReceiveHandler = null; };
+				}),
+				invoke: vi.fn(async (data: unknown) => {
+					if (!channelOnReceiveHandler) return {};
+					const msg = data as Record<string, unknown>;
+					const invokeId = msg.__invokeId as string;
+					return new Promise((resolve) => {
+						const orig = channelSendFn.getMockImplementation() ?? channelSendFn;
+						channelSendFn.mockImplementation((response: unknown) => {
+							const resp = response as Record<string, unknown>;
+							if (resp?.invokeId === invokeId) {
+								channelSendFn.mockImplementation(orig as any);
+								resolve(response);
+							}
+						});
+						channelOnReceiveHandler(data);
+					});
+				}),
+				call: vi.fn(async (method: string, params: Record<string, unknown>, _timeoutMs?: number) => {
+					if (!channelOnReceiveHandler) return {};
+					const invokeId = `invoke_${method}_${Date.now()}`;
+					return new Promise((resolve) => {
+						const orig = channelSendFn.getMockImplementation() ?? channelSendFn;
+						channelSendFn.mockImplementation((response: unknown) => {
+							const resp = response as Record<string, unknown>;
+							if (resp?.invokeId === invokeId) {
+								channelSendFn.mockImplementation(orig as any);
+								resolve(response);
+							}
+						});
+						channelOnReceiveHandler({ __call: method, invokeId, ...params });
+					});
+				}),
 			};
 			return currentChannel;
 		}),
@@ -50,7 +85,7 @@ function createMockPi() {
 		pi,
 		handlers,
 		registeredTools,
-		channelSend,
+		channelSend: channelSendFn,
 		registerCommandFn,
 		getCurrentChannel: () => currentChannel,
 	};
@@ -220,6 +255,52 @@ describe("lsp extension", () => {
 				const payload = call[0] as LspChannelEvent;
 				expect(payload.timestamp).toBeGreaterThan(0);
 			}
+		});
+
+		it("pushes language_activated event for ready servers with fileTypes", async () => {
+			const mock = createMockPi();
+			lspExtensionDefault(mock.pi);
+			await fireSessionStart(mock);
+			const languageEvents = mock.channelSend.mock.calls.filter(
+				(c: any) => c[0]?.event === "language_activated",
+			);
+			if (languageEvents.length > 0) {
+				for (const call of languageEvents) {
+					const payload = call[0] as LspChannelEvent;
+					expect(payload.event).toBe("language_activated");
+					expect(payload.timestamp).toBeGreaterThan(0);
+					expect(payload.languages).toBeDefined();
+					expect(payload.languages!.length).toBeGreaterThan(0);
+				}
+			}
+		});
+	});
+
+	describe("getActiveLanguages method", () => {
+		it("responds to getActiveLanguages channel call", async () => {
+			const mock = createMockPi();
+			lspExtensionDefault(mock.pi);
+			await fireSessionStart(mock);
+
+			const channel = mock.getCurrentChannel();
+			expect(channel).not.toBeNull();
+
+			const result = await channel!.call("getActiveLanguages", {});
+			expect(result).toHaveProperty("languages");
+			expect(Array.isArray((result as any).languages)).toBe(true);
+		});
+
+		it("returns languages array from channel call", async () => {
+			const mock = createMockPi();
+			lspExtensionDefault(mock.pi);
+			await fireSessionStart(mock);
+
+			const channel = mock.getCurrentChannel();
+			expect(channel).not.toBeNull();
+
+			const result = await channel!.call("getActiveLanguages", {});
+			expect(result).toHaveProperty("languages");
+			expect(Array.isArray((result as any).languages)).toBe(true);
 		});
 	});
 

@@ -235,6 +235,15 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
+export function buildAgentCliArgs(agent: AgentConfig): string[] {
+	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	if (agent.model) args.push("--model", agent.model);
+	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	if (agent.maxTurns && agent.maxTurns > 0) args.push("--max-turns", String(agent.maxTurns));
+	if (agent.effort) args.push("--thinking", agent.effort);
+	return args;
+}
+
 async function runSingleAgent(
 	defaultCwd: string,
 	agents: AgentConfig[],
@@ -262,9 +271,7 @@ async function runSingleAgent(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (agent.model) args.push("--model", agent.model);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	const args = buildAgentCliArgs(agent);
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;

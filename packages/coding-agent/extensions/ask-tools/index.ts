@@ -1,9 +1,9 @@
 /**
  * Ask Tools Extension
  *
- * 注册 ask-confirm / ask-select / ask-input 工具，
- * 内部调用 ctx.ui.confirm / select / input 触发 UI 交互。
- * 配合 message-bridge 扩展使用时，这些调用会被推送到 Bridge。
+ * 注册 ask-confirm / ask-select / ask-input / ask-editor / ask-notify 工具，
+ * 内部调用 ctx.ui.confirm / select / input / editor / notify 触发 UI 交互。
+ * 配合 message-bridge 扩展使用时，confirm/select/input 调用会被推送到 Bridge。
  */
 
 import { Type } from "typebox";
@@ -44,7 +44,7 @@ export default function askToolsExtension(pi: any) {
 	pi.registerTool({
 		name: "ask-input",
 		label: "Ask Input",
-		description: "Asks the user for free-form text input. Use when you need the user to provide text.",
+		description: "Asks user for free-form text input. Use when you need user to provide text.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Short title for the input" }),
 			placeholder: Type.Optional(Type.String({ description: "Placeholder text" })),
@@ -53,6 +53,38 @@ export default function askToolsExtension(pi: any) {
 			const text = await ctx.ui.input(params.title, params.placeholder);
 			return {
 				content: [{ type: "text", text: `User input: ${text ?? "(empty)"}` }],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "ask-editor",
+		label: "Ask Editor",
+		description: "Opens a multi-line editor for user to edit text. Use when you need user to edit longer text (code, JSON, configs, commit messages).",
+		parameters: Type.Object({
+			title: Type.String({ description: "Short title for the editor" }),
+			prefill: Type.Optional(Type.String({ description: "Pre-filled content in the editor" })),
+		}),
+		execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
+			const text = await ctx.ui.editor(params.title, params.prefill);
+			return {
+				content: [{ type: "text", text: text ?? "(cancelled)" }],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "ask-notify",
+		label: "Ask Notify",
+		description: "Shows a notification to the user. Use for informational messages (fire-and-forget, does not wait for response).",
+		parameters: Type.Object({
+			message: Type.String({ description: "The message to display" }),
+			type: Type.Optional(Type.String({ description: "Notification type: 'info', 'warning', or 'error'" })),
+		}),
+		execute: async (_id: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
+			ctx.ui.notify(params.message, params.type as any);
+			return {
+				content: [{ type: "text", text: "Notified user" }],
 			};
 		},
 	});

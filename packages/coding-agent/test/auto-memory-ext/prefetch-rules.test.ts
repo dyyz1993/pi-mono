@@ -16,7 +16,7 @@ import {
 	type SkipRule,
 	type SkipWordStore,
 	saveSkipWordStore,
-} from "../../extensions/prefetch/index.js";
+} from "../../extensions/auto-memory/skip-rules.js";
 
 function makeSkipRule(overrides: Partial<SkipRule> & { pattern: string }): SkipRule {
 	return {

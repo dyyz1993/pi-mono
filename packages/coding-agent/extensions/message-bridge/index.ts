@@ -117,7 +117,7 @@ export default function messageBridgeExtension(pi: any) {
 
 	pi.on("ui", async (event: any, ctx: any) => {
 		if (event.method === "notify") {
-			pushAndWait(event.title || event.message, sessionId).catch(() => {});
+			pushAndWait(event.message, sessionId).catch(() => {});
 			return undefined;
 		}
 
@@ -147,6 +147,18 @@ export default function messageBridgeExtension(pi: any) {
 		if (event.method === "input") {
 			const question = event.placeholder
 				? `${event.title}\n\nPlaceholder: ${event.placeholder}`
+				: event.title;
+			pushAndWait(question, sessionId)
+				.then((answer) => {
+					ctx.respondUI(event.id, { action: "responded", value: answer });
+				})
+				.catch(() => {});
+			return undefined;
+		}
+
+		if (event.method === "editor") {
+			const question = event.prefill
+				? `${event.title}\n\nPre-filled content:\n${event.prefill}`
 				: event.title;
 			pushAndWait(question, sessionId)
 				.then((answer) => {

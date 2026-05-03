@@ -42,6 +42,7 @@ export interface Args {
 	listModels?: string | true;
 	offline?: boolean;
 	verbose?: boolean;
+	maxTurns?: number;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -150,6 +151,13 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.listModels = true;
 			}
+		} else if (arg === "--max-turns" && i + 1 < args.length) {
+			const val = Number.parseInt(args[++i], 10);
+			if (Number.isFinite(val) && val > 0) {
+				result.maxTurns = val;
+			} else {
+				result.diagnostics.push({ type: "warning", message: `Invalid --max-turns value "${args[i]}"` });
+			}
 		} else if (arg === "--verbose") {
 			result.verbose = true;
 		} else if (arg === "--offline") {
@@ -233,8 +241,9 @@ ${chalk.bold("Options:")}
   --no-prompt-templates, -np     Disable prompt template discovery and loading
   --theme <path>                 Load a theme file or directory (can be used multiple times)
   --no-themes                    Disable theme discovery and loading
-  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
-  --export <file>                Export session file to HTML and exit
+   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
+   --max-turns <n>                Maximum number of agent turns before stopping
+   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)

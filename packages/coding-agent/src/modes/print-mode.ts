@@ -23,6 +23,8 @@ export interface PrintModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+	/** Maximum number of agent turns before aborting (0 = unlimited) */
+	maxTurns?: number;
 }
 
 /**
@@ -30,12 +32,13 @@ export interface PrintModeOptions {
  * Sends prompts to the agent and outputs the result.
  */
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
-	const { mode, messages = [], initialMessage, initialImages } = options;
+	const { mode, messages = [], initialMessage, initialImages, maxTurns } = options;
 	let exitCode = 0;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	let disposed = false;
 	const signalCleanupHandlers: Array<() => void> = [];
+	let turnCount = 0;
 
 	const disposeRuntime = async (): Promise<void> => {
 		if (disposed) return;
@@ -103,6 +106,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribe = session.subscribe((event) => {
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(event)}\n`);
+			}
+			if (event.type === "turn_end") {
+				turnCount++;
+				if (maxTurns && maxTurns > 0 && turnCount >= maxTurns) {
+					session.agent.abort();
+				}
 			}
 		});
 	};

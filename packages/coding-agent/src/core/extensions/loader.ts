@@ -265,11 +265,18 @@ function createExtensionAPI(
 ): ExtensionAPI {
 	const api = {
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): void {
+		on(event: string, handler: HandlerFn): () => void {
 			runtime.assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
+			return () => {
+				const handlers = extension.handlers.get(event);
+				if (handlers) {
+					const idx = handlers.indexOf(handler);
+					if (idx !== -1) handlers.splice(idx, 1);
+				}
+			};
 		},
 
 		registerTool(tool: ToolDefinition): void {

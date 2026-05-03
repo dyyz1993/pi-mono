@@ -246,6 +246,7 @@ export interface RpcClientAPI {
 	registerRemoteTool(tool: { name: string; description: string; parameters: object }): Promise<void>;
 	unregisterRemoteTool(name: string): Promise<void>;
 	sendRemoteToolResult(toolCallId: string, result: RemoteToolResult): void;
+	respondUI(requestId: string, response: Record<string, unknown>): void;
 	onRemoteToolCall(handler: (call: RemoteToolCall) => void): () => void;
 
 	// Helpers

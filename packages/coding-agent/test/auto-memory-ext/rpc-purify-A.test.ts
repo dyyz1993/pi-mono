@@ -4,8 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@dyyz1993/pi-agent-core";
 import { describe, expect, it } from "vitest";
+import { getGlobalMemoryDir, loadSkipWordStore } from "../../extensions/auto-memory/skip-rules.js";
 import { buildFrontmatter, ENTRYPOINT_NAME, getMemoryDir } from "../../extensions/auto-memory/utils.js";
-import { getGlobalMemoryDir, loadSkipWordStore } from "../../extensions/prefetch/index.js";
 import { RpcClient } from "../../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
