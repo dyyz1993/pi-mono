@@ -1,12 +1,32 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
-import { DEFAULT_CONFIG } from "./config.js";
+import { DEFAULT_CONFIG, type CompactionManagerConfig } from "./config.js";
 import { extractFoldSummary, estimateMessageTokens, findFoldableEntries } from "./context-fold.js";
 import { microcompactMessages, stripThinkingBlocks } from "./microcompact.js";
 import { buildMemorySummary, readMemoryFiles } from "./session-memory.js";
 import { shouldWarn, shouldForceCompact } from "./reactive.js";
 
+function loadConfig(): CompactionManagerConfig {
+	const configPath = join(process.cwd(), ".pi", "compaction.json");
+	if (existsSync(configPath)) {
+		try {
+			const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+			return {
+				microcompact: { ...DEFAULT_CONFIG.microcompact, ...raw.microcompact },
+				sessionMemory: { ...DEFAULT_CONFIG.sessionMemory, ...raw.sessionMemory },
+				reactive: { ...DEFAULT_CONFIG.reactive, ...raw.reactive },
+				contextFold: { ...DEFAULT_CONFIG.contextFold, ...raw.contextFold },
+			};
+		} catch {
+			return DEFAULT_CONFIG;
+		}
+	}
+	return DEFAULT_CONFIG;
+}
+
 export default function (pi: ExtensionAPI) {
-	const config = DEFAULT_CONFIG;
+	const config = loadConfig();
 
 	if (config.microcompact.enabled) {
 		pi.on("context", (event, _ctx) => {

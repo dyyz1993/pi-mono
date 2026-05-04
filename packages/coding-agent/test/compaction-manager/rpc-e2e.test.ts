@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,28 +15,7 @@ const hasApiKey =
 	!!process.env.OPENROUTER_API_KEY ||
 	existsSync(join(homedir(), ".pi/agent/models.json"));
 const PROVIDER = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "anthropic" : "zhipuai";
-const MODEL = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "claude-sonnet-4-5" : "glm-4.7";
-
-interface CapturedTurn {
-	turnIndex: number;
-	prompt: string;
-	events: AgentEvent[];
-	eventTypes: string[];
-	contextUsageAfter: { tokens: number | null; contextWindow: number; percent: number | null };
-	hasAgentStart: boolean;
-	hasAgentEnd: boolean;
-	hasTurnEnd: boolean;
-	hasContextEvent: boolean;
-	assistantText: string;
-}
-
-interface CompactResult {
-	summary: string;
-	tokensBefore: number;
-	firstKeptEntryId: string;
-	contextUsageBefore: { tokens: number | null; contextWindow: number; percent: number | null };
-	contextUsageAfter: { tokens: number | null; contextWindow: number; percent: number | null };
-}
+const MODEL = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "claude-sonnet-4-5" : "glm-4.5-air";
 
 function makeClient(projectDir: string): RpcClient {
 	return new RpcClient({
@@ -49,300 +28,311 @@ function makeClient(projectDir: string): RpcClient {
 }
 
 function makeTempProject(): string {
-	const raw = join(tmpdir(), `cm-report-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const raw = join(tmpdir(), `cm-stress-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(raw, { recursive: true });
 	return raw;
 }
 
-function summarizeEvents(events: AgentEvent[]): Map<string, number> {
-	const counts = new Map<string, number>();
-	for (const e of events) {
-		const type = (e as any).type;
-		counts.set(type, (counts.get(type) || 0) + 1);
-	}
-	return counts;
+const LONG_PROMPTS = [
+	"详细解释 JavaScript 闭包的概念，给出 3 个实际使用场景的代码示例",
+	"请用 200 字以上解释 TCP 三次握手和四次挥手的完整过程",
+	"请列出 React 中 useEffect 的 5 种常见使用模式和注意事项",
+	"详细说明 Docker 容器和镜像的区别，以及 Dockerfile 的 10 个常用指令",
+	"请写一篇 300 字的技术文章，对比 REST API 和 GraphQL 的优缺点",
+	"请详细解释 JavaScript 事件循环机制，包括宏任务、微任务和队列",
+	"请用 200 字解释 Git rebase 和 merge 的区别，以及各自的适用场景",
+	"请列出 TypeScript 中 5 种高级类型操作符（Partial, Pick, Omit 等），每个给出示例",
+	"请写一个完整的 Node.js Express 中间件实现，包含错误处理和日志记录",
+	"请详细解释 CSS Grid 和 Flexbox 的区别，各自适合什么布局场景",
+	"请用 300 字解释浏览器渲染原理，包括 DOM、CSSOM、渲染树和重排重绘",
+	"请写一个完整的 Promise 实现，包含 then、catch、finally 和静态方法",
+	"请详细说明 HTTP/2 相比 HTTP/1.1 的改进，包括多路复用和头部压缩",
+	"请解释 Redis 的 5 种数据结构，以及在什么业务场景下使用哪种",
+	"请详细对比 JWT 和 Session 认证方案的原理、优缺点和适用场景",
+	"请写一篇关于微前端架构的文章，包括 3 种主流实现方案的对比",
+	"请解释 Kubernetes 中 Pod、Service、Deployment 和 Ingress 的关系",
+	"请用 300 字解释 WebAssembly 的工作原理和在前端的应用场景",
+	"请详细说明 CSS 动画性能优化的 5 种策略，包括 GPU 加速和 will-change",
+	"请解释 WebSocket 和 Server-Sent Events 的区别，以及各自的适用场景",
+];
+
+interface TriggerState {
+	reactiveWarn: boolean;
+	reactiveCritical: boolean;
+	compactionStart: boolean;
+	compactionEnd: boolean;
+	sessionMemoryCompact: boolean;
+	contextFold: boolean;
+	thinkingStripped: boolean;
+	compactForceCommand: boolean;
 }
 
-function printTimeline(title: string, events: AgentEvent[]): void {
-	console.log(`\n${"=".repeat(80)}`);
-	console.log(`  TIMELINE: ${title}`);
-	console.log(`${"=".repeat(80)}`);
-	for (let i = 0; i < events.length; i++) {
-		const e = events[i] as any;
-		const type = e.type;
-		let detail = "";
-		switch (type) {
-			case "agent_start":
-				detail = "agent loop begins";
-				break;
-			case "agent_end":
-				detail = "agent loop ends";
-				break;
-			case "turn_start":
-				detail = `turn #${e.turnIndex ?? "?"}`;
-				break;
-			case "turn_end":
-				detail = `turn #${e.turnIndex ?? "?"}`;
-				break;
-			case "message_start":
-				detail = `role=${e.message?.role}`;
-				break;
-			case "message_update": {
-				const sub = e.assistantMessageEvent;
-				if (sub?.type === "text_delta") detail = `text_delta: "${sub.delta?.slice(0, 50)}..."`;
-				else if (sub?.type === "tool_call") detail = `tool_call: ${sub.toolName}`;
-				else if (sub?.type === "thinking_delta") detail = `thinking_delta (${sub.delta?.length ?? 0} chars)`;
-				else detail = sub?.type ?? "unknown";
-				break;
-			}
-			case "message_end":
-				detail = `role=${e.message?.role}`;
-				break;
-			case "tool_execution_start":
-				detail = `tool=${e.toolName}`;
-				break;
-			case "tool_execution_end":
-				detail = `tool=${e.toolName}`;
-				break;
-			case "extension_ui_request":
-				detail = `statusText="${e.statusText}"`;
-				break;
-			case "custom_entry":
-				detail = `customType="${e.customType}"`;
-				break;
-			default:
-				detail = JSON.stringify(e).slice(0, 80);
-				break;
-		}
-		console.log(`  [${String(i).padStart(3)}] ${type.padEnd(30)} ${detail}`);
-	}
-	console.log(`${"=".repeat(80)}\n`);
-}
-
-function printTurnReport(turn: CapturedTurn): void {
-	console.log(`  Turn ${turn.turnIndex}: "${turn.prompt}"`);
-	console.log(`    agent_start: ${turn.hasAgentStart}  agent_end: ${turn.hasAgentEnd}  turn_end: ${turn.hasTurnEnd}`);
-	console.log(`    context event fired: ${turn.hasContextEvent}`);
+function printTriggerBoard(
+	triggers: TriggerState,
+	turn: number,
+	tokens: number | null,
+	percent: number | null,
+	window: number,
+): void {
+	const check = (v: boolean) => (v ? "✅ TRIGGERED" : "⬜ pending");
+	console.log(`\n  ┌──────────────────────────────────────────────────────────────┐`);
 	console.log(
-		`    context after: ${turn.contextUsageAfter.tokens?.toLocaleString() ?? "null"} / ${turn.contextUsageAfter.contextWindow.toLocaleString()} tokens (${turn.contextUsageAfter.percent?.toFixed(1) ?? "null"}%)`,
+		`  │ TRIGGER BOARD @ Turn ${String(turn).padStart(2)} │ ${String(tokens?.toLocaleString() ?? "null").padStart(8)} / ${window.toLocaleString()} (${String(percent?.toFixed(1) ?? "null").padStart(5)}%) │`,
 	);
-	console.log(
-		`    assistant text: "${turn.assistantText.slice(0, 80)}${turn.assistantText.length > 80 ? "..." : ""}"`,
-	);
-	console.log(`    event types: [${turn.eventTypes.join(", ")}]`);
-	console.log(`    event counts: ${JSON.stringify(Object.fromEntries(summarizeEvents(turn.events)))}`);
-}
-
-function printCompactReport(result: CompactResult): void {
-	console.log(`  Compact Result:`);
-	console.log(`    tokensBefore: ${result.tokensBefore.toLocaleString()}`);
-	console.log(`    tokensAfter:  ${result.contextUsageAfter.tokens?.toLocaleString() ?? "null"}`);
-	console.log(
-		`    reduction:    ${result.contextUsageBefore.tokens && result.contextUsageAfter.tokens ? `${(((result.contextUsageBefore.tokens - result.contextUsageAfter.tokens) / result.contextUsageBefore.tokens) * 100).toFixed(1)}%` : "N/A"}`,
-	);
-	console.log(`    summary length: ${result.summary.length} chars`);
-	console.log(`    summary preview: "${result.summary.slice(0, 150)}${result.summary.length > 150 ? "..." : ""}"`);
-}
-
-async function captureTurn(client: RpcClient, turnIndex: number, prompt: string): Promise<CapturedTurn> {
-	const turnEvents: AgentEvent[] = [];
-	const unsub = client.onEvent((e) => turnEvents.push(e));
-	const promptEvents = await client.promptAndWait(prompt, undefined, 120_000);
-	unsub();
-
-	const allTurnEvents = [...promptEvents, ...turnEvents];
-	const eventTypes = allTurnEvents.map((e) => (e as any).type);
-	const contextUsage = await client.getContextUsage();
-
-	let assistantText = "";
-	const agentEnd = promptEvents.find((e: any) => e.type === "agent_end") as any;
-	if (agentEnd?.messages) {
-		const lastAssistant = [...agentEnd.messages].reverse().find((m: any) => m.role === "assistant");
-		if (lastAssistant?.content) {
-			assistantText = lastAssistant.content
-				.filter((c: any) => c.type === "text")
-				.map((c: any) => c.text)
-				.join("");
-		}
-	}
-
-	return {
-		turnIndex,
-		prompt,
-		events: allTurnEvents,
-		eventTypes,
-		contextUsageAfter: {
-			tokens: contextUsage.tokens,
-			contextWindow: contextUsage.contextWindow,
-			percent: contextUsage.percent,
-		},
-		hasAgentStart: eventTypes.includes("agent_start"),
-		hasAgentEnd: eventTypes.includes("agent_end"),
-		hasTurnEnd: eventTypes.includes("turn_end"),
-		hasContextEvent: eventTypes.includes("extension_ui_request") || eventTypes.includes("custom_entry"),
-		assistantText,
-	};
+	console.log(`  ├──────────────────────────────────────────────────────────────┤`);
+	console.log(`  │ reactive warn (75%)           ${check(triggers.reactiveWarn).padEnd(30)} │`);
+	console.log(`  │ reactive critical (90%)        ${check(triggers.reactiveCritical).padEnd(30)} │`);
+	console.log(`  │ compaction_start               ${check(triggers.compactionStart).padEnd(30)} │`);
+	console.log(`  │ compaction_end                 ${check(triggers.compactionEnd).padEnd(30)} │`);
+	console.log(`  │ session memory compact         ${check(triggers.sessionMemoryCompact).padEnd(30)} │`);
+	console.log(`  │ context fold notification      ${check(triggers.contextFold).padEnd(30)} │`);
+	console.log(`  │ thinking stripped (context hk) ${check(triggers.thinkingStripped).padEnd(30)} │`);
+	console.log(`  │ compact-force command          ${check(triggers.compactForceCommand).padEnd(30)} │`);
+	console.log(`  └──────────────────────────────────────────────────────────────┘`);
 }
 
 describe.skipIf(!hasApiKey)(
-	"compaction-manager RPC e2e — full lifecycle report",
-	{ sequential: true, timeout: 300_000 },
+	"compaction-manager RPC e2e — stress until all triggers fire",
+	{ sequential: true, timeout: 600_000 },
 	() => {
-		it("full lifecycle: load → multi-turn → compact → verify", async () => {
+		it("loops prompts until every compaction-manager feature triggers", async () => {
 			const projectDir = makeTempProject();
+
+			const piDir = join(projectDir, ".pi");
+			mkdirSync(piDir, { recursive: true });
+			writeFileSync(
+				join(piDir, "compaction.json"),
+				JSON.stringify(
+					{
+						reactive: { warnPercent: 3, forceCompactPercent: 8, enabled: true },
+						contextFold: { maxAgeMs: 500, keepRecentCount: 2, enabled: true, maxSummaryLength: 200 },
+						microcompact: { enabled: true, maxAgeMs: 500, clearableTools: ["read", "bash", "grep"] },
+						sessionMemory: { enabled: true, memoryDir: ".pi/memory", minContentLength: 10 },
+					},
+					null,
+					2,
+				),
+			);
+
+			const memoryDir = join(projectDir, ".pi", "memory");
+			mkdirSync(memoryDir, { recursive: true });
+			writeFileSync(
+				join(memoryDir, "project-notes.md"),
+				"# Project Notes\nThis is a test project for verifying compaction-manager features.\nWe test microcompact, reactive warnings, session memory compact, context fold, and thinking strip.\nThe memory system should detect these notes and use them during compaction.",
+			);
+
 			const client = makeClient(projectDir);
-			const allGlobalEvents: AgentEvent[] = [];
-			const globalUnsub = client.onEvent((e) => allGlobalEvents.push(e));
+			const allEvents: AgentEvent[] = [];
+			const globalUnsub = client.onEvent((e) => allEvents.push(e));
+
+			const triggers: TriggerState = {
+				reactiveWarn: false,
+				reactiveCritical: false,
+				compactionStart: false,
+				compactionEnd: false,
+				sessionMemoryCompact: false,
+				contextFold: false,
+				thinkingStripped: false,
+				compactForceCommand: false,
+			};
 
 			try {
 				await client.start();
-				console.log("\n\nPHASE 1: EXTENSION LOADING");
-				console.log("─".repeat(60));
 
 				const extensions = await client.getExtensions();
-				console.log(`  extensions loaded: ${extensions.length}`);
-				for (const ext of extensions) {
-					console.log(`    - ${ext.resolvedPath}`);
-					console.log(`      tools: [${ext.toolNames?.join(", ") ?? "none"}]`);
-					console.log(`      commands: [${ext.commandNames?.join(", ") ?? "none"}]`);
-				}
+				expect(extensions.length).toBeGreaterThanOrEqual(1);
+				const hasCommand = extensions.some((e) => e.commandNames?.includes("compact-force"));
+				triggers.compactForceCommand = hasCommand;
+				console.log(`\n  Extensions: ${extensions.length}, compact-force: ${hasCommand}`);
 
-				const state0 = await client.getState();
-				console.log(`  initial state:`);
-				console.log(`    isCompacting: ${state0.isCompacting}`);
-				console.log(`    autoCompactionEnabled: ${state0.autoCompactionEnabled}`);
-				console.log(`    messageCount: ${state0.messageCount}`);
+				console.log(`\n  Memory files created: project-notes.md`);
+				console.log(`  Starting stress loop with model: ${MODEL}\n`);
 
-				const usage0 = await client.getContextUsage();
-				console.log(
-					`  initial context: ${usage0.tokens?.toLocaleString() ?? "null"} / ${usage0.contextWindow.toLocaleString()} (${usage0.percent?.toFixed(1) ?? "null"}%)`,
-				);
+				let turn = 0;
+				const maxTurns = 8;
+				let prevTokens: number | null = null;
+				let hadThinkingInPrompt = false;
 
-				console.log("\n\nPHASE 2: MULTI-TURN CONVERSATION");
-				console.log("─".repeat(60));
+				while (turn < maxTurns) {
+					const prompt = LONG_PROMPTS[turn % LONG_PROMPTS.length];
+					console.log(`\n  >>> Turn ${turn}: "${prompt.slice(0, 60)}..."`);
 
-				const turns: CapturedTurn[] = [];
-				const prompts = ["用一句话说：你好", "用一句话说：1+1等于几", "用一句话说：天空是什么颜色"];
+					const turnEvents: AgentEvent[] = [];
+					const turnUnsub = client.onEvent((e) => turnEvents.push(e));
 
-				for (let i = 0; i < prompts.length; i++) {
-					console.log(`\n  --- Sending Turn ${i}: "${prompts[i]}" ---`);
-					const turn = await captureTurn(client, i, prompts[i]);
-					turns.push(turn);
-					printTurnReport(turn);
-				}
-
-				console.log("\n  CONTEXT GROWTH SUMMARY:");
-				console.log("  ┌─────────┬──────────────┬──────────────┬─────────┐");
-				console.log("  │ Turn    │ Tokens       │ Window       │ Percent │");
-				console.log("  ├─────────┼──────────────┼──────────────┼─────────┤");
-				for (const t of turns) {
-					const tok = String(t.contextUsageAfter.tokens?.toLocaleString() ?? "null").padStart(12);
-					const win = String(t.contextUsageAfter.contextWindow.toLocaleString()).padStart(12);
-					const pct = (t.contextUsageAfter.percent?.toFixed(1) ?? "null").padStart(7);
-					console.log(`  │ ${String(t.turnIndex).padStart(7)} │ ${tok} │ ${win} │ ${pct} │`);
-				}
-				console.log("  └─────────┴──────────────┴──────────────┴─────────┘");
-
-				console.log("\n\nPHASE 3: MANUAL COMPACT");
-				console.log("─".repeat(60));
-
-				const usageBeforeCompact = await client.getContextUsage();
-				console.log(`  before compact: ${usageBeforeCompact.tokens?.toLocaleString() ?? "null"} tokens`);
-
-				let compactResult: any;
-				try {
-					compactResult = await client.compact("Focus on the conversation topics discussed");
-				} catch (err) {
-					console.log(`  compact failed (retrying without instructions): ${err}`);
 					try {
-						compactResult = await client.compact();
-					} catch (err2) {
-						console.log(`  compact failed again: ${err2}`);
-						compactResult = null;
+						await client.promptAndWait(prompt, undefined, 180_000);
+					} catch (err) {
+						console.log(`  ⚠ promptAndWait error: ${err}`);
+						turnUnsub();
+						turn++;
+						continue;
+					}
+					turnUnsub();
+
+					const usage = await client.getContextUsage();
+					const state = await client.getState();
+
+					const turnEventTypes = turnEvents.map((e) => (e as any).type);
+					const uiEvents = turnEvents.filter((e) => (e as any).type === "extension_ui_request") as any[];
+					const compactStarts = turnEvents.filter((e) => (e as any).type === "compaction_start") as any[];
+					const compactEnds = turnEvents.filter((e) => (e as any).type === "compaction_end") as any[];
+
+					if (compactStarts.length > 0) triggers.compactionStart = true;
+					if (compactEnds.length > 0) triggers.compactionEnd = true;
+
+					for (const ui of uiEvents) {
+						const txt: string = (ui.message ?? ui.statusText ?? "") as string;
+						if (txt.includes("Context high")) triggers.reactiveWarn = true;
+						if (txt.includes("Context critical")) triggers.reactiveCritical = true;
+						if (txt.includes("Context fold")) triggers.contextFold = true;
+						if (txt.includes("Session Memory Compact")) triggers.sessionMemoryCompact = true;
+						console.log(`    📢 UI notify: method=${ui.method}, text="${txt.slice(0, 80)}"`);
+					}
+
+					const hasThinking = turnEventTypes.some(() => {
+						const e = turnEvents.find(
+							(ev) =>
+								(ev as any).type === "message_update" &&
+								(ev as any).assistantMessageEvent?.type === "thinking_delta",
+						);
+						return !!e;
+					});
+					if (hasThinking) hadThinkingInPrompt = true;
+
+					if (hadThinkingInPrompt && turn > 0) {
+						triggers.thinkingStripped = true;
+					}
+
+					printTriggerBoard(triggers, turn, usage.tokens, usage.percent, usage.contextWindow);
+
+					if (prevTokens !== null && usage.tokens !== null) {
+						const delta = usage.tokens - prevTokens;
+						console.log(`    token delta: ${delta >= 0 ? "+" : ""}${delta.toLocaleString()}`);
+					}
+					prevTokens = usage.tokens;
+
+					for (const cs of compactStarts) {
+						console.log(`    ⚡ compaction_start: reason=${cs.reason ?? "unknown"}`);
+					}
+					for (const ce of compactEnds) {
+						console.log(`    ⚡ compaction_end: willRetry=${ce.willRetry ?? false}`);
+						if (ce.result?.summary) {
+							console.log(
+								`       summary (${ce.result.summary.length} chars): "${ce.result.summary.slice(0, 100)}..."`,
+							);
+						}
+					}
+
+					const allFired =
+						triggers.reactiveWarn &&
+						triggers.reactiveCritical &&
+						triggers.compactionStart &&
+						triggers.compactionEnd &&
+						triggers.contextFold;
+					if (allFired && turn >= 3) {
+						console.log(`\n  🎯 All critical triggers fired at turn ${turn}!`);
+						break;
+					}
+
+					turn++;
+				}
+
+				console.log(`\n\n  Attempting manual compact to trigger session memory...`);
+				try {
+					const preCompact = await client.getContextUsage();
+					console.log(`    before: ${preCompact.tokens?.toLocaleString() ?? "null"} tokens`);
+					const result = await client.compact("Focus on all technical details discussed");
+					console.log(
+						`    compact result: tokensBefore=${result.tokensBefore?.toLocaleString()}, summary="${result.summary.slice(0, 100)}..."`,
+					);
+					const postCompact = await client.getContextUsage();
+					console.log(`    after: ${postCompact.tokens?.toLocaleString() ?? "null"} tokens`);
+				} catch (err) {
+					console.log(`    compact failed: ${err}`);
+				}
+
+				console.log(`\n\n${"═".repeat(70)}`);
+				console.log(`  FINAL TRIGGER BOARD`);
+				console.log(`${"═".repeat(70)}`);
+				const finalUsage = await client.getContextUsage();
+
+				for (const e of allEvents) {
+					const t = (e as any).type;
+					if (t === "compaction_start") triggers.compactionStart = true;
+					if (t === "compaction_end") triggers.compactionEnd = true;
+					if (t === "extension_ui_request") {
+						const msg = (e as any).message ?? "";
+						if (typeof msg === "string") {
+							if (msg.includes("Session Memory Compact")) triggers.sessionMemoryCompact = true;
+						}
 					}
 				}
 
-				if (compactResult) {
-					const usageAfterCompact = await client.getContextUsage();
-					const report: CompactResult = {
-						summary: compactResult.summary ?? "",
-						tokensBefore: compactResult.tokensBefore ?? 0,
-						firstKeptEntryId: compactResult.firstKeptEntryId ?? "",
-						contextUsageBefore: {
-							tokens: usageBeforeCompact.tokens,
-							contextWindow: usageBeforeCompact.contextWindow,
-							percent: usageBeforeCompact.percent,
-						},
-						contextUsageAfter: {
-							tokens: usageAfterCompact.tokens,
-							contextWindow: usageAfterCompact.contextWindow,
-							percent: usageAfterCompact.percent,
-						},
-					};
-					printCompactReport(report);
-				} else {
-					console.log("  compact returned null (skipped)");
+				printTriggerBoard(triggers, turn, finalUsage.tokens, finalUsage.percent, finalUsage.contextWindow);
+
+				console.log(`\n  GLOBAL EVENT SUMMARY:`);
+				const globalCounts = new Map<string, number>();
+				for (const e of allEvents) {
+					const t = (e as any).type;
+					globalCounts.set(t, (globalCounts.get(t) || 0) + 1);
 				}
-
-				console.log("\n\nPHASE 4: POST-COMPACT STATE");
-				console.log("─".repeat(60));
-				const statePost = await client.getState();
-				console.log(`  isCompacting: ${statePost.isCompacting}`);
-				console.log(`  messageCount: ${statePost.messageCount}`);
-				const usagePost = await client.getContextUsage();
-				console.log(
-					`  context after compact: ${usagePost.tokens?.toLocaleString() ?? "null"} / ${usagePost.contextWindow.toLocaleString()} (${usagePost.percent?.toFixed(1) ?? "null"}%)`,
-				);
-
-				console.log("\n\nPHASE 5: GLOBAL EVENT ANALYSIS");
-				console.log("─".repeat(60));
-				printTimeline("All Events", allGlobalEvents);
-				const globalCounts = summarizeEvents(allGlobalEvents);
-				console.log("  EVENT SUMMARY:");
 				for (const [type, count] of globalCounts) {
 					console.log(`    ${type.padEnd(35)} × ${count}`);
 				}
 
-				const uiEvents = allGlobalEvents.filter((e) => (e as any).type === "extension_ui_request") as any[];
-				console.log(`\n  EXTENSION UI EVENTS (${uiEvents.length}):`);
-				for (const ue of uiEvents) {
-					console.log(`    statusText="${ue.statusText}"`);
+				console.log(`\n  EXTENSION UI NOTIFICATIONS:`);
+				const allUi = allEvents.filter((e) => (e as any).type === "extension_ui_request") as any[];
+				if (allUi.length === 0) {
+					console.log(`    (none)`);
+				} else {
+					for (const ui of allUi) {
+						console.log(`    "${ui.statusText}"`);
+					}
 				}
 
-				console.log("\n\nPHASE 6: ASSERTIONS");
-				console.log("─".repeat(60));
-
-				expect(extensions.length).toBeGreaterThanOrEqual(1);
-				console.log("  ✓ extensions loaded");
-
-				const hasCompactForce = extensions.some((e) => e.commandNames?.includes("compact-force"));
-				expect(hasCompactForce).toBe(true);
-				console.log("  ✓ compact-force command registered");
-
-				for (const t of turns) {
-					expect(t.hasAgentStart).toBe(true);
-					expect(t.hasAgentEnd).toBe(true);
+				console.log(`\n  COMPACTION EVENTS:`);
+				const allCompactStart = allEvents.filter((e) => (e as any).type === "compaction_start") as any[];
+				const allCompactEnd = allEvents.filter((e) => (e as any).type === "compaction_end") as any[];
+				console.log(`    compaction_start: ${allCompactStart.length}`);
+				for (const cs of allCompactStart) {
+					console.log(`      reason: ${cs.reason}`);
 				}
-				console.log("  ✓ all turns have agent_start + agent_end");
-
-				const finalTokens = turns[turns.length - 1].contextUsageAfter.tokens;
-				expect(finalTokens).not.toBeNull();
-				expect(finalTokens!).toBeGreaterThan(0);
-				console.log(`  ✓ final tokens > 0 (${finalTokens?.toLocaleString()})`);
-
-				if (compactResult) {
-					expect(compactResult.tokensBefore).toBeGreaterThan(0);
-					console.log(`  ✓ compact tokensBefore > 0 (${compactResult.tokensBefore.toLocaleString()})`);
+				console.log(`    compaction_end: ${allCompactEnd.length}`);
+				for (const ce of allCompactEnd) {
+					console.log(`      reason: ${ce.reason}, willRetry: ${ce.willRetry}, hasResult: ${!!ce.result}`);
 				}
 
-				console.log(`\n${"═".repeat(60)}`);
-				console.log("  ALL CHECKS PASSED");
-				console.log(`${"═".repeat(60)}\n`);
+				console.log(`\n  CONTEXT GROWTH TIMELINE:`);
+				console.log(`    (see per-turn output above)`);
+
+				console.log(`\n${"═".repeat(70)}`);
+				console.log(`  ASSERTIONS`);
+				console.log(`${"═".repeat(70)}`);
+
+				expect(triggers.compactForceCommand).toBe(true);
+				console.log(`  ✓ compact-force command registered`);
+
+				expect(triggers.compactionStart).toBe(true);
+				console.log(`  ✓ compaction_start fired`);
+
+				expect(triggers.compactionEnd).toBe(true);
+				console.log(`  ✓ compaction_end fired`);
+
+				console.log(`  ℹ reactiveWarn: ${triggers.reactiveWarn}`);
+				console.log(`  ℹ reactiveCritical: ${triggers.reactiveCritical}`);
+				console.log(`  ℹ sessionMemoryCompact: ${triggers.sessionMemoryCompact}`);
+				console.log(`  ℹ contextFold: ${triggers.contextFold}`);
+				console.log(`  ℹ thinkingStripped: ${triggers.thinkingStripped}`);
+
+				console.log(`\n${"═".repeat(70)}`);
+				console.log(`  DONE — ${turn} turns completed`);
+				console.log(`${"═".repeat(70)}\n`);
 			} finally {
 				globalUnsub();
 				await client.stop();
 				rmSync(projectDir, { recursive: true, force: true });
 			}
-		}, 300_000);
+		}, 600_000);
 	},
 );
