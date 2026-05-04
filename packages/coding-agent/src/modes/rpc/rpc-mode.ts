@@ -646,7 +646,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_full_messages": {
 				const allEntries = session.sessionManager.getEntries();
 				const messageEntries = allEntries.filter((e) => e.type === "message");
-				const totalCount = messageEntries.length;
+				const persistedMessages = messageEntries.map((e) => (e as { message: AgentMessage }).message);
+				const persistedSet = new Set(persistedMessages);
+
+				const memoryMessages = session.messages;
+				const unPersisted: AgentMessage[] = [];
+				for (let i = memoryMessages.length - 1; i >= 0; i--) {
+					const msg = memoryMessages[i];
+					if (persistedSet.has(msg)) break;
+					if (msg.role === "compactionSummary") continue;
+					unPersisted.unshift(msg);
+				}
+
+				const allMessages = [...persistedMessages, ...unPersisted];
+				const totalCount = allMessages.length;
 
 				if (command.limit !== undefined) {
 					const limit = command.limit;
@@ -657,19 +670,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 							startIndex = idx + 1;
 						}
 					}
-					const page = messageEntries.slice(startIndex, startIndex + limit);
+					const page = allMessages.slice(startIndex, startIndex + limit);
 					const hasMore = startIndex + limit < totalCount;
-					const lastEntry = page[page.length - 1];
+					const lastPersisted = messageEntries[Math.min(startIndex + limit, messageEntries.length) - 1];
 					return success(id, "get_full_messages", {
-						messages: page.map((e) => (e as { message: AgentMessage }).message),
+						messages: page,
 						hasMore,
 						totalCount,
-						nextCursor: hasMore && lastEntry ? lastEntry.id : null,
+						nextCursor: hasMore && lastPersisted ? lastPersisted.id : null,
 					});
 				}
 
 				return success(id, "get_full_messages", {
-					messages: messageEntries.map((e) => (e as { message: AgentMessage }).message),
+					messages: allMessages,
 					hasMore: false,
 					totalCount,
 					nextCursor: null,
