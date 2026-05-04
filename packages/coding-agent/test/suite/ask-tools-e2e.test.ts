@@ -326,9 +326,13 @@ describe("Ask Tools E2E", () => {
 									if (!result || !Array.isArray(result) || result.length === 0) {
 										return { content: [{ type: "text", text: "User selected: (none)" }] };
 									}
-									return { content: [{ type: "text", text: `User selected: ${(result as string[]).join(", ")}` }] };
+									return {
+										content: [{ type: "text", text: `User selected: ${(result as string[]).join(", ")}` }],
+									};
 								}
-								return { content: [{ type: "text", text: `User selected: ${(result as string) ?? "(cancelled)"}` }] };
+								return {
+									content: [{ type: "text", text: `User selected: ${(result as string) ?? "(cancelled)"}` }],
+								};
 							},
 						});
 					},
@@ -376,9 +380,13 @@ describe("Ask Tools E2E", () => {
 									if (!result || !Array.isArray(result) || result.length === 0) {
 										return { content: [{ type: "text", text: "User selected: (none)" }] };
 									}
-									return { content: [{ type: "text", text: `User selected: ${(result as string[]).join(", ")}` }] };
+									return {
+										content: [{ type: "text", text: `User selected: ${(result as string[]).join(", ")}` }],
+									};
 								}
-								return { content: [{ type: "text", text: `User selected: ${(result as string) ?? "(cancelled)"}` }] };
+								return {
+									content: [{ type: "text", text: `User selected: ${(result as string) ?? "(cancelled)"}` }],
+								};
 							},
 						});
 					},
