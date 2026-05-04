@@ -69,9 +69,22 @@ type BashToolDetails = _BashToolDetails & {
 	background?: BackgroundDetails;
 };
 
+const DEFAULT_TIMEOUT_SECONDS = 300;
+
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	description: Type.String({ description: "Clear, concise description of what this command does in 5-10 words" }),
+	timeout: Type.Optional(
+		Type.Number({
+			description: `Hard timeout in seconds. Process is killed if still running after this duration. Defaults to ${DEFAULT_TIMEOUT_SECONDS}s (5 minutes). Acts as a safety net to prevent zombie processes.`,
+		}),
+	),
+	backgroundAfter: Type.Optional(
+		Type.Number({
+			description:
+				"Soft limit in seconds. If the command runs longer than this, it is automatically moved to background instead of blocking the agent. The process continues running; the agent receives a background notification and can proceed with other work. Must be less than timeout if both are set. Use for long-running tasks like builds or installs where you want the agent to stay productive.",
+		}),
+	),
 	cwd: Type.Optional(
 		Type.String({
 			description:
@@ -81,6 +94,7 @@ const bashSchema = Type.Object({
 });
 
 export interface BashProcess {
+	bashId: string;
 	toolCallId: string;
 	command: string;
 	cwd: string;
@@ -120,9 +134,28 @@ const managed = new Map<string, ManagedBash>();
 const history: BashProcess[] = [];
 const deletedIds = new Set<string>();
 
-function getTempFilePath(): string {
-	const id = randomBytes(8).toString("hex");
-	return join(tmpdir(), `pi-bash-${id}.log`);
+function generateBashId(): string {
+	const id = randomBytes(3).toString("hex");
+	return `bash-${id}`;
+}
+
+function getLogPath(bashId: string): string {
+	return join(tmpdir(), `pi-${bashId}.log`);
+}
+
+const BG_PREVIEW_LINES = 20;
+
+function takeLastLines(text: string, n: number): string {
+	const lines = text.split("\n");
+	if (lines.length <= n) return text;
+	return `... (${lines.length - n} earlier lines)\n${lines.slice(-n).join("\n")}`;
+}
+
+function grepLines(text: string, pattern: string): string {
+	const lines = text.split("\n");
+	const matched = lines.filter((l) => l.toLowerCase().includes(pattern.toLowerCase()));
+	if (matched.length === 0) return `(no lines matching "${pattern}")`;
+	return matched.join("\n");
 }
 
 function formatDuration(ms: number): string {
@@ -137,7 +170,7 @@ export default function (pi: ExtensionAPI) {
 
 	function createLogStream(m: ManagedBash): void {
 		if (m.logStream) return;
-		const logPath = getTempFilePath();
+		const logPath = getLogPath(m.proc.bashId);
 		const logStream = createWriteStream(logPath);
 		if (m.proc.output) logStream.write(m.proc.output);
 		m.proc.logPath = logPath;
@@ -224,14 +257,14 @@ export default function (pi: ExtensionAPI) {
 					processes: Array.from(managed.values()).map((x) => x.proc),
 					timestamp: Date.now(),
 				} satisfies BashChannelEvent);
-				const outputText = m.proc.output || "(no output yet)";
-				m.resolve({
-					content: [
-						{
-							type: "text",
-							text: `${outputText}\n\n[Moved to background after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}${m.proc.logPath ? `. Log: ${m.proc.logPath}` : ""}. Use the Shell panel in the sidebar to monitor or kill the process.]`,
-						},
-					],
+						const outputPreview = m.proc.output ? takeLastLines(m.proc.output, BG_PREVIEW_LINES) : "(no output yet)";
+						m.resolve({
+							content: [
+								{
+									type: "text",
+									text: `${outputPreview}\n\n[Moved to background after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Use get_background_process with <bashId>${m.proc.bashId}</bashId> to check progress.]`,
+								},
+							],
 					details: {
 						background: {
 							pid: m.proc.pid,
@@ -282,23 +315,44 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Supports optional timeout (seconds) and custom working directory (cwd).`,
+		description: [
+			`Execute a bash command. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file.`,
+			"",
+			"Timeout and background behavior:",
+			`- timeout: Hard limit in seconds. Process is killed after this duration. Default: ${DEFAULT_TIMEOUT_SECONDS}s (5 min). This is a safety net — always present.`,
+			"- backgroundAfter: Soft limit in seconds. If the command runs longer, it is automatically moved to background. The process keeps running, the agent receives a notification and can continue other work.",
+			"- If backgroundAfter < timeout: command goes to background first, then gets killed if it reaches timeout.",
+			"- If backgroundAfter >= timeout (or not set): command runs until timeout, then gets killed.",
+			"",
+			"When to use backgroundAfter:",
+			"- Long builds (npm install, cargo build, docker build): set backgroundAfter to a reasonable time so the agent stays productive.",
+			"- Quick commands (ls, grep, echo): no need for backgroundAfter, they finish fast.",
+			"",
+			"Rules:",
+			"- ALWAYS provide a description (5-10 words explaining what the command does).",
+			"- Use cwd to run commands in a specific directory instead of cd.",
+			"- When a command is moved to background, the result includes a <bashId>. Use get_background_process with that ID to poll progress before running dependent commands.",
+		].join("\n"),
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
 		async execute(
 			toolCallId: string,
-			{ command, timeout, cwd: cwdParam }: { command: string; timeout?: number; cwd?: string },
+			{ command, description, timeout, backgroundAfter, cwd: cwdParam }: { command: string; description: string; timeout?: number; backgroundAfter?: number; cwd?: string },
 			signal?: AbortSignal,
 			onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 			_ctx?: ExtensionContext,
 		): Promise<AgentToolResult<BashToolDetails>> {
 			return new Promise((resolve, reject) => {
+				const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
+				const effectiveBackgroundAfter = backgroundAfter !== undefined && backgroundAfter < effectiveTimeout ? backgroundAfter : undefined;
 				const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
 				const { shell, args } = getShellConfig();
 				if (!existsSync(cwd)) {
 					reject(new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`));
 					return;
 				}
+
+				const bashId = generateBashId();
 
 				const child = spawn(shell, [...args, command], {
 					cwd,
@@ -308,6 +362,7 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				const proc: BashProcess = {
+					bashId,
 					toolCallId,
 					command,
 					cwd,
@@ -329,7 +384,7 @@ export default function (pi: ExtensionAPI) {
 					stdin: child.stdin,
 				});
 
-				const logPath = getTempFilePath();
+				const logPath = getLogPath(bashId);
 				const logStream = createWriteStream(logPath);
 				proc.logPath = logPath;
 				const m = managed.get(toolCallId)!;
@@ -419,11 +474,52 @@ export default function (pi: ExtensionAPI) {
 
 				let timedOut = false;
 				let timeoutHandle: NodeJS.Timeout | undefined;
-				if (timeout !== undefined && timeout > 0) {
+				if (effectiveTimeout > 0) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
 						if (child.pid) killProcessTree(child.pid);
-					}, timeout * 1000);
+					}, effectiveTimeout * 1000);
+				}
+
+				let backgroundAfterHandle: NodeJS.Timeout | undefined;
+				if (effectiveBackgroundAfter !== undefined) {
+					backgroundAfterHandle = setTimeout(() => {
+						const m = managed.get(toolCallId);
+						if (!m || m.resolved || m.backgrounded) return;
+						m.proc.status = "background";
+						m.resolved = true;
+						m.backgrounded = true;
+						m.outputSubscribed = false;
+						createLogStream(m);
+						const durationMs = Date.now() - m.proc.startedAt;
+						channel?.emit("background", {
+							type: "background",
+							toolCallId,
+							pid: m.proc.pid,
+							data: m.proc.output.slice(-2000),
+							processes: Array.from(managed.values()).map((x) => x.proc),
+							timestamp: Date.now(),
+						} satisfies BashChannelEvent);
+							const outputPreview = m.proc.output ? takeLastLines(m.proc.output, BG_PREVIEW_LINES) : "(no output yet)";
+						m.resolve({
+							content: [
+								{
+									type: "text",
+									text: `${outputPreview}\n\n[Automatically moved to background after ${formatDuration(durationMs)} (backgroundAfter=${effectiveBackgroundAfter}s), PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Use get_background_process with <bashId>${m.proc.bashId}</bashId> to check progress.]`,
+								},
+							],
+							details: {
+								background: {
+									pid: m.proc.pid,
+									command: m.proc.command,
+									startedAt: m.proc.startedAt,
+									durationMs,
+									logPath: m.proc.logPath,
+									detached: false,
+								},
+							},
+						});
+					}, effectiveBackgroundAfter * 1000);
 				}
 
 				const onAbort = () => {
@@ -438,6 +534,7 @@ export default function (pi: ExtensionAPI) {
 					.then((code) => {
 						if (child.pid) untrackDetachedChildPid(child.pid);
 						if (timeoutHandle) clearTimeout(timeoutHandle);
+						if (backgroundAfterHandle) clearTimeout(backgroundAfterHandle);
 						if (signal) signal.removeEventListener("abort", onAbort);
 						if (tempFileStream) tempFileStream.end();
 
@@ -510,7 +607,7 @@ export default function (pi: ExtensionAPI) {
 							channel?.emit("error", {
 								type: "error",
 								toolCallId,
-								data: `Timed out after ${timeout}s`,
+								data: `Timed out after ${effectiveTimeout}s`,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
 							} satisfies BashChannelEvent);
@@ -519,7 +616,7 @@ export default function (pi: ExtensionAPI) {
 								content: [
 									{
 										type: "text",
-										text: `${outputText}\n\n[Timed out after ${timeout}s, PID: ${proc.pid ?? "unknown"}]`,
+										text: `${outputText}\n\n[Timed out after ${effectiveTimeout}s, PID: ${proc.pid ?? "unknown"}]`,
 									},
 								],
 								details: {
@@ -530,7 +627,7 @@ export default function (pi: ExtensionAPI) {
 										startedAt: proc.startedAt,
 										endedAt: proc.endedAt,
 										durationMs,
-										timeoutSecs: timeout,
+										timeoutSecs: effectiveTimeout,
 										logPath: tempFilePath,
 									},
 								},
@@ -602,6 +699,7 @@ export default function (pi: ExtensionAPI) {
 					.catch((err: Error) => {
 						if (child.pid) untrackDetachedChildPid(child.pid);
 						if (timeoutHandle) clearTimeout(timeoutHandle);
+						if (backgroundAfterHandle) clearTimeout(backgroundAfterHandle);
 						if (signal) signal.removeEventListener("abort", onAbort);
 						if (tempFileStream) tempFileStream.end();
 
@@ -729,6 +827,99 @@ export default function (pi: ExtensionAPI) {
 						}
 					});
 			});
+		},
+	});
+
+	const bashStatusSchema = Type.Object({
+		bashId: Type.String({ description: "The bashId returned when a command was moved to background. Example: bash-abc123" }),
+		lastLines: Type.Optional(Type.Number({ description: "Only show the last N lines of output. Useful for checking tail of long-running builds. Default: show last 2000 chars." })),
+		grep: Type.Optional(Type.String({ description: "Filter output to only lines containing this keyword (case-insensitive). Useful for finding errors, warnings, or specific patterns in build output." })),
+	});
+
+	function findProcess(bashId: string): { proc: BashProcess; isLive: boolean } | null {
+		for (const m of managed.values()) {
+			if (m.proc.bashId === bashId) return { proc: m.proc, isLive: !m.proc.endedAt };
+		}
+		const histProc = history.find((p) => p.bashId === bashId);
+		if (histProc) return { proc: histProc, isLive: false };
+		return null;
+	}
+
+	pi.registerTool({
+		name: "get_background_process",
+		label: "get_background_process",
+		description: [
+			"Query the status and output of a backgrounded bash process by its bashId.",
+			"",
+			"When a bash command is moved to background (manually or via backgroundAfter), it returns a <bashId>. Use this tool to:",
+			"- Check if the process is still running, finished, or errored",
+			"- Get the accumulated output (filtered if needed)",
+			"- Get the exit code (if finished)",
+			"",
+			"Filtering options:",
+			"- lastLines: show only the last N lines (e.g. lastLines=5 for quick status check)",
+			"- grep: filter output to lines containing a keyword (e.g. grep='error' to find failures)",
+			"- Both can be combined: lastLines=10 + grep='warning'",
+			"",
+			"Typical flow:",
+			"1. Start long command: bash({ command: 'npm install', backgroundAfter: 60 })",
+			"2. Do other work while it runs",
+			"3. Poll: get_background_process({ bashId: 'bash-abc123' })",
+			"4. If status='done', proceed. If status='running', poll again later.",
+		].join("\n"),
+		promptSnippet: "Check status of a backgrounded bash command",
+		parameters: bashStatusSchema,
+		async execute(
+			_toolCallId: string,
+			{ bashId, lastLines, grep: grepPattern }: { bashId: string; lastLines?: number; grep?: string },
+		): Promise<AgentToolResult> {
+			const result = findProcess(bashId);
+
+			if (!result) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `No process found with <bashId>${bashId}</bashId>. It may have never existed, been removed, or the session has been reset.`,
+						},
+					],
+				};
+			}
+
+			const { proc, isLive } = result;
+			const durationMs = (proc.endedAt ?? Date.now()) - proc.startedAt;
+
+			let output = proc.output || "(no output yet)";
+
+			if (grepPattern) {
+				output = grepLines(output, grepPattern);
+			}
+
+			if (lastLines !== undefined && lastLines > 0) {
+				output = takeLastLines(output, lastLines);
+			} else if (!grepPattern) {
+				output = takeLastLines(output, 50);
+			}
+
+			const header = [
+				`Process: ${proc.command}`,
+				`<bashId>${proc.bashId}</bashId>`,
+				`Status: ${proc.status}${isLive ? " (still running)" : ""}`,
+				`PID: ${proc.pid ?? "unknown"}`,
+				`Duration: ${formatDuration(durationMs)}`,
+				proc.exitCode !== undefined ? `Exit code: ${proc.exitCode}` : null,
+				proc.logPath ? `Log: ${proc.logPath}` : null,
+				proc.error ? `Error: ${proc.error}` : null,
+				grepPattern ? `Filtered by: "${grepPattern}"` : null,
+				"",
+				isLive ? "Output so far:" : "Output:",
+			]
+				.filter(Boolean)
+				.join("\n");
+
+			return {
+				content: [{ type: "text", text: `${header}\n${output}` }],
+			};
 		},
 	});
 }

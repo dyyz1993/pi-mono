@@ -15,10 +15,22 @@ function getTempFilePath(): string {
 	return join(tmpdir(), `mom-bash-${id}.log`);
 }
 
+const DEFAULT_TIMEOUT_SECONDS = 300;
+
 const bashSchema = Type.Object({
-	label: Type.String({ description: "Brief description of what this command does (shown to user)" }),
+	description: Type.String({ description: "Clear, concise description of what this command does in 5-10 words" }),
 	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	timeout: Type.Optional(
+		Type.Number({
+			description: `Hard timeout in seconds. Process is killed if still running after this duration. Defaults to ${DEFAULT_TIMEOUT_SECONDS}s (5 minutes).`,
+		}),
+	),
+	backgroundAfter: Type.Optional(
+		Type.Number({
+			description:
+				"Soft limit in seconds. If the command runs longer than this, it is automatically moved to background. Must be less than timeout if both are set. Use for long-running tasks like builds or installs.",
+		}),
+	),
 });
 
 interface BashToolDetails {
@@ -30,18 +42,17 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Hard timeout defaults to ${DEFAULT_TIMEOUT_SECONDS}s (5 min). Use backgroundAfter for long-running tasks to auto-move to background.`,
 		parameters: bashSchema,
 		execute: async (
 			_toolCallId: string,
-			{ command, timeout }: { label: string; command: string; timeout?: number },
+			{ command, timeout, backgroundAfter: _backgroundAfter }: { description: string; command: string; timeout?: number; backgroundAfter?: number },
 			signal?: AbortSignal,
 		) => {
-			// Track output for potential temp file writing
 			let tempFilePath: string | undefined;
 			let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
-
-			const result = await executor.exec(command, { timeout, signal });
+			const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
+			const result = await executor.exec(command, { timeout: effectiveTimeout, signal });
 			let output = "";
 			if (result.stdout) output += result.stdout;
 			if (result.stderr) {

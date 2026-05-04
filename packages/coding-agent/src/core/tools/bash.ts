@@ -30,9 +30,22 @@ function getTempFilePath(): string {
 	return join(tmpdir(), `pi-bash-${id}.log`);
 }
 
+const DEFAULT_TIMEOUT_SECONDS = 300;
+
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	description: Type.String({ description: "Clear, concise description of what this command does in 5-10 words" }),
+	timeout: Type.Optional(
+		Type.Number({
+			description: `Hard timeout in seconds. Process is killed if still running after this duration. Defaults to ${DEFAULT_TIMEOUT_SECONDS}s (5 minutes). Acts as a safety net to prevent zombie processes.`,
+		}),
+	),
+	backgroundAfter: Type.Optional(
+		Type.Number({
+			description:
+				"Soft limit in seconds. If the command runs longer than this, it is automatically moved to background instead of blocking the agent. The process continues running; the agent receives a background notification and can proceed with other work. Must be less than timeout if both are set. Use for long-running tasks like builds or installs.",
+		}),
+	),
 });
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -186,12 +199,14 @@ function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatBashCall(args: { command?: string; timeout?: number } | undefined): string {
+function formatBashCall(args: { command?: string; description?: string; timeout?: number } | undefined): string {
 	const command = str(args?.command);
+	const description = str(args?.description);
 	const timeout = args?.timeout as number | undefined;
 	const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
-	return theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix;
+	const descPrefix = description ? theme.fg("muted", `${description} `) : "";
+	return descPrefix + theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix;
 }
 
 function rebuildBashResultRenderComponent(
@@ -280,16 +295,33 @@ export function createBashToolDefinition(
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: [
+			`Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file.`,
+			"",
+			"Timeout and background behavior:",
+			`- timeout: Hard limit in seconds. Process is killed after this duration. Default: ${DEFAULT_TIMEOUT_SECONDS}s (5 min).`,
+			"- backgroundAfter: Soft limit in seconds. If the command runs longer, it is automatically moved to background. The process keeps running, the agent receives a notification and can continue other work.",
+			"- If backgroundAfter < timeout: command goes to background first, then gets killed if it reaches timeout.",
+			"- If backgroundAfter >= timeout (or not set): command runs until timeout, then gets killed.",
+			"",
+			"When to use backgroundAfter:",
+			"- Long builds (npm install, cargo build, docker build): set backgroundAfter to a reasonable time so the agent stays productive.",
+			"- Quick commands (ls, grep, echo): no need for backgroundAfter.",
+			"",
+			"Rules:",
+			"- ALWAYS provide a description (5-10 words explaining what the command does).",
+			"- Use the workdir parameter to run commands in a specific directory instead of cd.",
+		].join("\n"),
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
 		async execute(
 			_toolCallId,
-			{ command, timeout }: { command: string; timeout?: number },
+			{ command, description, timeout, backgroundAfter: _backgroundAfter }: { command: string; description: string; timeout?: number; backgroundAfter?: number },
 			signal?: AbortSignal,
 			onUpdate?,
 			_ctx?,
 		) {
+			const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
 			if (onUpdate) {
@@ -347,7 +379,7 @@ export function createBashToolDefinition(
 				ops.exec(spawnContext.command, spawnContext.cwd, {
 					onData: handleData,
 					signal,
-					timeout,
+					timeout: effectiveTimeout,
 					env: spawnContext.env,
 				})
 					.then(({ exitCode }) => {
