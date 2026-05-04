@@ -450,6 +450,25 @@ export class RpcClient {
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
 	}
 
+	async getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
+		messages: AgentMessage[];
+		hasMore: boolean;
+		totalCount: number;
+		nextCursor: string | null;
+	}> {
+		const response = await this.send({
+			type: "get_full_messages",
+			afterEntryId: options?.afterEntryId,
+			limit: options?.limit,
+		});
+		return this.getData<{
+			messages: AgentMessage[];
+			hasMore: boolean;
+			totalCount: number;
+			nextCursor: string | null;
+		}>(response);
+	}
+
 	async getTree(): Promise<TreeEntry[]> {
 		const response = await this.send({ type: "get_tree" });
 		const data = this.getData<{

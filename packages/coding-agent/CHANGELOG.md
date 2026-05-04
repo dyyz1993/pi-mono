@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `get_full_messages` RPC command to retrieve complete message history including pre-compaction messages with optional cursor-based pagination
+
 ## [0.69.24] - 2026-05-03
 
 ### Added

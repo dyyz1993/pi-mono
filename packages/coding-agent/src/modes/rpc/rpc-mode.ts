@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import { ChannelManager } from "../../core/extensions/channel-manager.js";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.js";
@@ -640,6 +641,39 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_messages": {
 				return success(id, "get_messages", { messages: session.messages });
+			}
+
+			case "get_full_messages": {
+				const allEntries = session.sessionManager.getEntries();
+				const messageEntries = allEntries.filter((e) => e.type === "message");
+				const totalCount = messageEntries.length;
+
+				if (command.limit !== undefined) {
+					const limit = command.limit;
+					let startIndex = 0;
+					if (command.afterEntryId) {
+						const idx = messageEntries.findIndex((e) => e.id === command.afterEntryId);
+						if (idx !== -1) {
+							startIndex = idx + 1;
+						}
+					}
+					const page = messageEntries.slice(startIndex, startIndex + limit);
+					const hasMore = startIndex + limit < totalCount;
+					const lastEntry = page[page.length - 1];
+					return success(id, "get_full_messages", {
+						messages: page.map((e) => (e as { message: AgentMessage }).message),
+						hasMore,
+						totalCount,
+						nextCursor: hasMore && lastEntry ? lastEntry.id : null,
+					});
+				}
+
+				return success(id, "get_full_messages", {
+					messages: messageEntries.map((e) => (e as { message: AgentMessage }).message),
+					hasMore: false,
+					totalCount,
+					nextCursor: null,
+				});
 			}
 
 			case "get_tree": {

@@ -175,6 +175,12 @@ export interface RpcClientAPI {
 	getLastAssistantText(): Promise<string | null>;
 	setSessionName(name: string): Promise<void>;
 	getMessages(): Promise<AgentMessage[]>;
+	getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
+		messages: AgentMessage[];
+		hasMore: boolean;
+		totalCount: number;
+		nextCursor: string | null;
+	}>;
 	getTree(): Promise<TreeEntry[]>;
 	getTreeWithLeaf(): Promise<TreeWithLeaf>;
 

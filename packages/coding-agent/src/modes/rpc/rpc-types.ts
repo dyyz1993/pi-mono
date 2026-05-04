@@ -67,6 +67,7 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
+	| { id?: string; type: "get_full_messages"; afterEntryId?: string; limit?: number }
 	| { id?: string; type: "get_tree" }
 
 	// Commands (available for invocation via prompt)
@@ -298,6 +299,18 @@ export type RpcResponse =
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_full_messages";
+			success: true;
+			data: {
+				messages: AgentMessage[];
+				hasMore: boolean;
+				totalCount: number;
+				nextCursor: string | null;
+			};
+	  }
 	| {
 			id?: string;
 			type: "response";
