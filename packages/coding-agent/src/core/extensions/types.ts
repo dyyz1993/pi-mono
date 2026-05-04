@@ -1239,6 +1239,9 @@ export interface ExtensionAPI {
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T, options?: { display?: boolean }): void;
 
+	/** Fold a message entry, replacing its content with a summary in LLM context. */
+	foldEntry(entryId: string, summary: string, originalTokens: number): void;
+
 	// =========================================================================
 	// Session Metadata
 	// =========================================================================
@@ -1474,6 +1477,8 @@ export type SendUserMessageHandler = (
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: { display?: boolean }) => void;
 
+export type FoldEntryHandler = (entryId: string, summary: string, originalTokens: number) => void;
+
 export type SetSessionNameHandler = (name: string) => void;
 
 export type GetSessionNameHandler = () => string | undefined;
@@ -1594,6 +1599,7 @@ export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
+	foldEntry: FoldEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;

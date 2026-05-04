@@ -79,6 +79,9 @@ import lspExtensionDefault, { type LspChannelEvent } from "./index.js";
 			registeredTools.set(tool.name, tool);
 		}),
 		registerCommand: registerCommandFn,
+		appendEntry: vi.fn(),
+		sendMessage: vi.fn(),
+		off: vi.fn(),
 	} as unknown as ExtensionAPI;
 
 	return {

@@ -2959,6 +2959,9 @@ export class InteractiveMode {
 				this.chatContainer.addChild(component);
 				break;
 			}
+			case "foldSummary": {
+				break;
+			}
 			case "user": {
 				const textContent = this.getUserMessageText(message);
 				if (textContent) {

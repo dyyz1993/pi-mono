@@ -23,6 +23,7 @@ import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
+	createFoldSummaryMessage,
 } from "./messages.js";
 
 export const CURRENT_SESSION_VERSION = 3;
@@ -149,10 +150,18 @@ export type SessionEntry =
 	| ModelChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
+	| FoldEntry
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
 	| SessionInfoEntry;
+
+export interface FoldEntry extends SessionEntryBase {
+	type: "fold";
+	targetId: string;
+	summary: string;
+	originalTokens: number;
+}
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -377,6 +386,14 @@ export function buildSessionContext(
 		}
 	}
 
+	// Build fold index: targetId -> FoldEntry
+	const folds = new Map<string, FoldEntry>();
+	for (const entry of path) {
+		if (entry.type === "fold") {
+			folds.set(entry.targetId, entry);
+		}
+	}
+
 	// Build messages and collect corresponding entries
 	// When there's a compaction, we need to:
 	// 1. Emit summary first (entry = compaction)
@@ -386,7 +403,12 @@ export function buildSessionContext(
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
-			messages.push(entry.message);
+			const fold = folds.get(entry.id);
+			if (fold) {
+				messages.push(createFoldSummaryMessage(fold.summary, fold.originalTokens, entry.timestamp));
+			} else {
+				messages.push(entry.message);
+			}
 		} else if (entry.type === "custom_message") {
 			messages.push(
 				createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp),
@@ -923,6 +945,21 @@ export class SessionManager {
 			customType,
 			data,
 			display: options?.display,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a fold entry that replaces a message with a summary in LLM context. Returns entry id. */
+	appendFold(targetId: string, summary: string, originalTokens: number): string {
+		const entry: FoldEntry = {
+			type: "fold",
+			targetId,
+			summary,
+			originalTokens,
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),

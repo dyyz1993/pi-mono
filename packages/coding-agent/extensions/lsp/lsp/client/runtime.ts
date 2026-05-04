@@ -95,7 +95,7 @@ export interface LspClientRuntime {
 	getStatus(): LspRuntimeStatus;
 }
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 4_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BUFFER_BYTES = 8 * 1024 * 1024;
 const MAX_FRAME_CONTENT_LENGTH = 4 * 1024 * 1024;
 const LSPMUX_BINARY = "lspmux";

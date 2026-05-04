@@ -101,16 +101,35 @@ export default function lspExtension(pi: ExtensionAPI): void {
 				const validModes: DiagnosticsModeName[] = ["agent_end", "edit_write", "disabled"];
 				if (!validModes.includes(newMode as DiagnosticsModeName)) return { ok: false };
 				mode.set(newMode as DiagnosticsModeName);
-				lspChannel?.emit("mode_changed", {
+				const modeData = {
 					event: "mode_changed",
 					timestamp: Date.now(),
 					mode: mode.get(),
-				});
+				};
+				lspChannel?.emit("mode_changed", modeData);
+				pi.appendEntry("lsp", modeData);
 				return { ok: true, mode: mode.get() };
 			});
 
 			lspChannel.handle("getActiveLanguages", () => {
 				return { languages: getActiveLanguages() };
+			});
+
+			lspChannel.handle("getStatus", () => {
+				const s = runtime.getStatus();
+				return {
+					state: s.state,
+					servers: s.servers.map((srv) => ({
+						name: srv.name,
+						fileTypes: srv.fileTypes,
+						state: srv.status.state,
+						reason: srv.status.reason,
+						transport: srv.status.transport,
+						activeCommand: srv.status.activeCommand,
+						configuredCommand: srv.status.configuredCommand,
+					})),
+					mode: mode.get(),
+				};
 			});
 		}
 
@@ -153,6 +172,13 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			event: "status_changed",
 			timestamp: Date.now(),
 			servers: status.servers,
+			state: status.state,
+		});
+		pi.appendEntry("lsp", {
+			event: "status_changed",
+			timestamp: Date.now(),
+			servers: status.servers,
+			state: status.state,
 		});
 		lspChannel?.emit("startup_complete", {
 			event: "startup_complete",
@@ -246,11 +272,13 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			}
 
 			mode.set(trimmed as DiagnosticsModeName);
-			lspChannel?.emit("mode_changed", {
+			const modeData = {
 				event: "mode_changed",
 				timestamp: Date.now(),
 				mode: mode.get(),
-			});
+			};
+			lspChannel?.emit("mode_changed", modeData);
+			pi.appendEntry("lsp", modeData);
 			ctx.ui.notify(`LSP diagnostics mode set to: ${mode.get()}`, "info");
 		},
 	});

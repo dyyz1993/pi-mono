@@ -252,6 +252,7 @@ export {
 	createLsToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
+	DEFAULT_INPUT_MAX_BYTES,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	type EditOperations,

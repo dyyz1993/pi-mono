@@ -14,6 +14,12 @@ export interface CompactionManagerConfig {
 		warnPercent: number;
 		forceCompactPercent: number;
 	};
+	contextFold: {
+		enabled: boolean;
+		maxAgeMs: number;
+		keepRecentCount: number;
+		maxSummaryLength: number;
+	};
 }
 
 export const DEFAULT_CONFIG: CompactionManagerConfig = {
@@ -31,5 +37,11 @@ export const DEFAULT_CONFIG: CompactionManagerConfig = {
 		enabled: true,
 		warnPercent: 75,
 		forceCompactPercent: 90,
+	},
+	contextFold: {
+		enabled: true,
+		maxAgeMs: 30 * 60 * 1000,
+		keepRecentCount: 6,
+		maxSummaryLength: 200,
 	},
 };

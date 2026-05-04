@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@dyyz1993/pi-agent-core";
+import type { AgentMessage, AssistantMessage } from "@dyyz1993/pi-agent-core";
 import type { ToolResultMessage } from "@dyyz1993/pi-ai";
 
 export function microcompactMessages(
@@ -20,6 +20,28 @@ export function microcompactMessages(
 		return {
 			...toolMsg,
 			content: [{ type: "text" as const, text: `[Old ${toolMsg.toolName} result cleared]` }],
+		};
+	});
+
+	return modified ? { messages: cleaned } : undefined;
+}
+
+export function stripThinkingBlocks(messages: AgentMessage[]): { messages: AgentMessage[] } | undefined {
+	let modified = false;
+
+	const cleaned = messages.map((msg) => {
+		if (msg.role !== "assistant") return msg;
+		const assistant = msg as AssistantMessage;
+		if (!Array.isArray(assistant.content)) return msg;
+
+		const hasThinking = assistant.content.some((block) => block.type === "thinking");
+		if (!hasThinking) return msg;
+
+		modified = true;
+		const filtered = assistant.content.filter((block) => block.type !== "thinking");
+		return {
+			...assistant,
+			content: filtered,
 		};
 	});
 

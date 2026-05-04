@@ -15,6 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	Agent,
@@ -79,6 +80,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import { handleLargeInput } from "./large-input.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -1029,10 +1031,11 @@ export class AgentSession {
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 					);
 				}
+				const { text: streamingText } = handleLargeInput(expandedText);
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages);
+					await this._queueFollowUp(streamingText, currentImages);
 				} else {
-					await this._queueSteer(expandedText, currentImages);
+					await this._queueSteer(streamingText, currentImages);
 				}
 				preflightResult?.(true);
 				return;
@@ -1074,8 +1077,11 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
+			// Handle large input: save to temp file and replace with preview
+			const { text: finalText } = handleLargeInput(expandedText);
+
 			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: finalText }];
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
@@ -1201,16 +1207,15 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async steer(text: string, images?: ImageContent[]): Promise<void> {
-		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
 
-		// Expand skill commands and prompt templates
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images);
+		const { text: finalText } = handleLargeInput(expandedText);
+		await this._queueSteer(finalText, images);
 	}
 
 	/**
@@ -1221,16 +1226,15 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async followUp(text: string, images?: ImageContent[]): Promise<void> {
-		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
 
-		// Expand skill commands and prompt templates
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images);
+		const { text: finalText } = handleLargeInput(expandedText);
+		await this._queueFollowUp(finalText, images);
 	}
 
 	/**
@@ -2218,6 +2222,9 @@ export class AgentSession {
 				appendEntry: (customType, data, options) => {
 					const id = this.sessionManager.appendCustomEntry(customType, data, options);
 					this._emit({ type: "custom_entry", customType, data, id, display: options?.display });
+				},
+				foldEntry: (entryId, summary, originalTokens) => {
+					this.sessionManager.appendFold(entryId, summary, originalTokens);
 				},
 				setSessionName: (name) => {
 					const oldName = this.sessionManager.getSessionName();

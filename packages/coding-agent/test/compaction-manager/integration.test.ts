@@ -1,10 +1,14 @@
-import type { AgentMessage } from "@dyyz1993/pi-agent-core";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AgentMessage, AssistantMessage } from "@dyyz1993/pi-agent-core";
 import type { ToolResultMessage } from "@dyyz1993/pi-ai";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import compactionManager from "../../extensions/compaction-manager/index.js";
 import { microcompactMessages } from "../../extensions/compaction-manager/microcompact.js";
 import { shouldForceCompact, shouldWarn } from "../../extensions/compaction-manager/reactive.js";
 import { buildMemorySummary } from "../../extensions/compaction-manager/session-memory.js";
+import type { SessionEntry } from "../../src/core/session-manager.js";
 
 function createMockPi() {
 	const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
@@ -30,6 +34,7 @@ function createMockPi() {
 		callLLMStructured: vi.fn(),
 		forkAgent: vi.fn(),
 		appendEntry: vi.fn(),
+		foldEntry: vi.fn(),
 	} as any;
 
 	return { pi, handlers, commands };
@@ -46,7 +51,9 @@ function createMockCtx(overrides?: Record<string, unknown>) {
 			percent: 50,
 		})),
 		compact: vi.fn(),
-		sessionManager: {},
+		sessionManager: {
+			getBranch: vi.fn(() => []),
+		},
 		modelRegistry: {},
 		...overrides,
 	};
@@ -168,7 +175,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const turnEndHandler = handlers.turn_end[0];
+		const turnEndHandler = handlers.turn_end[1];
 		const ctx = createMockCtx({
 			getContextUsage: vi.fn(() => ({
 				tokens: 160000,
@@ -185,7 +192,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const turnEndHandler = handlers.turn_end[0];
+		const turnEndHandler = handlers.turn_end[1];
 		const ctx = createMockCtx({
 			getContextUsage: vi.fn(() => ({
 				tokens: 190000,
@@ -202,7 +209,7 @@ describe("compaction-manager extension registration", () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
 
-		const turnEndHandler = handlers.turn_end[0];
+		const turnEndHandler = handlers.turn_end[1];
 		const ctx = createMockCtx({
 			getContextUsage: vi.fn(() => ({
 				tokens: 50000,
@@ -220,7 +227,7 @@ describe("compaction-manager extension registration", () => {
 		compactionManager(pi);
 
 		const agentStartHandler = handlers.agent_start[0];
-		const turnEndHandler = handlers.turn_end[0];
+		const turnEndHandler = handlers.turn_end[1];
 
 		const ctxHigh = createMockCtx({
 			getContextUsage: vi.fn(() => ({
@@ -288,5 +295,223 @@ describe("compaction-manager extension registration", () => {
 		expect(ctx.compact).toHaveBeenCalledWith(
 			expect.objectContaining({ customInstructions: "focus on architecture decisions" }),
 		);
+	});
+});
+
+function createAssistantMessage(text: string, overrides?: Partial<AssistantMessage>): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		usage: {
+			input: 100,
+			output: 50,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 150,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now() - 60 * 60 * 1000,
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+		...overrides,
+	};
+}
+
+function createAssistantEntry(id: string, text: string, overrides?: Partial<AssistantMessage>): SessionEntry {
+	return {
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: new Date().toISOString(),
+		message: createAssistantMessage(text, overrides),
+	};
+}
+
+async function createMemoryDir(cwd: string, files: Record<string, string> = {}) {
+	const memoryDir = join(cwd, ".pi", "memory");
+	await mkdir(memoryDir, { recursive: true });
+	for (const [name, content] of Object.entries(files)) {
+		await writeFile(join(memoryDir, name), content);
+	}
+	return memoryDir;
+}
+
+describe("session_before_compact branches", () => {
+	const preparation = {
+		firstKeptEntryId: "entry-1",
+		tokensBefore: 100000,
+		settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+	};
+
+	it("returns undefined when memoryFiles.size === 0", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const handler = handlers.session_before_compact[0];
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-test-"));
+
+		try {
+			const ctx = createMockCtx({ cwd: tmpDir });
+			const result = await handler({ preparation, signal: new AbortController().signal }, ctx);
+
+			expect(result).toBeUndefined();
+			expect(ctx.ui.notify).not.toHaveBeenCalled();
+		} finally {
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("returns undefined when signal is aborted", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const handler = handlers.session_before_compact[0];
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-test-"));
+
+		try {
+			await createMemoryDir(tmpDir, { "notes.md": "## Decision\n- Use React for frontend" });
+
+			const ctx = createMockCtx({ cwd: tmpDir });
+			const signal = AbortSignal.abort();
+			const result = await handler({ preparation, signal }, ctx);
+
+			expect(result).toBeUndefined();
+			expect(ctx.ui.notify).not.toHaveBeenCalled();
+		} finally {
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("returns undefined when buildMemorySummary returns undefined (content too short)", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const handler = handlers.session_before_compact[0];
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-test-"));
+
+		try {
+			await createMemoryDir(tmpDir, { "short.md": "tiny" });
+
+			const ctx = createMockCtx({ cwd: tmpDir });
+			const result = await handler({ preparation, signal: new AbortController().signal }, ctx);
+
+			expect(result).toBeUndefined();
+			expect(ctx.ui.notify).not.toHaveBeenCalled();
+		} finally {
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("returns compaction result on success", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const handler = handlers.session_before_compact[0];
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-test-"));
+
+		try {
+			await createMemoryDir(tmpDir, {
+				"notes.md": "## Key Decision\n- Use React for the frontend framework\n- Use PostgreSQL for database",
+			});
+
+			const ctx = createMockCtx({ cwd: tmpDir });
+			const result = await handler({ preparation, signal: new AbortController().signal }, ctx);
+
+			expect(result).toBeDefined();
+			expect(result.compaction).toBeDefined();
+			expect(result.compaction.summary).toContain("React");
+			expect(result.compaction.firstKeptEntryId).toBe("entry-1");
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("memory files"), "info");
+		} finally {
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+});
+
+describe("after_provider_response branches", () => {
+	it("normal status 200 does not notify", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const handler = handlers.after_provider_response[0];
+		const ctx = createMockCtx();
+
+		await handler({ status: 200 }, ctx);
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+});
+
+describe("turn_end reactive branches", () => {
+	it("usage returns null → no notify", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const reactiveHandler = handlers.turn_end[1];
+		const ctx = createMockCtx({
+			getContextUsage: vi.fn(() => null),
+		});
+
+		await reactiveHandler({}, ctx);
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("warnedThisTurn=true → second call does not warn", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const reactiveHandler = handlers.turn_end[1];
+
+		const ctxHigh = createMockCtx({
+			getContextUsage: vi.fn(() => ({
+				tokens: 180000,
+				contextWindow: 200000,
+				percent: 90,
+			})),
+		});
+
+		await reactiveHandler({}, ctxHigh);
+		expect(ctxHigh.ui.notify).toHaveBeenCalledTimes(1);
+
+		const ctxHigh2 = createMockCtx({
+			getContextUsage: vi.fn(() => ({
+				tokens: 180000,
+				contextWindow: 200000,
+				percent: 90,
+			})),
+		});
+
+		await reactiveHandler({}, ctxHigh2);
+		expect(ctxHigh2.ui.notify).not.toHaveBeenCalled();
+	});
+});
+
+describe("context fold branches", () => {
+	it("already folded entry is not re-folded", async () => {
+		const { pi, handlers } = createMockPi();
+		compactionManager(pi);
+
+		const contextFoldHandler = handlers.turn_end[0];
+
+		const entries: SessionEntry[] = [
+			createAssistantEntry("a1", "old response", { timestamp: Date.now() - 60 * 60 * 1000 }),
+			{ type: "fold", targetId: "a1", id: "fold-1", parentId: null, timestamp: new Date().toISOString() } as any,
+			createAssistantEntry("a2", "recent 1", { timestamp: Date.now() }),
+			createAssistantEntry("a3", "recent 2", { timestamp: Date.now() }),
+			createAssistantEntry("a4", "recent 3", { timestamp: Date.now() }),
+			createAssistantEntry("a5", "recent 4", { timestamp: Date.now() }),
+			createAssistantEntry("a6", "recent 5", { timestamp: Date.now() }),
+			createAssistantEntry("a7", "recent 6", { timestamp: Date.now() }),
+		];
+
+		const ctx = createMockCtx({
+			sessionManager: { getBranch: vi.fn(() => entries) },
+			getContextUsage: vi.fn(() => ({ tokens: 50000, contextWindow: 200000, percent: 25 })),
+		});
+
+		await contextFoldHandler({}, ctx);
+
+		expect(pi.foldEntry).not.toHaveBeenCalled();
 	});
 });

@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { DEFAULT_CONFIG } from "./config.js";
-import { microcompactMessages } from "./microcompact.js";
+import { extractFoldSummary, estimateMessageTokens, findFoldableEntries } from "./context-fold.js";
+import { microcompactMessages, stripThinkingBlocks } from "./microcompact.js";
 import { buildMemorySummary, readMemoryFiles } from "./session-memory.js";
 import { shouldWarn, shouldForceCompact } from "./reactive.js";
 
@@ -9,7 +10,45 @@ export default function (pi: ExtensionAPI) {
 
 	if (config.microcompact.enabled) {
 		pi.on("context", (event, _ctx) => {
-			return microcompactMessages(event.messages, config.microcompact.clearableTools, config.microcompact.maxAgeMs);
+			const microResult = microcompactMessages(event.messages, config.microcompact.clearableTools, config.microcompact.maxAgeMs);
+			const messages = microResult?.messages ?? event.messages;
+			const thinkResult = stripThinkingBlocks(messages);
+			return thinkResult ?? microResult;
+		});
+	} else {
+		pi.on("context", (event, _ctx) => {
+			return stripThinkingBlocks(event.messages);
+		});
+	}
+
+	if (config.contextFold.enabled) {
+		pi.on("turn_end", (_event, ctx) => {
+			const entries = ctx.sessionManager.getBranch();
+
+			const foldedIds = new Set<string>();
+			for (const entry of entries) {
+				if (entry.type === "fold") {
+					foldedIds.add(entry.targetId);
+				}
+			}
+
+			const foldable = findFoldableEntries(
+				entries,
+				foldedIds,
+				config.contextFold.maxAgeMs,
+				config.contextFold.keepRecentCount,
+			);
+
+			if (foldable.length === 0) return;
+
+			for (const entry of foldable) {
+				const msg = entry.message as import("@dyyz1993/pi-agent-core").AssistantMessage;
+				const summary = extractFoldSummary(msg, config.contextFold.maxSummaryLength);
+				const tokens = estimateMessageTokens(msg);
+				pi.foldEntry(entry.id, summary, tokens);
+			}
+
+			ctx.ui.notify(`Context fold: folded ${foldable.length} old message(s)`, "info");
 		});
 	}
 
