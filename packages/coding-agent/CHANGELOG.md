@@ -17,6 +17,22 @@
 
 ## [Unreleased]
 
+## [0.70.2]
+
+### Added
+- Coordinator extension for cross-session communication and task delegation
+- session_delegate, session_delegate_send, session_delegate_status, session_delegate_stop, session_delegate_list methods
+- session_delegate_fork to fork sessions without stopping the original
+- isCompacting and contextUsage fields for session state tracking
+- TaskStore for persisting delegated tasks to {sessionDir}/coordinator-tasks.json
+- Inject delegated task summaries into LLM context via "context" event
+- 63 comprehensive tests (handler, lifecycle, E2E)
+
+### Fixed
+- Pre-existing lint warnings in test files (unused parameters)
+- Pre-existing type error: tsconfig.base.json ES2022 → ES2024 for /v regex flag
+- Extension imports now use package imports (@dyyz1993/pi-coding-agent)
+
 ### Added
 
 - Added `ctx.projectRoot` to `ExtensionContext` — canonical git root (worktree-aware), falls back to `cwd`
