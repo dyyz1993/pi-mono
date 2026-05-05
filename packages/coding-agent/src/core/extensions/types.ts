@@ -299,6 +299,18 @@ export interface ExtensionContext {
 	hasUI: boolean;
 	/** Current working directory */
 	cwd: string;
+	/** The name of the current extension. */
+	extensionName: string;
+	/** Canonical git root (worktree-aware). Falls back to cwd if not a git repo. */
+	projectRoot: string;
+	/** Per-session data directory. Automatically created on first access. Use this to store session-scoped data. */
+	sessionDataDir: string;
+	/** Per-project data directory (shared across sessions). Automatically created on first access. Use this to store project-scoped data. */
+	projectDataDir: string;
+	/** Per-cwd data directory (isolated by current working directory). Same as projectDataDir for normal repos; different in worktrees where each working directory gets its own storage. Automatically created on first access. */
+	cwdDataDir: string;
+	/** Global data directory shared across all projects. Use this for cross-project data like knowledge bases, shared caches, etc. Automatically created on first access. */
+	globalDataDir: string;
 	/** Session manager (read-only) */
 	sessionManager: ReadonlySessionManager;
 	/** Model registry for API key resolution */
@@ -1246,6 +1258,11 @@ export interface ExtensionAPI {
 	// Session Metadata
 	// =========================================================================
 
+	/** Set the extension's display name. Used for storage path namespacing and error reporting. Must be called before any event handlers are registered. */
+	setName(name: string): void;
+	/** Get the extension's name. If not explicitly set via setName(), returns the auto-derived name. */
+	extensionName: string;
+
 	/** Set the session display name (shown in session selector). */
 	setSessionName(name: string): void;
 
@@ -1669,6 +1686,7 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 
 /** Loaded extension with all registered items. */
 export interface Extension {
+	name: string;
 	path: string;
 	resolvedPath: string;
 	sourceInfo: SourceInfo;

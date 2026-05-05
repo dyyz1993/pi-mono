@@ -265,6 +265,15 @@ function createExtensionAPI(
 	eventBus: EventBus,
 ): ExtensionAPI {
 	const api = {
+		setName(name: string): void {
+			runtime.assertActive();
+			extension.name = name;
+		},
+		get extensionName(): string {
+			runtime.assertActive();
+			return extension.name;
+		},
+
 		// Registration methods - write to extension
 		on(event: string, handler: HandlerFn): () => void {
 			runtime.assertActive();
@@ -458,6 +467,26 @@ async function loadExtensionModule(extensionPath: string) {
 	return typeof factory !== "function" ? undefined : factory;
 }
 
+function deriveExtensionName(resolvedPath: string): string {
+	const basename = path.basename(resolvedPath);
+
+	if (basename === "index.ts" || basename === "index.js") {
+		const dir = path.dirname(resolvedPath);
+		const pkgPath = path.join(dir, "package.json");
+		if (fs.existsSync(pkgPath)) {
+			try {
+				const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+				if (pkg.name) {
+					return pkg.name.includes("/") ? pkg.name.split("/").pop()! : pkg.name;
+				}
+			} catch {}
+		}
+		return path.basename(dir);
+	}
+
+	return basename.replace(/\.(ts|js|mjs)$/, "");
+}
+
 /**
  * Create an Extension object with empty collections.
  */
@@ -467,8 +496,10 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 			? extensionPath.slice(1, -1).split(":")[0] || "temporary"
 			: "local";
 	const baseDir = extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath);
+	const name = deriveExtensionName(resolvedPath);
 
 	return {
+		name,
 		path: extensionPath,
 		resolvedPath,
 		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
@@ -544,8 +575,22 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 		}
 	}
 
+	const names = new Map<string, string>();
+	for (const ext of extensions) {
+		const existing = names.get(ext.name);
+		if (existing) {
+			errors.push({
+				path: ext.path,
+				error: `Duplicate extension name "${ext.name}". Extension at "${existing}" already uses this name. Use pi.setName() to set a unique name.`,
+			});
+		} else {
+			names.set(ext.name, ext.path);
+		}
+	}
+	const validExtensions = extensions.filter((ext) => !errors.some((e) => e.path === ext.path));
+
 	return {
-		extensions,
+		extensions: validExtensions,
 		errors,
 		runtime,
 	};

@@ -69,6 +69,7 @@ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../cor
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
+import { getCwdDataDir, getGlobalDataDir, getProjectDataDir, getSessionDataDir, resolveProjectRoot } from "../../core/storage.js";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
@@ -1573,10 +1574,16 @@ export class InteractiveMode {
 		if (shortcuts.size === 0) return;
 
 		// Create a context for shortcut handlers
-		const createContext = (): ExtensionContext => ({
+		const createContext = (extName = "unknown"): ExtensionContext => ({
 			ui: this.createExtensionUIContext(),
 			hasUI: true,
 			cwd: this.sessionManager.getCwd(),
+			extensionName: extName,
+			projectRoot: resolveProjectRoot(this.sessionManager.getCwd()),
+			sessionDataDir: getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
+			projectDataDir: getProjectDataDir(resolveProjectRoot(this.sessionManager.getCwd()), extName),
+			cwdDataDir: getCwdDataDir(this.sessionManager.getCwd(), extName),
+			globalDataDir: getGlobalDataDir(extName),
 			sessionManager: this.sessionManager,
 			modelRegistry: this.session.modelRegistry,
 			model: this.session.model,
@@ -1609,8 +1616,9 @@ export class InteractiveMode {
 			for (const [shortcutStr, shortcut] of shortcuts) {
 				// Cast to KeyId - extension shortcuts use the same format
 				if (matchesKey(data, shortcutStr as KeyId)) {
+					const extName = extensionRunner.getExtensionNameByPath(shortcut.extensionPath) ?? "unknown";
 					// Run handler async, don't block input
-					Promise.resolve(shortcut.handler(createContext())).catch((err) => {
+					Promise.resolve(shortcut.handler(createContext(extName))).catch((err) => {
 						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
 					});
 					return true;

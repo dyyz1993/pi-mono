@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import { findCanonicalGitRoot, getAgentDir } from "../config.js";
 
@@ -35,6 +35,73 @@ export function encodeProjectPath(projectPath: string): string {
 	const hash = fnv1aHash(projectPath);
 	const name = sanitizeBasename(projectPath);
 	return `${hash}--${name}`;
+}
+
+/**
+ * Resolve the project root directory.
+ * If cwd is inside a git worktree, returns the main repo root.
+ * If not a git repo, returns cwd.
+ */
+export function resolveProjectRoot(cwd: string): string {
+	return findCanonicalGitRoot(cwd) ?? cwd;
+}
+
+/**
+ * Get the per-session data directory for extension storage.
+ * Path: <sessionDir>/data/<sessionId>/
+ * The directory is created automatically.
+ */
+export function getSessionDataDir(sessionDir: string, sessionId: string, extName: string): string {
+	const dir = join(sessionDir, "data", sessionId, extName);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	return dir;
+}
+
+/**
+ * Get the per-project data directory for extension storage.
+ * Path: ~/.pi/agent/project-data/<encoded-project-root>/
+ * The directory is created automatically.
+ */
+export function getProjectDataDir(projectRoot: string, extName: string): string {
+	const encoded = encodeProjectPath(projectRoot);
+	const dir = join(getAgentDir(), "project-data", encoded, extName);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	return dir;
+}
+
+/**
+ * Get the per-cwd data directory for extension storage.
+ * Uses the actual cwd (not canonical git root) as the key.
+ * In a normal repo, this is the same as projectDataDir.
+ * In a worktree, this provides isolation from the main repo and other worktrees.
+ * Path: ~/.pi/agent/cwd-data/<encoded-cwd>/
+ * The directory is created automatically.
+ */
+export function getCwdDataDir(cwd: string, extName: string): string {
+	const encoded = encodeProjectPath(cwd);
+	const dir = join(getAgentDir(), "cwd-data", encoded, extName);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	return dir;
+}
+
+/**
+ * Get the global data directory for extension storage.
+ * This directory is shared across all projects and sessions.
+ * Path: ~/.pi/agent/global-data/
+ * The directory is created automatically.
+ */
+export function getGlobalDataDir(extName: string): string {
+	const dir = join(getAgentDir(), "extensions-data", extName);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	return dir;
 }
 
 export class ExtensionStorage implements StoragePaths {

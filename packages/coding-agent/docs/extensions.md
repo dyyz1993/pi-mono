@@ -1041,6 +1041,74 @@ pi.on("before_agent_start", (event, ctx) => {
 });
 ```
 
+### Project & Storage Paths
+
+Extensions can access standardized storage paths at different scopes through `ExtensionContext`. All paths are automatically created on first access and namespaced per extension to prevent conflicts.
+
+#### `ctx.projectRoot`
+
+```typescript
+projectRoot: string
+```
+
+The canonical git root directory. If `cwd` is inside a git worktree, this resolves to the main repository root. If not a git repository, falls back to `cwd`.
+
+```typescript
+// In a worktree at /Users/alice/projects/myapp-feature/
+ctx.cwd          // "/Users/alice/projects/myapp-feature/"
+ctx.projectRoot  // "/Users/alice/projects/myapp/" (main repo)
+
+// Not a git repo
+ctx.cwd          // "/Users/alice/my-folder/"
+ctx.projectRoot  // "/Users/alice/my-folder/" (same as cwd)
+```
+
+#### `ctx.extensionName`
+
+```typescript
+extensionName: string
+```
+
+The name of the current extension. Auto-derived from the extension's file/directory/package name, or overridden via `pi.setName()`.
+
+```typescript
+// In an extension loaded from my-tool/index.ts
+ctx.extensionName  // "my-tool"
+```
+
+#### Storage Paths
+
+All storage paths include the extension name as the final path segment, providing automatic isolation between extensions:
+
+| Property | Scope | Path Template | Lifecycle |
+|----------|-------|---------------|-----------|
+| `ctx.sessionDataDir` | Session | `~/.pi/agent/sessions/<project>/data/<sessionId>/<ext-name>/` | Per-session, can be cleaned up when session ends |
+| `ctx.cwdDataDir` | Working directory | `~/.pi/agent/cwd-data/<encoded-cwd>/<ext-name>/` | Per-cwd, isolated in worktrees |
+| `ctx.projectDataDir` | Project | `~/.pi/agent/project-data/<encoded-project>/<ext-name>/` | Per-project, shared across worktrees |
+| `ctx.globalDataDir` | Global | `~/.pi/agent/extensions-data/<ext-name>/` | Cross-project, persists forever |
+
+```typescript
+// Example: Store per-session cache
+import { writeFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const cacheFile = join(ctx.sessionDataDir, "cache.json");
+writeFileSync(cacheFile, JSON.stringify(data));
+
+// Example: Share data across all sessions of a project
+const projectConfig = join(ctx.projectDataDir, "config.json");
+
+// Example: Global extension settings shared across all projects
+const globalSettings = join(ctx.globalDataDir, "settings.json");
+```
+
+**Choosing the right scope:**
+
+- **Session**: Temporary data for a single conversation (e.g., conversation cache, working state)
+- **CWD**: Data tied to the current working directory, isolated in worktrees (e.g., build artifacts, local cache)
+- **Project**: Data shared across all worktrees of a project (e.g., project config, shared memory)
+- **Global**: Cross-project data (e.g., knowledge bases, shared settings, global caches)
+
 ## ExtensionCommandContext
 
 Command handlers receive `ExtensionCommandContext`, which extends `ExtensionContext` with session control methods. These are only available in commands because they can deadlock if called from event handlers.
@@ -1412,6 +1480,38 @@ if (name) {
   console.log(`Session: ${name}`);
 }
 ```
+
+### pi.setName(name)
+
+```typescript
+setName(name: string): void
+```
+
+Override the auto-derived extension name. Must be called before any event handlers are registered. Extension names must be unique — duplicate names cause a load-time error.
+
+```typescript
+export default function(pi: ExtensionAPI) {
+    pi.setName("my-custom-extension");
+    // ctx.extensionName will now be "my-custom-extension"
+    // Storage paths will use "my-custom-extension" as the namespace
+}
+```
+
+### pi.extensionName
+
+```typescript
+extensionName: string
+```
+
+Read the current extension name. Returns the auto-derived name unless overridden by `setName()`.
+
+**Name derivation rules:**
+
+| Extension Form | Derived From | Example |
+|----------------|-------------|---------|
+| Package (with package.json) | `name` field (strips `@scope/`) | `@scope/my-ext` → `my-ext` |
+| Directory (index.ts/js) | Directory name | `my-ext/index.ts` → `my-ext` |
+| Single file | Filename without extension | `hello.ts` → `hello` |
 
 ### pi.setLabel(entryId, label)
 

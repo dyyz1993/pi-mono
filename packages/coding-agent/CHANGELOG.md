@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `ctx.projectRoot` to `ExtensionContext` — canonical git root (worktree-aware), falls back to `cwd`
+- Added `ctx.sessionDataDir` to `ExtensionContext` — per-session storage path, automatically namespaced by extension name
+- Added `ctx.cwdDataDir` to `ExtensionContext` — per-cwd storage path (worktree-isolated), automatically namespaced by extension name
+- Added `ctx.projectDataDir` to `ExtensionContext` — per-project storage path, automatically namespaced by extension name
+- Added `ctx.globalDataDir` to `ExtensionContext` — cross-project global storage path, automatically namespaced by extension name
+- Added `ctx.extensionName` to `ExtensionContext` — the current extension's name
+- Added `pi.setName()` to `ExtensionAPI` — override auto-derived extension name
+- Added `pi.extensionName` to `ExtensionAPI` — read current extension name
+- Added extension name mechanism: auto-derived from file/directory/package name, with duplicate name validation at load time
+
 ## [0.69.26] - 2026-05-04
 
 ## [0.69.25] - 2026-05-04
