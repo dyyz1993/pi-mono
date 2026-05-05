@@ -96,7 +96,7 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
-	it("reports unknown current context usage immediately after compaction", () => {
+	it("falls back to estimateContextTokens after compaction when no post-compaction assistant exists", () => {
 		const { session, sessionManager } = createSession();
 
 		try {
@@ -111,8 +111,10 @@ describe("AgentSession.getSessionStats", () => {
 			const stats = session.getSessionStats();
 			expect(stats.tokens.input).toBe(195_000);
 			expect(stats.contextUsage).toBeDefined();
-			expect(stats.contextUsage?.tokens).toBeNull();
-			expect(stats.contextUsage?.percent).toBeNull();
+			expect(stats.contextUsage?.tokens).not.toBeNull();
+			expect(typeof stats.contextUsage?.tokens).toBe("number");
+			expect(stats.contextUsage?.percent).not.toBeNull();
+			expect(typeof stats.contextUsage?.percent).toBe("number");
 		} finally {
 			session.dispose();
 		}
