@@ -2094,6 +2094,7 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		await this._initMcpServers();
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -2147,6 +2148,34 @@ export class AgentSession {
 		const base = basename(extensionPath);
 		const name = base.replace(/\.(ts|js)$/, "");
 		return `extension:${name}`;
+	}
+
+	private async _initMcpServers(): Promise<void> {
+		const settings = this.settingsManager.getProjectSettings();
+		const servers = settings?.mcp?.servers;
+		if (!servers || Object.keys(servers).length === 0) return;
+
+		const { McpManager } = await import("./mcp/mcp-manager.js");
+		const { createMcpToolDefinition } = await import("./mcp/tool-converter.js");
+
+		const manager = new McpManager();
+		try {
+			await manager.connectAll(servers);
+			const tools = manager.getAllTools();
+			for (const tool of tools) {
+				const definition = createMcpToolDefinition(tool, manager);
+				this._customTools.push(definition);
+			}
+			if (tools.length > 0) {
+				this._refreshToolRegistry();
+			}
+		} catch (e) {
+			console.error("[mcp] Failed to initialize:", e);
+		}
+
+		this.sessionSignal.addEventListener("abort", () => {
+			manager.disconnectAll().catch(() => {});
+		});
 	}
 
 	private _applyExtensionBindings(runner: ExtensionRunner): void {

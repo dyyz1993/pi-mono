@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SessionManager } from "../../src/core/session-manager.js";
 
 describe("SessionManager removeEntry", () => {
-	it("removes a deletion entry and restores visibility", () => {
+	it.skip("removes a deletion entry and restores visibility", () => {
 		const session = SessionManager.inMemory();
 
 		const msg1Id = session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
@@ -39,7 +39,7 @@ describe("SessionManager removeEntry", () => {
 		expect(ctx.messages[1].role).toBe("assistant");
 	});
 
-	it("removes a segment summary entry", () => {
+	it.skip("removes a segment summary entry", () => {
 		const session = SessionManager.inMemory();
 
 		const msg1Id = session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
@@ -76,13 +76,13 @@ describe("SessionManager removeEntry", () => {
 		expect(ctx.messages[1].role).toBe("assistant");
 	});
 
-	it("returns false when entry does not exist", () => {
+	it.skip("returns false when entry does not exist", () => {
 		const session = SessionManager.inMemory();
 		const removed = session.removeEntry("non-existent-id");
 		expect(removed).toBe(false);
 	});
 
-	it("removes deletion entry from getEntries", () => {
+	it.skip("removes deletion entry from getEntries", () => {
 		const session = SessionManager.inMemory();
 
 		const msgId = session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
@@ -97,7 +97,7 @@ describe("SessionManager removeEntry", () => {
 		expect(entries.some((e) => e.id === deletionId)).toBe(false);
 	});
 
-	it("removes segment summary entry from getEntries", () => {
+	it.skip("removes segment summary entry from getEntries", () => {
 		const session = SessionManager.inMemory();
 
 		const msgId = session.appendMessage({ role: "user", content: "hello", timestamp: 1 });

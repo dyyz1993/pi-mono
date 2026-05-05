@@ -220,6 +220,10 @@ export {
 export {
 	type CompactionSettings,
 	type ImageSettings,
+	type McpServerConfig,
+	type McpSettings,
+	type McpSseServerConfig,
+	type McpStdioServerConfig,
 	type PackageSource,
 	type RetrySettings,
 	type Settings,

@@ -62,6 +62,27 @@ export type PackageSource =
 			themes?: string[];
 	  };
 
+export interface McpStdioServerConfig {
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+	disabled?: boolean;
+}
+
+export interface McpSseServerConfig {
+	type: "sse";
+	url: string;
+	headers?: Record<string, string>;
+	disabled?: boolean;
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpSseServerConfig;
+
+export interface McpSettings {
+	servers?: Record<string, McpServerConfig>;
+}
+
 export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
@@ -98,6 +119,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
+	mcp?: McpSettings;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */

@@ -157,7 +157,10 @@ describe("readClipboardImage", () => {
 			mocks.clipboard.hasImage.mockReturnValue(false);
 
 			const { readClipboardImage } = await import("../src/utils/clipboard-image.js");
-			const result = await readClipboardImage({ platform: "linux", env: { WAYLAND_DISPLAY: "1", WSL_DISTRO_NAME: "Ubuntu" } });
+			const result = await readClipboardImage({
+				platform: "linux",
+				env: { WAYLAND_DISPLAY: "1", WSL_DISTRO_NAME: "Ubuntu" },
+			});
 
 			const wslCall = mocks.spawnSync.mock.calls.find((c) => c[0] === "wslpath");
 			expect(wslCall).toBeDefined();
