@@ -1,5 +1,4 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { DiscoveredTool, McpConnection, McpServerConfig, McpStdioServerConfig } from "./types.js";
 
@@ -27,7 +26,7 @@ export class McpManager {
 		this.connections.set(name, entry);
 
 		try {
-			const transport = this.createTransport(config);
+			const transport = await this.createTransport(config);
 			const client = new Client({ name: "pi-mcp", version: "1.0.0" }, { capabilities: {} });
 
 			await client.connect(transport);
@@ -55,7 +54,7 @@ export class McpManager {
 		}
 	}
 
-	private createTransport(config: McpServerConfig) {
+	private async createTransport(config: McpServerConfig) {
 		if (this.isStdioConfig(config)) {
 			return new StdioClientTransport({
 				command: config.command,
@@ -64,7 +63,29 @@ export class McpManager {
 				stderr: "pipe",
 			});
 		}
-		return new SSEClientTransport(new URL(config.url));
+		if (config.type === "sse") {
+			const { SSEClientTransport } = await import("@modelcontextprotocol/sdk/client/sse.js");
+			return new SSEClientTransport(
+				new URL(config.url),
+				config.headers
+					? {
+							requestInit: { headers: config.headers },
+						}
+					: undefined,
+			);
+		}
+		if (config.type === "streamable-http") {
+			const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+			return new StreamableHTTPClientTransport(
+				new URL(config.url),
+				config.headers
+					? {
+							requestInit: { headers: config.headers },
+						}
+					: undefined,
+			);
+		}
+		throw new Error(`Unknown MCP transport type: ${(config as { type: string }).type}`);
 	}
 
 	private isStdioConfig(config: McpServerConfig): config is McpStdioServerConfig {

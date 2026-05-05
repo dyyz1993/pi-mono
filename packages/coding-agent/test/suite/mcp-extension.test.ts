@@ -1,144 +1,114 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpManager } from "../../src/core/mcp/mcp-manager.js";
 import type { McpServerConfig } from "../../src/core/settings-manager.js";
 
-function loadMcpConfig(): Record<string, McpServerConfig> {
-	return {};
-}
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
+	return {
+		Client: vi
+			.fn()
+			.mockImplementation(() => ({
+				connect: vi.fn().mockResolvedValue(undefined),
+				listTools: vi.fn().mockResolvedValue({ tools: [] }),
+				callTool: vi.fn(),
+				close: vi.fn().mockResolvedValue(undefined),
+			})),
+	};
+});
 
-import { createHarness, type Harness } from "./harness.js";
+vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
+	StdioClientTransport: vi.fn().mockImplementation(() => ({})),
+}));
 
-describe.skip("pi-mcp extension", () => {
-	const harnesses: Harness[] = [];
+vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => ({
+	SSEClientTransport: vi.fn().mockImplementation(() => ({})),
+}));
 
-	afterEach(() => {
-		while (harnesses.length > 0) {
-			harnesses.pop()?.cleanup();
-		}
+describe("MCP settings-driven configuration", () => {
+	let manager: McpManager;
+
+	beforeEach(() => {
+		manager = new McpManager();
+		vi.clearAllMocks();
 	});
 
-	describe("config loading", () => {
-		let tempDir: string;
+	afterEach(async () => {
+		await manager.disconnectAll();
+	});
 
-		beforeEach(() => {
-			tempDir = join(tmpdir(), `pi-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-			mkdirSync(tempDir, { recursive: true });
-		});
+	it("does nothing when settings has no mcp config", async () => {
+		const settings = {};
+		const servers = (settings as any).mcp?.servers ?? {};
 
-		afterEach(() => {
-			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true });
-			}
-		});
+		await manager.connectAll(servers);
 
-		it("returns empty when no config files exist", () => {
-			const servers = loadMcpConfig(tempDir, tempDir);
-			expect(servers).toEqual({});
-		});
+		const tools = manager.getAllTools();
+		expect(tools).toHaveLength(0);
+	});
 
-		it("reads project-level mcp.json", () => {
-			const piDir = join(tempDir, ".pi");
-			mkdirSync(piDir, { recursive: true });
-			writeFileSync(
-				join(piDir, "mcp.json"),
-				JSON.stringify({
-					mcpServers: {
-						test: { command: "echo", args: ["hello"] },
-					},
-				}),
-			);
+	it("reads mcp.servers from settings", async () => {
+		const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+		const mockClient = vi.mocked(Client);
 
-			const servers = loadMcpConfig(tempDir, tempDir);
-			expect(servers).toHaveProperty("test");
-			expect((servers.test as any).command).toBe("echo");
-		});
+		mockClient.mockImplementation(
+			() =>
+				({
+					connect: vi.fn().mockResolvedValue(undefined),
+					listTools: vi.fn().mockResolvedValue({ tools: [{ name: "tool1", description: "t", inputSchema: {} }] }),
+					callTool: vi.fn(),
+					close: vi.fn().mockResolvedValue(undefined),
+				}) as any,
+		);
 
-		it("reads global mcp.json", () => {
-			const globalDir = join(tempDir, "global");
-			mkdirSync(globalDir, { recursive: true });
-			writeFileSync(
-				join(globalDir, "mcp.json"),
-				JSON.stringify({
-					mcpServers: {
-						globalServer: { command: "node", args: ["server.js"] },
-					},
-				}),
-			);
+		const servers: Record<string, McpServerConfig> = {
+			myServer: { command: "npx", args: ["-y", "my-mcp"] },
+		};
 
-			const servers = loadMcpConfig(tempDir, globalDir);
-			expect(servers).toHaveProperty("globalServer");
-		});
+		await manager.connectAll(servers);
 
-		it("project config overrides global config", () => {
-			const globalDir = join(tempDir, "global");
-			mkdirSync(globalDir, { recursive: true });
-			writeFileSync(
-				join(globalDir, "mcp.json"),
-				JSON.stringify({
-					mcpServers: {
-						s1: { command: "global-cmd" },
-						s2: { command: "global-cmd-2" },
-					},
-				}),
-			);
+		const tools = manager.getAllTools();
+		expect(tools).toHaveLength(1);
+		expect(tools[0].fullName).toBe("mcp__myServer__tool1");
+	});
 
-			const piDir = join(tempDir, ".pi");
-			mkdirSync(piDir, { recursive: true });
-			writeFileSync(
-				join(piDir, "mcp.json"),
-				JSON.stringify({
-					mcpServers: {
-						s1: { command: "project-cmd" },
-					},
-				}),
-			);
+	it("handles mixed stdio and SSE configurations", async () => {
+		const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+		const mockClient = vi.mocked(Client);
 
-			const servers = loadMcpConfig(tempDir, globalDir);
-			expect((servers.s1 as any).command).toBe("project-cmd");
-			expect((servers.s2 as any).command).toBe("global-cmd-2");
-		});
+		mockClient.mockImplementation(
+			() =>
+				({
+					connect: vi.fn().mockResolvedValue(undefined),
+					listTools: vi.fn().mockResolvedValue({ tools: [{ name: "t", description: "", inputSchema: {} }] }),
+					callTool: vi.fn(),
+					close: vi.fn().mockResolvedValue(undefined),
+				}) as any,
+		);
 
-		it("handles malformed mcp.json gracefully", () => {
-			const piDir = join(tempDir, ".pi");
-			mkdirSync(piDir, { recursive: true });
-			writeFileSync(join(piDir, "mcp.json"), "not json{{{");
+		const servers: Record<string, McpServerConfig> = {
+			local: { command: "node", args: ["local-server.js"] },
+			remote: { type: "sse", url: "http://localhost:3001/sse" },
+		};
 
-			const servers = loadMcpConfig(tempDir, tempDir);
-			expect(servers).toEqual({});
-		});
+		await manager.connectAll(servers);
 
-		it("handles mcp.json without mcpServers field", () => {
-			const piDir = join(tempDir, ".pi");
-			mkdirSync(piDir, { recursive: true });
-			writeFileSync(join(piDir, "mcp.json"), JSON.stringify({ other: true }));
+		expect(mockClient).toHaveBeenCalledTimes(2);
+		const tools = manager.getAllTools();
+		expect(tools).toHaveLength(2);
+	});
 
-			const servers = loadMcpConfig(tempDir, tempDir);
-			expect(servers).toEqual({});
-		});
+	it("skips disabled servers in settings", async () => {
+		const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+		const mockClient = vi.mocked(Client);
+		mockClient.mockClear();
 
-		it("reads remote SSE server config", () => {
-			const piDir = join(tempDir, ".pi");
-			mkdirSync(piDir, { recursive: true });
-			writeFileSync(
-				join(piDir, "mcp.json"),
-				JSON.stringify({
-					mcpServers: {
-						remote: {
-							type: "sse",
-							url: "http://localhost:3001/sse",
-							headers: { Authorization: "Bearer token" },
-						},
-					},
-				}),
-			);
+		const servers: Record<string, McpServerConfig> = {
+			active: { command: "echo" },
+			disabled1: { command: "echo", disabled: true },
+			disabled2: { type: "sse", url: "http://host/sse", disabled: true },
+		};
 
-			const servers = loadMcpConfig(tempDir, tempDir);
-			expect((servers.remote as any).type).toBe("sse");
-			expect((servers.remote as any).url).toBe("http://localhost:3001/sse");
-		});
+		await manager.connectAll(servers);
+
+		expect(mockClient).toHaveBeenCalledTimes(1);
 	});
 });

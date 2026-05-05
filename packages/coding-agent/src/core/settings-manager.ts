@@ -62,26 +62,21 @@ export type PackageSource =
 			themes?: string[];
 	  };
 
-export interface McpStdioServerConfig {
-	command: string;
-	args?: string[];
-	env?: Record<string, string>;
-	cwd?: string;
-	disabled?: boolean;
-}
+import type {
+	McpSettings,
+	McpServerConfig,
+	McpStdioServerConfig,
+	McpSseServerConfig,
+	McpStreamableHttpServerConfig,
+} from "./mcp/types.js";
 
-export interface McpSseServerConfig {
-	type: "sse";
-	url: string;
-	headers?: Record<string, string>;
-	disabled?: boolean;
-}
-
-export type McpServerConfig = McpStdioServerConfig | McpSseServerConfig;
-
-export interface McpSettings {
-	servers?: Record<string, McpServerConfig>;
-}
+export type {
+	McpStdioServerConfig,
+	McpSseServerConfig,
+	McpStreamableHttpServerConfig,
+	McpServerConfig,
+	McpSettings,
+} from "./mcp/types.js";
 
 export interface Settings {
 	lastChangelogVersion?: string;

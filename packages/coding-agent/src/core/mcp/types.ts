@@ -13,7 +13,18 @@ export interface McpSseServerConfig {
 	disabled?: boolean;
 }
 
-export type McpServerConfig = McpStdioServerConfig | McpSseServerConfig;
+export interface McpStreamableHttpServerConfig {
+	type: "streamable-http";
+	url: string;
+	headers?: Record<string, string>;
+	disabled?: boolean;
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpSseServerConfig | McpStreamableHttpServerConfig;
+
+export interface McpSettings {
+	servers?: Record<string, McpServerConfig>;
+}
 
 export interface DiscoveredTool {
 	serverName: string;

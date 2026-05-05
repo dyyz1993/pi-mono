@@ -224,6 +224,7 @@ export {
 	type McpSettings,
 	type McpSseServerConfig,
 	type McpStdioServerConfig,
+	type McpStreamableHttpServerConfig,
 	type PackageSource,
 	type RetrySettings,
 	type Settings,
