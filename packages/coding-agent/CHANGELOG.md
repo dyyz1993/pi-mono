@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.70.2] - 2026-05-05
+
+### Added
+
+- Added coordinator extension for cross-session communication and task delegation
+- Added `session_delegate`, `session_delegate_send`, `session_delegate_status`, `session_delegate_stop`, `session_delegate_list` methods for coordinating tasks across sessions
+- Added `session_delegate_fork` to fork sessions without stopping the original session
+- Added session state tracking with `isCompacting` and `contextUsage` fields
+- Persist delegated tasks to `{sessionDir}/coordinator-tasks.json`
+- Inject task summaries into LLM context for delegated tasks
+
+### Fixed
+
+- Fixed pre-existing lint and type errors
+
 ## [Unreleased]
 
 ### Added

@@ -14,7 +14,7 @@ interface FileStamp {
 const fileRecords = new Map<string, Map<string, FileStamp>>();
 
 export default function (pi: ExtensionAPI) {
-	let config: FileTimeGuardConfig = { ...DEFAULT_CONFIG };
+	const config: FileTimeGuardConfig = { ...DEFAULT_CONFIG };
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!config.enabled) return;
