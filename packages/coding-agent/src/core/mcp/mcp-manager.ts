@@ -1,28 +1,67 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { McpError, McpConnectionError, McpTimeoutError, McpToolCallError } from "./errors.js";
+import { McpConnectionError, McpError, McpTimeoutError, McpToolCallError } from "./errors.js";
 import { McpLogger } from "./logger.js";
-import type { DiscoveredTool, McpConnection, McpManagerEvents, McpServerConfig, McpStdioServerConfig } from "./types.js";
+import type {
+	DiscoveredTool,
+	McpConnection,
+	McpManagerEvents,
+	McpManagerOptions,
+	McpServerConfig,
+	McpStdioServerConfig,
+} from "./types.js";
 
 interface ManagedConnection extends McpConnection {
 	client?: Client;
 }
 
+interface Semaphore {
+	current: number;
+	max: number;
+	queue: Array<() => void>;
+}
+
 export class McpManager {
 	private connections = new Map<string, ManagedConnection>();
 	private toolMap = new Map<string, { serverName: string; toolName: string }>();
-	private logger = new McpLogger();
-	private events: McpManagerEvents = {};
+	private readonly logger: McpLogger;
+	private readonly events: McpManagerEvents;
+	private readonly connectTimeoutMs: number;
+	private readonly callTimeoutMs: number;
+	private readonly maxReconnectAttempts: number;
+	private readonly callSemaphore: Semaphore | undefined;
 
 	private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	private maxReconnectAttempts = 3;
 	private baseReconnectDelay = 1000;
 	private maxReconnectDelay = 30000;
 
 	private cleanupHandler: (() => void) | undefined;
 
-	constructor(events?: McpManagerEvents) {
-		if (events) this.events = events;
+	constructor(
+		optionsOrEvents?:
+			| McpManagerEvents
+			| (McpManagerOptions & { onConnectionChange?: McpManagerEvents["onConnectionChange"] }),
+	) {
+		const hasOptions =
+			optionsOrEvents &&
+			("logLevel" in optionsOrEvents ||
+				"connectTimeoutMs" in optionsOrEvents ||
+				"callTimeoutMs" in optionsOrEvents ||
+				"maxReconnectAttempts" in optionsOrEvents ||
+				"maxConcurrentCalls" in optionsOrEvents);
+		const opts = hasOptions ? (optionsOrEvents as McpManagerOptions) : undefined;
+		const eventsCallback = (optionsOrEvents as Record<string, unknown>)?.onConnectionChange as
+			| McpManagerEvents["onConnectionChange"]
+			| undefined;
+
+		this.events = eventsCallback ? { onConnectionChange: eventsCallback } : {};
+		this.logger = new McpLogger(opts?.logLevel ?? "info");
+		this.connectTimeoutMs = opts?.connectTimeoutMs ?? 30_000;
+		this.callTimeoutMs = opts?.callTimeoutMs ?? 60_000;
+		this.maxReconnectAttempts = opts?.maxReconnectAttempts ?? 3;
+		if (opts?.maxConcurrentCalls) {
+			this.callSemaphore = { current: 0, max: opts.maxConcurrentCalls, queue: [] };
+		}
 		this.registerCleanup();
 	}
 
@@ -85,7 +124,11 @@ export class McpManager {
 		}
 	}
 
-	private async doConnectWithTimeout(name: string, config: McpServerConfig, timeoutMs = 30000): Promise<void> {
+	private async doConnectWithTimeout(
+		name: string,
+		config: McpServerConfig,
+		timeoutMs = this.connectTimeoutMs,
+	): Promise<void> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		try {
@@ -100,14 +143,14 @@ export class McpManager {
 		}
 	}
 
-	private async doConnectServer(name: string, config: McpServerConfig, _signal?: AbortSignal): Promise<void> {
+	private async doConnectServer(name: string, config: McpServerConfig, signal?: AbortSignal): Promise<void> {
 		const entry = this.connections.get(name);
 		if (!entry) return;
 
 		const transport = await this.createTransport(config);
 		const client = new Client({ name: "pi-mcp", version: "1.0.0" }, { capabilities: {} });
 
-		await client.connect(transport);
+		await client.connect(transport, { signal });
 		const { tools } = await client.listTools();
 
 		entry.client = client;
@@ -325,25 +368,63 @@ export class McpManager {
 		return this.connections.get(serverName)?.tools ?? [];
 	}
 
-	async callTool(fullName: string, args: Record<string, unknown>, timeoutMs = 60000): Promise<unknown> {
-		const mapping = this.toolMap.get(fullName);
-		if (!mapping) throw new McpToolCallError("", fullName, `Unknown MCP tool: ${fullName}`);
-
-		const connection = this.connections.get(mapping.serverName);
-		if (!connection?.client) throw new McpToolCallError(mapping.serverName, mapping.toolName, `MCP server "${mapping.serverName}" not connected`);
-
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), timeoutMs);
+	async callTool(fullName: string, args: Record<string, unknown>, timeoutMs = this.callTimeoutMs): Promise<unknown> {
+		const slotPromise = this.acquireCallSlot();
+		if (slotPromise) await slotPromise;
 		try {
-			return await connection.client.callTool({ name: mapping.toolName, arguments: args }, undefined, { signal: controller.signal });
-		} catch (e) {
-			if (controller.signal.aborted) {
-				throw new McpTimeoutError(`callTool(${fullName})`, mapping.serverName, timeoutMs);
+			const mapping = this.toolMap.get(fullName);
+			if (!mapping) throw new McpToolCallError("", fullName, `Unknown MCP tool: ${fullName}`);
+
+			const connection = this.connections.get(mapping.serverName);
+			if (!connection?.client)
+				throw new McpToolCallError(
+					mapping.serverName,
+					mapping.toolName,
+					`MCP server "${mapping.serverName}" not connected`,
+				);
+
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), timeoutMs);
+			try {
+				return await connection.client.callTool({ name: mapping.toolName, arguments: args }, undefined, {
+					signal: controller.signal,
+				});
+			} catch (e) {
+				if (controller.signal.aborted) {
+					throw new McpTimeoutError(`callTool(${fullName})`, mapping.serverName, timeoutMs);
+				}
+				throw new McpToolCallError(
+					mapping.serverName,
+					mapping.toolName,
+					e instanceof Error ? e.message : String(e),
+				);
+			} finally {
+				clearTimeout(timer);
 			}
-			throw new McpToolCallError(mapping.serverName, mapping.toolName, e instanceof Error ? e.message : String(e));
 		} finally {
-			clearTimeout(timer);
+			this.releaseCallSlot();
 		}
+	}
+
+	private acquireCallSlot(): Promise<void> | undefined {
+		if (!this.callSemaphore) return undefined;
+		if (this.callSemaphore.current < this.callSemaphore.max) {
+			this.callSemaphore.current++;
+			return undefined;
+		}
+		return new Promise<void>((resolve) => {
+			this.callSemaphore!.queue.push(() => {
+				this.callSemaphore!.current++;
+				resolve();
+			});
+		});
+	}
+
+	private releaseCallSlot(): void {
+		if (!this.callSemaphore) return;
+		this.callSemaphore.current--;
+		const next = this.callSemaphore.queue.shift();
+		if (next) next();
 	}
 
 	getAllTools(): DiscoveredTool[] {
@@ -373,7 +454,11 @@ export class McpManager {
 			return new StdioClientTransport({
 				command: config.command,
 				args: config.args,
-				env: config.env ? ({ ...process.env, ...config.env } as Record<string, string>) : undefined,
+				env: config.env
+					? (Object.fromEntries(
+							Object.entries({ ...process.env, ...config.env }).filter(([, v]) => v !== undefined),
+						) as Record<string, string>)
+					: undefined,
 				stderr: "pipe",
 			});
 		}

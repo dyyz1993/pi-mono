@@ -22,8 +22,17 @@ export interface McpStreamableHttpServerConfig {
 
 export type McpServerConfig = McpStdioServerConfig | McpSseServerConfig | McpStreamableHttpServerConfig;
 
+export interface McpManagerOptions {
+	logLevel?: "debug" | "info" | "warn" | "error";
+	connectTimeoutMs?: number;
+	callTimeoutMs?: number;
+	maxReconnectAttempts?: number;
+	maxConcurrentCalls?: number;
+}
+
 export interface McpSettings {
 	servers?: Record<string, McpServerConfig>;
+	options?: Omit<McpManagerOptions, "maxConcurrentCalls">;
 }
 
 export interface DiscoveredTool {

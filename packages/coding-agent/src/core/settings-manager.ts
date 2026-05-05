@@ -63,19 +63,21 @@ export type PackageSource =
 	  };
 
 import type {
-	McpSettings,
+	McpManagerOptions,
 	McpServerConfig,
-	McpStdioServerConfig,
+	McpSettings,
 	McpSseServerConfig,
+	McpStdioServerConfig,
 	McpStreamableHttpServerConfig,
 } from "./mcp/types.js";
 
 export type {
-	McpStdioServerConfig,
-	McpSseServerConfig,
-	McpStreamableHttpServerConfig,
+	McpManagerOptions,
 	McpServerConfig,
 	McpSettings,
+	McpSseServerConfig,
+	McpStdioServerConfig,
+	McpStreamableHttpServerConfig,
 } from "./mcp/types.js";
 
 export interface Settings {

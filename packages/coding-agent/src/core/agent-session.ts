@@ -2151,7 +2151,12 @@ export class AgentSession {
 	}
 
 	private _mcpManager: import("./mcp/mcp-manager.js").McpManager | undefined;
-	private _createMcpToolDef: ((tool: import("./mcp/types.js").DiscoveredTool, manager: import("./mcp/mcp-manager.js").McpManager) => import("./extensions/types.js").ToolDefinition) | undefined;
+	private _createMcpToolDef:
+		| ((
+				tool: import("./mcp/types.js").DiscoveredTool,
+				manager: import("./mcp/mcp-manager.js").McpManager,
+		  ) => import("./extensions/types.js").ToolDefinition)
+		| undefined;
 
 	private async _initMcpServers(): Promise<void> {
 		const settings = this.settingsManager.getProjectSettings();
@@ -2163,7 +2168,9 @@ export class AgentSession {
 
 		this._createMcpToolDef = createMcpToolDefinition;
 
+		const mcpOptions = settings?.mcp?.options;
 		const manager = new McpManager({
+			...mcpOptions,
 			onConnectionChange: () => {
 				this._syncMcpTools();
 			},

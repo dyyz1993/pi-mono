@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { McpManager } from "../../src/core/mcp/mcp-manager.js";
 import { McpConnectionError, McpTimeoutError, McpToolCallError } from "../../src/core/mcp/errors.js";
+import { McpManager } from "../../src/core/mcp/mcp-manager.js";
 
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
 	return {
@@ -273,9 +273,9 @@ describe("McpManager", () => {
 		});
 
 		it("throws on unknown transport type", async () => {
-			await expect(
-				manager.connectServer("bad", { type: "unknown" } as any),
-			).rejects.toThrow("Unknown MCP transport type");
+			await expect(manager.connectServer("bad", { type: "unknown" } as any)).rejects.toThrow(
+				"Unknown MCP transport type",
+			);
 
 			const conn = manager.getConnection("bad")!;
 			expect(conn.status).toBe("error");
@@ -869,6 +869,237 @@ describe("McpManager", () => {
 			expect(tools[0].fullName).toBe("mcp__my-server__search");
 			expect(tools[0].originalName).toBe("search");
 			expect(tools[0].serverName).toBe("my-server");
+		});
+	});
+
+	describe("constructor options (P2-4)", () => {
+		it("accepts logLevel option and passes to logger", async () => {
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const m = new McpManager({ logLevel: "debug" });
+			const Client = await getClientMock();
+			Client.mockImplementation(() => mockClient() as any);
+
+			await m.connectServer("srv", { command: "echo" });
+			expect(logSpy).toHaveBeenCalled();
+			const calls = logSpy.mock.calls.map((c) => c[0] as string);
+			expect(calls.some((c) => c.includes("[mcp:info]"))).toBe(true);
+
+			logSpy.mockRestore();
+			await m.dispose();
+		});
+
+		it("accepts custom connectTimeoutMs", async () => {
+			vi.useFakeTimers();
+			const m = new McpManager({ connectTimeoutMs: 5000 });
+			const Client = await getClientMock();
+
+			let rejectConnect!: (err: Error) => void;
+			Client.mockImplementation(
+				() =>
+					({
+						connect: vi.fn().mockReturnValue(
+							new Promise<void>((_, reject) => {
+								rejectConnect = reject;
+							}),
+						),
+						listTools: vi.fn(),
+						callTool: vi.fn(),
+						close: vi.fn().mockResolvedValue(undefined),
+					}) as any,
+			);
+
+			const promise = m.connectServer("slow", { command: "hang" });
+			await Promise.resolve();
+			vi.advanceTimersByTime(5000);
+			rejectConnect(new Error("Connection timeout"));
+
+			await expect(promise).rejects.toThrow(McpTimeoutError);
+
+			vi.useRealTimers();
+			await m.dispose();
+		});
+
+		it("accepts custom maxReconnectAttempts", async () => {
+			vi.useFakeTimers();
+			const Client = await getClientMock();
+			let firstClientOnclose: (() => void) | undefined;
+			let callCount = 0;
+
+			Client.mockImplementation(() => {
+				callCount++;
+				if (callCount === 1) {
+					const client: any = {
+						connect: vi.fn().mockResolvedValue(undefined),
+						listTools: vi.fn().mockResolvedValue({ tools: [] }),
+						callTool: vi.fn(),
+						close: vi.fn().mockResolvedValue(undefined),
+						onerror: undefined,
+					};
+					Object.defineProperty(client, "onclose", {
+						set(fn: () => void) {
+							firstClientOnclose = fn;
+						},
+						get() {
+							return firstClientOnclose;
+						},
+					});
+					return client;
+				}
+				return {
+					connect: vi.fn().mockRejectedValue(new Error("reconnect failed")),
+					listTools: vi.fn(),
+					callTool: vi.fn(),
+					close: vi.fn().mockResolvedValue(undefined),
+					onclose: undefined,
+					onerror: undefined,
+				} as any;
+			});
+
+			const m = new McpManager({ maxReconnectAttempts: 1 });
+			await m.connectServer("srv", { command: "echo" });
+
+			firstClientOnclose!();
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(callCount).toBe(2);
+
+			await vi.advanceTimersByTimeAsync(60000);
+			expect(callCount).toBe(2);
+
+			vi.useRealTimers();
+			await m.dispose();
+		});
+
+		it("accepts custom callTimeoutMs", async () => {
+			vi.useFakeTimers();
+			const Client = await getClientMock();
+			let rejectCall!: (err: Error) => void;
+			Client.mockImplementation(
+				() =>
+					mockClient({
+						listTools: vi.fn().mockResolvedValue({
+							tools: [{ name: "slowTool", description: "", inputSchema: { type: "object" } }],
+						}),
+						callTool: vi.fn().mockReturnValue(
+							new Promise((_, reject) => {
+								rejectCall = reject;
+							}),
+						),
+					}) as any,
+			);
+
+			const m = new McpManager({ callTimeoutMs: 5000 });
+			await m.connectServer("srv", { command: "echo" });
+			const promise = m.callTool("mcp__srv__slowTool", {});
+			await Promise.resolve();
+
+			vi.advanceTimersByTime(5000);
+			rejectCall(new Error("timeout"));
+
+			await expect(promise).rejects.toThrow(McpTimeoutError);
+			vi.useRealTimers();
+			await m.dispose();
+		});
+
+		it("accepts events alongside options", async () => {
+			const changes: string[] = [];
+			const m = new McpManager({
+				logLevel: "info",
+				onConnectionChange: (c) => changes.push(`${c.name}:${c.status}`),
+			});
+			const Client = await getClientMock();
+			Client.mockImplementation(() => mockClient() as any);
+
+			await m.connectServer("srv", { command: "echo" });
+			await m.dispose();
+
+			expect(changes).toContain("srv:connecting");
+			expect(changes).toContain("srv:connected");
+		});
+
+		it("backward compatible: accepts old McpManagerEvents shape", async () => {
+			const changes: string[] = [];
+			const m = new McpManager({
+				onConnectionChange: (c) => changes.push(`${c.name}:${c.status}`),
+			});
+			const Client = await getClientMock();
+			Client.mockImplementation(() => mockClient() as any);
+
+			await m.connectServer("srv", { command: "echo" });
+			await m.dispose();
+
+			expect(changes).toContain("srv:connecting");
+			expect(changes).toContain("srv:connected");
+		});
+	});
+
+	describe("concurrent call throttling (P2-6)", () => {
+		it("limits concurrent calls when maxConcurrentCalls is set", async () => {
+			const Client = await getClientMock();
+			const resolveCall: (() => void)[] = [];
+			Client.mockImplementation(
+				() =>
+					mockClient({
+						listTools: vi.fn().mockResolvedValue({
+							tools: [{ name: "tool1", description: "", inputSchema: { type: "object" } }],
+						}),
+						callTool: vi.fn().mockImplementation(() => {
+							return new Promise((resolve) => {
+								resolveCall.push(() => resolve({ content: [{ type: "text", text: "ok" }] }));
+							});
+						}),
+					}) as any,
+			);
+
+			const m = new McpManager({ maxConcurrentCalls: 1 });
+			await m.connectServer("srv", { command: "echo" });
+
+			const p1 = m.callTool("mcp__srv__tool1", {});
+			const p2 = m.callTool("mcp__srv__tool1", {});
+
+			expect(resolveCall.length).toBe(1);
+
+			resolveCall[0]();
+			await p1;
+
+			expect(resolveCall.length).toBe(2);
+			resolveCall[1]();
+			await p2;
+
+			await m.dispose();
+		});
+
+		it("no limit when maxConcurrentCalls is not set", async () => {
+			const Client = await getClientMock();
+			let callCount = 0;
+			const resolveCall: (() => void)[] = [];
+			Client.mockImplementation(
+				() =>
+					mockClient({
+						listTools: vi.fn().mockResolvedValue({
+							tools: [{ name: "tool1", description: "", inputSchema: { type: "object" } }],
+						}),
+						callTool: vi.fn().mockImplementation(() => {
+							callCount++;
+							return new Promise((resolve) => {
+								resolveCall.push(() => resolve({ content: [{ type: "text", text: "ok" }] }));
+							});
+						}),
+					}) as any,
+			);
+
+			const m = new McpManager();
+			await m.connectServer("srv", { command: "echo" });
+
+			const p1 = m.callTool("mcp__srv__tool1", {});
+			const p2 = m.callTool("mcp__srv__tool1", {});
+
+			expect(callCount).toBe(2);
+
+			resolveCall[0]();
+			resolveCall[1]();
+			await Promise.all([p1, p2]);
+
+			await m.dispose();
 		});
 	});
 });
