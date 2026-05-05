@@ -1528,6 +1528,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
 // ============================================================================
 
 export interface CallLLMOptions {
+	/** Optional model override. Accepts tier aliases ("fast", "pro", "max"), provider/model format, or bare model id. Falls back to session model if not specified or resolution fails. */
+	model?: string;
 	systemPrompt?: string;
 	messages: { role: "user" | "assistant"; content: string }[];
 	tools?: string[];
@@ -1551,6 +1553,8 @@ export interface CallLLMStructuredError extends Error {
 export type CallLLMStructuredHandler = (options: CallLLMStructuredOptions) => Promise<unknown>;
 
 export interface ForkAgentOptions {
+	/** Optional model override. Accepts tier aliases ("fast", "pro", "max"), provider/model format, or bare model id. Falls back to session model if not specified or resolution fails. */
+	model?: string;
 	systemPrompt?: string;
 	inheritSystemPrompt?: boolean;
 	tools?: string[];

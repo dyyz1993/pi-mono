@@ -84,6 +84,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.js";
 import { handleLargeInput } from "./large-input.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
+import { resolveModelAlias } from "./model-resolver.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
@@ -2377,8 +2378,40 @@ export class AgentSession {
 		);
 	}
 
+	private async _resolveOptionalModel(modelSpec?: string): Promise<Model<any>> {
+		if (!modelSpec) return this.model!;
+
+		const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
+		const candidate = aliasResolved ?? modelSpec;
+
+		let provider: string | undefined;
+		let modelId: string;
+		if (candidate.includes("/")) {
+			const slashIdx = candidate.indexOf("/");
+			provider = candidate.substring(0, slashIdx);
+			modelId = candidate.substring(slashIdx + 1);
+		} else {
+			modelId = candidate;
+		}
+
+		let resolved: Model<any> | undefined;
+		if (provider) {
+			resolved = this._modelRegistry.find(provider, modelId);
+		}
+		if (!resolved) {
+			const available = this._modelRegistry.getAvailable();
+			resolved = available.find((m) => m.id === modelId);
+		}
+
+		if (resolved && this._modelRegistry.hasConfiguredAuth(resolved)) {
+			return resolved;
+		}
+
+		return this.model!;
+	}
+
 	async callLLM(options: CallLLMOptions): Promise<string> {
-		const model = this.model;
+		const model = await this._resolveOptionalModel(options.model);
 		if (!model) throw new Error("No model selected");
 
 		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
@@ -2558,7 +2591,7 @@ export class AgentSession {
 	}
 
 	async forkAgent(promptText: string, options?: ForkAgentOptions): Promise<ForkAgentResult> {
-		const model = this.model;
+		const model = await this._resolveOptionalModel(options?.model);
 		if (!model) throw new Error("No model selected");
 
 		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
