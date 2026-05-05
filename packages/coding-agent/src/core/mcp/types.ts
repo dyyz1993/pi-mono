@@ -43,3 +43,7 @@ export interface McpConnection {
 	error?: string;
 	tools: DiscoveredTool[];
 }
+
+export interface McpManagerEvents {
+	onConnectionChange?: (connection: McpConnection) => void;
+}

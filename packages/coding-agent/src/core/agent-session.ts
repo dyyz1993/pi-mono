@@ -2150,6 +2150,9 @@ export class AgentSession {
 		return `extension:${name}`;
 	}
 
+	private _mcpManager: import("./mcp/mcp-manager.js").McpManager | undefined;
+	private _createMcpToolDef: ((tool: import("./mcp/types.js").DiscoveredTool, manager: import("./mcp/mcp-manager.js").McpManager) => import("./extensions/types.js").ToolDefinition) | undefined;
+
 	private async _initMcpServers(): Promise<void> {
 		const settings = this.settingsManager.getProjectSettings();
 		const servers = settings?.mcp?.servers;
@@ -2158,24 +2161,39 @@ export class AgentSession {
 		const { McpManager } = await import("./mcp/mcp-manager.js");
 		const { createMcpToolDefinition } = await import("./mcp/tool-converter.js");
 
-		const manager = new McpManager();
+		this._createMcpToolDef = createMcpToolDefinition;
+
+		const manager = new McpManager({
+			onConnectionChange: () => {
+				this._syncMcpTools();
+			},
+		});
+		this._mcpManager = manager;
+
 		try {
 			await manager.connectAll(servers);
-			const tools = manager.getAllTools();
-			for (const tool of tools) {
-				const definition = createMcpToolDefinition(tool, manager);
-				this._customTools.push(definition);
-			}
-			if (tools.length > 0) {
-				this._refreshToolRegistry();
-			}
+			this._syncMcpTools();
 		} catch (e) {
 			console.error("[mcp] Failed to initialize:", e);
 		}
 
 		this.sessionSignal.addEventListener("abort", () => {
-			manager.disconnectAll().catch(() => {});
+			this._mcpManager?.dispose().catch(() => {});
+			this._mcpManager = undefined;
 		});
+	}
+
+	private _syncMcpTools(): void {
+		this._customTools = this._customTools.filter((t) => !t.name.startsWith("mcp__"));
+		if (!this._createMcpToolDef || !this._mcpManager) return;
+
+		const tools = this._mcpManager.getAllTools();
+		for (const tool of tools) {
+			this._customTools.push(this._createMcpToolDef(tool, this._mcpManager));
+		}
+		if (tools.length > 0) {
+			this._refreshToolRegistry();
+		}
 	}
 
 	private _applyExtensionBindings(runner: ExtensionRunner): void {

@@ -75,3 +75,10 @@ export {
 	type WorkingIndicatorOptions,
 } from "./extensions/index.js";
 export { createSyntheticSourceInfo } from "./source-info.js";
+export {
+	McpConnectionError,
+	McpError,
+	McpTimeoutError,
+	McpToolCallError,
+} from "./mcp/errors.js";
+export type { ConnectionStatus, McpConnection, McpManagerEvents } from "./mcp/types.js";

@@ -15,10 +15,9 @@ function makeTool(overrides: Partial<DiscoveredTool> = {}): DiscoveredTool {
 }
 
 describe("createMcpToolDefinition", () => {
-	it("returns correct ToolDefinition fields", () => {
+	it("returns correct name, label, description", () => {
 		const tool = makeTool();
 		const manager = { callTool: vi.fn() } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 
 		expect(def.name).toBe("mcp__test-server__testTool");
@@ -27,22 +26,20 @@ describe("createMcpToolDefinition", () => {
 		expect(def.parameters).toBeDefined();
 	});
 
-	it("uses fallback description when tool has no description", () => {
+	it("uses fallback description when empty", () => {
 		const tool = makeTool({ description: "" });
 		const manager = { callTool: vi.fn() } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 
 		expect(def.description).toBe("MCP tool: testTool (from test-server)");
 	});
 
-	it("execute calls manager.callTool and formats text result", async () => {
+	it("execute calls manager.callTool and returns text result", async () => {
 		const tool = makeTool();
 		const callTool = vi.fn().mockResolvedValue({
 			content: [{ type: "text", text: "hello world" }],
 		});
 		const manager = { callTool } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 		const result = await def.execute("call-1", { key: "val" }, undefined, undefined, undefined as any);
 
@@ -56,7 +53,6 @@ describe("createMcpToolDefinition", () => {
 			content: [{ type: "image", data: "base64data", mimeType: "image/png" }],
 		});
 		const manager = { callTool } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 		const result = await def.execute("call-1", {}, undefined, undefined, undefined as any);
 
@@ -69,14 +65,13 @@ describe("createMcpToolDefinition", () => {
 			content: [{ type: "resource", uri: "file:///test" }],
 		});
 		const manager = { callTool } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 		const result = await def.execute("call-1", {}, undefined, undefined, undefined as any);
 
 		expect(result.content).toEqual([{ type: "text", text: '{"type":"resource","uri":"file:///test"}' }]);
 	});
 
-	it("execute handles multiple content items joined by newline", async () => {
+	it("execute joins multiple content items with newline", async () => {
 		const tool = makeTool();
 		const callTool = vi.fn().mockResolvedValue({
 			content: [
@@ -85,7 +80,6 @@ describe("createMcpToolDefinition", () => {
 			],
 		});
 		const manager = { callTool } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 		const result = await def.execute("call-1", {}, undefined, undefined, undefined as any);
 
@@ -96,18 +90,16 @@ describe("createMcpToolDefinition", () => {
 		const tool = makeTool();
 		const callTool = vi.fn().mockResolvedValue({ some: "data" });
 		const manager = { callTool } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 		const result = await def.execute("call-1", {}, undefined, undefined, undefined as any);
 
 		expect(result.content).toEqual([{ type: "text", text: '{\n  "some": "data"\n}' }]);
 	});
 
-	it("execute handles manager.callTool error", async () => {
+	it("execute handles manager.callTool Error", async () => {
 		const tool = makeTool();
 		const callTool = vi.fn().mockRejectedValue(new Error("server down"));
 		const manager = { callTool } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 		const result = await def.execute("call-1", {}, undefined, undefined, undefined as any);
 
@@ -118,10 +110,21 @@ describe("createMcpToolDefinition", () => {
 		const tool = makeTool();
 		const callTool = vi.fn().mockRejectedValue("string error");
 		const manager = { callTool } as unknown as McpManager;
-
 		const def = createMcpToolDefinition(tool, manager);
 		const result = await def.execute("call-1", {}, undefined, undefined, undefined as any);
 
 		expect(result.content).toEqual([{ type: "text", text: "MCP error: string error" }]);
+	});
+
+	it("execute returns details as undefined", async () => {
+		const tool = makeTool();
+		const callTool = vi.fn().mockResolvedValue({
+			content: [{ type: "text", text: "ok" }],
+		});
+		const manager = { callTool } as unknown as McpManager;
+		const def = createMcpToolDefinition(tool, manager);
+		const result = await def.execute("call-1", {}, undefined, undefined, undefined as any);
+
+		expect(result.details).toBeUndefined();
 	});
 });
