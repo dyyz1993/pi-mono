@@ -15,7 +15,7 @@
 
 - Fixed pre-existing lint and type errors
 
-## [Unreleased]
+## [0.70.3] - 2026-05-05
 
 ### Added
 - MCP (Model Context Protocol) module embedded into core (`src/core/mcp/`)
