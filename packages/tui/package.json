@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-tui",
-	"version": "0.69.26",
+	"version": "0.70.0",
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"type": "module",
 	"main": "dist/index.js",
@@ -26,6 +26,9 @@
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/dyyz1993/pi-mono.git",

@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-ai",
-	"version": "0.69.26",
+	"version": "0.70.0",
 	"description": "Unified LLM API with automatic model discovery and provider configuration",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -96,6 +96,9 @@
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/dyyz1993/pi-mono.git",
