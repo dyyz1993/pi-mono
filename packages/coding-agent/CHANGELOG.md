@@ -17,6 +17,20 @@
 
 ## [Unreleased]
 
+### Added
+- MCP (Model Context Protocol) module embedded into core (`src/core/mcp/`)
+  - Supports Stdio, SSE (with headers), and StreamableHTTP transports
+  - Connection/tool-call timeout control (configurable, default 30s/60s)
+  - Exponential backoff auto-reconnection (configurable, max 3 retries)
+  - Runtime dynamic server management: addServer, removeServer, setServerEnabled, refreshTools
+  - Connection status query API: getConnections, getConnection, getToolsByServer
+  - Structured error types: McpError, McpConnectionError, McpToolCallError, McpTimeoutError
+  - Structured logging with level filtering (debug/info/warn/error)
+  - Concurrent tool call throttling (configurable maxConcurrentCalls)
+  - Process cleanup hooks (beforeExit, SIGTERM, SIGINT)
+  - Configurable via settings.json under `mcp.servers` and `mcp.options`
+  - Lazy-loaded SDK imports — zero overhead when no MCP servers configured
+
 ## [0.70.2]
 
 ### Added
