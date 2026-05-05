@@ -166,6 +166,36 @@ describe("McpManager", () => {
 			expect(changes).toContain("srv:connecting");
 			expect(changes).toContain("srv:connected");
 		});
+
+		it("sets error status on client onerror event", async () => {
+			const Client = await getClientMock();
+			let capturedOnerror: ((err: Error) => void) | undefined;
+			Client.mockImplementation(
+				() =>
+					({
+						connect: vi.fn().mockResolvedValue(undefined),
+						listTools: vi.fn().mockResolvedValue({ tools: [] }),
+						callTool: vi.fn(),
+						close: vi.fn().mockResolvedValue(undefined),
+						onclose: undefined,
+						set onerror(fn: (err: Error) => void) {
+							capturedOnerror = fn;
+						},
+						get onerror() {
+							return capturedOnerror;
+						},
+					}) as any,
+			);
+
+			await manager.connectServer("srv", { command: "echo" });
+			expect(manager.getConnection("srv")!.status).toBe("connected");
+
+			capturedOnerror!(new Error("connection lost"));
+
+			const conn = manager.getConnection("srv")!;
+			expect(conn.status).toBe("error");
+			expect(conn.error).toBe("connection lost");
+		});
 	});
 
 	describe("connection timeout", () => {
@@ -240,6 +270,15 @@ describe("McpManager", () => {
 
 			const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
 			expect(vi.mocked(StreamableHTTPClientTransport)).toHaveBeenCalledTimes(1);
+		});
+
+		it("throws on unknown transport type", async () => {
+			await expect(
+				manager.connectServer("bad", { type: "unknown" } as any),
+			).rejects.toThrow("Unknown MCP transport type");
+
+			const conn = manager.getConnection("bad")!;
+			expect(conn.status).toBe("error");
 		});
 	});
 
@@ -490,6 +529,57 @@ describe("McpManager", () => {
 			const all = await manager.refreshTools();
 			expect(all).toHaveLength(2);
 		});
+
+		it("refreshTools handles listTools failure for single server", async () => {
+			const Client = await getClientMock();
+			const mockListTools = vi.fn().mockResolvedValue({
+				tools: [{ name: "tool1", description: "d", inputSchema: {} }],
+			});
+			Client.mockImplementation(
+				() =>
+					mockClient({
+						listTools: mockListTools,
+					}) as any,
+			);
+
+			await manager.connectServer("srv", { command: "echo" });
+			expect(manager.getToolsByServer("srv")).toHaveLength(1);
+
+			mockListTools.mockRejectedValue(new Error("listTools failed"));
+
+			const result = await manager.refreshTools("srv");
+			expect(result).toHaveLength(1);
+			expect(manager.getConnection("srv")!.status).toBe("connected");
+		});
+
+		it("refreshTools handles partial failure when refreshing all servers", async () => {
+			const Client = await getClientMock();
+			let callIdx = 0;
+			const mockListToolsA = vi.fn().mockResolvedValue({
+				tools: [{ name: "toolA", description: "A", inputSchema: {} }],
+			});
+			const mockListToolsB = vi.fn().mockResolvedValue({
+				tools: [{ name: "toolB", description: "B", inputSchema: {} }],
+			});
+
+			Client.mockImplementation(() => {
+				callIdx++;
+				if (callIdx === 1) {
+					return mockClient({ listTools: mockListToolsA }) as any;
+				}
+				return mockClient({ listTools: mockListToolsB }) as any;
+			});
+
+			await manager.connectServer("a", { command: "echo" });
+			await manager.connectServer("b", { command: "cat" });
+
+			mockListToolsB.mockRejectedValue(new Error("refresh failed"));
+
+			const all = await manager.refreshTools();
+			expect(all).toHaveLength(1);
+			expect(all[0].originalName).toBe("toolA");
+			expect(manager.getToolsByServer("b")).toHaveLength(1);
+		});
 	});
 
 	describe("reconnection", () => {
@@ -564,6 +654,131 @@ describe("McpManager", () => {
 			await manager.removeServer("srv");
 
 			expect(manager.getConnection("srv")).toBeUndefined();
+		});
+
+		it("retries reconnection up to max attempts then stops", async () => {
+			vi.useFakeTimers();
+			const Client = await getClientMock();
+			let firstClientOnclose: (() => void) | undefined;
+			let callCount = 0;
+
+			Client.mockImplementation(() => {
+				callCount++;
+				if (callCount === 1) {
+					const client: any = {
+						connect: vi.fn().mockResolvedValue(undefined),
+						listTools: vi.fn().mockResolvedValue({ tools: [] }),
+						callTool: vi.fn(),
+						close: vi.fn().mockResolvedValue(undefined),
+						onerror: undefined,
+					};
+					Object.defineProperty(client, "onclose", {
+						set(fn: () => void) {
+							firstClientOnclose = fn;
+						},
+						get() {
+							return firstClientOnclose;
+						},
+					});
+					return client;
+				}
+				return {
+					connect: vi.fn().mockRejectedValue(new Error("reconnect failed")),
+					listTools: vi.fn(),
+					callTool: vi.fn(),
+					close: vi.fn().mockResolvedValue(undefined),
+					onclose: undefined,
+					onerror: undefined,
+				} as any;
+			});
+
+			await manager.connectServer("srv", { command: "echo" });
+			expect(manager.getConnection("srv")!.status).toBe("connected");
+
+			firstClientOnclose!();
+			expect(manager.getConnection("srv")!.status).toBe("error");
+
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(callCount).toBe(2);
+			expect(manager.getConnection("srv")!.status).toBe("error");
+
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(callCount).toBe(3);
+			expect(manager.getConnection("srv")!.status).toBe("error");
+
+			await vi.advanceTimersByTimeAsync(4000);
+			expect(callCount).toBe(4);
+			expect(manager.getConnection("srv")!.status).toBe("error");
+
+			await vi.advanceTimersByTimeAsync(60000);
+			expect(callCount).toBe(4);
+
+			vi.useRealTimers();
+		});
+
+		it("reconnects successfully on retry and discovers tools", async () => {
+			vi.useFakeTimers();
+			const Client = await getClientMock();
+			let firstClientOnclose: (() => void) | undefined;
+			let callCount = 0;
+
+			Client.mockImplementation(() => {
+				callCount++;
+				if (callCount === 1) {
+					const client: any = {
+						connect: vi.fn().mockResolvedValue(undefined),
+						listTools: vi.fn().mockResolvedValue({ tools: [] }),
+						callTool: vi.fn(),
+						close: vi.fn().mockResolvedValue(undefined),
+						onerror: undefined,
+					};
+					Object.defineProperty(client, "onclose", {
+						set(fn: () => void) {
+							firstClientOnclose = fn;
+						},
+						get() {
+							return firstClientOnclose;
+						},
+					});
+					return client;
+				}
+				if (callCount === 2) {
+					return {
+						connect: vi.fn().mockRejectedValue(new Error("reconnect fail")),
+						listTools: vi.fn(),
+						callTool: vi.fn(),
+						close: vi.fn().mockResolvedValue(undefined),
+						onclose: undefined,
+						onerror: undefined,
+					} as any;
+				}
+				return {
+					connect: vi.fn().mockResolvedValue(undefined),
+					listTools: vi.fn().mockResolvedValue({
+						tools: [{ name: "recoveredTool", description: "recovered", inputSchema: {} }],
+					}),
+					callTool: vi.fn(),
+					close: vi.fn().mockResolvedValue(undefined),
+					onclose: undefined,
+					onerror: undefined,
+				} as any;
+			});
+
+			await manager.connectServer("srv", { command: "echo" });
+			expect(manager.getConnection("srv")!.tools).toHaveLength(0);
+
+			firstClientOnclose!();
+
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(manager.getConnection("srv")!.status).toBe("error");
+			expect(callCount).toBe(2);
+
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(manager.getConnection("srv")!.status).toBe("connected");
+			expect(manager.getConnection("srv")!.tools).toHaveLength(1);
+			expect(manager.getConnection("srv")!.tools[0].originalName).toBe("recoveredTool");
+
+			vi.useRealTimers();
 		});
 	});
 
