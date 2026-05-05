@@ -62,7 +62,12 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
-import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
+import {
+	defaultModelPerProvider,
+	findExactModelReferenceMatch,
+	resolveModelAlias,
+	resolveModelScope,
+} from "../../core/model-resolver.js";
 import { DefaultPackageManager } from "../../core/package-manager.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
@@ -3851,6 +3856,20 @@ export class InteractiveMode {
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
+		const tierModels = this.settingsManager.getTierModels();
+		const aliasTarget = resolveModelAlias(searchTerm, tierModels);
+		if (aliasTarget) {
+			const slashIndex = aliasTarget.indexOf("/");
+			if (slashIndex !== -1) {
+				const provider = aliasTarget.substring(0, slashIndex);
+				const modelId = aliasTarget.substring(slashIndex + 1);
+				const model = this.session.modelRegistry.find(provider, modelId);
+				if (model && this.session.modelRegistry.hasConfiguredAuth(model)) {
+					return model;
+				}
+			}
+		}
+
 		const models = await this.getModelCandidates();
 		return findExactModelReferenceMatch(searchTerm, models);
 	}

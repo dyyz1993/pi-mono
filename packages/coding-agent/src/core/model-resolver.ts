@@ -7,7 +7,7 @@ import { type Api, type KnownProvider, type Model, modelsAreEqual } from "@dyyz1
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.js";
-import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
+import { DEFAULT_THINKING_LEVEL, DEFAULT_TIER_ALIASES } from "./defaults.js";
 import type { ModelRegistry } from "./model-registry.js";
 
 /** Default model IDs for each known provider */
@@ -44,15 +44,23 @@ export interface ScopedModel {
 	thinkingLevel?: ThinkingLevel;
 }
 
+export function resolveModelAlias(input: string, tierModels?: Record<string, string>): string | undefined {
+	const merged = { ...DEFAULT_TIER_ALIASES, ...tierModels };
+	const lower = input.toLowerCase();
+	const target = merged[lower];
+	if (target && target.toLowerCase() !== lower) {
+		return target;
+	}
+	return undefined;
+}
+
 /**
  * Helper to check if a model ID looks like an alias (no date suffix)
  * Dates are typically in format: -20241022 or -20250929
  */
 function isAlias(id: string): boolean {
-	// Check if ID ends with -latest
 	if (id.endsWith("-latest")) return true;
 
-	// Check if ID ends with a date pattern (-YYYYMMDD)
 	const datePattern = /-\d{8}$/;
 	return !datePattern.test(id);
 }
@@ -244,11 +252,19 @@ export function parseModelPattern(
  * The algorithm tries to match the full pattern first, then progressively
  * strips colon-suffixes to find a match.
  */
-export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
+export async function resolveModelScope(
+	patterns: string[],
+	modelRegistry: ModelRegistry,
+	tierModels?: Record<string, string>,
+): Promise<ScopedModel[]> {
 	const availableModels = await modelRegistry.getAvailable();
 	const scopedModels: ScopedModel[] = [];
 
-	for (const pattern of patterns) {
+	for (let pattern of patterns) {
+		const aliasTarget = resolveModelAlias(pattern, tierModels);
+		if (aliasTarget) {
+			pattern = aliasTarget;
+		}
 		// Check if pattern contains glob characters
 		if (pattern.includes("*") || pattern.includes("?") || pattern.includes("[")) {
 			// Extract optional thinking level suffix (e.g., "provider/*:high")
@@ -330,11 +346,33 @@ export function resolveCliModel(options: {
 	cliProvider?: string;
 	cliModel?: string;
 	modelRegistry: ModelRegistry;
+	tierModels?: Record<string, string>;
 }): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRegistry } = options;
+	const { cliProvider, cliModel, modelRegistry, tierModels } = options;
 
 	if (!cliModel) {
 		return { model: undefined, warning: undefined, error: undefined };
+	}
+
+	let aliasInput = cliModel;
+	let aliasThinkingSuffix: string | undefined;
+	const lastColon = cliModel.lastIndexOf(":");
+	if (lastColon !== -1) {
+		const suffix = cliModel.substring(lastColon + 1);
+		if (isValidThinkingLevel(suffix)) {
+			aliasInput = cliModel.substring(0, lastColon);
+			aliasThinkingSuffix = suffix;
+		}
+	}
+
+	const aliasTarget = resolveModelAlias(aliasInput, tierModels);
+	if (aliasTarget) {
+		const fullTarget = aliasThinkingSuffix ? `${aliasTarget}:${aliasThinkingSuffix}` : aliasTarget;
+		return resolveCliModel({
+			cliProvider,
+			cliModel: fullTarget,
+			modelRegistry,
+		});
 	}
 
 	// Important: use *all* models here, not just models with pre-configured auth.
@@ -481,6 +519,7 @@ export async function findInitialModel(options: {
 	defaultModelId?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	modelRegistry: ModelRegistry;
+	tierModels?: Record<string, string>;
 }): Promise<InitialModelResult> {
 	const {
 		cliProvider,
@@ -491,6 +530,7 @@ export async function findInitialModel(options: {
 		defaultModelId,
 		defaultThinkingLevel,
 		modelRegistry,
+		tierModels,
 	} = options;
 
 	let model: Model<Api> | undefined;
@@ -502,6 +542,7 @@ export async function findInitialModel(options: {
 			cliProvider,
 			cliModel,
 			modelRegistry,
+			tierModels,
 		});
 		if (resolved.error) {
 			console.error(chalk.red(resolved.error));
@@ -530,6 +571,22 @@ export async function findInitialModel(options: {
 				thinkingLevel = defaultThinkingLevel;
 			}
 			return { model, thinkingLevel, fallbackMessage: undefined };
+		}
+		const aliasTarget = resolveModelAlias(defaultModelId, tierModels);
+		if (aliasTarget) {
+			const slashIndex = aliasTarget.indexOf("/");
+			if (slashIndex !== -1) {
+				const resolved = modelRegistry.find(
+					aliasTarget.substring(0, slashIndex),
+					aliasTarget.substring(slashIndex + 1),
+				);
+				if (resolved) {
+					if (defaultThinkingLevel) {
+						thinkingLevel = defaultThinkingLevel;
+					}
+					return { model: resolved, thinkingLevel, fallbackMessage: undefined };
+				}
+			}
 		}
 	}
 

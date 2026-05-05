@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import { DEFAULT_TIER_ALIASES } from "./defaults.js";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -117,6 +118,7 @@ export interface Settings {
 	markdown?: MarkdownSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	mcp?: McpSettings;
+	tierModels?: Record<string, string>;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -574,6 +576,10 @@ export class SettingsManager {
 
 	getDefaultModel(): string | undefined {
 		return this.settings.defaultModel;
+	}
+
+	getTierModels(): Record<string, string> {
+		return { ...DEFAULT_TIER_ALIASES, ...this.settings.tierModels };
 	}
 
 	setDefaultProvider(provider: string): void {

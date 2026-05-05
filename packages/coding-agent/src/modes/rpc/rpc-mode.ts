@@ -22,6 +22,7 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.js";
+import { resolveModelAlias } from "../../core/model-resolver.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
@@ -461,10 +462,25 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "set_model": {
+				let provider = command.provider;
+				let modelId = command.modelId;
+
+				const tierModels = session.getTierModels();
+				const aliasTarget = resolveModelAlias(modelId, tierModels);
+				if (aliasTarget) {
+					const slashIndex = aliasTarget.indexOf("/");
+					if (slashIndex !== -1) {
+						provider = aliasTarget.substring(0, slashIndex);
+						modelId = aliasTarget.substring(slashIndex + 1);
+					} else {
+						modelId = aliasTarget;
+					}
+				}
+
 				const models = await session.modelRegistry.getAvailable();
-				const model = models.find((m) => m.provider === command.provider && m.id === command.modelId);
+				const model = models.find((m) => m.provider === provider && m.id === modelId);
 				if (!model) {
-					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+					return error(id, "set_model", `Model not found: ${provider}/${modelId}`);
 				}
 				await session.setModel(model);
 				return success(id, "set_model", model);

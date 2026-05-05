@@ -27,7 +27,7 @@ import { exportFromFile } from "./core/export-html/index.js";
 import type { ExtensionFactory } from "./core/extensions/types.js";
 import { KeybindingsManager } from "./core/keybindings.js";
 import type { ModelRegistry } from "./core/model-registry.js";
-import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
+import { resolveCliModel, resolveModelAlias, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.js";
 import {
@@ -328,7 +328,22 @@ function buildSessionOptions(
 		// Check if saved default is in scoped models - use it if so, otherwise first scoped model
 		const savedProvider = settingsManager.getDefaultProvider();
 		const savedModelId = settingsManager.getDefaultModel();
-		const savedModel = savedProvider && savedModelId ? modelRegistry.find(savedProvider, savedModelId) : undefined;
+		let resolvedProvider = savedProvider;
+		let resolvedModelId = savedModelId;
+		if (savedModelId) {
+			const aliasTarget = resolveModelAlias(savedModelId, settingsManager.getTierModels());
+			if (aliasTarget) {
+				const slashIndex = aliasTarget.indexOf("/");
+				if (slashIndex !== -1) {
+					resolvedProvider = aliasTarget.substring(0, slashIndex);
+					resolvedModelId = aliasTarget.substring(slashIndex + 1);
+				} else {
+					resolvedModelId = aliasTarget;
+				}
+			}
+		}
+		const savedModel =
+			resolvedProvider && resolvedModelId ? modelRegistry.find(resolvedProvider, resolvedModelId) : undefined;
 		const savedInScope = savedModel ? scopedModels.find((sm) => modelsAreEqual(sm.model, savedModel)) : undefined;
 
 		if (savedInScope) {

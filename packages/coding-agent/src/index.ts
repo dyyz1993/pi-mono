@@ -135,6 +135,7 @@ export type {
 } from "./core/extensions/index.js";
 export {
 	ChannelManager,
+	ClientChannel,
 	createExtensionRuntime,
 	defineTool,
 	discoverAndLoadExtensions,
