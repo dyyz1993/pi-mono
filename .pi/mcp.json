@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "npx",
+      "args": ["-y", "@dyyz1993/kb-mcp@1.2.0", "--stdio"]
+    },
+    "autoglm-browser-agent": {
+      "command": "/Users/xuyingzhou/.agents/skills/autoglm-browser-agent/dist/mcp_server",
+      "args": [
+        "--start_url", "https://www.bing.com",
+        "--window_width", "1456",
+        "--window_height", "819",
+        "--resize_width", "1456",
+        "--resize_height", "819",
+        "--max_steps", "100",
+        "--log_dir", "/Users/xuyingzhou/.agents/skills/autoglm-browser-agent/mcp_output",
+        "--if_subagent"
+      ]
+    }
+  }
+}
