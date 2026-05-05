@@ -154,4 +154,60 @@ describe("ChannelManager", () => {
 			expect(sent.data.__call).toBe("config_list");
 		});
 	});
+
+	describe("invokeId format and uniqueness", () => {
+		it("invokeId is exactly 12 characters (4 prefix + 8 hex chars)", async () => {
+			const ch = cm.register("fmt");
+			const promise = ch.invoke({ action: "check" }, 5000);
+
+			const sent = output.mock.calls[0][0];
+			expect(sent.data.invokeId).toHaveLength(12);
+
+			cm.handleInbound({
+				type: "channel_data",
+				name: "fmt",
+				data: { invokeId: sent.data.invokeId, ok: true },
+			});
+
+			await promise;
+		});
+
+		it("hex portion after inv_ contains only hex characters", async () => {
+			const ch = cm.register("fmt");
+			const promise = ch.invoke({ action: "check" }, 5000);
+
+			const sent = output.mock.calls[0][0];
+			expect(sent.data.invokeId).toMatch(/^inv_[0-9a-f]{8}$/);
+
+			cm.handleInbound({
+				type: "channel_data",
+				name: "fmt",
+				data: { invokeId: sent.data.invokeId, ok: true },
+			});
+
+			await promise;
+		});
+
+		it("consecutive invoke calls produce unique IDs", async () => {
+			const ch = cm.register("fmt");
+			const ids: string[] = [];
+
+			for (let i = 0; i < 10; i++) {
+				const promise = ch.invoke({ action: "check", i }, 5000);
+				const sent = output.mock.calls[i][0];
+				ids.push(sent.data.invokeId);
+
+				cm.handleInbound({
+					type: "channel_data",
+					name: "fmt",
+					data: { invokeId: sent.data.invokeId, ok: true },
+				});
+
+				await promise;
+			}
+
+			const uniqueIds = new Set(ids);
+			expect(uniqueIds.size).toBe(10);
+		});
+	});
 });

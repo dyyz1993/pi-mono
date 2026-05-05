@@ -629,4 +629,181 @@ describe("UI Interception", () => {
 			expect(runner.hasUI()).toBe(true);
 		});
 	});
+
+	describe("UI event ID uniqueness and format", () => {
+		const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+		afterEach(() => {
+			delete (globalThis as any).__uuidCaptured;
+		});
+
+		it("confirm event has a valid UUID id", async () => {
+			const runner = await createRunnerWithExtension(`
+				export default function(pi) {
+					pi.on("ui", async (event, ctx) => {
+						if (event.method === "confirm") {
+							globalThis.__uuidCaptured = event.id;
+							return { action: "responded", confirmed: true };
+						}
+						return undefined;
+					});
+				}
+			`);
+
+			runner.setUIContext(createMockUI({ confirm: async () => false }));
+			await runner.getUIContext().confirm("Title", "Message");
+
+			const id = (globalThis as any).__uuidCaptured;
+			expect(id).toBeDefined();
+			expect(id.length).toBe(36);
+			expect(UUID_REGEX.test(id)).toBe(true);
+		});
+
+		it("select event has a valid UUID id", async () => {
+			const runner = await createRunnerWithExtension(`
+				export default function(pi) {
+					pi.on("ui", async (event, ctx) => {
+						if (event.method === "select") {
+							globalThis.__uuidCaptured = event.id;
+							return { action: "responded", value: "A" };
+						}
+						return undefined;
+					});
+				}
+			`);
+
+			runner.setUIContext(createMockUI({ select: async () => undefined }));
+			await runner.getUIContext().select("Pick", ["A", "B"]);
+
+			const id = (globalThis as any).__uuidCaptured;
+			expect(id).toBeDefined();
+			expect(id.length).toBe(36);
+			expect(UUID_REGEX.test(id)).toBe(true);
+		});
+
+		it("input event has a valid UUID id", async () => {
+			const runner = await createRunnerWithExtension(`
+				export default function(pi) {
+					pi.on("ui", async (event, ctx) => {
+						if (event.method === "input") {
+							globalThis.__uuidCaptured = event.id;
+							return { action: "responded", value: "hello" };
+						}
+						return undefined;
+					});
+				}
+			`);
+
+			runner.setUIContext(createMockUI({ input: async () => undefined }));
+			await runner.getUIContext().input("Title");
+
+			const id = (globalThis as any).__uuidCaptured;
+			expect(id).toBeDefined();
+			expect(id.length).toBe(36);
+			expect(UUID_REGEX.test(id)).toBe(true);
+		});
+
+		it("notify event has a valid UUID id", async () => {
+			const runner = await createRunnerWithExtension(`
+				export default function(pi) {
+					pi.on("ui", async (event, ctx) => {
+						if (event.method === "notify") {
+							globalThis.__uuidCaptured = event.id;
+						}
+						return undefined;
+					});
+				}
+			`);
+
+			runner.setUIContext(createMockUI({ notify: () => {} }));
+			runner.getUIContext().notify("Hello");
+			await new Promise((r) => setTimeout(r, 50));
+
+			const id = (globalThis as any).__uuidCaptured;
+			expect(id).toBeDefined();
+			expect(id.length).toBe(36);
+			expect(UUID_REGEX.test(id)).toBe(true);
+		});
+
+		it("consecutive confirm events get different IDs", async () => {
+			const runner = await createRunnerWithExtension(`
+				export default function(pi) {
+					const ids = [];
+					pi.on("ui", async (event, ctx) => {
+						if (event.method === "confirm") {
+							ids.push(event.id);
+							globalThis.__uuidCaptured = ids;
+							return { action: "responded", confirmed: true };
+						}
+						return undefined;
+					});
+				}
+			`);
+
+			runner.setUIContext(createMockUI({ confirm: async () => false }));
+			await runner.getUIContext().confirm("Title1", "Message1");
+			await runner.getUIContext().confirm("Title2", "Message2");
+			await runner.getUIContext().confirm("Title3", "Message3");
+
+			const ids = (globalThis as any).__uuidCaptured as string[];
+			expect(ids.length).toBe(3);
+			expect(new Set(ids).size).toBe(3);
+		});
+
+		it("consecutive select events get different IDs", async () => {
+			const runner = await createRunnerWithExtension(`
+				export default function(pi) {
+					const ids = [];
+					pi.on("ui", async (event, ctx) => {
+						if (event.method === "select") {
+							ids.push(event.id);
+							globalThis.__uuidCaptured = ids;
+							return { action: "responded", value: "A" };
+						}
+						return undefined;
+					});
+				}
+			`);
+
+			runner.setUIContext(createMockUI({ select: async () => undefined }));
+			await runner.getUIContext().select("Pick1", ["A", "B"]);
+			await runner.getUIContext().select("Pick2", ["A", "B"]);
+
+			const ids = (globalThis as any).__uuidCaptured as string[];
+			expect(ids.length).toBe(2);
+			expect(ids[0]).not.toBe(ids[1]);
+		});
+
+		it("mixed UI event types each get different IDs", async () => {
+			const runner = await createRunnerWithExtension(`
+				export default function(pi) {
+					const ids = [];
+					pi.on("ui", async (event, ctx) => {
+						ids.push(event.id);
+						globalThis.__uuidCaptured = ids;
+						if (event.method === "confirm") return { action: "responded", confirmed: true };
+						if (event.method === "select") return { action: "responded", value: "X" };
+						if (event.method === "input") return { action: "responded", value: "Y" };
+						return undefined;
+					});
+				}
+			`);
+
+			runner.setUIContext(
+				createMockUI({
+					confirm: async () => false,
+					select: async () => undefined,
+					input: async () => undefined,
+				}),
+			);
+
+			await runner.getUIContext().confirm("C", "M");
+			await runner.getUIContext().select("S", ["X"]);
+			await runner.getUIContext().input("I");
+
+			const ids = (globalThis as any).__uuidCaptured as string[];
+			expect(ids.length).toBe(3);
+			expect(new Set(ids).size).toBe(3);
+		});
+	});
 });

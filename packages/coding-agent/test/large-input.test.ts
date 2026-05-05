@@ -131,4 +131,45 @@ describe("handleLargeInput", () => {
 		const saved = readFileSync(filePath, "utf-8");
 		expect(saved).toBe(text);
 	});
+
+	describe("UUID format in temp file name", () => {
+		const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+		function extractUuid(filePath: string): string {
+			const match = filePath.match(/pi-input-(.+)\.txt$/);
+			expect(match).not.toBeNull();
+			return match![1];
+		}
+
+		test("file name between pi-input- and .txt is a valid UUID", () => {
+			const text = generateLargeText(DEFAULT_INPUT_MAX_BYTES + 1);
+			const result = handleLargeInput(text);
+			const filePath = result.savedFilePath!;
+			createdFiles.push(filePath);
+
+			const uuid = extractUuid(filePath);
+			expect(UUID_REGEX.test(uuid)).toBe(true);
+		});
+
+		test("consecutive calls produce unique file names", () => {
+			const text = generateLargeText(DEFAULT_INPUT_MAX_BYTES + 1);
+			const result1 = handleLargeInput(text);
+			const result2 = handleLargeInput(text);
+
+			createdFiles.push(result1.savedFilePath!);
+			createdFiles.push(result2.savedFilePath!);
+
+			expect(result1.savedFilePath).not.toBe(result2.savedFilePath);
+		});
+
+		test("UUID matches standard format regex", () => {
+			const text = generateLargeText(DEFAULT_INPUT_MAX_BYTES + 1);
+			const result = handleLargeInput(text);
+			const filePath = result.savedFilePath!;
+			createdFiles.push(filePath);
+
+			const uuid = extractUuid(filePath);
+			expect(uuid).toMatch(UUID_REGEX);
+		});
+	});
 });

@@ -133,4 +133,61 @@ describe("readClipboardImage", () => {
 		const result = await readClipboardImage({ platform: "linux", env: {} });
 		expect(result).toBeNull();
 	});
+
+	describe("WSL PowerShell path", () => {
+		const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+		test("uses PowerShell on WSL when Linux clipboard has no image", async () => {
+			mocks.spawnSync.mockImplementation((command, args, _options) => {
+				if (command === "wl-paste" && args[0] === "--list-types") {
+					return spawnOk(Buffer.from("text/plain\n", "utf-8"));
+				}
+				if (command === "xclip" && args.includes("TARGETS")) {
+					return spawnOk(Buffer.from("text/plain\n", "utf-8"));
+				}
+				if (command === "wslpath" && args[0] === "-w") {
+					return spawnOk(Buffer.from("C:\\Temp\\pi-wsl-clip-test.png\n", "utf-8"));
+				}
+				if (command === "powershell.exe") {
+					return spawnOk(Buffer.from("ok\n", "utf-8"));
+				}
+				return spawnOk(Buffer.alloc(0));
+			});
+
+			mocks.clipboard.hasImage.mockReturnValue(false);
+
+			const { readClipboardImage } = await import("../src/utils/clipboard-image.js");
+			const result = await readClipboardImage({ platform: "linux", env: { WAYLAND_DISPLAY: "1", WSL_DISTRO_NAME: "Ubuntu" } });
+
+			const wslCall = mocks.spawnSync.mock.calls.find((c) => c[0] === "wslpath");
+			expect(wslCall).toBeDefined();
+
+			const tmpPath = (wslCall![1] as string[])[1];
+			expect(tmpPath).toContain("pi-wsl-clip-");
+			expect(tmpPath.endsWith(".png")).toBe(true);
+		});
+
+		test("WSL temp file name contains UUID between pi-wsl-clip- and .png", async () => {
+			const UUID_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+
+			mocks.spawnSync.mockImplementation((command, args, _options) => {
+				if (command === "wslpath" && args[0] === "-w") {
+					const linuxPath = (args as string[])[1];
+					const match = linuxPath.match(/pi-wsl-clip-(.+)\.png$/);
+					expect(match).toBeDefined();
+					expect(UUID_REGEX.test(match![1])).toBe(true);
+					return spawnOk(Buffer.from("C:\\Temp\\clip.png\n", "utf-8"));
+				}
+				if (command === "powershell.exe") {
+					return spawnOk(Buffer.from("ok\n", "utf-8"));
+				}
+				return spawnOk(Buffer.alloc(0));
+			});
+
+			mocks.clipboard.hasImage.mockReturnValue(false);
+
+			const { readClipboardImage } = await import("../src/utils/clipboard-image.js");
+			await readClipboardImage({ platform: "linux", env: { WAYLAND_DISPLAY: "1", WSL_DISTRO_NAME: "Ubuntu" } });
+		});
+	});
 });

@@ -40,6 +40,59 @@ describe("migrateSessionEntries", () => {
 		expect(msg2.parentId).toBe(msg1.id);
 	});
 
+	describe("generateId (via migration)", () => {
+		function makeEntries(count: number): FileEntry[] {
+			const entries: FileEntry[] = [
+				{ type: "session", id: "sess-1", timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp" },
+			];
+			for (let i = 0; i < count; i++) {
+				entries.push({
+					type: "message",
+					timestamp: `2025-01-01T00:00:0${i}Z`,
+					message: { role: "user", content: `msg ${i}`, timestamp: i },
+				} as any);
+			}
+			return entries;
+		}
+
+		it("should produce 8-char IDs on migrated entries", () => {
+			const entries = makeEntries(5);
+			migrateSessionEntries(entries);
+			for (let i = 1; i < entries.length; i++) {
+				expect((entries[i] as any).id.length).toBe(8);
+			}
+		});
+
+		it("should produce IDs containing only hex characters", () => {
+			const entries = makeEntries(20);
+			migrateSessionEntries(entries);
+			for (let i = 1; i < entries.length; i++) {
+				expect((entries[i] as any).id).toMatch(/^[0-9a-f]{8}$/);
+			}
+		});
+
+		it("should produce unique IDs across consecutive entries", () => {
+			const entries = makeEntries(50);
+			migrateSessionEntries(entries);
+			const ids = new Set<string>();
+			for (let i = 1; i < entries.length; i++) {
+				const id = (entries[i] as any).id as string;
+				expect(ids.has(id)).toBe(false);
+				ids.add(id);
+			}
+		});
+
+		it("should use generated IDs as the id field on migrated entries", () => {
+			const entries = makeEntries(3);
+			migrateSessionEntries(entries);
+			for (let i = 1; i < entries.length; i++) {
+				const entry = entries[i] as any;
+				expect(typeof entry.id).toBe("string");
+				expect(entry.id).toBeDefined();
+			}
+		});
+	});
+
 	it("should be idempotent (skip already migrated)", () => {
 		const entries: FileEntry[] = [
 			{ type: "session", id: "sess-1", version: 2, timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp" },
