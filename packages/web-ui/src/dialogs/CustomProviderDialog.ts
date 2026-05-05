@@ -10,6 +10,7 @@ import { state } from "lit/decorators.js";
 import { getAppStorage } from "../storage/app-storage.js";
 import type { CustomProvider, CustomProviderType } from "../storage/stores/custom-providers-store.js";
 import { discoverModels } from "../utils/model-discovery.js";
+import { generateUUID } from "../utils/uuid.js";
 
 export class CustomProviderDialog extends DialogBase {
 	private provider?: CustomProvider;
@@ -120,7 +121,7 @@ export class CustomProviderDialog extends DialogBase {
 			const storage = getAppStorage();
 
 			const provider: CustomProvider = {
-				id: this.provider?.id || crypto.randomUUID(),
+				id: this.provider?.id || generateUUID(),
 				name: this.name,
 				type: this.type,
 				baseUrl: this.baseUrl,

@@ -22,6 +22,7 @@ import {
 	streamSimpleOpenAIResponses,
 } from "@dyyz1993/pi-ai";
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
+import { generateOAuthState } from "@dyyz1993/pi-coding-agent";
 
 // =============================================================================
 // Constants
@@ -199,7 +200,7 @@ async function loginGitLab(callbacks: OAuthLoginCallbacks): Promise<OAuthCredent
 		scope: OAUTH_SCOPES.join(" "),
 		code_challenge: challenge,
 		code_challenge_method: "S256",
-		state: crypto.randomUUID(),
+		state: generateOAuthState(),
 	});
 
 	callbacks.onAuth({ url: `${GITLAB_COM_URL}/oauth/authorize?${authParams.toString()}` });
