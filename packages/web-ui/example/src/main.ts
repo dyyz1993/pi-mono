@@ -8,7 +8,6 @@ import {
 	ChatPanel,
 	CustomProvidersStore,
 	createJavaScriptReplTool,
-	generateUUID,
 	IndexedDBStorageBackend,
 	// PersistentStorageDialog, // TODO: Fix - currently broken
 	ProviderKeysStore,
@@ -190,9 +189,8 @@ Feel free to use these tools when needed to provide accurate and helpful respons
 
 			// Create session ID on first successful save
 			if (!currentSessionId && shouldSaveSession(messages)) {
-				const sessionId = generateUUID();
-				currentSessionId = sessionId;
-				updateUrl(sessionId);
+				currentSessionId = crypto.randomUUID();
+				updateUrl(currentSessionId);
 			}
 
 			// Auto-save

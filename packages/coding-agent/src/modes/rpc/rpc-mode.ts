@@ -11,6 +11,7 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
+import * as crypto from "node:crypto";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import { ChannelManager } from "../../core/extensions/channel-manager.js";
@@ -23,7 +24,6 @@ import type {
 } from "../../core/extensions/index.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
-import { generateUUID } from "../../utils/uuid.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type {
@@ -103,7 +103,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	): Promise<T> {
 		if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
 
-		const id = generateUUID();
+		const id = crypto.randomUUID();
 		return new Promise((resolve, reject) => {
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
@@ -163,7 +163,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Fire and forget - no response needed
 			output({
 				type: "extension_ui_request",
-				id: generateUUID(),
+				id: crypto.randomUUID(),
 				method: "notify",
 				message,
 				notifyType: type,
@@ -179,7 +179,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Fire and forget - no response needed
 			output({
 				type: "extension_ui_request",
-				id: generateUUID(),
+				id: crypto.randomUUID(),
 				method: "setStatus",
 				statusKey: key,
 				statusText: text,
@@ -203,7 +203,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			if (content === undefined || Array.isArray(content)) {
 				output({
 					type: "extension_ui_request",
-					id: generateUUID(),
+					id: crypto.randomUUID(),
 					method: "setWidget",
 					widgetKey: key,
 					widgetLines: content as string[] | undefined,
@@ -225,7 +225,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Fire and forget - host can implement terminal title control
 			output({
 				type: "extension_ui_request",
-				id: generateUUID(),
+				id: crypto.randomUUID(),
 				method: "setTitle",
 				title,
 			} as RpcExtensionUIRequest);
@@ -245,7 +245,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Fire and forget - host can implement editor control
 			output({
 				type: "extension_ui_request",
-				id: generateUUID(),
+				id: crypto.randomUUID(),
 				method: "set_editor_text",
 				text,
 			} as RpcExtensionUIRequest);
@@ -258,7 +258,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		},
 
 		async editor(title: string, prefill?: string): Promise<string | undefined> {
-			const id = generateUUID();
+			const id = crypto.randomUUID();
 			return new Promise((resolve, reject) => {
 				pendingExtensionRequests.set(id, {
 					resolve: (response: RpcExtensionUIResponse) => {
