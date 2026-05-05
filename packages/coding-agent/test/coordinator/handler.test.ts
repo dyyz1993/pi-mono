@@ -130,10 +130,10 @@ function createMockProcessManager() {
 			return { sessionId: newSessionId, status: "started" };
 		},
 
-		delegate_compact_status(sessionId: string): {
+		async delegate_compact_status(sessionId: string): Promise<{
 			isCompacting: boolean;
 			contextUsage: { tokens: number | null; contextWindow: number; percent: number | null };
-		} {
+		}> {
 			const state = compactStates.get(sessionId);
 			return state ?? { isCompacting: false, contextUsage: { tokens: null, contextWindow: 0, percent: null } };
 		},
@@ -149,7 +149,12 @@ function setupCoordinator() {
 	const currentSessionId = "current_session_001";
 	const store = new TaskStore(tmpDir);
 
-	createCoordinatorHandler(serverChannel, processManager, currentSessionId, store);
+	createCoordinatorHandler(
+		serverChannel,
+		processManager,
+		() => currentSessionId,
+		() => store,
+	);
 
 	return { tmpDir, mockChannel, serverChannel, clientChannel, processManager, currentSessionId, store };
 }

@@ -10,7 +10,7 @@ export interface ProcessManagerApi {
 	delegate_list(): Array<{ sessionId: string; status: SessionStatus; projectPath: string }>;
 	delegate_stop(sessionId: string): boolean;
 	delegate_fork(sessionId: string, task: string, title?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
-	delegate_compact_status(sessionId: string): { isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } };
+	delegate_compact_status(sessionId: string): Promise<{ isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } }>;
 }
 
 export class TaskStore {
@@ -72,7 +72,7 @@ export class TaskStore {
 		const lines = ["## Delegated Tasks", ""];
 		for (const t of tasks) {
 			const status = t.status === "completed" ? "DONE" : t.status === "stopped" ? "STOPPED" : t.status.toUpperCase();
-			const compactTag = (t as any).isCompacting ? " ⚠️ COMPACTING" : "";
+			const compactTag = (t as any).isCompacting ? " COMPACTING" : "";
 			const ctxTag = (t as any).contextUsage?.percent != null ? ` ctx:${Math.round((t as any).contextUsage.percent)}%` : "";
 			const elapsed = t.completedAt
 				? `${((t.completedAt - t.dispatchedAt) / 1000).toFixed(1)}s`
@@ -90,14 +90,14 @@ export class TaskStore {
 export function createCoordinatorHandler(
 	channel: ServerChannel<CoordinatorChannelContract>,
 	pm: ProcessManagerApi,
-	currentSessionId: string,
-	store: TaskStore,
+	getSessionId: () => string,
+	getStore: () => TaskStore,
 ): void {
 	channel.handle("session_delegate", async ({ task, title }) => {
 		const projectPath = process.cwd();
 		const result = await pm.delegate(task, projectPath);
 
-		store.add({
+		getStore().add({
 			sessionId: result.sessionId,
 			title: title || task.slice(0, 60),
 			task,
@@ -110,9 +110,10 @@ export function createCoordinatorHandler(
 	});
 
 	channel.handle("session_delegate_send", async ({ targetSessionId, message }) => {
-		const result = await pm.delegate_send(currentSessionId, targetSessionId, message);
+		const result = await pm.delegate_send(getSessionId(), targetSessionId, message);
 
 		if (result.delivered) {
+			const store = getStore();
 			const task = store.get(targetSessionId);
 			if (task && task.status === "stopped") {
 				store.update(targetSessionId, { status: "idle" });
@@ -123,6 +124,7 @@ export function createCoordinatorHandler(
 	});
 
 	channel.handle("session_delegate_status", async ({ sessionId }) => {
+		const store = getStore();
 		const task = store.get(sessionId);
 		if (!task) {
 			const status = pm.delegate_status(sessionId);
@@ -130,11 +132,12 @@ export function createCoordinatorHandler(
 		}
 		const remote = pm.delegate_status(sessionId);
 		store.update(sessionId, { status: remote.status });
-		const compactInfo = pm.delegate_compact_status(sessionId);
+		const compactInfo = await pm.delegate_compact_status(sessionId);
 		return { task: store.get(sessionId) ?? null, isCompacting: compactInfo.isCompacting, contextUsage: compactInfo.contextUsage };
 	});
 
 	channel.handle("session_delegate_list", async () => {
+		const store = getStore();
 		for (const t of store.list()) {
 			const remote = pm.delegate_status(t.sessionId);
 			store.update(t.sessionId, { status: remote.status });
@@ -145,14 +148,14 @@ export function createCoordinatorHandler(
 	channel.handle("session_delegate_stop", async ({ sessionId }) => {
 		const ok = pm.delegate_stop(sessionId);
 		if (ok) {
-			store.update(sessionId, { status: "stopped" });
+			getStore().update(sessionId, { status: "stopped" });
 		}
 		return { ok };
 	});
 
 	channel.handle("session_delegate_fork", async ({ sessionId, task, title }) => {
 		const result = await pm.delegate_fork(sessionId, task, title);
-		store.add({
+		getStore().add({
 			sessionId: result.sessionId,
 			title: title || task.slice(0, 60),
 			task,

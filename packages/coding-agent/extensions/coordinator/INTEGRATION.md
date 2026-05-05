@@ -38,10 +38,9 @@ The coordinator extension enables cross-session communication and task delegatio
 
 The extension uses `ClientChannel.call()` to send `__call` requests OUTBOUND to pi-agent-chat. pi-agent-chat must respond by returning a value from its `onReceive` handler.
 
-**Critical**: The `RpcClient.handleLine()` automatically sends back responses when `onReceive` handlers return a value:
+**Critical**: The `RpcClient.handleLine()` does NOT await handler results. It calls handlers synchronously:
 
 ```typescript
-// RpcClient internal (rpc-client.ts lines 566-575):
 for (const handler of handlers) {
     const result = handler(data.data);
     if (invokeId && result !== undefined) {
@@ -50,7 +49,7 @@ for (const handler of handlers) {
 }
 ```
 
-So pi-agent-chat's `onReceive` handler **must return the result** (not void) for the extension's `ClientChannel.call()` to resolve.
+This means async handlers that return Promises will NOT work correctly with the auto-response mechanism. You **must** use the manual response pattern for any handler that performs async operations.
 
 ## Step-by-Step Integration
 
@@ -59,72 +58,23 @@ So pi-agent-chat's `onReceive` handler **must return the result** (not void) for
 In `AgentProcessManager.start()`, add `"coordinator"` to the channel registration loop:
 
 ```typescript
-// File: src/shared/agent/process-manager.ts
-// In the start() method, add "coordinator" to the channel list:
-
 for (const name of ["bash", "todo", "subagent", "lsp", "rules-engine", "memory", "coordinator"] as const) {
     client.channel(name).onReceive((data: unknown) => {
-        this.handleCoordinatorChannelData(sessionId, data);
+        this.handleCoordinatorCall(sessionId, data);
     });
 }
 ```
 
-### Step 2: Implement `handleCoordinatorChannelData()`
+### Step 2: Implement `handleCoordinatorCall()` with manual response
 
-```typescript
-private handleCoordinatorChannelData(sessionId: string, data: unknown): unknown {
-    const msg = data as Record<string, unknown>;
-    const method = msg.__call as string;
-    
-    if (!method) {
-        // Not a method call, ignore
-        return;
-    }
-    
-    // Route to handler, return result for auto-response
-    switch (method) {
-        case "session_delegate":
-            return this.handleDelegate(sessionId, msg);
-        case "session_delegate_send":
-            return this.handleDelegateSend(sessionId, msg);
-        case "session_delegate_status":
-            return this.handleDelegateStatus(sessionId, msg);
-        case "session_delegate_list":
-            return this.handleDelegateList(sessionId, msg);
-        case "session_delegate_stop":
-            return this.handleDelegateStop(sessionId, msg);
-        case "session_delegate_fork":
-            return this.handleDelegateFork(sessionId, msg);
-        default:
-            return;
-    }
-}
-```
-
-**Important**: These handlers must be synchronous or return a Promise. The `RpcClient.handleLine()` awaits the handler result if it's a Promise? No — it does NOT await. It checks `const result = handler(data.data)` synchronously. So if you need async operations, you need to handle the response manually.
-
-Actually, re-read the RpcClient source. Let me check...
-
-Looking at the rpc-client.ts handleLine code:
-```typescript
-for (const handler of handlers) {
-    const result = handler(data.data);
-    if (invokeId && result !== undefined) {
-        this.writeLine({ ... });
-    }
-}
-```
-
-It does NOT await. So async handlers that return Promises will NOT work correctly — the `result` will be a Promise object (truthy), not the resolved value.
-
-**Solution**: Use a manual response pattern for async operations:
+> **Warning**: You MUST use the manual response pattern below. The `RpcClient.handleLine()` does NOT await handlers, so returning a Promise from `onReceive` will send the unresolved Promise object as the response, causing the extension's `ClientChannel.call()` to receive garbage data.
 
 ```typescript
 private async handleCoordinatorCall(sessionId: string, data: unknown): Promise<void> {
     const msg = data as Record<string, unknown>;
     const method = msg.__call as string;
     const invokeId = msg.invokeId as string | undefined;
-    
+
     let result: unknown;
     try {
         switch (method) {
@@ -152,8 +102,7 @@ private async handleCoordinatorCall(sessionId: string, data: unknown): Promise<v
     } catch (err) {
         result = { error: err instanceof Error ? err.message : String(err) };
     }
-    
-    // Send response back manually
+
     if (invokeId) {
         const managed = this.clients.get(sessionId);
         if (managed) {
@@ -161,15 +110,6 @@ private async handleCoordinatorCall(sessionId: string, data: unknown): Promise<v
         }
     }
 }
-```
-
-Then in `start()`:
-
-```typescript
-client.channel("coordinator").onReceive((data: unknown) => {
-    this.handleCoordinatorCall(sessionId, data);
-    // Return nothing — we handle response manually via send()
-});
 ```
 
 ### Step 3: Implement each handler
@@ -184,20 +124,17 @@ private async handleDelegate(
     const task = msg.task as string;
     const parent = this.clients.get(parentSessionId);
     if (!parent) throw new Error("Parent session not found");
-    
+
     const projectPath = parent.info.projectPath;
-    
-    // Generate new session ID and path
+
     const newSessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const sessionDir = path.dirname(parent.info.sessionPath);
     const sessionPath = path.join(sessionDir, `${newSessionId}.jsonl`);
-    
-    // Start new process
+
     const result = await this.start(newSessionId, projectPath, sessionPath);
-    
-    // Send the task as first prompt
+
     this.send(newSessionId, task);
-    
+
     return { sessionId: newSessionId, status: result.status === "started" ? "started" : "already_running" };
 }
 ```
@@ -211,19 +148,17 @@ private async handleDelegateSend(
 ): Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }> {
     const targetSessionId = msg.targetSessionId as string;
     const message = msg.message as string;
-    
+
     const target = this.clients.get(targetSessionId);
     if (!target) {
         return { delivered: false, targetStatus: "not_found" };
     }
-    
+
     if (target.info.status === "idle") {
-        // Use followUp to deliver as continuation
         this.followUp(targetSessionId, message);
         return { delivered: true, targetStatus: "active" };
     }
-    
-    // Session is streaming, queue the message
+
     this.followUp(targetSessionId, message);
     return { delivered: true, targetStatus: "active" };
 }
@@ -237,15 +172,15 @@ private async handleDelegateStatus(
     msg: Record<string, unknown>,
 ): Promise<{ status: string; isCompacting: boolean; contextUsage: unknown }> {
     const targetSessionId = msg.sessionId as string;
-    
+
     const status = this.getStatus(targetSessionId);
     if (status.status === "stopped") {
         return { status: "stopped", isCompacting: false, contextUsage: { tokens: null, contextWindow: 0, percent: null } };
     }
-    
+
     const state = await this.getState(targetSessionId);
     const contextUsage = await this.getContextUsage(targetSessionId);
-    
+
     return {
         status: state?.isStreaming ? "streaming" : "idle",
         isCompacting: state?.isCompacting ?? false,
@@ -293,41 +228,48 @@ private async handleDelegateFork(
     const task = msg.task as string;
     const base = this.clients.get(parentSessionId);
     if (!base) throw new Error("Base session not found");
-    
+
     const sessionPath = base.info.sessionPath;
     const projectPath = base.info.projectPath;
     const sessionDir = path.dirname(sessionPath);
-    
-    // Use pi's SessionManager to create a branched session
-    // Option 1: Import SessionManager from pi-coding-agent
-    // Option 2: Copy the JSONL file and let pi handle it on load
-    
-    // Simple approach: copy the session file
-    const forkedSessionId = `sess_fork_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const forkedPath = path.join(sessionDir, `${forkedSessionId}.jsonl`);
-    
-    // Copy file
-    fs.copyFileSync(sessionPath, forkedPath);
-    
-    // Start new process with forked file
+
+    // Primary approach: use SessionManager.createBranchedSession() for correct JSONL extraction
+    // This handles tree-structured sessions and avoids half-write corruption
+    import { SessionManager } from "@dyyz1993/pi-coding-agent";
+
+    const sourceManager = SessionManager.open(sessionPath, sessionDir);
+    const leafId = sourceManager.getLeafId();
+    const forkedPath = sourceManager.createBranchedSession(leafId);
+
+    // Fallback: if createBranchedSession is unavailable, use direct file copy
+    // const forkedSessionId = `sess_fork_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // const forkedPath = path.join(sessionDir, `${forkedSessionId}.jsonl`);
+    // fs.copyFileSync(sessionPath, forkedPath);
+
+    const forkedSessionId = path.basename(forkedPath, ".jsonl");
     const result = await this.start(forkedSessionId, projectPath, forkedPath);
-    
-    // Send the task
+
     this.send(forkedSessionId, task);
-    
-    // Original session is NOT affected
+
     return { sessionId: forkedSessionId, status: result.status === "started" ? "started" : "already_running" };
 }
 ```
 
-**Note on fork**: Simple file copy works for linear sessions. For branched sessions (tree structure), use `SessionManager.createBranchedSession()` instead. See the "Fork Implementation Details" section below.
+**Why `SessionManager.createBranchedSession()` is preferred over file copy**:
+
+1. Extracts a single linear path from tree-structured sessions (after navigateTree/branch operations)
+2. Filters and recreates label entries correctly
+3. Generates a new session ID and header
+4. Rebuilds internal index
+5. Avoids reading a partially-written JSONL file (the source session may be actively writing)
+
+File copy (`fs.copyFileSync`) is only safe as a fallback when you can guarantee the source session is idle and the JSONL is not being written to.
 
 ### Step 4: Emit events from pi-agent-chat to extension
 
 To send events to the extension (e.g., message_received, task_completed), use:
 
 ```typescript
-// In handleEvent() or wherever appropriate:
 if (delegatedSessionId) {
     const managed = this.clients.get(parentSessionId);
     if (managed) {
@@ -374,39 +316,6 @@ const EXTENSION_ARGS = [
         .flatMap((p) => ["--extension", p]),
 ];
 ```
-
-## Fork Implementation Details
-
-### Simple File Copy (linear sessions)
-
-For sessions that have never been branched (most cases), directly copying the JSONL file is sufficient:
-
-```typescript
-fs.copyFileSync(sourceSessionPath, forkedPath);
-```
-
-### Proper Branch Extraction (tree sessions)
-
-For sessions with tree structure (after navigateTree/branch operations), use pi's `SessionManager.createBranchedSession()`:
-
-```typescript
-import { SessionManager } from "@dyyz1993/pi-coding-agent";
-
-// Open source file in read-only mode (doesn't affect running session)
-const sourceManager = SessionManager.open(sourceSessionPath, sessionDir);
-
-// Get current position
-const leafId = sourceManager.getLeafId();
-
-// Create branched session (extracts single path root→leaf)
-const forkedPath = sourceManager.createBranchedSession(leafId);
-```
-
-What `createBranchedSession()` does that simple copy doesn't:
-1. Extracts single linear path from tree structure
-2. Filters and recreates label entries
-3. Generates new session ID and header
-4. Rebuilds internal index
 
 ## Channel Contract Reference
 

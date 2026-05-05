@@ -66,8 +66,14 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			}
 		},
 
-		delegate_list() {
-			return [];
+		async delegate_list() {
+			try {
+				const result = await client.call("session_delegate_list", {}) as Record<string, unknown>;
+				const sessions = (result.sessions ?? result.tasks ?? []) as Array<{ sessionId: string; status: import("./types.js").SessionStatus; projectPath: string }>;
+				return sessions;
+			} catch {
+				return [];
+			}
 		},
 
 		async delegate_stop(sessionId) {
@@ -83,13 +89,25 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			return client.call("session_delegate_fork", { sessionId, task, title });
 		},
 
-		delegate_compact_status(sessionId: string) {
-			return { isCompacting: false, contextUsage: { tokens: null, contextWindow: 0, percent: null } };
+		async delegate_compact_status(sessionId: string) {
+			try {
+				const result = await client.call("session_delegate_status", { sessionId });
+				return {
+					isCompacting: result.isCompacting ?? false,
+					contextUsage: result.contextUsage ?? { tokens: null as number | null, contextWindow: 0, percent: null as number | null },
+				};
+			} catch {
+				return { isCompacting: false, contextUsage: { tokens: null as number | null, contextWindow: 0, percent: null as number | null } };
+			}
 		},
 	};
 
-	const activeStore = () => store ?? new TaskStore("/tmp/coordinator-fallback");
-	createCoordinatorHandler(serverChannel, serverProxy, currentSessionId, activeStore());
+	createCoordinatorHandler(
+		serverChannel,
+		serverProxy,
+		() => currentSessionId,
+		() => store ?? new TaskStore("/tmp/coordinator-fallback"),
+	);
 
 	pi.on("context", (event, _ctx) => {
 		if (!store) return;
