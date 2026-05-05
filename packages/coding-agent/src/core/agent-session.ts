@@ -41,6 +41,7 @@ import {
 	collectEntriesForBranchSummary,
 	compact,
 	estimateContextTokens,
+	estimateTokens,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -314,6 +315,8 @@ export class AgentSession {
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
+
+	private _tierModels: Record<string, string> = {};
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -772,6 +775,14 @@ export class AgentSession {
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model<any> | undefined {
 		return this.agent.state.model;
+	}
+
+	getTierModels(): Record<string, string> {
+		return this._tierModels;
+	}
+
+	setTierModels(mapping: Record<string, string>): void {
+		this._tierModels = { ...mapping };
 	}
 
 	/** Current thinking level */
@@ -2023,6 +2034,13 @@ export class AgentSession {
 				tokensBefore,
 				details,
 			};
+
+			let tokensAfter = 0;
+			for (const msg of sessionContext.messages) {
+				tokensAfter += estimateTokens(msg);
+			}
+			result.tokensAfter = tokensAfter;
+
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
@@ -3441,6 +3459,22 @@ export class AgentSession {
 		}
 
 		const estimate = estimateContextTokens(this.messages);
+
+		if (latestCompaction && estimate.lastUsageIndex !== null) {
+			const usageMsg = this.messages[estimate.lastUsageIndex];
+			if (
+				usageMsg?.role === "assistant" &&
+				(usageMsg as AssistantMessage).timestamp <= new Date(latestCompaction.timestamp).getTime()
+			) {
+				let estimated = 0;
+				for (const message of this.messages) {
+					estimated += estimateTokens(message);
+				}
+				const fallbackPercent = contextWindow > 0 ? (estimated / contextWindow) * 100 : 0;
+				return { tokens: estimated, contextWindow, percent: fallbackPercent };
+			}
+		}
+
 		const percent = contextWindow > 0 ? (estimate.tokens / contextWindow) * 100 : 0;
 
 		return {

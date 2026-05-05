@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `getContextUsage()` returning pre-compaction token counts after session compaction — fallback now skips stale usage from messages before the compaction boundary
+- Added `tokensAfter` to `CompactionResult` so `compaction_end` events carry accurate post-compaction token counts
+
 ## [0.70.4] - 2026-05-05
 
 ### Fixed
