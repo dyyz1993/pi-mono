@@ -4,14 +4,12 @@ import type { McpServerConfig } from "../../src/core/settings-manager.js";
 
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
 	return {
-		Client: vi
-			.fn()
-			.mockImplementation(() => ({
-				connect: vi.fn().mockResolvedValue(undefined),
-				listTools: vi.fn().mockResolvedValue({ tools: [] }),
-				callTool: vi.fn(),
-				close: vi.fn().mockResolvedValue(undefined),
-			})),
+		Client: vi.fn().mockImplementation(() => ({
+			connect: vi.fn().mockResolvedValue(undefined),
+			listTools: vi.fn().mockResolvedValue({ tools: [] }),
+			callTool: vi.fn(),
+			close: vi.fn().mockResolvedValue(undefined),
+		})),
 	};
 });
 

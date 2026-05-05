@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createMcpToolDefinition } from "../../src/core/mcp/tool-converter.js";
 import type { McpManager } from "../../src/core/mcp/mcp-manager.js";
+import { createMcpToolDefinition } from "../../src/core/mcp/tool-converter.js";
 import type { DiscoveredTool } from "../../src/core/mcp/types.js";
 
 function makeTool(overrides: Partial<DiscoveredTool> = {}): DiscoveredTool {

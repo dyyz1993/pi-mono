@@ -74,7 +74,6 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.js";
-export { createSyntheticSourceInfo } from "./source-info.js";
 export {
 	McpConnectionError,
 	McpError,
@@ -82,3 +81,4 @@ export {
 	McpToolCallError,
 } from "./mcp/errors.js";
 export type { ConnectionStatus, McpConnection, McpManagerEvents } from "./mcp/types.js";
+export { createSyntheticSourceInfo } from "./source-info.js";

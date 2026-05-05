@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type {
+	ConnectionStatus,
+	DiscoveredTool,
+	McpConnection,
 	McpServerConfig,
 	McpSettings,
 	McpSseServerConfig,
 	McpStdioServerConfig,
 	McpStreamableHttpServerConfig,
-	ConnectionStatus,
-	DiscoveredTool,
-	McpConnection,
 } from "../../src/core/mcp/types.js";
 
 describe("MCP config types", () => {
