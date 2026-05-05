@@ -38,7 +38,7 @@ describe("AgentSession.background() task ID", () => {
 	it("task has cancel function and abort signal", async () => {
 		harness = createHarness();
 
-		const task = harness.session.background(async (signal) => {
+		const task = harness.session.background(async (_signal) => {
 			await new Promise((r) => setTimeout(r, 500));
 			return "done";
 		});
