@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `getContextUsage()` returning `tokens: null` after compaction instead of falling back to `estimateContextTokens` estimate
+
 ## [0.70.2] - 2026-05-05
 
 ### Added
