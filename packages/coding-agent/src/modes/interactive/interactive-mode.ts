@@ -69,7 +69,13 @@ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../cor
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
-import { getCwdDataDir, getGlobalDataDir, getProjectDataDir, getSessionDataDir, resolveProjectRoot } from "../../core/storage.js";
+import {
+	getCwdDataDir,
+	getGlobalDataDir,
+	getProjectDataDir,
+	getSessionDataDir,
+	resolveProjectRoot,
+} from "../../core/storage.js";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
@@ -1580,7 +1586,11 @@ export class InteractiveMode {
 			cwd: this.sessionManager.getCwd(),
 			extensionName: extName,
 			projectRoot: resolveProjectRoot(this.sessionManager.getCwd()),
-			sessionDataDir: getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
+			sessionDataDir: getSessionDataDir(
+				this.sessionManager.getSessionDir(),
+				this.sessionManager.getSessionId(),
+				extName,
+			),
 			projectDataDir: getProjectDataDir(resolveProjectRoot(this.sessionManager.getCwd()), extName),
 			cwdDataDir: getCwdDataDir(this.sessionManager.getCwd(), extName),
 			globalDataDir: getGlobalDataDir(extName),

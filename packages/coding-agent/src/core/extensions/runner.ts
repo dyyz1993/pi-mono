@@ -11,7 +11,13 @@ import type { ResourceDiagnostic } from "../diagnostics.js";
 import type { KeybindingsConfig } from "../keybindings.js";
 import type { ModelRegistry } from "../model-registry.js";
 import type { SessionManager } from "../session-manager.js";
-import { getCwdDataDir, getGlobalDataDir, getProjectDataDir, getSessionDataDir, resolveProjectRoot } from "../storage.js";
+import {
+	getCwdDataDir,
+	getGlobalDataDir,
+	getProjectDataDir,
+	getSessionDataDir,
+	resolveProjectRoot,
+} from "../storage.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.js";
 import type {
 	BeforeAgentStartEvent,

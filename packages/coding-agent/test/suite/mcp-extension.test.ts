@@ -1,12 +1,10 @@
-import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
+import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
-import { createHarness, type Harness } from "./harness.js";
-
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadMcpConfig } from "../../.pi/extensions/pi-mcp/config.js";
+import { createHarness, type Harness } from "./harness.js";
 
 describe("pi-mcp extension", () => {
 	const harnesses: Harness[] = [];

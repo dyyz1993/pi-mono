@@ -46,7 +46,11 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
 		parameters: bashSchema,
 		execute: async (
 			_toolCallId: string,
-			{ command, timeout, backgroundAfter: _backgroundAfter }: { description: string; command: string; timeout?: number; backgroundAfter?: number },
+			{
+				command,
+				timeout,
+				backgroundAfter: _backgroundAfter,
+			}: { description: string; command: string; timeout?: number; backgroundAfter?: number },
 			signal?: AbortSignal,
 		) => {
 			let tempFilePath: string | undefined;

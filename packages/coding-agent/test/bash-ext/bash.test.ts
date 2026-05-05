@@ -83,10 +83,7 @@ describe("bash channel extension", () => {
 	function getStatusToolDef() {
 		return (mock.pi.registerTool as ReturnType<typeof vi.fn>).mock.calls[1][0] as {
 			name: string;
-			execute: (
-				toolCallId: string,
-				params: { bashId: string; lastLines?: number; grep?: string },
-			) => Promise<any>;
+			execute: (toolCallId: string, params: { bashId: string; lastLines?: number; grep?: string }) => Promise<any>;
 		};
 	}
 
@@ -96,7 +93,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_timeout", { description: "Sleep for timeout test", command: "sleep 60", timeout: 1 }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_timeout",
+					{ description: "Sleep for timeout test", command: "sleep 60", timeout: 1 },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				})
@@ -120,7 +123,9 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_nonzero", { description: "Exit with code 42", command: "exit 42" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute("tc_nonzero", { description: "Exit with code 42", command: "exit 42" }, undefined, undefined, {
+					cwd: "/tmp",
+				} as any)
 				.then((r: any) => {
 					result = r;
 				})
@@ -144,7 +149,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_normal", { description: "Echo hello world", command: "echo hello world" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_normal",
+					{ description: "Echo hello world", command: "echo hello world" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				})
@@ -195,7 +206,13 @@ describe("bash channel extension", () => {
 			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
 			const toolDef = getToolDef();
 
-			toolDef.execute("tc_kill_test", { description: "Long sleep for kill test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_kill_test",
+				{ description: "Long sleep for kill test", command: "sleep 999" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 			await new Promise((r) => setTimeout(r, 20));
 
 			receiveHandler({ __call: "kill", toolCallId: "tc_kill_test" });
@@ -214,7 +231,13 @@ describe("bash channel extension", () => {
 
 			let resolved = false;
 			toolDef
-				.execute("tc_bg_test", { description: "Long sleep for background test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bg_test",
+					{ description: "Long sleep for background test", command: "sleep 999" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then(() => {
 					resolved = true;
 				});
@@ -245,7 +268,13 @@ describe("bash channel extension", () => {
 	describe("tool execution", () => {
 		it("emits start event with pid when tool executes", async () => {
 			const toolDef = getToolDef();
-			toolDef.execute("tc_exec_1", { description: "Sleep 5 for start event test", command: "sleep 5" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_exec_1",
+				{ description: "Sleep 5 for start event test", command: "sleep 5" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 
 			await new Promise((r) => setTimeout(r, 20));
 
@@ -260,7 +289,13 @@ describe("bash channel extension", () => {
 
 		it("emits end event when command finishes", async () => {
 			const toolDef = getToolDef();
-			toolDef.execute("tc_exec_2", { description: "Echo done for end event test", command: "echo done" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_exec_2",
+				{ description: "Echo done for end event test", command: "echo done" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 
 			await new Promise((r) => setTimeout(r, 200));
 
@@ -273,7 +308,13 @@ describe("bash channel extension", () => {
 
 		it("emits output events during execution", async () => {
 			const toolDef = getToolDef();
-			toolDef.execute("tc_exec_3", { description: "Echo hello world for output event test", command: "echo hello world" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_exec_3",
+				{ description: "Echo hello world for output event test", command: "echo hello world" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 
 			await new Promise((r) => setTimeout(r, 200));
 
@@ -284,8 +325,6 @@ describe("bash channel extension", () => {
 		});
 	});
 
-
-
 	describe("abort signal", () => {
 		it("resolves with details.terminated reason=signal when signal fires", async () => {
 			const controller = new AbortController();
@@ -293,7 +332,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_abort", { description: "Long sleep for abort signal test", command: "sleep 999" }, controller.signal, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_abort",
+					{ description: "Long sleep for abort signal test", command: "sleep 999" },
+					controller.signal,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				})
@@ -320,7 +365,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_kill_fmt", { description: "Long sleep for kill format test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_kill_fmt",
+					{ description: "Long sleep for kill format test", command: "sleep 999" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				});
@@ -347,7 +398,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_kill_msg", { description: "Long sleep for kill message test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_kill_msg",
+					{ description: "Long sleep for kill message test", command: "sleep 999" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				});
@@ -371,7 +428,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_bg_fmt", { description: "Long sleep for background format test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bg_fmt",
+					{ description: "Long sleep for background format test", command: "sleep 999" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				});
@@ -397,7 +460,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_bg_msg", { description: "Long sleep for background message test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bg_msg",
+					{ description: "Long sleep for background message test", command: "sleep 999" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				});
@@ -421,7 +490,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_bg_log", { description: "Long sleep for background log test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bg_log",
+					{ description: "Long sleep for background log test", command: "sleep 999" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				});
@@ -442,9 +517,18 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_bg_exit", { description: "Echo and sleep for background exit notification test", command: "echo bg_start && sleep 1" }, undefined, undefined, {
-					cwd: "/tmp",
-				} as any)
+				.execute(
+					"tc_bg_exit",
+					{
+						description: "Echo and sleep for background exit notification test",
+						command: "echo bg_start && sleep 1",
+					},
+					undefined,
+					undefined,
+					{
+						cwd: "/tmp",
+					} as any,
+				)
 				.then((r: any) => {
 					result = r;
 				});
@@ -469,7 +553,13 @@ describe("bash channel extension", () => {
 			const toolDef = getToolDef();
 
 			toolDef
-				.execute("tc_bg_exit2", { description: "Echo and sleep for logPath notification test", command: "echo ok && sleep 1" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bg_exit2",
+					{ description: "Echo and sleep for logPath notification test", command: "echo ok && sleep 1" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.catch(() => {});
 
 			await new Promise((r) => setTimeout(r, 50));
@@ -491,7 +581,13 @@ describe("bash channel extension", () => {
 			const toolDef = getToolDef();
 
 			toolDef
-				.execute("tc_bg_noout", { description: "Echo and sleep for background output mode test", command: "echo before && sleep 1" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bg_noout",
+					{ description: "Echo and sleep for background output mode test", command: "echo before && sleep 1" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.catch(() => {});
 
 			await new Promise((r) => setTimeout(r, 50));
@@ -513,7 +609,13 @@ describe("bash channel extension", () => {
 			const toolDef = getToolDef();
 
 			toolDef
-				.execute("tc_bg_sub", { description: "Echo and sleep for subscribe output test", command: "echo sub && sleep 2" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bg_sub",
+					{ description: "Echo and sleep for subscribe output test", command: "echo sub && sleep 2" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.catch(() => {});
 
 			await new Promise((r) => setTimeout(r, 50));
@@ -538,7 +640,13 @@ describe("bash channel extension", () => {
 			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
 			const toolDef = getToolDef();
 
-			toolDef.execute("tc_fg_only", { description: "Sleep for foreground-only list test", command: "sleep 5" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_fg_only",
+				{ description: "Sleep for foreground-only list test", command: "sleep 5" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 			await new Promise((r) => setTimeout(r, 20));
 
 			mock.channelSend.mockClear();
@@ -553,7 +661,13 @@ describe("bash channel extension", () => {
 			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
 			const toolDef = getToolDef();
 
-			toolDef.execute("tc_list_bg", { description: "Long sleep for background list test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_list_bg",
+				{ description: "Long sleep for background list test", command: "sleep 999" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 			await new Promise((r) => setTimeout(r, 20));
 			receiveHandler({ __call: "background", toolCallId: "tc_list_bg" });
 			await new Promise((r) => setTimeout(r, 10));
@@ -573,7 +687,13 @@ describe("bash channel extension", () => {
 			const toolDef = getToolDef();
 
 			toolDef
-				.execute("tc_hist_exit", { description: "Echo and sleep for history exit test", command: "echo hi && sleep 1" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_hist_exit",
+					{ description: "Echo and sleep for history exit test", command: "echo hi && sleep 1" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.catch(() => {});
 
 			await new Promise((r) => setTimeout(r, 50));
@@ -596,7 +716,13 @@ describe("bash channel extension", () => {
 			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
 			const toolDef = getToolDef();
 
-			toolDef.execute("tc_rm", { description: "Long sleep for remove action test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_rm",
+				{ description: "Long sleep for remove action test", command: "sleep 999" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 			await new Promise((r) => setTimeout(r, 20));
 			receiveHandler({ __call: "background", toolCallId: "tc_rm" });
 			await new Promise((r) => setTimeout(r, 10));
@@ -617,7 +743,13 @@ describe("bash channel extension", () => {
 			const toolDef = getToolDef();
 
 			toolDef
-				.execute("tc_rm_hist", { description: "Echo and sleep for remove history test", command: "echo bye && sleep 1" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_rm_hist",
+					{ description: "Echo and sleep for remove history test", command: "echo bye && sleep 1" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.catch(() => {});
 
 			await new Promise((r) => setTimeout(r, 50));
@@ -640,7 +772,13 @@ describe("bash channel extension", () => {
 			const toolDef = getToolDef();
 
 			toolDef
-				.execute("tc_session_clear", { description: "Echo and sleep for session clear test", command: "echo x && sleep 1" }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_session_clear",
+					{ description: "Echo and sleep for session clear test", command: "echo x && sleep 1" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.catch(() => {});
 
 			await new Promise((r) => setTimeout(r, 50));
@@ -660,7 +798,13 @@ describe("bash channel extension", () => {
 	describe("bashId generation", () => {
 		it("assigns bashId matching bash-<6-char-hex> to each process", async () => {
 			const toolDef = getToolDef();
-			toolDef.execute("tc_bashid_1", { description: "Echo for bashId test", command: "echo hello" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_bashid_1",
+				{ description: "Echo for bashId test", command: "echo hello" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 
 			await new Promise((r) => setTimeout(r, 200));
 
@@ -672,7 +816,13 @@ describe("bash channel extension", () => {
 
 		it("sets logPath containing pi-bash-", async () => {
 			const toolDef = getToolDef();
-			toolDef.execute("tc_bashid_2", { description: "Echo for logPath test", command: "echo hello" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_bashid_2",
+				{ description: "Echo for logPath test", command: "echo hello" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 
 			await new Promise((r) => setTimeout(r, 200));
 
@@ -689,7 +839,13 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_bgafter", { description: "Sleep for backgroundAfter test", command: "sleep 999", backgroundAfter: 1 }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bgafter",
+					{ description: "Sleep for backgroundAfter test", command: "sleep 999", backgroundAfter: 1 },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				})
@@ -714,7 +870,18 @@ describe("bash channel extension", () => {
 
 			let result: any = null;
 			toolDef
-				.execute("tc_bgafter_ignore", { description: "Sleep for ignored backgroundAfter test", command: "sleep 999", backgroundAfter: 10, timeout: 2 }, undefined, undefined, { cwd: "/tmp" } as any)
+				.execute(
+					"tc_bgafter_ignore",
+					{
+						description: "Sleep for ignored backgroundAfter test",
+						command: "sleep 999",
+						backgroundAfter: 10,
+						timeout: 2,
+					},
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
 				.then((r: any) => {
 					result = r;
 				})
@@ -735,7 +902,13 @@ describe("bash channel extension", () => {
 			const toolDef = getToolDef();
 			const statusTool = getStatusToolDef();
 
-			toolDef.execute("tc_status_live", { description: "Sleep for status tool test", command: "sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_status_live",
+				{ description: "Sleep for status tool test", command: "sleep 999" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 			await new Promise((r) => setTimeout(r, 50));
 
 			const startCall = mock.channelSend.mock.calls.find((c: any[]) => (c[0] as BashChannelEvent).type === "start");
@@ -758,11 +931,21 @@ describe("bash channel extension", () => {
 			const ch = mock.getCurrentChannel()!;
 			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
 
-			toolDef.execute("tc_grep_test", { description: "Multi-output for grep test", command: "echo 'hello world' && echo 'error: something failed' && echo 'done' && sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_grep_test",
+				{
+					description: "Multi-output for grep test",
+					command: "echo 'hello world' && echo 'error: something failed' && echo 'done' && sleep 999",
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 			await new Promise((r) => setTimeout(r, 200));
 
 			const startCall = mock.channelSend.mock.calls.find(
-				(c: any[]) => (c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_grep_test",
+				(c: any[]) =>
+					(c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_grep_test",
 			);
 			expect(startCall).toBeDefined();
 			const bashId = (startCall![0] as BashChannelEvent).processes![0].bashId;
@@ -787,11 +970,22 @@ describe("bash channel extension", () => {
 			const ch = mock.getCurrentChannel()!;
 			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
 
-			toolDef.execute("tc_lastlines_test", { description: "Multi-line output for lastLines test", command: "for i in $(seq 1 10); do echo \"line \$i\"; done && sleep 999" }, undefined, undefined, { cwd: "/tmp" } as any);
+			toolDef.execute(
+				"tc_lastlines_test",
+				{
+					description: "Multi-line output for lastLines test",
+					command: 'for i in $(seq 1 10); do echo "line $i"; done && sleep 999',
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
 			await new Promise((r) => setTimeout(r, 300));
 
 			const startCall = mock.channelSend.mock.calls.find(
-				(c: any[]) => (c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_lastlines_test",
+				(c: any[]) =>
+					(c[0] as BashChannelEvent).type === "start" &&
+					(c[0] as BashChannelEvent).toolCallId === "tc_lastlines_test",
 			);
 			expect(startCall).toBeDefined();
 			const bashId = (startCall![0] as BashChannelEvent).processes![0].bashId;

@@ -316,7 +316,12 @@ export function createBashToolDefinition(
 		parameters: bashSchema,
 		async execute(
 			_toolCallId,
-			{ command, description, timeout, backgroundAfter: _backgroundAfter }: { command: string; description: string; timeout?: number; backgroundAfter?: number },
+			{
+				command,
+				description: _description,
+				timeout,
+				backgroundAfter: _backgroundAfter,
+			}: { command: string; description: string; timeout?: number; backgroundAfter?: number },
 			signal?: AbortSignal,
 			onUpdate?,
 			_ctx?,
