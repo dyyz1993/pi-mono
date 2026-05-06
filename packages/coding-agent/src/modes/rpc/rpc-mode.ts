@@ -14,6 +14,7 @@
 import * as crypto from "node:crypto";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import { DEFAULT_TIER_ALIASES } from "../../core/defaults.js";
 import { ChannelManager } from "../../core/extensions/channel-manager.js";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.js";
 import type {
@@ -497,6 +498,28 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_available_models": {
 				const models = await session.modelRegistry.getAvailable();
 				return success(id, "get_available_models", { models });
+			}
+
+			case "get_tier_models": {
+				const tierModels = session.getTierModels();
+				const merged = { ...DEFAULT_TIER_ALIASES, ...tierModels };
+				return success(id, "get_tier_models", { models: merged });
+			}
+
+			case "set_tier_models": {
+				const { models } = command;
+				const validTiers = new Set(["fast", "pro", "max"]);
+				for (const key of Object.keys(models)) {
+					if (!validTiers.has(key)) {
+						return error(id, "set_tier_models", `Invalid tier name: "${key}". Valid tiers are: fast, pro, max`);
+					}
+				}
+				const mapping: Record<string, string> = {};
+				if (models.fast !== undefined) mapping.fast = models.fast;
+				if (models.pro !== undefined) mapping.pro = models.pro;
+				if (models.max !== undefined) mapping.max = models.max;
+				session.setTierModels(mapping);
+				return success(id, "set_tier_models");
 			}
 
 			// =================================================================

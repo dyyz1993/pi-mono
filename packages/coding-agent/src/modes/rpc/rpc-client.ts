@@ -282,6 +282,15 @@ export class RpcClient {
 		return this.getData<{ models: ModelInfo[] }>(response).models;
 	}
 
+	async getTierModels(): Promise<Record<string, string>> {
+		const response = await this.send({ type: "get_tier_models" });
+		return this.getData<{ models: Record<string, string> }>(response).models;
+	}
+
+	async setTierModels(models: { fast?: string; pro?: string; max?: string }): Promise<void> {
+		await this.send({ type: "set_tier_models", models });
+	}
+
 	/**
 	 * Set thinking level.
 	 */

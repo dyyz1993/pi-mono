@@ -54,6 +54,7 @@ function createMockSession() {
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
 		subscribe: vi.fn().mockReturnValue(vi.fn()),
 		getTierModels: vi.fn().mockReturnValue({}),
+		setTierModels: vi.fn(),
 		modelRegistry: {
 			getAvailable: vi.fn().mockResolvedValue([{ provider: "test", id: "test-model", contextWindow: 128000 }]),
 		},
@@ -289,6 +290,86 @@ describe("RPC mode command handling", () => {
 			expect(resp.success).toBe(true);
 			expect(resp.data.models).toHaveLength(1);
 			expect(resp.data.models[0].provider).toBe("test");
+		});
+	});
+
+	describe("get_tier_models", () => {
+		it("returns default tier aliases when no session overrides", async () => {
+			const resp = await sendCommand({ type: "get_tier_models", id: "gtm1" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.command).toBe("get_tier_models");
+			expect(resp.data.models).toEqual({
+				fast: "anthropic/claude-haiku-4",
+				pro: "anthropic/claude-sonnet-4-20250514",
+				max: "anthropic/claude-opus-4-6",
+			});
+		});
+
+		it("returns merged defaults and session overrides", async () => {
+			session.getTierModels.mockReturnValueOnce({ fast: "openai/gpt-4o" });
+
+			const resp = await sendCommand({ type: "get_tier_models", id: "gtm2" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.data.models.fast).toBe("openai/gpt-4o");
+			expect(resp.data.models.pro).toBe("anthropic/claude-sonnet-4-20250514");
+			expect(resp.data.models.max).toBe("anthropic/claude-opus-4-6");
+		});
+	});
+
+	describe("set_tier_models", () => {
+		it("sets session tier models", async () => {
+			const resp = await sendCommand({
+				type: "set_tier_models",
+				id: "stm1",
+				models: { fast: "openai/gpt-4o", pro: "anthropic/claude-sonnet-4-20250514" },
+			});
+
+			expect(resp.success).toBe(true);
+			expect(resp.command).toBe("set_tier_models");
+			expect(session.setTierModels).toHaveBeenCalledWith({
+				fast: "openai/gpt-4o",
+				pro: "anthropic/claude-sonnet-4-20250514",
+			});
+		});
+
+		it("sets all three tiers", async () => {
+			const resp = await sendCommand({
+				type: "set_tier_models",
+				id: "stm2",
+				models: { fast: "a/b", pro: "c/d", max: "e/f" },
+			});
+
+			expect(resp.success).toBe(true);
+			expect(session.setTierModels).toHaveBeenCalledWith({
+				fast: "a/b",
+				pro: "c/d",
+				max: "e/f",
+			});
+		});
+
+		it("sets partial tiers only", async () => {
+			const resp = await sendCommand({
+				type: "set_tier_models",
+				id: "stm3",
+				models: { max: "e/f" },
+			});
+
+			expect(resp.success).toBe(true);
+			expect(session.setTierModels).toHaveBeenCalledWith({ max: "e/f" });
+		});
+
+		it("returns error for invalid tier names", async () => {
+			const resp = await sendCommand({
+				type: "set_tier_models",
+				id: "stm4",
+				models: { turbo: "openai/gpt-4o" } as any,
+			});
+
+			expect(resp.success).toBe(false);
+			expect(resp.error).toContain("Invalid tier name");
+			expect(resp.error).toContain("turbo");
 		});
 	});
 
