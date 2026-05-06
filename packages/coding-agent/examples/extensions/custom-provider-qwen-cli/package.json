@@ -1,7 +1,7 @@
 {
   "name": "pi-extension-custom-provider-qwen-cli",
   "private": true,
-  "version": "0.69.25",
+  "version": "0.69.26",
   "type": "module",
   "scripts": {
     "clean": "echo 'nothing to clean'",
