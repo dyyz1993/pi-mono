@@ -784,6 +784,7 @@ export class AgentSession {
 
 	setTierModels(mapping: Record<string, string>): void {
 		this._tierModels = { ...mapping };
+		this.sessionManager.appendTierModelsChange(mapping);
 	}
 
 	/** Current thinking level */

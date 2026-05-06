@@ -65,6 +65,11 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	modelId: string;
 }
 
+export interface TierModelsChangeEntry extends SessionEntryBase {
+	type: "tier_models_change";
+	tierModels: Record<string, string>;
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -148,6 +153,7 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
+	| TierModelsChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| FoldEntry
@@ -910,6 +916,19 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			provider,
 			modelId,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a tier models change as child of current leaf, then advance leaf. Returns entry id. */
+	appendTierModelsChange(tierModels: Record<string, string>): string {
+		const entry: TierModelsChangeEntry = {
+			type: "tier_models_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			tierModels,
 		};
 		this._appendEntry(entry);
 		return entry.id;
