@@ -2379,8 +2379,8 @@ export class AgentSession {
 		);
 	}
 
-	private async _resolveOptionalModel(modelSpec?: string): Promise<Model<any>> {
-		if (!modelSpec) return this.model!;
+	private async _resolveOptionalModel(modelSpec?: string): Promise<Model<any> | undefined> {
+		if (!modelSpec) return this.model;
 
 		const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
 		const candidate = aliasResolved ?? modelSpec;
@@ -2408,7 +2408,7 @@ export class AgentSession {
 			return resolved;
 		}
 
-		return this.model!;
+		return this.model;
 	}
 
 	async callLLM(options: CallLLMOptions): Promise<string> {
