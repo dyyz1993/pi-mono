@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added model tier aliases: `fast`, `pro`, `max` can be used anywhere a model is specified (CLI, settings, agent configs, extensions) ([docs/models.md](docs/models.md#model-tier-aliases))
+- Added `tierModels` setting to customize alias-to-model mapping in `settings.json`
+- Added `model` parameter to `callLLM()` and `forkAgent()` extension APIs for per-call model selection
+- Added session-level `getTierModels()` / `setTierModels()` for per-session alias overrides
+
 ## [0.70.5] - 2026-05-05
 
 ### Fixed

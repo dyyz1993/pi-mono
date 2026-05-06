@@ -12,6 +12,7 @@ Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/ag
 - [Overriding Built-in Providers](#overriding-built-in-providers)
 - [Per-model Overrides](#per-model-overrides)
 - [OpenAI Compatibility](#openai-compatibility)
+- [Model Tier Aliases](#model-tier-aliases)
 
 ## Minimal Example
 
@@ -392,4 +393,71 @@ Vercel AI Gateway example:
     }
   }
 }
+```
+
+## Model Tier Aliases
+
+Pi provides built-in model aliases that work as shorthand for specific models:
+
+| Alias | Default Model | Use Case |
+|-------|--------------|----------|
+| `fast` | `anthropic/claude-haiku-4` | Quick tasks: summaries, titles, classification |
+| `pro` | `anthropic/claude-sonnet-4-20250514` | Day-to-day coding: write code, fix bugs, answer questions |
+| `max` | `anthropic/claude-opus-4-6` | Deep reasoning: architecture design, code review, complex analysis |
+
+### Where Aliases Work
+
+Aliases are accepted everywhere a model can be specified:
+
+- **CLI**: `pi --model fast`
+- **CLI scoped models**: `pi --models "fast,pro,max"`
+- **Settings**: `"defaultModel": "pro"`, `"enabledModels": ["fast", "pro", "max"]`
+- **Interactive**: `/model fast`
+- **Agent configs**: `model: max` in `.pi/agents/*.md`
+- **Extension API**: `pi.callLLM({ model: "fast", ... })`, `pi.forkAgent("task", { model: "max" })`
+- **RPC**: `{ type: "set_model", provider: "...", modelId: "fast" }`
+
+### Resolution Order
+
+When an alias is used, it resolves through this chain:
+
+1. **Session-level** `tierModels` override (set via `pi.setTierModels()`)
+2. **Global** `tierModels` from `settings.json`
+3. **Hardcoded defaults** (`fast` → haiku, `pro` → sonnet, `max` → opus)
+4. **Current session model** (if alias can't be resolved)
+
+### Customizing Aliases
+
+Override in `~/.pi/settings.json` (global) or `.pi/settings.json` (per-project):
+
+```json
+{
+  "tierModels": {
+    "fast": "openai/gpt-4o-mini",
+    "pro": "google/gemini-2.5-pro",
+    "max": "anthropic/claude-opus-4-6"
+  }
+}
+```
+
+You only need to override the aliases you want to change. Unspecified aliases keep their defaults.
+
+### Using in Extensions
+
+```typescript
+// Quick task with fast model
+const summary = await pi.callLLM({
+  model: "fast",
+  messages: [{ role: "user", content: "Summarize..." }],
+});
+
+// Background review with max model
+pi.background(async (signal) => {
+  const result = await pi.forkAgent("Review this code", {
+    model: "max",
+    shareContext: false,
+    maxTurns: 5,
+    signal,
+  });
+});
 ```

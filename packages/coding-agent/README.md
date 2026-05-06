@@ -501,7 +501,7 @@ cat README.md | pi -p "Summarize this text"
 | Option | Description |
 |--------|-------------|
 | `--provider <name>` | Provider (anthropic, openai, google, etc.) |
-| `--model <pattern>` | Model pattern or ID (supports `provider/id` and optional `:<thinking>`) |
+| `--model <pattern>` | Model pattern or ID (supports `provider/id` and optional `:<thinking>`). Tier aliases: `fast` (quick), `pro` (standard), `max` (deep reasoning). See [Model Tier Aliases](docs/models.md#model-tier-aliases) |
 | `--api-key <key>` | API key (overrides env vars) |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling |
