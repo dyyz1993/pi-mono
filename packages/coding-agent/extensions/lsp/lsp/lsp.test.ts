@@ -54,7 +54,7 @@ import lspExtensionDefault, { type LspChannelEvent } from "./index.js";
 								resolve(response);
 							}
 						});
-						channelOnReceiveHandler(data);
+						channelOnReceiveHandler!(data);
 					});
 				}),
 				call: vi.fn(async (method: string, params: Record<string, unknown>, _timeoutMs?: number) => {
@@ -69,7 +69,7 @@ import lspExtensionDefault, { type LspChannelEvent } from "./index.js";
 								resolve(response);
 							}
 						});
-						channelOnReceiveHandler({ __call: method, invokeId, ...params });
+						channelOnReceiveHandler!({ __call: method, invokeId, ...params });
 					});
 				}),
 			};

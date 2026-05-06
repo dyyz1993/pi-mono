@@ -6,9 +6,9 @@ import type { CoordinatorChannelContract, DelegatedTask, SessionStatus } from ".
 export interface ProcessManagerApi {
 	delegate(task: string, projectPath: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
 	delegate_send(fromSessionId: string, toSessionId: string, message: string): Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }>;
-	delegate_status(sessionId: string): { status: SessionStatus };
-	delegate_list(): Array<{ sessionId: string; status: SessionStatus; projectPath: string }>;
-	delegate_stop(sessionId: string): boolean;
+	delegate_status(sessionId: string): Promise<{ status: SessionStatus }>;
+	delegate_list(): Promise<Array<{ sessionId: string; status: SessionStatus; projectPath: string }>>;
+	delegate_stop(sessionId: string): Promise<boolean>;
 	delegate_fork(sessionId: string, task: string, title?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
 	delegate_compact_status(sessionId: string): Promise<{ isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } }>;
 }
@@ -32,7 +32,9 @@ export class TaskStore {
 				}
 			}
 		}
-		catch {}
+		catch (err) {
+			console.debug("[coordinator] task file load failed:", err instanceof Error ? err.message : err);
+		}
 	}
 
 	private save(): void {
@@ -93,7 +95,8 @@ export function createCoordinatorHandler(
 	getSessionId: () => string,
 	getStore: () => TaskStore,
 ): void {
-	channel.handle("session_delegate", async ({ task, title }) => {
+	channel.handle("session_delegate", async (params: unknown) => {
+		const { task, title } = params as { task: string; title?: string };
 		const projectPath = process.cwd();
 		const result = await pm.delegate(task, projectPath);
 
@@ -106,10 +109,17 @@ export function createCoordinatorHandler(
 			status: "idle",
 		});
 
+		channel.emit("task_started", {
+			sessionId: result.sessionId,
+			title: title || task.slice(0, 60),
+			task,
+		});
+
 		return result;
 	});
 
-	channel.handle("session_delegate_send", async ({ targetSessionId, message }) => {
+	channel.handle("session_delegate_send", async (params: unknown) => {
+		const { targetSessionId, message } = params as { targetSessionId: string; message: string };
 		const result = await pm.delegate_send(getSessionId(), targetSessionId, message);
 
 		if (result.delivered) {
@@ -123,14 +133,15 @@ export function createCoordinatorHandler(
 		return result;
 	});
 
-	channel.handle("session_delegate_status", async ({ sessionId }) => {
+	channel.handle("session_delegate_status", async (params: unknown) => {
+		const { sessionId } = params as { sessionId: string };
 		const store = getStore();
 		const task = store.get(sessionId);
 		if (!task) {
-			const status = pm.delegate_status(sessionId);
+			await pm.delegate_status(sessionId);
 			return { task: null };
 		}
-		const remote = pm.delegate_status(sessionId);
+		const remote = await pm.delegate_status(sessionId);
 		store.update(sessionId, { status: remote.status });
 		const compactInfo = await pm.delegate_compact_status(sessionId);
 		return { task: store.get(sessionId) ?? null, isCompacting: compactInfo.isCompacting, contextUsage: compactInfo.contextUsage };
@@ -139,21 +150,24 @@ export function createCoordinatorHandler(
 	channel.handle("session_delegate_list", async () => {
 		const store = getStore();
 		for (const t of store.list()) {
-			const remote = pm.delegate_status(t.sessionId);
+			const remote = await pm.delegate_status(t.sessionId);
 			store.update(t.sessionId, { status: remote.status });
 		}
 		return { tasks: store.list() };
 	});
 
-	channel.handle("session_delegate_stop", async ({ sessionId }) => {
-		const ok = pm.delegate_stop(sessionId);
+	channel.handle("session_delegate_stop", async (params: unknown) => {
+		const { sessionId } = params as { sessionId: string };
+		const ok = await pm.delegate_stop(sessionId);
 		if (ok) {
 			getStore().update(sessionId, { status: "stopped" });
+			channel.emit("task_stopped", { sessionId });
 		}
 		return { ok };
 	});
 
-	channel.handle("session_delegate_fork", async ({ sessionId, task, title }) => {
+	channel.handle("session_delegate_fork", async (params: unknown) => {
+		const { sessionId, task, title } = params as { sessionId: string; task: string; title?: string };
 		const result = await pm.delegate_fork(sessionId, task, title);
 		getStore().add({
 			sessionId: result.sessionId,
@@ -163,6 +177,13 @@ export function createCoordinatorHandler(
 			dispatchedAt: Date.now(),
 			status: "idle",
 		});
+
+		channel.emit("task_started", {
+			sessionId: result.sessionId,
+			title: title || task.slice(0, 60),
+			task,
+		});
+
 		return result;
 	});
 }

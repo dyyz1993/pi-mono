@@ -133,7 +133,9 @@ class ObjectStore {
 		if (existsSync(gitignorePath)) {
 			try {
 				gitignorePatterns.push(...readFileSync(gitignorePath, "utf-8").split(/\r?\n/));
-			} catch {}
+			} catch (err) {
+				console.debug("[file-snapshot] .gitignore read failed:", err instanceof Error ? err.message : err);
+			}
 		}
 		const result = new Map<string, string>();
 		this.scanDir(cwd, cwd, gitignorePatterns, result);
@@ -141,10 +143,11 @@ class ObjectStore {
 	}
 
 	private scanDir(dir: string, root: string, extraPatterns: string[], result: Map<string, string>): void {
-		let entries: ReturnType<typeof readdirSync>;
+		let entries: import("node:fs").Dirent[];
 		try {
-			entries = readdirSync(dir, { withFileTypes: true });
-		} catch {
+			entries = readdirSync(dir, { withFileTypes: true }) as import("node:fs").Dirent[];
+		} catch (err) {
+			console.debug("[file-snapshot] directory scan failed:", err instanceof Error ? err.message : err);
 			return;
 		}
 		for (const entry of entries) {
@@ -160,7 +163,9 @@ class ObjectStore {
 					if (stat.size > 1024 * 1024) continue;
 					const content = readFileSync(fullPath, "utf-8");
 					result.set(relPath, content);
-				} catch {}
+				} catch (err) {
+					console.debug("[file-snapshot] file read failed:", relPath, err instanceof Error ? err.message : err);
+				}
 			}
 		}
 	}
@@ -349,7 +354,8 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 		if (toRestore.length === 0 && toDelete.length === 0) return;
 
 		if (event.preview) {
-			return { restored: toRestore.sort(), deleted: toDelete.sort() };
+			void { restored: toRestore.sort(), deleted: toDelete.sort() };
+			return;
 		}
 
 		const preRollbackFiles = s.scanWorkingDir(ctx.cwd);

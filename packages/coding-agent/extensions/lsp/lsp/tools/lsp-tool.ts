@@ -136,7 +136,9 @@ async function executeAction(
 							diagnostics = diagnostics.concat(pulled);
 						}
 					}
-				} catch {}
+				} catch (err) {
+					console.debug("[lsp] pull diagnostics failed:", err instanceof Error ? err.message : err);
+				}
 
 				return {
 					action: "diagnostics",

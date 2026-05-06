@@ -177,7 +177,10 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 
 			isStopping = true;
 			try {
-				await sendRequest("shutdown", null, 1_000).catch(() => undefined);
+				await sendRequest("shutdown", null, 1_000).catch((err) => {
+					console.debug("[lsp] shutdown request failed:", err instanceof Error ? err.message : err);
+					return undefined;
+				});
 				sendNotification("exit", null);
 			} finally {
 				await terminateProcess();
@@ -404,7 +407,8 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 		let parsed: Record<string, unknown>;
 		try {
 			parsed = JSON.parse(payload) as Record<string, unknown>;
-		} catch {
+		} catch (err) {
+			console.debug("[lsp] RPC message parse failed:", err instanceof Error ? err.message : err);
 			return;
 		}
 
@@ -534,8 +538,8 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 
 		try {
 			processHandle.stdin.end();
-		} catch {
-			// Ignore shutdown race.
+		} catch (err) {
+			console.debug("[lsp] stdin end failed:", err instanceof Error ? err.message : err);
 		}
 
 		const exited = await Promise.race([
@@ -546,8 +550,8 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 		if (exited === null) {
 			try {
 				processHandle.kill("SIGKILL");
-			} catch {
-				// Ignore kill failures.
+			} catch (err) {
+				console.debug("[lsp] SIGKILL failed:", err instanceof Error ? err.message : err);
 			}
 		}
 	}
@@ -705,7 +709,8 @@ function isExecutable(filePath: string): boolean {
 	try {
 		accessSync(filePath, constants.X_OK);
 		return true;
-	} catch {
+	} catch (err) {
+		console.debug("[lsp] executable check failed:", err instanceof Error ? err.message : err);
 		return false;
 	}
 }

@@ -13,8 +13,7 @@
  *   always-deny  — block everything
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
-import type { AgentConfig } from "../subagent/agents.js";
+import type { AgentConfig, ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls", "glob"]);
 const EDIT_TOOLS = new Set(["edit", "write"]);

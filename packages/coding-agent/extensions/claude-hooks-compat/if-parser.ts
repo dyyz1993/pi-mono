@@ -39,7 +39,8 @@ function globMatch(pattern: string, text: string): boolean {
 	const regex = globToRegex(pattern);
 	try {
 		return new RegExp(regex).test(text);
-	} catch {
+	} catch (err) {
+		console.debug("[claude-hooks-compat] glob regex match failed:", err instanceof Error ? err.message : err);
 		return false;
 	}
 }

@@ -48,8 +48,8 @@ export function createAgentEndHook(
 				if (diagnostics.length > 0) {
 					results.push({ filePath, diagnostics });
 				}
-			} catch {
-				// skip files that fail
+			} catch (err) {
+				console.debug("[lsp] diagnostics for file failed:", filePath, err instanceof Error ? err.message : err);
 			}
 		}
 
@@ -74,7 +74,9 @@ export function createAgentEndHook(
 		let fileContent = "";
 		try {
 			fileContent = await fsReadFile(resolve(cwd, filePath), "utf8");
-		} catch {}
+		} catch (err) {
+			console.debug("[lsp] file read for diagnostics failed:", err instanceof Error ? err.message : err);
+		}
 
 		runtime.notify(
 			"textDocument/didOpen",
@@ -106,7 +108,9 @@ export function createAgentEndHook(
 					diagnostics = diagnostics.concat(pulled);
 				}
 			}
-		} catch {}
+		} catch (err) {
+			console.debug("[lsp] pull diagnostics request failed:", err instanceof Error ? err.message : err);
+		}
 
 		return diagnostics;
 	}

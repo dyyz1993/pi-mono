@@ -1,0 +1,16 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"paths": {
+			"@dyyz1993/pi-coding-agent": ["./src/index.ts"],
+			"@dyyz1993/pi-coding-agent/hooks": ["./src/core/hooks/index.ts"],
+			"@dyyz1993/pi-tui": ["../tui/src/index.ts"],
+			"@dyyz1993/pi-ai": ["../ai/src/index.ts"],
+			"typebox": ["../../node_modules/typebox"]
+		},
+		"skipLibCheck": true
+	},
+	"include": ["extensions/**/*.ts"],
+	"exclude": ["node_modules", "dist"]
+}

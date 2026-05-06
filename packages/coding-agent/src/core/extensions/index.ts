@@ -4,7 +4,10 @@
 
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.js";
 export type { SourceInfo } from "../source-info.js";
+export type { TypedChannel } from "./channel-factory.js";
+export { createTypedChannel, defineChannel } from "./channel-factory.js";
 export { ChannelManager } from "./channel-manager.js";
+export type { ChannelTypeRegistry } from "./channel-registry.js";
 export type { Channel, ChannelDataMessage, ChannelEntry, ChannelOutputFn } from "./channel-types.js";
 export { ClientChannel } from "./client-channel.js";
 export {

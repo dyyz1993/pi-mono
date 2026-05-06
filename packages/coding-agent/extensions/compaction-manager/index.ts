@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
+import type { AssistantMessage } from "@dyyz1993/pi-ai";
 import { DEFAULT_CONFIG, type CompactionManagerConfig } from "./config.js";
 import { extractFoldSummary, estimateMessageTokens, findFoldableEntries } from "./context-fold.js";
 import { microcompactMessages, stripThinkingBlocks } from "./microcompact.js";
@@ -18,7 +19,8 @@ function loadConfig(): CompactionManagerConfig {
 				reactive: { ...DEFAULT_CONFIG.reactive, ...raw.reactive },
 				contextFold: { ...DEFAULT_CONFIG.contextFold, ...raw.contextFold },
 			};
-		} catch {
+		} catch (err) {
+			console.debug("[compaction-manager] config load failed:", err instanceof Error ? err.message : err);
 			return DEFAULT_CONFIG;
 		}
 	}
@@ -62,7 +64,7 @@ export default function (pi: ExtensionAPI) {
 			if (foldable.length === 0) return;
 
 			for (const entry of foldable) {
-				const msg = entry.message as import("@dyyz1993/pi-agent-core").AssistantMessage;
+				const msg = entry.message as AssistantMessage;
 				const summary = extractFoldSummary(msg, config.contextFold.maxSummaryLength);
 				const tokens = estimateMessageTokens(msg);
 				pi.foldEntry(entry.id, summary, tokens);

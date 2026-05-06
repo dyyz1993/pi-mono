@@ -1,10 +1,9 @@
 import {
-	ClientChannel,
+	createTypedChannel,
 	type ExtensionAPI,
-	ServerChannel,
 } from "@dyyz1993/pi-coding-agent";
 import { Type } from "typebox";
-import type { CoordinatorChannelContract } from "./types.js";
+import { COORDINATOR_CHANNEL_NAME, type CoordinatorChannelContract, type SessionStatus } from "./types.js";
 import { createCoordinatorHandler, TaskStore, type ProcessManagerApi } from "./handler.js";
 
 const DelegateParams = Type.Object({
@@ -32,10 +31,9 @@ const DelegateForkParams = Type.Object({
 });
 
 export default function coordinatorExtension(pi: ExtensionAPI) {
-	const rawChannel = pi.registerChannel("coordinator");
+	const rawChannel = pi.registerChannel(COORDINATOR_CHANNEL_NAME);
 
-	const serverChannel = new ServerChannel<CoordinatorChannelContract>(rawChannel);
-	const client = new ClientChannel<CoordinatorChannelContract>(rawChannel);
+	const { server: serverChannel, client } = createTypedChannel<CoordinatorChannelContract>(rawChannel);
 
 	let currentSessionId = "";
 	let store: TaskStore | null = null;
@@ -47,56 +45,59 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
 	const serverProxy: ProcessManagerApi = {
 		async delegate(task, _projectPath) {
-			return client.call("session_delegate", { task });
+			return client.call("session_delegate", { task }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
 		},
 
 		async delegate_send(fromSessionId, toSessionId, message) {
 			return client.call("session_delegate_send", {
 				targetSessionId: toSessionId,
 				message,
-			});
+			}) as Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }>;
 		},
 
 		async delegate_status(sessionId) {
 			try {
-				const result = await client.call("session_delegate_status", { sessionId });
-				return result.task ? { status: result.task.status } : { status: "stopped" as const };
-			} catch {
+				const result = await client.call("session_delegate_status", { sessionId }) as { task: { status: string } | null };
+				return result.task ? { status: result.task.status as SessionStatus } : { status: "stopped" as const };
+			} catch (err) {
+				console.debug("[coordinator] delegate_status failed:", err instanceof Error ? err.message : err);
 				return { status: "stopped" as const };
 			}
 		},
 
 		async delegate_list() {
 			try {
-				const result = await client.call("session_delegate_list", {}) as Record<string, unknown>;
-				const sessions = (result.sessions ?? result.tasks ?? []) as Array<{ sessionId: string; status: import("./types.js").SessionStatus; projectPath: string }>;
-				return sessions;
-			} catch {
+				const result = await client.call("session_delegate_list", {}) as { tasks: Array<{ sessionId: string; status: SessionStatus; projectPath: string }> };
+				return result.tasks;
+			} catch (err) {
+				console.debug("[coordinator] delegate_list failed:", err instanceof Error ? err.message : err);
 				return [];
 			}
 		},
 
 		async delegate_stop(sessionId) {
 			try {
-				const result = await client.call("session_delegate_stop", { sessionId });
+				const result = await client.call("session_delegate_stop", { sessionId }) as { ok: boolean };
 				return result.ok;
-			} catch {
+			} catch (err) {
+				console.debug("[coordinator] delegate_stop failed:", err instanceof Error ? err.message : err);
 				return false;
 			}
 		},
 
 		async delegate_fork(sessionId, task, title) {
-			return client.call("session_delegate_fork", { sessionId, task, title });
+			return client.call("session_delegate_fork", { sessionId, task, title }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
 		},
 
 		async delegate_compact_status(sessionId: string) {
 			try {
-				const result = await client.call("session_delegate_status", { sessionId });
+				const result = await client.call("session_delegate_status", { sessionId }) as { isCompacting?: boolean; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } };
 				return {
 					isCompacting: result.isCompacting ?? false,
 					contextUsage: result.contextUsage ?? { tokens: null as number | null, contextWindow: 0, percent: null as number | null },
 				};
-			} catch {
+			} catch (err) {
+				console.debug("[coordinator] delegate_compact_status failed:", err instanceof Error ? err.message : err);
 				return { isCompacting: false, contextUsage: { tokens: null as number | null, contextWindow: 0, percent: null as number | null } };
 			}
 		},
@@ -114,8 +115,9 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		const prompt = store.buildPrompt();
 		if (prompt) {
 			event.messages.push({
-				role: "system",
+				role: "user",
 				content: [{ type: "text", text: prompt }],
+				timestamp: Date.now(),
 			});
 		}
 	});
@@ -145,8 +147,8 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			}
 
 			return {
-				output: `Delegated task to session ${result.sessionId} (status: ${result.status}). Use session_delegate_send to communicate.`,
-				result: { ...result, dispatchedBy: sid },
+				content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}). Use session_delegate_send to communicate.` }],
+				details: { ...result, dispatchedBy: sid },
 			};
 		},
 	});
@@ -165,12 +167,15 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			const result = await serverProxy.delegate_send(sid, params.targetSessionId, params.message);
 
 			if (!result.delivered) {
-				return { output: `Could not deliver message to ${params.targetSessionId}: session not found`, error: true };
+				return {
+					content: [{ type: "text" as const, text: `Could not deliver message to ${params.targetSessionId}: session not found` }],
+					details: { delivered: false, targetSessionId: params.targetSessionId },
+				};
 			}
 
 			return {
-				output: `Message delivered to ${params.targetSessionId} (status: ${result.targetStatus})`,
-				result,
+				content: [{ type: "text" as const, text: `Message delivered to ${params.targetSessionId} (status: ${result.targetStatus})` }],
+				details: result,
 			};
 		},
 	});
@@ -180,14 +185,20 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		label: "Session Delegate Status",
 		description: "Check the status of a delegated task session.",
 		parameters: DelegateStatusParams,
-		async execute(toolCallId, params) {
+		async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
 			const task = store?.get(params.sessionId);
 			if (task) {
 				const status = task.status === "completed" ? "DONE" : task.status.toUpperCase();
-				return { output: `Task "${task.title}" (${params.sessionId}): ${status}`, result: { task } };
+				return {
+					content: [{ type: "text" as const, text: `Task "${task.title}" (${params.sessionId}): ${status}` }],
+					details: { task },
+				};
 			}
 			const remote = await serverProxy.delegate_status(params.sessionId);
-			return { output: `Session ${params.sessionId} status: ${remote.status}`, result: { task: null } };
+			return {
+				content: [{ type: "text" as const, text: `Session ${params.sessionId} status: ${remote.status}` }],
+				details: { task: null },
+			};
 		},
 	});
 
@@ -196,14 +207,14 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		label: "Session Delegate Stop",
 		description: "Stop a delegated task session.",
 		parameters: DelegateStopParams,
-		async execute(toolCallId, params) {
+		async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
 			const ok = await serverProxy.delegate_stop(params.sessionId);
 			if (ok && store) {
 				store.update(params.sessionId, { status: "stopped" });
 			}
 			return {
-				output: ok ? `Session ${params.sessionId} stopped.` : `Session ${params.sessionId} not found or already stopped.`,
-				result: { ok },
+				content: [{ type: "text" as const, text: ok ? `Session ${params.sessionId} stopped.` : `Session ${params.sessionId} not found or already stopped.` }],
+				details: { ok },
 			};
 		},
 	});
@@ -231,15 +242,16 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				});
 			}
 			return {
-				output: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}). Task: ${params.task}`,
-				result: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid },
+				content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}). Task: ${params.task}` }],
+				details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid },
 			};
 		},
 	});
 
-	client.on("message_received", (data) => {
+	client.on("message_received", (data: unknown) => {
+		const d = data as { fromSessionId: string; message: string };
 		pi.sendUserMessage(
-			`[Coordinator] Message from session ${data.fromSessionId}:\n${data.message}`,
+			`[Coordinator] Message from session ${d.fromSessionId}:\n${d.message}`,
 			{ deliverAs: "followUp" },
 		);
 	});

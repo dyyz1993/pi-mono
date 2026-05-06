@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import bashExtensionDefault, { type BashChannelEvent } from "../../extensions/bash-ext/index.js";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
@@ -1013,6 +1014,116 @@ describe("bash channel extension", () => {
 			const text = result.content[0].text;
 			expect(text).toContain("No process found");
 			expect(text).toContain("<bashId>bash-noexist</bashId>");
+		});
+	});
+
+	describe("truncation and temp file", () => {
+		const tempFilesToCleanup: string[] = [];
+
+		afterEach(() => {
+			for (const f of tempFilesToCleanup) {
+				try {
+					unlinkSync(f);
+				} catch {}
+			}
+			tempFilesToCleanup.length = 0;
+		});
+
+		it("should persist full output when truncation happens by line count", async () => {
+			const toolDef = getToolDef();
+
+			let result: any = null;
+			toolDef
+				.execute(
+					"tc_trunc_lines",
+					{ description: "Generate 3000 lines for truncation test", command: "seq 3000" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
+				.then((r: any) => {
+					result = r;
+				})
+				.catch(() => {});
+
+			await new Promise((r) => setTimeout(r, 2000));
+
+			expect(result).toBeDefined();
+			expect(result.details.truncation.truncated).toBe(true);
+			expect(result.details.fullOutputPath).toBeDefined();
+
+			const fullPath: string = result.details.fullOutputPath;
+			expect(existsSync(fullPath)).toBe(true);
+			tempFilesToCleanup.push(fullPath);
+
+			const fullContent = readFileSync(fullPath, "utf-8");
+			expect(fullContent).toContain("1\n");
+			expect(fullContent).toContain("2999\n3000");
+
+			const text = result.content[0].text;
+			expect(text).toContain("[Showing lines");
+			expect(text).toContain("Full output:");
+		});
+
+		it("should persist full output when truncation happens by byte count", async () => {
+			const toolDef = getToolDef();
+
+			let result: any = null;
+			toolDef
+				.execute(
+					"tc_trunc_bytes",
+					{
+						description: "Generate 60KB for byte truncation test",
+						command: "dd if=/dev/zero bs=1024 count=60 2>/dev/null | tr '\\0' 'x'",
+					},
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
+				.then((r: any) => {
+					result = r;
+				})
+				.catch(() => {});
+
+			await new Promise((r) => setTimeout(r, 3000));
+
+			expect(result).toBeDefined();
+			expect(result.details.fullOutputPath).toBeDefined();
+
+			const fullPath: string = result.details.fullOutputPath;
+			expect(existsSync(fullPath)).toBe(true);
+			tempFilesToCleanup.push(fullPath);
+
+			const fileSize = statSync(fullPath).size;
+			expect(fileSize).toBeGreaterThan(50 * 1024);
+		});
+
+		it("should include truncation message with line range in output text", async () => {
+			const toolDef = getToolDef();
+
+			let result: any = null;
+			toolDef
+				.execute(
+					"tc_trunc_range",
+					{ description: "Generate 3000 lines for line range test", command: "seq 3000" },
+					undefined,
+					undefined,
+					{ cwd: "/tmp" } as any,
+				)
+				.then((r: any) => {
+					result = r;
+				})
+				.catch(() => {});
+
+			await new Promise((r) => setTimeout(r, 2000));
+
+			expect(result).toBeDefined();
+			const text = result.content[0].text;
+			expect(text).toMatch(/\[Showing lines \d+-\d+ of \d+\. Full output: .+\]/);
+
+			if (result.details?.fullOutputPath) {
+				tempFilesToCleanup.push(result.details.fullOutputPath);
+			}
 		});
 	});
 });

@@ -76,7 +76,8 @@ export function parseFrontmatter(content: string): { data: Record<string, unknow
 		} else if (value.startsWith("[") && value.endsWith("]")) {
 			try {
 				value = JSON.parse(value.replace(/'/g, '"'));
-			} catch {
+			} catch (err) {
+				console.debug("[rules-engine] JSON array parse failed:", err instanceof Error ? err.message : err);
 				value = (value as string)
 					.slice(1, -1)
 					.split(",")
@@ -127,12 +128,18 @@ export function parseRuleFile(filePath: string, content: string): ParsedRule {
 	const { data, body } = parseFrontmatter(content);
 	const rawGlobs = data.globs ?? data.paths;
 	const globs = parsePaths(rawGlobs);
+	const rawPaths = data.paths;
+	const paths = parsePaths(rawPaths);
 	const isUnconditional = globs.length === 0 || (globs.length === 1 && globs[0] === "**");
 
 	const frontmatter: RuleFrontmatter = {};
 	if (rawGlobs) {
 		frontmatter.globs = globs;
-		if (data.paths) frontmatter.paths = globs;
+		if (rawPaths) {
+			frontmatter.paths = paths;
+		} else {
+			frontmatter.paths = globs;
+		}
 	}
 	if (data.description && typeof data.description === "string") frontmatter.description = data.description;
 	if (data.severity && typeof data.severity === "string")

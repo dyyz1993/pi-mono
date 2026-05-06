@@ -7,7 +7,8 @@ function loadSingleConfig(path: string): ClaudeHookConfig | null {
 	if (!existsSync(path)) return null;
 	try {
 		return JSON.parse(readFileSync(path, "utf-8"));
-	} catch {
+	} catch (err) {
+		console.debug("[claude-hooks-compat] config load failed:", err instanceof Error ? err.message : err);
 		return null;
 	}
 }

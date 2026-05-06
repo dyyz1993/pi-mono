@@ -1,0 +1,1 @@
+export { SUBAGENT_CHANNEL_NAME as SUBAGENT_V2_CHANNEL_NAME, type SubagentChannelContract as SubagentV2ChannelContract, type SubagentEventPayload as SubagentV2EventPayload } from "../subagent-shared/contract.js";

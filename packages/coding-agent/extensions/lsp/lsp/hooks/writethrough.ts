@@ -103,7 +103,8 @@ export function createWriteThroughHooks(
 				},
 				{ path: filePath },
 			);
-		} catch {
+		} catch (err) {
+			console.debug("[lsp] didOpen failed:", err instanceof Error ? err.message : err);
 			summaries.push("LSP didOpen failed");
 		}
 
@@ -147,7 +148,9 @@ export function createWriteThroughHooks(
 						diagnostics = diagnostics.concat(pulled);
 					}
 				}
-			} catch {}
+			} catch (err) {
+				console.debug("[lsp] pull diagnostics failed:", err instanceof Error ? err.message : err);
+			}
 
 			const diagSummary = summarizeDiagnostics(diagnostics);
 			summaries.push(diagSummary);

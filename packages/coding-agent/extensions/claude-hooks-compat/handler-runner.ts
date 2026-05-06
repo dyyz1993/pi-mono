@@ -156,7 +156,9 @@ function runCommandHandler(handler: HookHandler, stdinData: HookStdinData, ctx: 
 			if (result.exitCode === 0 && stdout.trim().startsWith("{")) {
 				try {
 					result.parsed = JSON.parse(stdout.trim());
-				} catch {}
+				} catch (err) {
+					console.debug("[claude-hooks-compat] stdout JSON parse failed:", err instanceof Error ? err.message : err);
+				}
 			}
 
 			resolve(result);
@@ -179,7 +181,8 @@ async function runHttpHandler(handler: HookHandler, stdinData: HookStdinData): P
 		let parsedUrl: URL;
 		try {
 			parsedUrl = new URL(urlStr);
-		} catch {
+		} catch (err) {
+			console.debug("[claude-hooks-compat] URL parse failed:", err instanceof Error ? err.message : err);
 			return { exitCode: 1, stdout: "", stderr: `Invalid URL: ${urlStr}` };
 		}
 
@@ -208,12 +211,17 @@ async function runHttpHandler(handler: HookHandler, stdinData: HookStdinData): P
 			let parsed: HookOutput["parsed"];
 			try {
 				parsed = JSON.parse(text);
-			} catch {}
+			} catch (err) {
+				console.debug("[claude-hooks-compat] HTTP response JSON parse failed:", err instanceof Error ? err.message : err);
+			}
 			return { exitCode: 0, stdout: text, stderr: "", parsed };
 		}
 
 		if (resp.status === 403) {
-			const body = await resp.text().catch(() => "");
+			const body = await resp.text().catch((err) => {
+				console.debug("[claude-hooks-compat] 403 body read failed:", err instanceof Error ? err.message : err);
+				return "";
+			});
 			return { exitCode: 2, stdout: "", stderr: body || `HTTP ${resp.status}` };
 		}
 
@@ -275,7 +283,9 @@ async function runPromptHandler(
 		let parsed: HookOutput["parsed"];
 		try {
 			parsed = JSON.parse(response);
-		} catch {}
+		} catch (err) {
+			console.debug("[claude-hooks-compat] prompt handler JSON parse failed:", err instanceof Error ? err.message : err);
+		}
 
 		return { exitCode: 0, stdout: response, stderr: "", parsed };
 	} catch (err) {
@@ -309,7 +319,9 @@ async function runAgentHandler(
 		let parsed: HookOutput["parsed"];
 		try {
 			parsed = JSON.parse(response);
-		} catch {}
+		} catch (err) {
+			console.debug("[claude-hooks-compat] agent handler JSON parse failed:", err instanceof Error ? err.message : err);
+		}
 
 		return { exitCode: 0, stdout: response, stderr: "", parsed };
 	} catch (err) {

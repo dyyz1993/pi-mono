@@ -40,8 +40,8 @@ export async function readMemoryFiles(cwd: string, memoryDir: string): Promise<M
 			const content = await readFile(join(dir, entry), "utf-8");
 			files.set(entry, content);
 		}
-	} catch {
-		// directory doesn't exist
+	} catch (err) {
+		console.debug("[compaction-manager] session memory dir read failed:", err instanceof Error ? err.message : err);
 	}
 
 	return files;

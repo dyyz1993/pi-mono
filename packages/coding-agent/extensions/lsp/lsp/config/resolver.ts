@@ -535,7 +535,8 @@ function isExecutable(filePath: string): boolean {
 	try {
 		accessSync(filePath, constants.X_OK);
 		return true;
-	} catch {
+	} catch (err) {
+		console.debug("[lsp] executable check failed:", err instanceof Error ? err.message : err);
 		return false;
 	}
 }

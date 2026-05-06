@@ -1,10 +1,11 @@
-import { existsSync } from "node:fs";
+import { existsSync, type Stats } from "node:fs";
 import { mkdir, readFile, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentMessage, AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { Type } from "typebox";
 import type { CallLLMOptions, ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
-import { ServerChannel } from "@dyyz1993/pi-coding-agent";
+import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
+import type { MemoryChannelContract } from "./contract.js";
 
 function stripMarkdownCodeBlock(text: string): string {
 	let cleaned = text.trim();
@@ -122,6 +123,12 @@ class MemoryPrefetch {
 		return this._debugInfo;
 	}
 
+	markResultEntryWritten(): boolean {
+		if (this.resultEntryWritten) return true;
+		this.resultEntryWritten = true;
+		return false;
+	}
+
 	start(query: string, memoryDir: string, callLLM: CallLLMFn): void {
 		this.settled = false;
 		this.result = null;
@@ -226,7 +233,8 @@ class MemoryPrefetch {
 			let parsed: { selected?: string[]; purification?: PurificationResult };
 			try {
 				parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
-			} catch {
+			} catch (err) {
+				console.debug("[auto-memory] prefetch LLM parse failed:", err instanceof Error ? err.message : err);
 				this._debugInfo = {
 					selectedFiles: [],
 					durationMs: Date.now() - startTime,
@@ -245,7 +253,9 @@ class MemoryPrefetch {
 			if (parsed.purification && typeof parsed.purification === "object") {
 				try {
 					store = applyPurification(store, parsed.purification);
-				} catch {}
+				} catch (err) {
+					console.debug("[auto-memory] purification failed:", err instanceof Error ? err.message : err);
+				}
 			}
 
 			store = addHistoryEntry(store, {
@@ -272,11 +282,12 @@ class MemoryPrefetch {
 			if (selected.length === 0) return "";
 
 			return await this.readFiles(selected, memoryDir);
-		} catch {
+		} catch (err) {
+			console.debug("[auto-memory] prefetch failed:", err instanceof Error ? err.message : err);
 			this._debugInfo = {
 				selectedFiles: [],
 				durationMs: 0,
-				layer: "error",
+				layer: "none",
 				skipHits: [],
 				guardHits: [],
 				availableFiles: 0,
@@ -295,7 +306,9 @@ class MemoryPrefetch {
 			try {
 				const content = await readFile(header.filePath, "utf-8");
 				parts.push(`### ${name}\n${content}`);
-			} catch {}
+			} catch (err) {
+				console.debug("[auto-memory] memory file read failed:", err instanceof Error ? err.message : err);
+			}
 		}
 		return parts.join("\n\n");
 	}
@@ -363,7 +376,8 @@ class MemoryExtractor {
 			let parsed: { actions?: Array<Record<string, string>> };
 			try {
 				parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
-			} catch {
+			} catch (err) {
+				console.debug("[auto-memory] extraction LLM parse failed:", err instanceof Error ? err.message : err);
 				return null;
 			}
 
@@ -464,7 +478,8 @@ class BookmarkCreator {
 			let parsed: { title?: string; description?: string; summary?: string; tags?: string[] };
 			try {
 				parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
-			} catch {
+			} catch (err) {
+				console.debug("[auto-memory] bookmark LLM parse failed:", err instanceof Error ? err.message : err);
 				return null;
 			}
 
@@ -490,7 +505,8 @@ class BookmarkCreator {
 			await updateMemoryIndex(memoryDir);
 
 			return { filename, filePath };
-		} catch {
+		} catch (err) {
+			console.debug("[auto-memory] bookmark creation failed:", err instanceof Error ? err.message : err);
 			return null;
 		}
 	}
@@ -508,10 +524,11 @@ class MemoryDream {
 			await utimes(lockPath, new Date(0), new Date(0));
 		}
 
-		let lockStat: Awaited<typeof stat>;
+		let lockStat: Stats;
 		try {
 			lockStat = await stat(lockPath);
-		} catch {
+		} catch (err) {
+			console.debug("[auto-memory] dream lock stat failed:", err instanceof Error ? err.message : err);
 			return null;
 		}
 		const hoursSince = (Date.now() - lockStat.mtimeMs) / 3_600_000;
@@ -524,7 +541,8 @@ class MemoryDream {
 			const result = await this.runDream(memoryDir, callLLM);
 			await utimes(lockPath, new Date(), new Date());
 			return result;
-		} catch {
+		} catch (err) {
+			console.debug("[auto-memory] dream consolidation failed:", err instanceof Error ? err.message : err);
 			await utimes(lockPath, new Date(lockStat.mtimeMs), new Date(lockStat.mtimeMs));
 			return null;
 		}
@@ -542,7 +560,9 @@ class MemoryDream {
 		let indexContent = "";
 		try {
 			indexContent = await readFile(entrypointPath, "utf-8");
-		} catch {}
+		} catch (err) {
+			console.debug("[auto-memory] dream entrypoint read failed:", err instanceof Error ? err.message : err);
+		}
 
 		const llmResult = await callLLM({
 			systemPrompt: DREAM_PROMPT(allContent, indexContent, memoryDir),
@@ -562,7 +582,8 @@ class MemoryDream {
 		};
 		try {
 			parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
-		} catch {
+		} catch (err) {
+			console.debug("[auto-memory] dream LLM parse failed:", err instanceof Error ? err.message : err);
 			return null;
 		}
 
@@ -665,7 +686,8 @@ async function countSessionsSince(memoryDir: string, _sinceMs: number): Promise<
 		const count = Number.parseInt(content.trim(), 10) || 0;
 		await writeFile(sessionsPath, String(count + 1));
 		return count + 1;
-	} catch {
+	} catch (err) {
+		console.debug("[auto-memory] session count update failed:", err instanceof Error ? err.message : err);
 		return DREAM_MIN_SESSIONS;
 	}
 }
@@ -710,7 +732,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 	bookmarkCreator.registerTool(pi);
 
 	const rawMemoryChannel = pi.registerChannel("memory");
-	const memoryChannel = new ServerChannel(rawMemoryChannel);
+	const memoryChannel = createTypedChannel<MemoryChannelContract>(rawMemoryChannel).server;
 
 	function status(msg?: string): void {
 		ctx?.ui.setStatus("auto-memory", msg);
@@ -730,7 +752,9 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		let memoryContent = "";
 		try {
 			memoryContent = await readFile(getEntrypointPath(cwd), "utf-8");
-		} catch {}
+		} catch (err) {
+			console.debug("[auto-memory] entrypoint read failed:", err instanceof Error ? err.message : err);
+		}
 		const truncated = truncateEntrypoint(memoryContent);
 		const memoryPrompt = MEMORY_SYSTEM_PROMPT(memoryDir, truncated.content);
 
@@ -752,8 +776,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		const memoryText = await prefetch.awaitResult();
 		const debug = prefetch.debugInfo;
 
-		if (!prefetch.resultEntryWritten && prefetch.started) {
-			prefetch.resultEntryWritten = true;
+		if (!prefetch.markResultEntryWritten() && prefetch.started) {
 			status(memoryText ? "memories injected" : "no memories found");
 			pi.appendEntry("memory_prefetch_result", {
 				summary: memoryText ? "Injected relevant memories" : "No relevant memories",
@@ -839,19 +862,17 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 			let entrypointContent: string | null = null;
 			try {
 				entrypointContent = await readFile(getEntrypointPath(cwd), "utf-8");
-			} catch {}
-			return { type: "list_result", files, entrypointContent, memoryDir };
-		} catch {
-			return { type: "list_result", files: [], entrypointContent: null, memoryDir };
+			} catch (err) {
+				console.debug("[auto-memory] entrypoint read failed:", err instanceof Error ? err.message : err);
+			}
+			return { type: "list_result" as const, files, entrypointContent, memoryDir };
+		} catch (err) {
+			console.debug("[auto-memory] memory list failed:", err instanceof Error ? err.message : err);
+			return { type: "list_result" as const, files: [], entrypointContent: null, memoryDir };
 		}
 	});
 
-	memoryChannel.handle("memory.userRemember", async (params) => {
-		const data = params as {
-			sourceSessionId?: string;
-			sourceMessageIds?: string[];
-			content?: string;
-		};
+	memoryChannel.handle("memory.userRemember", async (data) => {
 		memoryChannel.emit("bookmark_creating", { type: "bookmark_creating" });
 		pi.appendEntry("memory_creating", { content: data.content?.slice(0, 200) });
 		try {

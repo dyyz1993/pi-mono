@@ -146,6 +146,8 @@ export interface UnloadedPayload {
 
 export type RulesChannelEvent = SnapshotPayload | MatchedPayload | InjectedPayload | ReloadedPayload | UnloadedPayload;
 
+export const RULES_CHANNEL_NAME = "rules-engine";
+
 export interface RulesChannelContract {
 	methods: {
 		getSnapshot: {

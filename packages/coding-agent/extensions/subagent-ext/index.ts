@@ -1,13 +1,3 @@
-/**
- * SubAgent Extension - IPC-based sub-agent via JSON mode.
- *
- * Spawns `pi --mode json -p` child processes.
- * - One-shot: child auto-exits after task completion
- * - Events streamed as JSONL on stdout, captured in real-time
- * - Forwarded through the "subagent" channel
- * - Session metadata persisted via appendEntry for history retrieval
- */
-
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -16,8 +6,20 @@ import * as path from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@dyyz1993/pi-agent-core";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
-import { ServerChannel } from "@dyyz1993/pi-coding-agent";
-import { getSubagentDir } from "../auto-memory/utils.js";
+import { createTypedChannel, getAgentDir } from "@dyyz1993/pi-coding-agent";
+import type { Message } from "@dyyz1993/pi-ai";
+import {
+	SUBAGENT_CHANNEL_NAME,
+	type SubagentChannelContract,
+	type SubagentEventPayload,
+	cleanupTempFiles,
+	getFinalOutput,
+	writePromptToTempFile,
+} from "../subagent-shared/index.js";
+
+function getSubagentDir(): string {
+	return path.join(getAgentDir(), "memory", "subagent");
+}
 
 export interface SubagentParams {
 	systemPrompt?: string;
@@ -79,31 +81,10 @@ export function parseJsonLine(line: string): unknown | null {
 	if (!line.trim()) return null;
 	try {
 		return JSON.parse(line);
-	} catch {
+	} catch (err) {
+		console.debug("[subagent-ext] JSON line parse failed:", err instanceof Error ? err.message : err);
 		return null;
 	}
-}
-
-export function getFinalText(messages: Array<{ role?: string; content?: unknown }>): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg?.role !== "assistant") continue;
-		const parts = Array.isArray(msg.content) ? msg.content : [msg.content];
-		for (const p of parts) {
-			if (
-				p &&
-				typeof p === "object" &&
-				"type" in p &&
-				p.type === "text" &&
-				"text" in p &&
-				typeof p.text === "string" &&
-				p.text
-			) {
-				return p.text;
-			}
-		}
-	}
-	return "";
 }
 
 export function extractTextFromEvent(event: Record<string, unknown>): string {
@@ -224,8 +205,8 @@ export function runSubagent(
 }
 
 export default function subagentExtension(pi: ExtensionAPI): void {
-	const rawChannel = pi.registerChannel("subagent");
-	const channel = new ServerChannel(rawChannel);
+	const rawChannel = pi.registerChannel(SUBAGENT_CHANNEL_NAME);
+	const channel = createTypedChannel<SubagentChannelContract>(rawChannel).server;
 
 	pi.registerTool({
 		name: "subagent",
@@ -249,7 +230,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const { systemPrompt, description, instruction, cwd, model, maxTurns, thinkingLevel, extensions, tools } = params;
 			const sessionId = randomUUID().slice(0, 8);
 			const effectiveCwd = cwd ?? ctx.cwd;
-			const sessionDir = getSubagentDir(effectiveCwd);
+			const sessionDir = getSubagentDir();
 			const sessionPath = path.join(sessionDir, `subagent-${sessionId}.jsonl`);
 			const startedAt = Date.now();
 
@@ -265,10 +246,11 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 			const onUpdate = _onUpdate;
 			let tmpPromptPath: string | null = null;
+			let tmpPromptDir: string | null = null;
 
 			const wrappedChannel = {
 				send: (data: unknown) => {
-					channel.emit("event", data);
+					channel.emit("event", data as SubagentEventPayload);
 					const payload = data as { event: Record<string, unknown> };
 					if (payload.event) {
 						details.events.push(payload.event);
@@ -306,9 +288,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			}
 			const args = baseArgs;
 				if (systemPrompt?.trim()) {
-					const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-prompt-"));
-					tmpPromptPath = path.join(tmpDir, "system-prompt.md");
-					await fs.promises.writeFile(tmpPromptPath, systemPrompt, { encoding: "utf-8", mode: 0o600 });
+					const tmp = await writePromptToTempFile("subagent", systemPrompt, "pi-subagent-prompt-");
+					tmpPromptDir = tmp.dir;
+					tmpPromptPath = tmp.filePath;
 					args.push("--append-system-prompt", tmpPromptPath);
 				}
 				args.push(instruction);
@@ -358,15 +340,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					details,
 				};
 			} finally {
-				if (tmpPromptPath) {
-					const tmpDir = path.dirname(tmpPromptPath);
-					try {
-						await fs.promises.unlink(tmpPromptPath);
-					} catch {}
-					try {
-						await fs.promises.rmdir(tmpDir);
-					} catch {}
-				}
+				cleanupTempFiles(tmpPromptPath, tmpPromptDir, "subagent-ext");
 			}
 		},
 	});

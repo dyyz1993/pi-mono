@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type ExtensionAPI, type ExtensionCommandContext, ServerChannel } from "@dyyz1993/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, type ServerChannel, createTypedChannel } from "@dyyz1993/pi-coding-agent";
+import type { LspChannelContract } from "./contract.js";
 import { createFileTracker } from "./client/file-tracker.js";
 import { createLspRuntimeRegistry } from "./client/registry.js";
 import { createLspConfigResolver } from "./config/resolver.js";
@@ -77,7 +78,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	});
 
 	let idleCleanupTimer: ReturnType<typeof setTimeout> | undefined;
-	let lspChannel: ServerChannel | null = null;
+	let lspChannel: ServerChannel<LspChannelContract> | null = null;
 
 	toolRouter.register(pi);
 	writeThroughHooks.register(pi);
@@ -94,15 +95,15 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		const raw = pi.registerChannel("lsp");
 
 		if (raw) {
-			lspChannel = new ServerChannel(raw);
+			lspChannel = createTypedChannel<LspChannelContract>(raw).server;
 
 			lspChannel.handle("lsp.setMode", (params) => {
-				const { mode: newMode } = params as { mode: string };
+				const { mode: newMode } = params;
 				const validModes: DiagnosticsModeName[] = ["agent_end", "edit_write", "disabled"];
 				if (!validModes.includes(newMode as DiagnosticsModeName)) return { ok: false };
 				mode.set(newMode as DiagnosticsModeName);
 				const modeData = {
-					event: "mode_changed",
+					event: "mode_changed" as const,
 					timestamp: Date.now(),
 					mode: mode.get(),
 				};
@@ -273,7 +274,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 
 			mode.set(trimmed as DiagnosticsModeName);
 			const modeData = {
-				event: "mode_changed",
+				event: "mode_changed" as const,
 				timestamp: Date.now(),
 				mode: mode.get(),
 			};

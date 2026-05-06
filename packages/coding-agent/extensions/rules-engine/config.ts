@@ -40,7 +40,9 @@ export async function loadConfig(projectDir: string): Promise<RulesConfig> {
 				notifyOnLoad: parsed.notifyOnLoad ?? true,
 				notifyOnMatch: parsed.notifyOnMatch ?? true,
 			};
-		} catch {}
+		} catch (err) {
+			console.debug("[rules-engine] config parse failed:", err instanceof Error ? err.message : err);
+		}
 	}
 
 	return defaultConfig();

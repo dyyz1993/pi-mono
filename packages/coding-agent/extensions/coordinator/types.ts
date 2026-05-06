@@ -1,5 +1,7 @@
 import type { ChannelContract } from "@dyyz1993/pi-coding-agent";
 
+export const COORDINATOR_CHANNEL_NAME = "coordinator";
+
 export type SessionStatus = "idle" | "streaming" | "stopped" | "completed";
 
 export interface DelegatedTask {

@@ -38,7 +38,9 @@ export function getProjectRoot(cwd: string): string {
 		if (result) {
 			return realpathSync(resolve(cwd, result, ".."));
 		}
-	} catch {}
+	} catch (err) {
+		console.debug("[auto-memory] git rev-parse failed:", err instanceof Error ? err.message : err);
+	}
 	return cwd;
 }
 
@@ -46,7 +48,9 @@ export function getProjectRoot(cwd: string): string {
 	let resolved = cwd;
 	try {
 		resolved = realpathSync(cwd);
-	} catch {}
+	} catch (err) {
+		console.debug("[auto-memory] realpathSync failed:", err instanceof Error ? err.message : err);
+	}
 	return `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 

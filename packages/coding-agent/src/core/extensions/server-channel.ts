@@ -5,35 +5,23 @@ export interface ChannelContract {
 	events?: Record<string, unknown>;
 }
 
-type MethodKeys<T extends ChannelContract> = T["methods"] extends Record<string, unknown>
-	? keyof T["methods"] & string
-	: string;
+type MethodKeys<T extends ChannelContract> = keyof NonNullable<T["methods"]> & string;
 
-type MethodParams<T extends ChannelContract, K extends string> = T["methods"] extends Record<string, infer M>
-	? K extends keyof M
-		? M[K] extends { params: infer P }
-			? P
-			: unknown
-		: unknown
+type MethodParams<T extends ChannelContract, K extends MethodKeys<T>> = NonNullable<T["methods"]>[K] extends {
+	params: infer P;
+}
+	? P
 	: unknown;
 
-type MethodReturn<T extends ChannelContract, K extends string> = T["methods"] extends Record<string, infer M>
-	? K extends keyof M
-		? M[K] extends { return: infer R }
-			? R
-			: unknown
-		: unknown
+type MethodReturn<T extends ChannelContract, K extends MethodKeys<T>> = NonNullable<T["methods"]>[K] extends {
+	return: infer R;
+}
+	? R
 	: unknown;
 
-type EventKeys<T extends ChannelContract> = T["events"] extends Record<string, unknown>
-	? keyof T["events"] & string
-	: string;
+type EventKeys<T extends ChannelContract> = keyof NonNullable<T["events"]> & string;
 
-type EventData<T extends ChannelContract, K extends string> = T["events"] extends Record<string, infer E>
-	? K extends keyof E
-		? E[K]
-		: unknown
-	: unknown;
+type EventData<T extends ChannelContract, K extends EventKeys<T>> = NonNullable<T["events"]>[K];
 
 export class ServerChannel<T extends ChannelContract = ChannelContract> {
 	private raw: Channel;
@@ -67,7 +55,10 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 		});
 	}
 
-	handle<K extends MethodKeys<T>>(method: K, fn: (params: MethodParams<T, K>) => MethodReturn<T, K>): void {
+	handle<K extends MethodKeys<T>>(
+		method: K,
+		fn: (params: MethodParams<T, K>) => MethodReturn<T, K> | Promise<MethodReturn<T, K>>,
+	): void {
 		this.methodHandlers.set(method, fn as (params: unknown) => unknown);
 	}
 

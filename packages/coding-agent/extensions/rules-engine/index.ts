@@ -1,6 +1,5 @@
 import { Type } from "@dyyz1993/pi-ai";
-import { defineTool, type ExtensionAPI } from "@dyyz1993/pi-coding-agent";
-import { ServerChannel } from "@dyyz1993/pi-coding-agent";
+import { createTypedChannel, defineTool, type ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { getRules, invalidateCache } from "./cache.js";
 import { loadConfig } from "./config.js";
 import { buildSystemReminderSection, buildToolReminderSection } from "./injector.js";
@@ -19,8 +18,9 @@ import type {
 	ScannedDir,
 	SnapshotPayload,
 } from "./types.js";
+import { RULES_CHANNEL_NAME } from "./types.js";
 
-export { ServerChannel } from "@dyyz1993/pi-coding-agent";
+export { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 export { getRules, invalidateCache } from "./cache.js";
 export { loadConfig, resolveDirs } from "./config.js";
 export { buildCompactContext, buildSystemReminderSection, buildToolReminderSection, buildSystemPromptSection, buildToolContextSection } from "./injector.js";
@@ -75,8 +75,8 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 		return history;
 	}
 
-	const rawChannel = pi.registerChannel("rules-engine");
-	const channel = new ServerChannel<RulesChannelContract>(rawChannel);
+	const rawChannel = pi.registerChannel(RULES_CHANNEL_NAME);
+	const channel = createTypedChannel<RulesChannelContract>(rawChannel).server;
 
 	channel.handle("getSnapshot", (params) => {
 		const unconditional = getUnconditionalRules();
@@ -131,7 +131,7 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 		};
 	}
 
-	function buildSnapshot(matchHistory: MatchRecord[], lifecycleLog: LifecycleEntry[]): RulesChannelEvent {
+	function buildSnapshot(matchHistory: MatchRecord[], lifecycleLog: LifecycleEntry[]): SnapshotPayload {
 		const unconditional = getUnconditionalRules();
 		const conditional = getConditionalRules();
 		return {
@@ -383,7 +383,7 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 			message: {
 				customType: "rules-engine",
 				content: reminderContent,
-				display: "collapsed" as const,
+				display: false,
 			},
 		};
 	});

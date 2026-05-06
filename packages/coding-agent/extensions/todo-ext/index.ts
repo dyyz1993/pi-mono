@@ -12,28 +12,17 @@ import type { AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { StringEnum } from "@dyyz1993/pi-ai";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
-import { ServerChannel } from "@dyyz1993/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
+import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ServerChannel } from "@dyyz1993/pi-coding-agent";
+import { TODO_CHANNEL_NAME, type TodoChannelContract, type TodoItem, type TodoChannelEvent } from "./contract.js";
 
-export interface Todo {
-	id: number;
-	text: string;
-	done: boolean;
-	deleted?: boolean;
-	priority?: "high" | "medium" | "low";
-}
+export type Todo = TodoItem;
 
 export interface TodoDetails {
 	action: string;
 	todos: Todo[];
 	nextId: number;
 	error?: string;
-}
-
-export interface TodoChannelEvent {
-	action: string;
-	todos: Todo[];
-	timestamp: number;
 }
 
 const PRIORITY_LABELS: Record<string, string> = {
@@ -88,7 +77,7 @@ function updateWidget(ctx: ExtensionContext | undefined, todos: Todo[]): void {
 export default function (pi: ExtensionAPI) {
 	let todos: Todo[] = [];
 	let nextId = 1;
-	let channel: ServerChannel | null = null;
+	let channel: ServerChannel<TodoChannelContract> | null = null;
 
 	const reconstructState = (ctx: ExtensionContext): void => {
 		todos = [];
@@ -117,8 +106,9 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		const rawChannel = pi.registerChannel("todo");
-		channel = new ServerChannel(rawChannel);
+		const rawChannel = pi.registerChannel(TODO_CHANNEL_NAME);
+		const typed = createTypedChannel<TodoChannelContract>(rawChannel);
+		channel = typed.server;
 		reconstructState(ctx);
 		channel.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 	});

@@ -358,12 +358,6 @@ describe("RulesEngine/Loader: directory scanning", () => {
 			expect(rule.frontmatter.paths).toEqual(["**/*.js"]);
 		});
 
-		it("should not set frontmatter.paths when only globs is provided", () => {
-			const content = "---\nglobs: **/*.ts\n---\n# Rule";
-			const rule = parseRuleFile("/test/rule.md", content);
-			expect(rule.frontmatter.paths).toBeUndefined();
-		});
-
 		it("should set both when only paths is provided (backward compat)", () => {
 			const content = "---\npaths: **/*.js\n---\n# Rule";
 			const rule = parseRuleFile("/test/rule.md", content);

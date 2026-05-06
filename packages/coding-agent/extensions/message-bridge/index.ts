@@ -96,7 +96,8 @@ function parseSelectAnswer(answer: string): string {
 		if (Array.isArray(parsed)) return String(parsed[0] ?? trimmed);
 		if (typeof parsed === "string") return parsed;
 		return trimmed;
-	} catch {
+	} catch (err) {
+		console.debug("[message-bridge] JSON parse fallback:", err instanceof Error ? err.message : err);
 		return trimmed;
 	}
 }
@@ -108,7 +109,9 @@ function parseMultiSelectAnswer(answer: string, options: string[]): string[] {
 		if (Array.isArray(parsed)) {
 			return parsed.map(String).filter((v) => options.includes(v));
 		}
-	} catch {}
+	} catch (err) {
+		console.debug("[message-bridge] multi-select parse failed:", err instanceof Error ? err.message : err);
+	}
 	const colonIdx = trimmed.indexOf("】:");
 	if (colonIdx !== -1) {
 		const value = trimmed.slice(colonIdx + 2).trim();
@@ -136,7 +139,7 @@ export default function messageBridgeExtension(pi: any) {
 
 	pi.on("ui", async (event: any, ctx: any) => {
 		if (event.method === "notify") {
-			pushAndWait(event.message, sessionId).catch(() => {});
+			pushAndWait(event.message, sessionId).catch((err) => console.debug("[message-bridge] notify push failed:", err instanceof Error ? err.message : err));
 			return undefined;
 		}
 
@@ -147,7 +150,7 @@ export default function messageBridgeExtension(pi: any) {
 					const confirmed = parseConfirmAnswer(answer);
 					ctx.respondUI(event.id, { action: "responded", confirmed });
 				})
-				.catch(() => {});
+				.catch((err) => console.debug("[message-bridge] confirm push failed:", err instanceof Error ? err.message : err));
 			return undefined;
 		}
 
@@ -165,7 +168,7 @@ export default function messageBridgeExtension(pi: any) {
 						ctx.respondUI(event.id, { action: "responded", value });
 					}
 				})
-				.catch(() => {});
+				.catch((err) => console.debug("[message-bridge] select push failed:", err instanceof Error ? err.message : err));
 			return undefined;
 		}
 
@@ -177,7 +180,7 @@ export default function messageBridgeExtension(pi: any) {
 				.then((answer) => {
 					ctx.respondUI(event.id, { action: "responded", value: answer });
 				})
-				.catch(() => {});
+				.catch((err) => console.debug("[message-bridge] input push failed:", err instanceof Error ? err.message : err));
 			return undefined;
 		}
 
@@ -189,7 +192,7 @@ export default function messageBridgeExtension(pi: any) {
 				.then((answer) => {
 					ctx.respondUI(event.id, { action: "responded", value: answer });
 				})
-				.catch(() => {});
+				.catch((err) => console.debug("[message-bridge] editor push failed:", err instanceof Error ? err.message : err));
 			return undefined;
 		}
 
@@ -214,6 +217,6 @@ export default function messageBridgeExtension(pi: any) {
 					pi.sendUserMessage(answer.trim());
 				}
 			})
-			.catch(() => {});
+			.catch((err) => console.debug("[message-bridge] agent_end push failed:", err instanceof Error ? err.message : err));
 	});
 }

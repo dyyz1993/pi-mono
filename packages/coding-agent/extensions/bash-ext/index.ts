@@ -1,9 +1,10 @@
 /**
  * Bash Channel Extension - Replaces built-in bash tool with PID-aware version.
  *
- * Registers a "bash" tool that overrides the built-in one. Internally uses
- * createLocalBashOperations for actual execution, but intercepts the child
- * process to capture PID and support background/detach/kill operations.
+ * Registers a "bash" tool that overrides the built-in one. Spawns child processes
+ * with full lifecycle management: timeout, background/detach/kill operations,
+ * streaming output via channel events, truncation with temp-file overflow,
+ * and a companion get_background_process tool for polling backgrounded processes.
  *
  * Channel events:
  *   - "start": new bash process started (toolCallId, command, pid, timestamp)
@@ -22,25 +23,27 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@dyyz1993/pi-agent-core";
-import { spawn } from "child_process";
+import stripAnsi from "strip-ansi";
+import type { ChildProcess } from "child_process";
 import { Type } from "typebox";
 import type { BashToolDetails as _BashToolDetails, ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
+	OutputCollector,
 	ServerChannel,
-	getShellConfig,
-	getShellEnv,
+	createTypedChannel,
 	killProcessTree,
-	truncateTail,
-	untrackDetachedChildPid,
-	trackDetachedChildPid,
+	sanitizeBinaryOutput,
+	spawnManagedProcess,
 	waitForChildProcess,
 } from "@dyyz1993/pi-coding-agent";
+import { BASH_CHANNEL_NAME, type BashChannelContract, type BashProcess } from "./contract.js";
+export type { BashProcess, BashChannelEvent } from "./contract.js";
 
 interface TerminatedDetails {
 	reason: string;
@@ -93,41 +96,19 @@ const bashSchema = Type.Object({
 	),
 });
 
-export interface BashProcess {
-	bashId: string;
-	toolCallId: string;
-	command: string;
-	cwd: string;
-	pid?: number;
-	startedAt: number;
-	endedAt?: number;
-	exitCode?: number | null;
-	output: string;
-	status: "running" | "done" | "error" | "terminated" | "background";
-	error?: string;
-	logPath?: string;
-}
 
-export interface BashChannelEvent {
-	type: "start" | "output" | "end" | "error" | "terminated" | "background" | "list";
-	processes?: BashProcess[];
-	toolCallId?: string;
-	pid?: number;
-	data?: string;
-	timestamp: number;
-}
 
 interface ManagedBash {
 	proc: BashProcess;
 	resolve: (result: AgentToolResult<BashToolDetails>) => void;
 	reject: (error: Error) => void;
-	child: ReturnType<typeof spawn>;
+	child: ChildProcess;
 	resolved: boolean;
 	backgrounded: boolean;
 	killedByUser?: boolean;
 	logStream: ReturnType<typeof createWriteStream> | undefined;
 	outputSubscribed: boolean;
-	stdin: ReturnType<typeof spawn>["stdin"];
+	stdin: ChildProcess["stdin"];
 }
 
 const managed = new Map<string, ManagedBash>();
@@ -166,7 +147,7 @@ function formatDuration(ms: number): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	let channel: ServerChannel | null = null;
+	let channel: ServerChannel<BashChannelContract> | null = null;
 
 	function createLogStream(m: ManagedBash): void {
 		if (m.logStream) return;
@@ -178,12 +159,12 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async () => {
-		const rawChannel = pi.registerChannel("bash");
-		channel = new ServerChannel(rawChannel);
+		const rawChannel = pi.registerChannel(BASH_CHANNEL_NAME);
+		channel = createTypedChannel<BashChannelContract>(rawChannel).server;
 		managed.clear();
 		history.length = 0;
 		deletedIds.clear();
-		channel.emit("list", { type: "list", processes: [], timestamp: Date.now() } satisfies BashChannelEvent);
+		channel.emit("list", { type: "list", processes: [], timestamp: Date.now() });
 
 		channel.handle("list", () => {
 			const activeBg = Array.from(managed.values())
@@ -191,16 +172,15 @@ export default function (pi: ExtensionAPI) {
 				.map((m) => m.proc);
 			const hist = history.filter((p) => !deletedIds.has(p.toolCallId));
 			return {
-				type: "list",
+				type: "list" as const,
 				processes: [...activeBg, ...hist],
 				timestamp: Date.now(),
-			} satisfies BashChannelEvent;
+			};
 		});
 
-		channel.handle("kill", (params) => {
-			const msg = params as { toolCallId?: string };
-			if (!msg?.toolCallId) return;
-			const m = managed.get(msg.toolCallId);
+		channel.handle("kill", ({ toolCallId }) => {
+			if (!toolCallId) return;
+			const m = managed.get(toolCallId);
 			if (m?.proc.pid) {
 				killProcessTree(m.proc.pid);
 				m.proc.status = "terminated";
@@ -211,11 +191,11 @@ export default function (pi: ExtensionAPI) {
 				if (m.logStream) m.logStream.end();
 				channel?.emit("terminated", {
 					type: "terminated",
-					toolCallId: msg.toolCallId,
+					toolCallId,
 					pid: m.proc.pid,
 					processes: Array.from(managed.values()).map((x) => x.proc),
 					timestamp: Date.now(),
-				} satisfies BashChannelEvent);
+				});
 				m.resolve({
 					content: [
 						{
@@ -238,10 +218,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		});
 
-		channel.handle("background", (params) => {
-			const msg = params as { toolCallId?: string };
-			if (!msg?.toolCallId) return;
-			const m = managed.get(msg.toolCallId);
+		channel.handle("background", ({ toolCallId }) => {
+			if (!toolCallId) return;
+			const m = managed.get(toolCallId);
 			if (m) {
 				m.proc.status = "background";
 				m.resolved = true;
@@ -251,12 +230,12 @@ export default function (pi: ExtensionAPI) {
 				const durationMs = Date.now() - m.proc.startedAt;
 				channel?.emit("background", {
 					type: "background",
-					toolCallId: msg.toolCallId,
+					toolCallId,
 					pid: m.proc.pid,
 					data: m.proc.output.slice(-2000),
 					processes: Array.from(managed.values()).map((x) => x.proc),
 					timestamp: Date.now(),
-				} satisfies BashChannelEvent);
+				});
 						const outputPreview = m.proc.output ? takeLastLines(m.proc.output, BG_PREVIEW_LINES) : "(no output yet)";
 						m.resolve({
 							content: [
@@ -279,35 +258,31 @@ export default function (pi: ExtensionAPI) {
 			}
 		});
 
-		channel.handle("subscribe_output", (params) => {
-			const msg = params as { toolCallId?: string };
-			if (!msg?.toolCallId) return;
-			const m = managed.get(msg.toolCallId);
+		channel.handle("subscribe_output", ({ toolCallId }) => {
+			if (!toolCallId) return;
+			const m = managed.get(toolCallId);
 			if (m?.backgrounded) m.outputSubscribed = true;
 		});
 
-		channel.handle("unsubscribe_output", (params) => {
-			const msg = params as { toolCallId?: string };
-			if (!msg?.toolCallId) return;
-			const m = managed.get(msg.toolCallId);
+		channel.handle("unsubscribe_output", ({ toolCallId }) => {
+			if (!toolCallId) return;
+			const m = managed.get(toolCallId);
 			if (m) m.outputSubscribed = false;
 		});
 
-		channel.handle("remove", (params) => {
-			const msg = params as { toolCallId?: string };
-			if (!msg?.toolCallId) return;
-			deletedIds.add(msg.toolCallId);
-			managed.delete(msg.toolCallId);
-			const idx = history.findIndex((p) => p.toolCallId === msg.toolCallId);
+		channel.handle("remove", ({ toolCallId }) => {
+			if (!toolCallId) return;
+			deletedIds.add(toolCallId);
+			managed.delete(toolCallId);
+			const idx = history.findIndex((p) => p.toolCallId === toolCallId);
 			if (idx >= 0) history.splice(idx, 1);
 		});
 
-		channel.handle("write_stdin", (params) => {
-			const msg = params as { toolCallId?: string; data?: string };
-			if (!msg?.toolCallId || !msg?.data) return;
-			const m = managed.get(msg.toolCallId);
+		channel.handle("write_stdin", ({ toolCallId, data }) => {
+			if (!toolCallId || !data) return;
+			const m = managed.get(toolCallId);
 			if (m?.stdin && !m.stdin.destroyed) {
-				m.stdin.write(msg.data);
+				m.stdin.write(data);
 			}
 		});
 	});
@@ -346,20 +321,22 @@ export default function (pi: ExtensionAPI) {
 				const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
 				const effectiveBackgroundAfter = backgroundAfter !== undefined && backgroundAfter < effectiveTimeout ? backgroundAfter : undefined;
 				const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
-				const { shell, args } = getShellConfig();
-				if (!existsSync(cwd)) {
-					reject(new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`));
+				const bashId = generateBashId();
+
+				const spawnResult = spawnManagedProcess({
+					command,
+					cwd,
+					timeout: effectiveTimeout,
+					signal,
+					stdin: "pipe",
+				});
+
+				if (spawnResult instanceof Error) {
+					reject(spawnResult);
 					return;
 				}
 
-				const bashId = generateBashId();
-
-				const child = spawn(shell, [...args, command], {
-					cwd,
-					detached: true,
-					env: getShellEnv(),
-					stdio: ["pipe", "pipe", "pipe"],
-				});
+				const { child, cleanup: spawnCleanup, isTimedOut } = spawnResult;
 
 				const proc: BashProcess = {
 					bashId,
@@ -390,8 +367,6 @@ export default function (pi: ExtensionAPI) {
 				const m = managed.get(toolCallId)!;
 				m.logStream = logStream;
 
-				if (child.pid) trackDetachedChildPid(child.pid);
-
 				channel?.emit("start", {
 					type: "start",
 					toolCallId,
@@ -399,21 +374,9 @@ export default function (pi: ExtensionAPI) {
 					data: command,
 					processes: Array.from(managed.values()).map((m) => m.proc),
 					timestamp: proc.startedAt,
-				} satisfies BashChannelEvent);
+				});
 
-				let tempFilePath: string | undefined;
-				let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
-				let totalBytes = 0;
-				const chunks: Buffer[] = [];
-				let chunksBytes = 0;
-				const maxChunksBytes = DEFAULT_MAX_BYTES * 2;
-
-				const ensureTempFile = () => {
-					if (tempFilePath) return;
-					tempFilePath = getTempFilePath();
-					tempFileStream = createWriteStream(tempFilePath);
-					for (const chunk of chunks) tempFileStream.write(chunk);
-				};
+				const collector = new OutputCollector();
 
 				const handleData = (data: Buffer) => {
 					const m = managed.get(toolCallId);
@@ -421,29 +384,22 @@ export default function (pi: ExtensionAPI) {
 
 					if (m?.backgrounded) {
 						if (m.outputSubscribed) {
-							const text = data.toString("utf-8");
+							const text = sanitizeBinaryOutput(stripAnsi(data.toString("utf-8"))).replace(/\r/g, "");
 							channel?.emit("output", {
 								type: "output",
 								toolCallId,
 								data: text,
 								processes: Array.from(managed.values()).map((x) => x.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 						}
 						return;
 					}
 
-					totalBytes += data.length;
-					if (totalBytes > DEFAULT_MAX_BYTES) ensureTempFile();
-					if (tempFileStream) tempFileStream.write(data);
-					chunks.push(data);
-					chunksBytes += data.length;
-					while (chunksBytes > maxChunksBytes && chunks.length > 1) {
-						const removed = chunks.shift()!;
-						chunksBytes -= removed.length;
-					}
+					collector.push(data);
 
-					const text = data.toString("utf-8");
+					const rawText = data.toString("utf-8");
+					const text = sanitizeBinaryOutput(stripAnsi(rawText)).replace(/\r/g, "");
 					proc.output += text;
 
 					channel?.emit("output", {
@@ -452,18 +408,15 @@ export default function (pi: ExtensionAPI) {
 						data: text,
 						processes: Array.from(managed.values()).map((x) => x.proc),
 						timestamp: Date.now(),
-					} satisfies BashChannelEvent);
+					});
 
 					if (onUpdate) {
-						const fullBuffer = Buffer.concat(chunks);
-						const fullText = fullBuffer.toString("utf-8");
-						const truncation = truncateTail(fullText);
-						if (truncation.truncated) ensureTempFile();
+						const truncation = collector.getTruncation();
 						onUpdate({
 							content: [{ type: "text", text: truncation.content || "" }],
 							details: {
 								truncation: truncation.truncated ? truncation : undefined,
-								fullOutputPath: tempFilePath,
+								fullOutputPath: collector.fullOutputPath,
 							},
 						});
 					}
@@ -471,15 +424,6 @@ export default function (pi: ExtensionAPI) {
 
 				child.stdout?.on("data", handleData);
 				child.stderr?.on("data", handleData);
-
-				let timedOut = false;
-				let timeoutHandle: NodeJS.Timeout | undefined;
-				if (effectiveTimeout > 0) {
-					timeoutHandle = setTimeout(() => {
-						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
-					}, effectiveTimeout * 1000);
-				}
 
 				let backgroundAfterHandle: NodeJS.Timeout | undefined;
 				if (effectiveBackgroundAfter !== undefined) {
@@ -499,7 +443,7 @@ export default function (pi: ExtensionAPI) {
 							data: m.proc.output.slice(-2000),
 							processes: Array.from(managed.values()).map((x) => x.proc),
 							timestamp: Date.now(),
-						} satisfies BashChannelEvent);
+						});
 							const outputPreview = m.proc.output ? takeLastLines(m.proc.output, BG_PREVIEW_LINES) : "(no output yet)";
 						m.resolve({
 							content: [
@@ -522,21 +466,11 @@ export default function (pi: ExtensionAPI) {
 					}, effectiveBackgroundAfter * 1000);
 				}
 
-				const onAbort = () => {
-					if (child.pid) killProcessTree(child.pid);
-				};
-				if (signal) {
-					if (signal.aborted) onAbort();
-					else signal.addEventListener("abort", onAbort, { once: true });
-				}
-
 				waitForChildProcess(child)
 					.then((code) => {
-						if (child.pid) untrackDetachedChildPid(child.pid);
-						if (timeoutHandle) clearTimeout(timeoutHandle);
+						spawnCleanup();
 						if (backgroundAfterHandle) clearTimeout(backgroundAfterHandle);
-						if (signal) signal.removeEventListener("abort", onAbort);
-						if (tempFileStream) tempFileStream.end();
+						collector.close();
 
 						const m = managed.get(toolCallId);
 						if (m?.resolved) {
@@ -555,14 +489,16 @@ export default function (pi: ExtensionAPI) {
 								data: proc.output.slice(-2000),
 								processes: Array.from(managed.values()).map((x) => x.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							if (!deletedIds.has(toolCallId)) history.push({ ...proc });
 							managed.delete(toolCallId);
 							try {
 								pi.sendUserMessage(
 									`[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) exited with code ${code ?? "unknown"} after ${formatDuration((proc.endedAt ?? Date.now()) - proc.startedAt)}.${proc.logPath ? ` Log: ${proc.logPath}` : ""}`,
 								);
-							} catch {}
+							} catch (err) {
+								console.debug("[bash-ext] background exit notification failed:", err instanceof Error ? err.message : err);
+							}
 							return;
 						}
 
@@ -576,7 +512,7 @@ export default function (pi: ExtensionAPI) {
 								toolCallId,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							managed.delete(toolCallId);
 							resolve({
 								content: [
@@ -593,13 +529,13 @@ export default function (pi: ExtensionAPI) {
 										startedAt: proc.startedAt,
 										endedAt: proc.endedAt,
 										durationMs,
-										logPath: tempFilePath,
+										logPath: collector.fullOutputPath,
 									},
 								},
 							});
 							return;
 						}
-						if (timedOut) {
+						if (isTimedOut()) {
 							proc.status = "error";
 							proc.endedAt = Date.now();
 							const durationMs = proc.endedAt - proc.startedAt;
@@ -610,7 +546,7 @@ export default function (pi: ExtensionAPI) {
 								data: `Timed out after ${effectiveTimeout}s`,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							managed.delete(toolCallId);
 							resolve({
 								content: [
@@ -628,7 +564,7 @@ export default function (pi: ExtensionAPI) {
 										endedAt: proc.endedAt,
 										durationMs,
 										timeoutSecs: effectiveTimeout,
-										logPath: tempFilePath,
+										logPath: collector.fullOutputPath,
 									},
 								},
 							});
@@ -638,19 +574,15 @@ export default function (pi: ExtensionAPI) {
 						proc.exitCode = code;
 						proc.endedAt = Date.now();
 
-						const fullBuffer = Buffer.concat(chunks);
-						const fullOutput = fullBuffer.toString("utf-8");
-						const truncation = truncateTail(fullOutput);
-						if (truncation.truncated) ensureTempFile();
-						if (tempFileStream) tempFileStream.end();
+						const truncation = collector.finalize();
 
 						let outputText = truncation.content || "(no output)";
 						let details: BashToolDetails | undefined;
 						if (truncation.truncated) {
-							details = { truncation, fullOutputPath: tempFilePath };
+							details = { truncation, fullOutputPath: collector.fullOutputPath };
 							const startLine = truncation.totalLines - truncation.outputLines + 1;
 							const endLine = truncation.totalLines;
-							outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${tempFilePath}]`;
+							outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${collector.fullOutputPath}]`;
 						}
 
 						if (code !== 0 && code !== null) {
@@ -663,7 +595,7 @@ export default function (pi: ExtensionAPI) {
 								data: outputText,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							managed.delete(toolCallId);
 							resolve({
 								content: [{ type: "text", text: outputText }],
@@ -676,7 +608,7 @@ export default function (pi: ExtensionAPI) {
 										endedAt: proc.endedAt,
 										durationMs,
 										exitCode: code,
-										logPath: tempFilePath,
+										logPath: collector.fullOutputPath,
 									},
 								},
 							});
@@ -688,7 +620,7 @@ export default function (pi: ExtensionAPI) {
 								data: outputText,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							managed.delete(toolCallId);
 							resolve({
 								content: [{ type: "text", text: outputText }],
@@ -697,11 +629,9 @@ export default function (pi: ExtensionAPI) {
 						}
 					})
 					.catch((err: Error) => {
-						if (child.pid) untrackDetachedChildPid(child.pid);
-						if (timeoutHandle) clearTimeout(timeoutHandle);
+						spawnCleanup();
 						if (backgroundAfterHandle) clearTimeout(backgroundAfterHandle);
-						if (signal) signal.removeEventListener("abort", onAbort);
-						if (tempFileStream) tempFileStream.end();
+						collector.close();
 
 						const m = managed.get(toolCallId);
 						if (m?.resolved) {
@@ -721,36 +651,37 @@ export default function (pi: ExtensionAPI) {
 								data: proc.output.slice(-2000),
 								processes: Array.from(managed.values()).map((x) => x.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							if (!deletedIds.has(toolCallId)) history.push({ ...proc });
 							managed.delete(toolCallId);
 							try {
 								pi.sendUserMessage(
 									`[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) crashed: ${err.message}${proc.logPath ? `. Log: ${proc.logPath}` : ""}`,
 								);
-							} catch {}
+							} catch (err) {
+								console.debug("[bash-ext] background crash notification failed:", err instanceof Error ? err.message : err);
+							}
 							return;
 						}
 
-						const fullBuffer = Buffer.concat(chunks);
-						const output = fullBuffer.toString("utf-8") || "(no output)";
 						const durationMs = (proc.endedAt || Date.now()) - proc.startedAt;
+						const outputText = proc.output || "(no output)";
 
 						if (err.message === "aborted") {
 							proc.status = "terminated";
 							channel?.emit("terminated", {
 								type: "terminated",
 								toolCallId,
-								data: output,
+								data: outputText,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							managed.delete(toolCallId);
 							resolve({
 								content: [
 									{
 										type: "text",
-										text: `${output}\n\n[Aborted after ${formatDuration(durationMs)}, PID: ${proc.pid ?? "unknown"}]`,
+										text: `${outputText}\n\n[Aborted after ${formatDuration(durationMs)}, PID: ${proc.pid ?? "unknown"}]`,
 									},
 								],
 								details: {
@@ -761,7 +692,7 @@ export default function (pi: ExtensionAPI) {
 										startedAt: proc.startedAt,
 										endedAt: proc.endedAt,
 										durationMs,
-										logPath: tempFilePath,
+										logPath: collector.fullOutputPath,
 									},
 								},
 							});
@@ -770,16 +701,16 @@ export default function (pi: ExtensionAPI) {
 							channel?.emit("error", {
 								type: "error",
 								toolCallId,
-								data: output,
+								data: outputText,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							managed.delete(toolCallId);
 							resolve({
 								content: [
 									{
 										type: "text",
-										text: `${output}\n\n[Timed out after ${timeoutSecs}s, PID: ${proc.pid ?? "unknown"}]`,
+										text: `${outputText}\n\n[Timed out after ${timeoutSecs}s, PID: ${proc.pid ?? "unknown"}]`,
 									},
 								],
 								details: {
@@ -791,7 +722,7 @@ export default function (pi: ExtensionAPI) {
 										endedAt: proc.endedAt,
 										durationMs,
 										timeoutSecs,
-										logPath: tempFilePath,
+										logPath: collector.fullOutputPath,
 									},
 								},
 							});
@@ -799,16 +730,16 @@ export default function (pi: ExtensionAPI) {
 							channel?.emit("error", {
 								type: "error",
 								toolCallId,
-								data: output,
+								data: outputText,
 								processes: Array.from(managed.values()).map((m) => m.proc),
 								timestamp: Date.now(),
-							} satisfies BashChannelEvent);
+							});
 							managed.delete(toolCallId);
 							resolve({
 								content: [
 									{
 										type: "text",
-										text: `${output}\n\n[Command crashed after ${formatDuration(durationMs)}, PID: ${proc.pid ?? "unknown"}: ${err.message}]`,
+										text: `${outputText}\n\n[Command crashed after ${formatDuration(durationMs)}, PID: ${proc.pid ?? "unknown"}: ${err.message}]`,
 									},
 								],
 								details: {
@@ -820,7 +751,7 @@ export default function (pi: ExtensionAPI) {
 										endedAt: proc.endedAt,
 										durationMs,
 										error: err.message,
-										logPath: tempFilePath,
+										logPath: collector.fullOutputPath,
 									},
 								},
 							});
@@ -872,7 +803,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(
 			_toolCallId: string,
 			{ bashId, lastLines, grep: grepPattern }: { bashId: string; lastLines?: number; grep?: string },
-		): Promise<AgentToolResult> {
+		): Promise<AgentToolResult<BashToolDetails>> {
 			const result = findProcess(bashId);
 
 			if (!result) {
@@ -883,6 +814,7 @@ export default function (pi: ExtensionAPI) {
 							text: `No process found with <bashId>${bashId}</bashId>. It may have never existed, been removed, or the session has been reset.`,
 						},
 					],
+					details: undefined as unknown as BashToolDetails,
 				};
 			}
 
@@ -919,6 +851,7 @@ export default function (pi: ExtensionAPI) {
 
 			return {
 				content: [{ type: "text", text: `${header}\n${output}` }],
+				details: undefined as unknown as BashToolDetails,
 			};
 		},
 	});

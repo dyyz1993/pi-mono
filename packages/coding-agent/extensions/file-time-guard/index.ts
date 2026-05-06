@@ -56,7 +56,8 @@ export default function (pi: ExtensionAPI) {
 					ctime: stats.ctimeMs,
 					size: stats.size,
 				});
-			} catch {
+			} catch (err) {
+				console.debug("[file-time-guard] file stat failed:", err instanceof Error ? err.message : err);
 			}
 		}
 
@@ -108,7 +109,8 @@ export default function (pi: ExtensionAPI) {
 						);
 					}
 				}
-			} catch {
+			} catch (err) {
+				console.debug("[file-time-guard] current file stat failed:", err instanceof Error ? err.message : err);
 			}
 		}
 	});

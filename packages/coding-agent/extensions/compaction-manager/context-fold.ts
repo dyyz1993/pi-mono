@@ -1,15 +1,16 @@
-import type { AgentMessage, AssistantMessage } from "@dyyz1993/pi-agent-core";
-import type { SessionEntry } from "@dyyz1993/pi-coding-agent";
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
+import type { AssistantMessage, Message, TextContent, ThinkingContent, ToolCall } from "@dyyz1993/pi-ai";
+import type { SessionEntry, SessionMessageEntry } from "@dyyz1993/pi-coding-agent";
 
 export function findFoldableEntries(
 	entries: SessionEntry[],
 	foldedIds: Set<string>,
 	maxAgeMs: number,
 	keepRecentCount: number,
-): SessionEntry[] {
+): SessionMessageEntry[] {
 	const now = Date.now();
 	const messageEntries = entries.filter(
-		(e) => e.type === "message" && e.message.role === "assistant",
+		(e): e is SessionMessageEntry => e.type === "message" && e.message.role === "assistant",
 	);
 
 	if (messageEntries.length <= keepRecentCount) return [];
@@ -46,14 +47,14 @@ export function extractFoldSummary(message: AssistantMessage, maxLength: number)
 	return full.slice(0, maxLength).trim() + "...";
 }
 
-export function estimateMessageTokens(message: AgentMessage): number {
+export function estimateMessageTokens(message: Message): number {
 	if (!Array.isArray(message.content)) return 0;
 	let total = 0;
 	for (const block of message.content) {
 		if (block.type === "text" && typeof block.text === "string") {
 			total += Math.ceil(block.text.length / 4);
-		} else if (block.type === "thinking" && typeof (block as any).text === "string") {
-			total += Math.ceil(((block as any).text as string).length / 4);
+		} else if (block.type === "thinking" && typeof (block as ThinkingContent).thinking === "string") {
+			total += Math.ceil((block as ThinkingContent).thinking.length / 4);
 		} else {
 			total += 50;
 		}

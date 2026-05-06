@@ -99,7 +99,8 @@ export function matchRule(query: string, rule: SkipRule): boolean {
 			try {
 				const re = new RegExp(rule.pattern);
 				return re.test(query);
-			} catch {
+			} catch (err) {
+				console.debug("[auto-memory] regex evaluation failed:", err instanceof Error ? err.message : err);
 				return false;
 			}
 		}
@@ -151,7 +152,8 @@ export function loadSkipWordStore(dir: string): SkipWordStore {
 			parsed.history = parsed.history.slice(-MAX_HISTORY);
 		}
 		return parsed;
-	} catch {
+	} catch (err) {
+		console.debug("[auto-memory] skip word store load failed:", err instanceof Error ? err.message : err);
 		return getDefaultStore();
 	}
 }

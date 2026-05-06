@@ -13,6 +13,25 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.js";
+// Agent types and discovery (shared across extensions)
+export {
+	type AgentColor,
+	type AgentConfig,
+	type AgentDiscoveryResult,
+	type AgentHook,
+	type AgentHookCommand,
+	type AgentHookPrompt,
+	type AgentHooks,
+	type AgentScope,
+	type AgentSource,
+	discoverAgents,
+	formatAgentList,
+	type IsolationMode,
+	loadAgentsFromDir,
+	type MemoryScope,
+	mergeAgentsByPriority,
+	type PermissionMode,
+} from "./core/agent-types.js";
 // Auth and model registry
 export {
 	type ApiKeyCredential,
@@ -64,8 +83,10 @@ export type {
 	BuildSystemPromptOptions,
 	CallLLMOptions,
 	Channel,
+	ChannelContract,
 	ChannelDataMessage,
 	ChannelOutputFn,
+	ChannelTypeRegistry,
 	CompactOptions,
 	ContextEvent,
 	ContextUsage,
@@ -127,6 +148,7 @@ export type {
 	ToolResultEvent,
 	TurnEndEvent,
 	TurnStartEvent,
+	TypedChannel,
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,
@@ -137,6 +159,8 @@ export {
 	ChannelManager,
 	ClientChannel,
 	createExtensionRuntime,
+	createTypedChannel,
+	defineChannel,
 	defineTool,
 	discoverAndLoadExtensions,
 	ExtensionRunner,
@@ -294,6 +318,8 @@ export {
 	type WriteToolOptions,
 	withFileMutationQueue,
 } from "./core/tools/index.js";
+export { OutputCollector } from "./core/tools/output-collector.js";
+export { type SpawnedProcess, type SpawnOptions, spawnManagedProcess } from "./core/tools/spawn-managed.js";
 // Main entry point
 export { type MainOptions, main } from "./main.js";
 // Run modes for programmatic SDK usage
@@ -372,6 +398,7 @@ export {
 	getShellConfig,
 	getShellEnv,
 	killProcessTree,
+	sanitizeBinaryOutput,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "./utils/shell.js";

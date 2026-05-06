@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ToolResultEvent, BeforeAgentStartEvent } from "@dyyz1993/pi-coding-agent";
 import type { MatcherGroup, HookHandler } from "./types.js";
 import { loadConfigs } from "./config-loader.js";
 import { matchesMatcher } from "./matcher.js";
@@ -35,49 +35,44 @@ export default function (pi: ExtensionAPI) {
 		return result;
 	});
 
-	pi.on("tool_result", async (event, ctx) => {
-		await processHookEvent("PostToolUse", {
-			toolName: (event as Record<string, unknown>).toolName as string ?? "",
-			input: ((event as Record<string, unknown>).input as Record<string, unknown>) ?? {},
-			toolCallId: (event as Record<string, unknown>).toolCallId as string | undefined,
-			toolOutput: typeof (event as Record<string, unknown>).output === "string"
-				? (event as Record<string, unknown>).output as string
-				: JSON.stringify((event as Record<string, unknown>).output ?? ""),
+	pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
+		const toolOutput = event.content.map((c) => c.type === "text" ? c.text : "").join("");
+		const hookName = event.isError ? "PostToolUseFailure" : "PostToolUse";
+		await processHookEvent(hookName, {
+			toolName: event.toolName,
+			input: event.input ?? {},
+			toolCallId: event.toolCallId,
+			toolOutput,
 		}, ctx);
 		return undefined;
 	});
 
-	pi.on("tool_error", async (event, ctx) => {
-		await processHookEvent("PostToolUseFailure", {
-			toolName: (event as Record<string, unknown>).toolName as string ?? "",
-			input: ((event as Record<string, unknown>).input as Record<string, unknown>) ?? {},
-			toolCallId: (event as Record<string, unknown>).toolCallId as string | undefined,
-			toolOutput: typeof (event as Record<string, unknown>).error === "string"
-				? (event as Record<string, unknown>).error as string
-				: JSON.stringify((event as Record<string, unknown>).error ?? ""),
-		}, ctx);
-	});
-
-	pi.on("message_send", async (event, ctx) => {
+	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx) => {
 		const result = await processHookEvent("UserPromptSubmit", {
 			toolName: "",
-			input: { prompt: (event as Record<string, unknown>).content ?? "" },
+			input: { prompt: event.prompt ?? "" },
 		}, ctx);
-		return result;
+		if (result?.block) {
+			return { message: { customType: "hook_block", content: result.reason, display: true } };
+		}
+		return undefined;
 	});
 
-	pi.on("session_end", async (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		await processHookEvent("SessionEnd", { toolName: "", input: {} }, ctx);
 	});
 
-	pi.on("compact", async (_event, ctx) => {
+	pi.on("session_compact", async (_event, ctx) => {
 		await processHookEvent("PreCompact", { toolName: "", input: {} }, ctx);
 	});
 
-	pi.on("notify", async (event, ctx) => {
+	pi.on("message_start", async (event, ctx) => {
+		const messageText = typeof event.message === "object" && event.message !== null && "content" in event.message
+			? String((event.message as { content: unknown }).content ?? "")
+			: "";
 		await processHookEvent("Notification", {
 			toolName: "",
-			input: { message: (event as Record<string, unknown>).message ?? "" },
+			input: { message: messageText },
 		}, ctx);
 	});
 
@@ -91,10 +86,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_end", async (_event, ctx) => {
 		await processHookEvent("Stop", { toolName: "", input: {} }, ctx);
-	});
-
-	pi.on("cwd_change", async (_event, ctx) => {
-		configs = loadConfigs(ctx.cwd);
 	});
 
 	async function processHookEvent(

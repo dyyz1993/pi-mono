@@ -1,5 +1,5 @@
-import type { AgentMessage, AssistantMessage } from "@dyyz1993/pi-agent-core";
-import type { ToolResultMessage } from "@dyyz1993/pi-ai";
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
+import type { AssistantMessage, TextContent, ToolResultMessage } from "@dyyz1993/pi-ai";
 
 export function microcompactMessages(
 	messages: AgentMessage[],
@@ -34,11 +34,11 @@ export function stripThinkingBlocks(messages: AgentMessage[]): { messages: Agent
 		const assistant = msg as AssistantMessage;
 		if (!Array.isArray(assistant.content)) return msg;
 
-		const hasThinking = assistant.content.some((block) => block.type === "thinking");
+		const hasThinking = assistant.content.some((block: AssistantMessage["content"][number]) => block.type === "thinking");
 		if (!hasThinking) return msg;
 
 		modified = true;
-		const filtered = assistant.content.filter((block) => block.type !== "thinking");
+		const filtered = assistant.content.filter((block: AssistantMessage["content"][number]) => block.type !== "thinking");
 		return {
 			...assistant,
 			content: filtered,

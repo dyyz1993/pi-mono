@@ -1,34 +1,17 @@
-import { randomBytes } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { Container, Text, truncateToWidth } from "@dyyz1993/pi-tui";
-import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.js";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { waitForChildProcess } from "../../utils/child-process.js";
-import {
-	getShellConfig,
-	getShellEnv,
-	killProcessTree,
-	trackDetachedChildPid,
-	untrackDetachedChildPid,
-} from "../../utils/shell.js";
+import { getShellEnv } from "../../utils/shell.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
+import { OutputCollector } from "./output-collector.js";
 import { getTextOutput, invalidArgText, str } from "./render-utils.js";
+import { spawnManagedProcess } from "./spawn-managed.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
-
-/**
- * Generate a unique temp file path for bash output.
- */
-function getTempFilePath(): string {
-	const id = randomBytes(8).toString("hex");
-	return join(tmpdir(), `pi-bash-${id}.log`);
-}
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 300;
 
@@ -89,59 +72,41 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 	return {
 		exec: (command, cwd, { onData, signal, timeout, env }) => {
 			return new Promise((resolve, reject) => {
-				const { shell, args } = getShellConfig(options?.shellPath);
-				if (!existsSync(cwd)) {
-					reject(new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`));
+				const result = spawnManagedProcess({
+					command,
+					cwd,
+					timeout,
+					signal,
+					stdin: "ignore",
+					env,
+					shellPath: options?.shellPath,
+				});
+
+				if (result instanceof Error) {
+					reject(result);
 					return;
 				}
-				const child = spawn(shell, [...args, command], {
-					cwd,
-					detached: true,
-					env: env ?? getShellEnv(),
-					stdio: ["ignore", "pipe", "pipe"],
-				});
-				if (child.pid) trackDetachedChildPid(child.pid);
-				let timedOut = false;
-				let timeoutHandle: NodeJS.Timeout | undefined;
-				// Set timeout if provided.
-				if (timeout !== undefined && timeout > 0) {
-					timeoutHandle = setTimeout(() => {
-						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
-					}, timeout * 1000);
-				}
-				// Stream stdout and stderr.
+
+				const { child, cleanup, isTimedOut } = result;
+
 				child.stdout?.on("data", onData);
 				child.stderr?.on("data", onData);
-				// Handle abort signal by killing the entire process tree.
-				const onAbort = () => {
-					if (child.pid) killProcessTree(child.pid);
-				};
-				if (signal) {
-					if (signal.aborted) onAbort();
-					else signal.addEventListener("abort", onAbort, { once: true });
-				}
-				// Handle shell spawn errors and wait for the process to terminate without hanging
-				// on inherited stdio handles held by detached descendants.
+
 				waitForChildProcess(child)
 					.then((code) => {
-						if (child.pid) untrackDetachedChildPid(child.pid);
-						if (timeoutHandle) clearTimeout(timeoutHandle);
-						if (signal) signal.removeEventListener("abort", onAbort);
+						cleanup();
 						if (signal?.aborted) {
 							reject(new Error("aborted"));
 							return;
 						}
-						if (timedOut) {
+						if (isTimedOut()) {
 							reject(new Error(`timeout:${timeout}`));
 							return;
 						}
 						resolve({ exitCode: code });
 					})
 					.catch((err) => {
-						if (child.pid) untrackDetachedChildPid(child.pid);
-						if (timeoutHandle) clearTimeout(timeoutHandle);
-						if (signal) signal.removeEventListener("abort", onAbort);
+						cleanup();
 						reject(err);
 					});
 			});
@@ -333,49 +298,17 @@ export function createBashToolDefinition(
 				onUpdate({ content: [], details: undefined });
 			}
 			return new Promise((resolve, reject) => {
-				let tempFilePath: string | undefined;
-				let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
-				let totalBytes = 0;
-				const chunks: Buffer[] = [];
-				let chunksBytes = 0;
-				const maxChunksBytes = DEFAULT_MAX_BYTES * 2;
-
-				const ensureTempFile = () => {
-					if (tempFilePath) return;
-					tempFilePath = getTempFilePath();
-					tempFileStream = createWriteStream(tempFilePath);
-					for (const chunk of chunks) tempFileStream.write(chunk);
-				};
+				const collector = new OutputCollector();
 
 				const handleData = (data: Buffer) => {
-					totalBytes += data.length;
-					// Start writing to a temp file once output exceeds the in-memory threshold.
-					if (totalBytes > DEFAULT_MAX_BYTES) {
-						ensureTempFile();
-					}
-					// Write to temp file if we have one.
-					if (tempFileStream) tempFileStream.write(data);
-					// Keep a rolling buffer of recent output for tail truncation.
-					chunks.push(data);
-					chunksBytes += data.length;
-					// Trim old chunks if the rolling buffer grows too large.
-					while (chunksBytes > maxChunksBytes && chunks.length > 1) {
-						const removed = chunks.shift()!;
-						chunksBytes -= removed.length;
-					}
-					// Stream partial output using the rolling tail buffer.
+					collector.push(data);
 					if (onUpdate) {
-						const fullBuffer = Buffer.concat(chunks);
-						const fullText = fullBuffer.toString("utf-8");
-						const truncation = truncateTail(fullText);
-						if (truncation.truncated) {
-							ensureTempFile();
-						}
+						const truncation = collector.getTruncation();
 						onUpdate({
 							content: [{ type: "text", text: truncation.content || "" }],
 							details: {
 								truncation: truncation.truncated ? truncation : undefined,
-								fullOutputPath: tempFilePath,
+								fullOutputPath: collector.fullOutputPath,
 							},
 						});
 					}
@@ -388,31 +321,21 @@ export function createBashToolDefinition(
 					env: spawnContext.env,
 				})
 					.then(({ exitCode }) => {
-						// Combine the rolling buffer chunks.
-						const fullBuffer = Buffer.concat(chunks);
-						const fullOutput = fullBuffer.toString("utf-8");
-						// Apply tail truncation for the final display payload.
-						const truncation = truncateTail(fullOutput);
-						if (truncation.truncated) {
-							ensureTempFile();
-						}
-						// Close temp file stream before building the final result.
-						if (tempFileStream) tempFileStream.end();
+						const truncation = collector.finalize();
+						const fullOutput = collector.getBufferedText();
 						let outputText = truncation.content || "(no output)";
 						let details: BashToolDetails | undefined;
 						if (truncation.truncated) {
-							// Build truncation details and an actionable notice.
-							details = { truncation, fullOutputPath: tempFilePath };
+							details = { truncation, fullOutputPath: collector.fullOutputPath };
 							const startLine = truncation.totalLines - truncation.outputLines + 1;
 							const endLine = truncation.totalLines;
 							if (truncation.lastLinePartial) {
-								// Edge case: the last line alone is larger than the byte limit.
 								const lastLineSize = formatSize(Buffer.byteLength(fullOutput.split("\n").pop() || "", "utf-8"));
-								outputText += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${tempFilePath}]`;
+								outputText += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${collector.fullOutputPath}]`;
 							} else if (truncation.truncatedBy === "lines") {
-								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${tempFilePath}]`;
+								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${collector.fullOutputPath}]`;
 							} else {
-								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${tempFilePath}]`;
+								outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${collector.fullOutputPath}]`;
 							}
 						}
 						if (exitCode !== 0 && exitCode !== null) {
@@ -423,10 +346,8 @@ export function createBashToolDefinition(
 						}
 					})
 					.catch((err: Error) => {
-						// Close temp file stream and include buffered output in the error message.
-						if (tempFileStream) tempFileStream.end();
-						const fullBuffer = Buffer.concat(chunks);
-						let output = fullBuffer.toString("utf-8");
+						collector.close();
+						let output = collector.getBufferedText();
 						if (err.message === "aborted") {
 							if (output) output += "\n\n";
 							output += "Command aborted";

@@ -70,7 +70,8 @@ export default function autoSessionTitle(pi: ExtensionAPI) {
 				messages: [{ role: "user", content: userText }],
 				maxTokens: MAX_LLM_TOKENS,
 			});
-		} catch {
+		} catch (err) {
+			console.debug("[auto-session-title] LLM title generation failed:", err instanceof Error ? err.message : err);
 			return;
 		}
 
