@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RpcClient } from "../../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const extensionPath = join(__dirname, "..", "..", "examples", "extensions", "file-snapshot.ts");
+const extensionPath = join(__dirname, "..", "..", "extensions", "file-snapshot", "index.ts");
 
 const hasApiKey =
 	!!process.env.ANTHROPIC_API_KEY ||
