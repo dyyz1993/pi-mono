@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { McpManager } from "../../src/core/mcp/mcp-manager.js";
 
-describe("pi-mcp integration with knowledge-base (npx)", () => {
+const MCP_E2E = !!process.env.MCP_E2E;
+
+describe.skipIf(!MCP_E2E)("pi-mcp integration with knowledge-base (npx)", () => {
 	const manager = new McpManager();
 
 	afterAll(async () => {

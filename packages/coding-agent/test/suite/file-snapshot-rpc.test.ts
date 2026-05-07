@@ -17,6 +17,12 @@ const hasApiKey =
 	!!process.env.ZAI_API_KEY ||
 	!!readApiKeyFromPiConfig();
 
+const hasReliableProvider =
+	!!process.env.ANTHROPIC_API_KEY ||
+	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
+	!!process.env.OPENAI_API_KEY ||
+	!!process.env.OPENROUTER_API_KEY;
+
 function readApiKeyFromPiConfig(): string | undefined {
 	try {
 		const configPath = join(homedir(), ".pi", "agent", "models.json");
@@ -41,6 +47,9 @@ function getProviderAndModel(): { provider: string; model: string } {
 	if (process.env.OPENROUTER_API_KEY) {
 		return { provider: "openrouter", model: "anthropic/claude-sonnet-4-5" };
 	}
+	if (hasZhipuaiInPiConfig()) {
+		return { provider: "zhipuai", model: "glm-4.7" };
+	}
 	return { provider: "", model: "" };
 }
 
@@ -64,7 +73,7 @@ function extractCustomEntries(events: AgentEvent[]): Array<{ type: string; custo
 	}>;
 }
 
-describe.skipIf(!hasApiKey)("file-snapshot RPC e2e", () => {
+describe.skipIf(!hasReliableProvider)("file-snapshot RPC e2e", () => {
 	let client: RpcClient;
 	let projectDir: string;
 

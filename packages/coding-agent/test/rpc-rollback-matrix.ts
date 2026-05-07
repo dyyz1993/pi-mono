@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const extensionPath = join(__dirname, "..", "examples", "extensions", "file-snapshot.ts");
+const extensionPath = join(__dirname, "..", "extensions", "file-snapshot", "index.ts");
 const cliPath = join(__dirname, "..", "dist", "cli.js");
 
 function listFiles(dir: string): string[] {

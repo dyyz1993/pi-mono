@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { runSubagent } from "../../extensions/subagent-ext/index.js";
 
 const hasModelConfig = existsSync(join(homedir(), ".pi/agent/models.json"));
+const hasApiKey = !!process.env.ANTHROPIC_API_KEY || !!process.env.OPENAI_API_KEY || !!process.env.OPENROUTER_API_KEY;
 
 function createTestContext() {
 	const sessionId = randomUUID().slice(0, 8);
@@ -36,7 +37,7 @@ function readSessionModel(sessionPath: string) {
 	return { lines, modelChange };
 }
 
-describe.skipIf(!hasModelConfig)("SubAgent E2E --model fallback", () => {
+describe.skipIf(!hasApiKey)("SubAgent E2E --model fallback", () => {
 	it("no --model → falls back to global default (zhipuai/glm-4.7)", async () => {
 		const { tmpDir, sessionPath, fakeChannel } = createTestContext();
 

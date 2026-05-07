@@ -155,8 +155,7 @@ async function runSingleAgent(
 
 			const processLine = (line: string) => {
 				if (!line.trim()) return;
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			let event: any;
+				let event: any;
 				try {
 					event = JSON.parse(line);
 				} catch (err) {

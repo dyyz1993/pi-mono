@@ -455,6 +455,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		sessionWithRunner._extensionRunner = {
 			hasHandlers: (eventType) => eventType === "tool_call",
 			emit: async () => {},
+			invalidate: vi.fn(),
 			emitToolCall: async () => {
 				snapshots.push(
 					sessionManager
@@ -594,6 +595,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		};
 		sessionWithRunner._extensionRunner = {
 			hasHandlers: () => false,
+			invalidate: vi.fn(),
 			emit: async (event) => {
 				if (event.type === "message_end" && event.message?.role === "assistant") {
 					await new Promise((resolve) => setTimeout(resolve, 40));

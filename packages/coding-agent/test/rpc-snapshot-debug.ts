@@ -5,7 +5,7 @@ import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, "..", "dist", "cli.js");
-const extPath = join(__dirname, "..", "examples", "extensions", "file-snapshot.ts");
+const extPath = join(__dirname, "..", "extensions", "file-snapshot", "index.ts");
 
 const dir = `/tmp/pi-snap-debug-${Date.now()}`;
 mkdirSync(dir, { recursive: true });

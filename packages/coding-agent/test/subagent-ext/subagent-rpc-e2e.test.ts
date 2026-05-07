@@ -6,11 +6,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RpcClient } from "../../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const subagentExtPath = resolve(__dirname, "subagent.ts");
-const bashExtPath = resolve(__dirname, "bash.ts");
-const todoExtPath = resolve(__dirname, "todo.ts");
+const subagentExtPath = resolve(__dirname, "..", "..", "extensions", "subagent-ext", "index.ts");
+const bashExtPath = resolve(__dirname, "..", "..", "extensions", "bash-ext", "index.ts");
+const todoExtPath = resolve(__dirname, "..", "..", "extensions", "todo-ext", "index.ts");
 
 const hasModelConfig = existsSync(join(homedir(), ".pi/agent/models.json"));
+const hasApiKey =
+	!!process.env.ANTHROPIC_API_KEY ||
+	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
+	!!process.env.OPENAI_API_KEY ||
+	!!process.env.OPENROUTER_API_KEY;
 const PROVIDER = "zhipuai";
 const MODEL = "glm-4.7";
 
@@ -24,7 +29,7 @@ function makeClient(projectDir: string): RpcClient {
 	});
 }
 
-describe.skipIf(!hasModelConfig)("SubAgent RPC E2E", () => {
+describe.skipIf(!hasApiKey)("SubAgent RPC E2E", () => {
 	let client: RpcClient;
 	let projectDir: string;
 

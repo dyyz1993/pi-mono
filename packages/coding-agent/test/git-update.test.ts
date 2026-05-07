@@ -28,7 +28,8 @@ function git(args: string[], cwd: string): string {
 }
 
 function initGitRepo(repoDir: string): void {
-	git(["init", "--initial-branch=main"], repoDir);
+	git(["init"], repoDir);
+	git(["checkout", "-b", "main"], repoDir);
 	git(["config", "--local", "user.email", "test@test.com"], repoDir);
 	git(["config", "--local", "user.name", "Test"], repoDir);
 }

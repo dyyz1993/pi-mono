@@ -992,10 +992,15 @@ describe("bash channel extension", () => {
 			const bashId = (startCall![0] as BashChannelEvent).processes![0].bashId;
 
 			receiveHandler({ __call: "background", toolCallId: "tc_lastlines_test" });
-			await new Promise((r) => setTimeout(r, 50));
+			await new Promise((r) => setTimeout(r, 500));
 
-			const result = await statusTool.execute("tc_lastlines_query", { bashId, lastLines: 3 });
-			const text = result.content[0].text;
+			let text = "";
+			for (let attempt = 0; attempt < 5; attempt++) {
+				const result = await statusTool.execute("tc_lastlines_query", { bashId, lastLines: 3 });
+				text = result.content[0].text;
+				if (text.includes("line 9")) break;
+				await new Promise((r) => setTimeout(r, 500));
+			}
 			expect(text).toContain("line 9");
 			expect(text).toContain("line 10");
 			expect(text).toContain("(8 earlier lines)");

@@ -10,7 +10,7 @@ mkdirSync(projectDir, { recursive: true });
 
 console.log("Project dir:", projectDir);
 
-const extensionPath = join(__dirname, "..", "examples", "extensions", "file-snapshot.ts");
+const extensionPath = join(__dirname, "..", "extensions", "file-snapshot", "index.ts");
 const cliPath = join(__dirname, "..", "dist", "cli.js");
 
 const client = new RpcClient({

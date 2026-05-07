@@ -33,7 +33,6 @@ vi.mock("../src/core/compaction/index.js", () => ({
 			stopReason?: string;
 		}>,
 	) => {
-		// Walk backwards to find last non-error, non-aborted assistant with usage
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const msg = messages[i];
 			if (msg.role === "assistant" && msg.stopReason !== "error" && msg.stopReason !== "aborted" && msg.usage) {
@@ -44,6 +43,7 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		}
 		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
 	},
+	estimateTokens: () => 10,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	prepareCompaction: () => ({ dummy: true }),
 	shouldCompact: (
