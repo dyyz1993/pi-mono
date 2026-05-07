@@ -181,7 +181,7 @@ export class FileSnapshotManager {
 		}
 	}
 
-	onTurnEnd(cwd: string, turnIndex: number, appendEntry: (type: string, data: unknown) => string): void {
+	onTurnEnd(cwd: string, turnIndex: number, appendEntry: (type: string, data: unknown) => string | undefined): void {
 		const files = readFilteredWorkingDir(this.git, cwd);
 		const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
 
@@ -199,14 +199,16 @@ export class FileSnapshotManager {
 				turnIndex,
 			});
 
-			this.snapshotIndex.set(entryId, {
-				baselineTreeHash: compareTo,
-				snapshotTreeHash,
-				diff: stepDiff,
-				turnIndex,
-				entryId,
-			});
-			this.turnIndexMap.set(turnIndex, entryId);
+			if (entryId) {
+				this.snapshotIndex.set(entryId, {
+					baselineTreeHash: compareTo,
+					snapshotTreeHash,
+					diff: stepDiff,
+					turnIndex,
+					entryId,
+				});
+				this.turnIndexMap.set(turnIndex, entryId);
+			}
 			this.lastCommittedTreeHash = snapshotTreeHash;
 		}
 
@@ -301,7 +303,12 @@ export class FileSnapshotManager {
 			targetTreeHash = options.snapshotHash;
 		} else if (options.targetEntryId) {
 			const snap = this.snapshotIndex.get(options.targetEntryId);
-			targetTreeHash = snap?.snapshotTreeHash ?? null;
+			if (snap) {
+				targetTreeHash = snap.snapshotTreeHash;
+			} else {
+				const pathSnap = this.getLatestSnapshotOnPath(options.entries, options.targetEntryId);
+				targetTreeHash = pathSnap?.snapshotTreeHash ?? null;
+			}
 		} else {
 			targetTreeHash = this.sessionStartTreeHash ?? null;
 		}

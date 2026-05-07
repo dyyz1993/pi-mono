@@ -28,7 +28,9 @@ describe("ToolCallEvent.variables propagation", () => {
 		harness.session.toolCallVariables = { agentName: "test-agent", permissionMode: "plan" };
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("bash", { command: "ls" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "ls", description: "list files" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 		await harness.session.prompt("run ls");
@@ -53,7 +55,9 @@ describe("ToolCallEvent.variables propagation", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("bash", { command: "ls" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "ls", description: "list files" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 		await harness.session.prompt("run ls");
@@ -77,14 +81,18 @@ describe("ToolCallEvent.variables propagation", () => {
 
 		harness.session.toolCallVariables = { role: "first" };
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("bash", { command: "echo 1" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "echo 1", description: "echo first" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 		await harness.session.prompt("run 1");
 
 		harness.session.toolCallVariables = { role: "second" };
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("bash", { command: "echo 2" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "echo 2", description: "echo second" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 		await harness.session.prompt("run 2");

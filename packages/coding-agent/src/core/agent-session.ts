@@ -15,7 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	Agent,
@@ -30,7 +30,7 @@ import { complete, isContextOverflow, modelsAreEqual, resetApiProviders, support
 import type { Static, TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
-import { getDocsPath } from "../config.js";
+import { getAgentDir, getDocsPath } from "../config.js";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
@@ -81,6 +81,8 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import { FileSnapshotManager } from "./file-store/index.js";
+import { InternalGit } from "./file-store/internal-git.js";
 import { handleLargeInput } from "./large-input.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
@@ -314,8 +316,9 @@ export class AgentSession {
 	private _sessionAbortController = new AbortController();
 	private _backgroundTasks = new Set<BackgroundTask<unknown>>();
 
-	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
+
+	private _fileSnapshotManager: FileSnapshotManager | null = null;
 
 	private _tierModels: Record<string, string> = {};
 
@@ -358,6 +361,10 @@ export class AgentSession {
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
 		return this._modelRegistry;
+	}
+
+	get fileSnapshotManager(): FileSnapshotManager | null {
+		return this._fileSnapshotManager;
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -2233,6 +2240,19 @@ export class AgentSession {
 			: undefined;
 	}
 
+	private _initFileSnapshotManager(): void {
+		try {
+			const storeRoot = join(getAgentDir(), "file-store");
+			const cwd = this._cwd;
+			const git = InternalGit.createForProject(storeRoot, cwd);
+			this._fileSnapshotManager = new FileSnapshotManager(git);
+			this._extensionRunner.setFileSnapshotManager(this._fileSnapshotManager);
+		} catch {
+			this._fileSnapshotManager = null;
+			this._extensionRunner.setFileSnapshotManager(null);
+		}
+	}
+
 	private _refreshCurrentModelFromRegistry(): void {
 		const currentModel = this.model;
 		if (!currentModel) {
@@ -2851,6 +2871,7 @@ export class AgentSession {
 		}
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
+		this._initFileSnapshotManager();
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)

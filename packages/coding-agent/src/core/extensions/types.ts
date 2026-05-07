@@ -342,6 +342,8 @@ export interface ExtensionContext {
 	 * First response wins (original UI or respondUI), subsequent calls are ignored.
 	 */
 	respondUI(id: string, result: UIEventResult): void;
+	/** File snapshot manager for turn-level file tracking and restore. Null when not available. */
+	fileSnapshotManager: import("../file-store/file-snapshot-manager.js").FileSnapshotManager | null;
 }
 
 /**

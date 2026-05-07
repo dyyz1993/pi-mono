@@ -8,6 +8,7 @@ import type { ImageContent, Model } from "@dyyz1993/pi-ai";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "../diagnostics.js";
+import type { FileSnapshotManager } from "../file-store/file-snapshot-manager.js";
 import type { KeybindingsConfig } from "../keybindings.js";
 import type { ModelRegistry } from "../model-registry.js";
 import type { SessionManager } from "../session-manager.js";
@@ -255,6 +256,11 @@ export class ExtensionRunner {
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 	private pendingUIResponses: Map<string, (result: UIEventResult) => void> = new Map();
+	private _fileSnapshotManager: FileSnapshotManager | null = null;
+
+	setFileSnapshotManager(manager: FileSnapshotManager | null): void {
+		this._fileSnapshotManager = manager;
+	}
 
 	constructor(
 		extensions: Extension[],
@@ -716,6 +722,10 @@ export class ExtensionRunner {
 			respondUI: (id, result) => {
 				runner.assertActive();
 				runner.respondUI(id, result);
+			},
+			get fileSnapshotManager() {
+				runner.assertActive();
+				return runner._fileSnapshotManager;
 			},
 		};
 	}

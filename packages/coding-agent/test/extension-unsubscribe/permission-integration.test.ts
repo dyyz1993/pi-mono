@@ -37,7 +37,9 @@ describe("Permission mode extension integration", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("bash", { command: "rm -rf /" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "rm -rf /", description: "delete everything" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("ok"),
 		]);
 
@@ -64,7 +66,9 @@ describe("Permission mode extension integration", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("bash", { command: "ls -la" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "ls -la", description: "list files" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 
@@ -93,7 +97,9 @@ describe("Permission mode extension integration", () => {
 		harness.session.toolCallVariables = { permissionMode: "plan" };
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("bash", { command: "echo hello" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "echo hello", description: "echo greeting" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 

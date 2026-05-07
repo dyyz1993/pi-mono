@@ -1624,6 +1624,7 @@ export class InteractiveMode {
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
 			respondUI: (id, result) => extensionRunner.respondUI(id, result),
+			fileSnapshotManager: this.session.fileSnapshotManager,
 		});
 
 		// Set up the extension shortcut handler on the default editor
