@@ -31,6 +31,14 @@ export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch tha
 
 export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
 
+export const SEGMENT_SUMMARY_PREFIX = `A segment of the conversation was compressed into this summary:
+
+<summary>
+`;
+
+export const SEGMENT_SUMMARY_SUFFIX = `
+</summary>`;
+
 /**
  * Message type for bash executions via the ! command.
  */
@@ -81,6 +89,12 @@ export interface FoldSummaryMessage {
 	timestamp: number;
 }
 
+export interface SegmentSummaryMessage {
+	role: "segmentSummary";
+	summary: string;
+	timestamp: number;
+}
+
 // Extend CustomAgentMessages via declaration merging
 declare module "@dyyz1993/pi-agent-core" {
 	interface CustomAgentMessages {
@@ -89,6 +103,7 @@ declare module "@dyyz1993/pi-agent-core" {
 		branchSummary: BranchSummaryMessage;
 		compactionSummary: CompactionSummaryMessage;
 		foldSummary: FoldSummaryMessage;
+		segmentSummary: SegmentSummaryMessage;
 	}
 }
 
@@ -214,6 +229,17 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 					return {
 						role: "user",
 						content: [{ type: "text" as const, text: FOLD_SUMMARY_PREFIX + m.summary + FOLD_SUMMARY_SUFFIX }],
+						timestamp: m.timestamp,
+					};
+				case "segmentSummary":
+					return {
+						role: "user",
+						content: [
+							{
+								type: "text" as const,
+								text: SEGMENT_SUMMARY_PREFIX + m.summary + SEGMENT_SUMMARY_SUFFIX,
+							},
+						],
 						timestamp: m.timestamp,
 					};
 				case "user":

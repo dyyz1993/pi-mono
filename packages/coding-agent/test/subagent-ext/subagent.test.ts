@@ -1,11 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import subagentExtensionDefault, {
-	extractTextFromEvent,
-	getFinalText,
-	parseJsonLine,
-} from "../../extensions/subagent-ext/index.js";
+import subagentExtensionDefault, { extractTextFromEvent, parseJsonLine } from "../../extensions/subagent-ext/index.js";
+import { getFinalOutput } from "../../extensions/subagent-shared/utils.js";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
 
 const spawnCalls: string[][] = [];
@@ -50,22 +47,22 @@ describe("subagent", () => {
 		});
 	});
 
-	describe("getFinalText", () => {
+	describe("getFinalOutput", () => {
 		it("extracts text from last assistant message", () => {
 			const messages = [
 				{ role: "user", content: [{ type: "text", text: "hello" }] },
 				{ role: "assistant", content: [{ type: "text", text: "hi there" }] },
 			];
-			expect(getFinalText(messages)).toBe("hi there");
+			expect(getFinalOutput(messages as any)).toBe("hi there");
 		});
 
 		it("returns empty string when no assistant messages", () => {
 			const messages = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
-			expect(getFinalText(messages)).toBe("");
+			expect(getFinalOutput(messages as any)).toBe("");
 		});
 
 		it("returns empty string for empty array", () => {
-			expect(getFinalText([])).toBe("");
+			expect(getFinalOutput([] as any)).toBe("");
 		});
 
 		it("returns last assistant text when multiple", () => {
@@ -74,7 +71,7 @@ describe("subagent", () => {
 				{ role: "user", content: [{ type: "text", text: "ok" }] },
 				{ role: "assistant", content: [{ type: "text", text: "second" }] },
 			];
-			expect(getFinalText(messages)).toBe("second");
+			expect(getFinalOutput(messages as any)).toBe("second");
 		});
 
 		it("skips non-text content parts", () => {
@@ -82,22 +79,22 @@ describe("subagent", () => {
 				{
 					role: "assistant",
 					content: [
-						{ type: "tool_call", name: "bash" },
+						{ type: "toolCall", name: "bash" },
 						{ type: "text", text: "result" },
 					],
 				},
 			];
-			expect(getFinalText(messages)).toBe("result");
+			expect(getFinalOutput(messages as any)).toBe("result");
 		});
 
 		it("handles string content", () => {
 			const messages = [{ role: "assistant", content: "plain text" }];
-			expect(getFinalText(messages)).toBe("");
+			expect(getFinalOutput(messages as any)).toBe("");
 		});
 
-		it("skips empty text", () => {
+		it("returns empty string for empty text", () => {
 			const messages = [{ role: "assistant", content: [{ type: "text", text: "" }] }];
-			expect(getFinalText(messages)).toBe("");
+			expect(getFinalOutput(messages as any)).toBe("");
 		});
 	});
 

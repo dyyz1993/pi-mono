@@ -150,6 +150,17 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	display: boolean;
 }
 
+export interface DeletionEntry extends SessionEntryBase {
+	type: "deletion";
+	targetIds: string[];
+}
+
+export interface SegmentSummaryEntry extends SessionEntryBase {
+	type: "segment_summary";
+	targetIds: string[];
+	summary: string;
+}
+
 /** Session entry - has id/parentId for tree structure (returned by "read" methods in SessionManager) */
 export type SessionEntry =
 	| SessionMessageEntry
@@ -162,7 +173,9 @@ export type SessionEntry =
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	| DeletionEntry
+	| SegmentSummaryEntry;
 
 export interface FoldEntry extends SessionEntryBase {
 	type: "fold";
@@ -402,6 +415,65 @@ export function buildSessionContext(
 		}
 	}
 
+	// Build deletion index from DeletionEntry on active path
+	const deletedIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "deletion") {
+			for (const targetId of (entry as DeletionEntry).targetIds) {
+				deletedIds.add(targetId);
+			}
+		}
+	}
+
+	// Cascade: deleting assistant with toolCalls also deletes matching toolResults
+	const deletedToolCallIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "message" && deletedIds.has(entry.id)) {
+			const msg = entry.message;
+			if (msg.role === "assistant" && Array.isArray(msg.content)) {
+				for (const part of msg.content as Array<{ type: string; id?: string }>) {
+					if (part.type === "toolCall" && part.id) {
+						deletedToolCallIds.add(part.id);
+					}
+				}
+			}
+		}
+	}
+	for (const entry of path) {
+		if (entry.type === "message" && entry.message.role === "toolResult") {
+			if (deletedToolCallIds.has(entry.message.toolCallId)) {
+				deletedIds.add(entry.id);
+			}
+		}
+	}
+
+	// Collect toolCallIds from deleted toolResults for stripping from assistant content
+	const strippedToolCallIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "message" && deletedIds.has(entry.id) && entry.message.role === "toolResult") {
+			strippedToolCallIds.add(entry.message.toolCallId);
+		}
+	}
+
+	// Build segment summary index: targetId -> { summary, isFirst, timestamp }
+	const segmentTargets = new Map<string, { summary: string; isFirst: boolean; timestamp: string }>();
+	for (const entry of path) {
+		if (entry.type === "segment_summary") {
+			const seg = entry as SegmentSummaryEntry;
+			if (seg.targetIds.length === 0) continue;
+			for (let i = 0; i < seg.targetIds.length; i++) {
+				const targetId = seg.targetIds[i];
+				if (deletedIds.has(targetId)) continue;
+				if (segmentTargets.has(targetId)) continue;
+				segmentTargets.set(targetId, {
+					summary: seg.summary,
+					isFirst: i === 0,
+					timestamp: entry.timestamp,
+				});
+			}
+		}
+	}
+
 	// Build messages and collect corresponding entries
 	// When there's a compaction, we need to:
 	// 1. Emit summary first (entry = compaction)
@@ -411,11 +483,40 @@ export function buildSessionContext(
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
+			if (deletedIds.has(entry.id)) return;
+
+			const segInfo = segmentTargets.get(entry.id);
+			if (segInfo) {
+				if (segInfo.isFirst) {
+					messages.push({
+						role: "segmentSummary",
+						summary: segInfo.summary,
+						timestamp: new Date(segInfo.timestamp).getTime(),
+					} as AgentMessage);
+				}
+				return;
+			}
+
 			const fold = folds.get(entry.id);
 			if (fold) {
 				messages.push(createFoldSummaryMessage(fold.summary, fold.originalTokens, entry.timestamp));
 			} else {
-				messages.push(entry.message);
+				let msg = entry.message;
+				if (msg.role === "assistant" && Array.isArray(msg.content) && strippedToolCallIds.size > 0) {
+					const content = msg.content;
+					const needsStrip = content.some(
+						(part: { type: string; id?: string }) =>
+							part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id),
+					);
+					if (needsStrip) {
+						const filteredContent = content.filter(
+							(part: { type: string; id?: string }) =>
+								!(part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id)),
+						);
+						msg = { ...msg, content: filteredContent as typeof msg.content };
+					}
+				}
+				messages.push(msg);
 			}
 		} else if (entry.type === "custom_message") {
 			messages.push(
@@ -981,6 +1082,33 @@ export class SessionManager {
 			targetId,
 			summary,
 			originalTokens,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a deletion entry that excludes target messages from LLM context. Returns entry id. */
+	appendDeletion(targetIds: string[]): string {
+		const entry: DeletionEntry = {
+			type: "deletion",
+			targetIds,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a segment summary entry that replaces target messages with a summary in LLM context. Returns entry id. */
+	appendSegmentSummary(targetIds: string[], summary: string): string {
+		const entry: SegmentSummaryEntry = {
+			type: "segment_summary",
+			targetIds,
+			summary,
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
