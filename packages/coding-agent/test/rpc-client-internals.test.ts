@@ -568,4 +568,110 @@ describe("RpcClient internal message routing", () => {
 			expect(client.getStderr()).toBe("some error output");
 		});
 	});
+
+	describe("getModifiedFiles() - sends correct command", () => {
+		it("sends get_modified_files command with options", async () => {
+			const client = createClient();
+			const { written } = mockProcess(client);
+
+			const promise = client.getModifiedFiles({ fromEntryId: "a", toEntryId: "b" });
+
+			expect(written).toHaveLength(1);
+			const parsed = JSON.parse(written[0].trim());
+			expect(parsed.type).toBe("get_modified_files");
+			expect(parsed.fromEntryId).toBe("a");
+			expect(parsed.toEntryId).toBe("b");
+			expect(parsed.id).toBeDefined();
+
+			feedJson(client, {
+				type: "response",
+				id: parsed.id,
+				command: "get_modified_files",
+				success: true,
+				data: {
+					files: [{ path: "src/foo.ts", status: "modified", turnIndex: 2, entryId: "snap123" }],
+				},
+			});
+
+			const result = await promise;
+			expect(result).toHaveLength(1);
+			expect(result[0].path).toBe("src/foo.ts");
+		});
+
+		it("sends get_modified_files without options", async () => {
+			const client = createClient();
+			const { written } = mockProcess(client);
+
+			const promise = client.getModifiedFiles();
+
+			const parsed = JSON.parse(written[0].trim());
+			expect(parsed.type).toBe("get_modified_files");
+			expect(parsed.fromEntryId).toBeUndefined();
+			expect(parsed.toEntryId).toBeUndefined();
+
+			feedJson(client, {
+				type: "response",
+				id: parsed.id,
+				command: "get_modified_files",
+				success: true,
+				data: { files: [] },
+			});
+
+			const result = await promise;
+			expect(result).toEqual([]);
+		});
+	});
+
+	describe("getFileDiff() - sends correct command", () => {
+		it("sends get_file_diff command", async () => {
+			const client = createClient();
+			const { written } = mockProcess(client);
+
+			const promise = client.getFileDiff({ filePath: "src/foo.ts", fromEntryId: "a", toEntryId: "b" });
+
+			expect(written).toHaveLength(1);
+			const parsed = JSON.parse(written[0].trim());
+			expect(parsed.type).toBe("get_file_diff");
+			expect(parsed.filePath).toBe("src/foo.ts");
+			expect(parsed.fromEntryId).toBe("a");
+			expect(parsed.toEntryId).toBe("b");
+
+			feedJson(client, {
+				type: "response",
+				id: parsed.id,
+				command: "get_file_diff",
+				success: true,
+				data: {
+					path: "src/foo.ts",
+					oldContent: "old\n",
+					newContent: "new\n",
+					unifiedDiff: "--- a\n+++ b\n",
+				},
+			});
+
+			const result = await promise;
+			expect(result!.path).toBe("src/foo.ts");
+			expect(result!.oldContent).toBe("old\n");
+		});
+
+		it("returns null when file not found", async () => {
+			const client = createClient();
+			const { written } = mockProcess(client);
+
+			const promise = client.getFileDiff({ filePath: "missing.ts" });
+
+			const parsed = JSON.parse(written[0].trim());
+
+			feedJson(client, {
+				type: "response",
+				id: parsed.id,
+				command: "get_file_diff",
+				success: true,
+				data: null,
+			});
+
+			const result = await promise;
+			expect(result).toBeNull();
+		});
+	});
 });

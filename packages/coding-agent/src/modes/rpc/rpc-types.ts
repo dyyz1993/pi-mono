@@ -84,6 +84,10 @@ export type RpcCommand =
 	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
 	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
 
+	// Rollback
+	| { id?: string; type: "get_modified_files"; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_file_diff"; filePath: string; fromEntryId?: string; toEntryId?: string }
+
 	// Context usage
 	| { id?: string; type: "get_context_usage" }
 
@@ -404,6 +408,34 @@ export type RpcResponse =
 			data: { toolNames: string[] };
 	  }
 	| { id?: string; type: "response"; command: "set_active_tools"; success: true }
+
+	// Rollback
+	| {
+			id?: string;
+			type: "response";
+			command: "get_modified_files";
+			success: true;
+			data: {
+				files: Array<{
+					path: string;
+					status: "added" | "modified" | "deleted";
+					turnIndex: number;
+					entryId: string;
+				}>;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_file_diff";
+			success: true;
+			data: {
+				path: string;
+				oldContent: string | null;
+				newContent: string | null;
+				unifiedDiff: string;
+			} | null;
+	  }
 
 	// Queue
 	| {

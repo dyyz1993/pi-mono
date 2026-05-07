@@ -639,6 +639,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "navigate_tree": {
 				const navResult = await session.navigateTree(command.targetId, {
 					summarize: command.summarize ?? false,
+					skipFiles: command.skipFiles,
 				});
 				return success(id, "navigate_tree", { cancelled: navResult.cancelled });
 			}
@@ -928,6 +929,39 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_agents_files": {
 				const result = session.resourceLoader.getAgentsFiles();
 				return success(id, "get_agents_files", { agentsFiles: result.agentsFiles });
+			}
+
+			case "get_modified_files": {
+				const fileSnapshotManager = (session as any).fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_modified_files", { files: [] });
+				}
+				const files = fileSnapshotManager.getModifiedFiles({
+					fromEntryId: command.fromEntryId,
+					toEntryId: command.toEntryId,
+				});
+				return success(id, "get_modified_files", { files });
+			}
+
+			case "get_file_diff": {
+				const fileSnapshotManager = (session as any).fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_file_diff", null);
+				}
+				const diff = fileSnapshotManager.getFileDiff({
+					filePath: command.filePath,
+					fromEntryId: command.fromEntryId,
+					toEntryId: command.toEntryId,
+				});
+				if (!diff) {
+					return success(id, "get_file_diff", null);
+				}
+				return success(id, "get_file_diff", {
+					path: diff.path,
+					oldContent: diff.oldContent,
+					newContent: diff.newContent,
+					unifiedDiff: diff.unifiedDiff,
+				});
 			}
 
 			default: {

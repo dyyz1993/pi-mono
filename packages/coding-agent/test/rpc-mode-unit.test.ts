@@ -129,6 +129,10 @@ function createMockSession() {
 		agent: {
 			waitForIdle: vi.fn().mockResolvedValue(undefined),
 		},
+		fileSnapshotManager: {
+			getModifiedFiles: vi.fn().mockReturnValue([]),
+			getFileDiff: vi.fn().mockReturnValue(null),
+		},
 	};
 }
 
@@ -832,13 +836,22 @@ describe("RPC mode command handling", () => {
 
 			expect(resp.success).toBe(true);
 			expect(resp.data.cancelled).toBe(false);
-			expect(session.navigateTree).toHaveBeenCalledWith("entry-5", { summarize: false });
+			expect(session.navigateTree).toHaveBeenCalledWith("entry-5", { summarize: false, skipFiles: undefined });
 		});
 
 		it("passes summarize option", async () => {
 			await sendCommand({ type: "navigate_tree", id: "nt2", targetId: "entry-5", summarize: true });
 
-			expect(session.navigateTree).toHaveBeenCalledWith("entry-5", { summarize: true });
+			expect(session.navigateTree).toHaveBeenCalledWith("entry-5", { summarize: true, skipFiles: undefined });
+		});
+
+		it("passes skipFiles option", async () => {
+			await sendCommand({ type: "navigate_tree", id: "nt3", targetId: "entry-5", skipFiles: true });
+
+			expect(session.navigateTree).toHaveBeenCalledWith("entry-5", {
+				summarize: false,
+				skipFiles: true,
+			});
 		});
 	});
 
@@ -874,6 +887,128 @@ describe("RPC mode command handling", () => {
 
 			expect(resp.success).toBe(true);
 			expect(resp.data.agentsFiles).toHaveLength(1);
+		});
+	});
+
+	// ========================================================================
+	// Rollback queries
+	// ========================================================================
+
+	describe("get_modified_files", () => {
+		it("returns files from session", async () => {
+			const files = [{ path: "src/foo.ts", status: "modified", turnIndex: 2, entryId: "snap123" }];
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce(files);
+
+			const resp = await sendCommand({ type: "get_modified_files", id: "gmf1" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.command).toBe("get_modified_files");
+			expect(resp.data.files).toHaveLength(1);
+			expect(resp.data.files[0].path).toBe("src/foo.ts");
+			expect(resp.data.files[0].status).toBe("modified");
+		});
+
+		it("passes fromEntryId and toEntryId", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
+
+			await sendCommand({
+				type: "get_modified_files",
+				id: "gmf2",
+				fromEntryId: "entry-a",
+				toEntryId: "entry-b",
+			});
+
+			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
+				fromEntryId: "entry-a",
+				toEntryId: "entry-b",
+			});
+		});
+
+		it("returns empty array when no fileSnapshotManager", async () => {
+			delete (session as any).fileSnapshotManager;
+
+			const resp = await sendCommand({ type: "get_modified_files", id: "gmf3" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.data.files).toEqual([]);
+		});
+
+		it("returns empty files with no changes", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
+
+			const resp = await sendCommand({ type: "get_modified_files", id: "gmf4" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.data.files).toEqual([]);
+		});
+	});
+
+	describe("get_file_diff", () => {
+		it("returns diff for file", async () => {
+			const diff = {
+				path: "src/foo.ts",
+				oldContent: "original\n",
+				newContent: "modified\n",
+				unifiedDiff: "--- src/foo.ts\n+++ src/foo.ts\n@@ -1 +1 @@\n-original\n+modified\n",
+			};
+			(session as any).fileSnapshotManager.getFileDiff.mockReturnValueOnce(diff);
+
+			const resp = await sendCommand({
+				type: "get_file_diff",
+				id: "gfd1",
+				filePath: "src/foo.ts",
+			});
+
+			expect(resp.success).toBe(true);
+			expect(resp.command).toBe("get_file_diff");
+			expect(resp.data.path).toBe("src/foo.ts");
+			expect(resp.data.oldContent).toBe("original\n");
+			expect(resp.data.newContent).toBe("modified\n");
+			expect(resp.data.unifiedDiff).toContain("-original");
+		});
+
+		it("returns null for non-existent file", async () => {
+			(session as any).fileSnapshotManager.getFileDiff.mockReturnValueOnce(null);
+
+			const resp = await sendCommand({
+				type: "get_file_diff",
+				id: "gfd2",
+				filePath: "nonexistent.ts",
+			});
+
+			expect(resp.success).toBe(true);
+			expect(resp.data).toBeNull();
+		});
+
+		it("passes entry range options", async () => {
+			(session as any).fileSnapshotManager.getFileDiff.mockReturnValueOnce(null);
+
+			await sendCommand({
+				type: "get_file_diff",
+				id: "gfd3",
+				filePath: "src/foo.ts",
+				fromEntryId: "a",
+				toEntryId: "b",
+			});
+
+			expect((session as any).fileSnapshotManager.getFileDiff).toHaveBeenCalledWith({
+				filePath: "src/foo.ts",
+				fromEntryId: "a",
+				toEntryId: "b",
+			});
+		});
+
+		it("returns null when no fileSnapshotManager", async () => {
+			delete (session as any).fileSnapshotManager;
+
+			const resp = await sendCommand({
+				type: "get_file_diff",
+				id: "gfd4",
+				filePath: "src/foo.ts",
+			});
+
+			expect(resp.success).toBe(true);
+			expect(resp.data).toBeNull();
 		});
 	});
 

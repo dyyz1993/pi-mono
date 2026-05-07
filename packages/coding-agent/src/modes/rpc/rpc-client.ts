@@ -587,6 +587,46 @@ export class RpcClient {
 		return this.getData<{ agentsFiles: Array<{ path: string; content: string }> }>(response).agentsFiles;
 	}
 
+	async getModifiedFiles(options?: {
+		fromEntryId?: string;
+		toEntryId?: string;
+	}): Promise<Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>> {
+		const response = await this.send({
+			type: "get_modified_files",
+			fromEntryId: options?.fromEntryId,
+			toEntryId: options?.toEntryId,
+		});
+		return this.getData<{
+			files: Array<{
+				path: string;
+				status: "added" | "modified" | "deleted";
+				turnIndex: number;
+				entryId: string;
+			}>;
+		}>(response).files;
+	}
+
+	async getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): Promise<{
+		path: string;
+		oldContent: string | null;
+		newContent: string | null;
+		unifiedDiff: string;
+	} | null> {
+		const response = await this.send({
+			type: "get_file_diff",
+			filePath: options.filePath,
+			fromEntryId: options.fromEntryId,
+			toEntryId: options.toEntryId,
+		});
+		const data = this.getData<{
+			path: string;
+			oldContent: string | null;
+			newContent: string | null;
+			unifiedDiff: string;
+		} | null>(response);
+		return data;
+	}
+
 	async registerRemoteTool(tool: { name: string; description: string; parameters: object }): Promise<void> {
 		await this.send({ type: "register_remote_tool", tool });
 	}

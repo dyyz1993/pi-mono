@@ -3313,7 +3313,13 @@ export class AgentSession {
 		let summaryEntry: BranchSummaryEntry | undefined;
 		if (summaryText) {
 			// Create summary at target position (can be null for root)
-			const summaryId = this.sessionManager.branchWithSummary(newLeafId, summaryText, summaryDetails, fromExtension);
+			const summaryId = this.sessionManager.branchWithSummary(
+				newLeafId,
+				summaryText,
+				summaryDetails,
+				fromExtension,
+				options.skipFiles,
+			);
 			summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 
 			// Attach label to the summary entry
