@@ -644,6 +644,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "navigate_tree", { cancelled: navResult.cancelled });
 			}
 
+			case "rollback_preview": {
+				const previewResult = await session.previewRollback(command.targetId);
+				return success(id, "rollback_preview", previewResult);
+			}
+
 			case "clone": {
 				const leafId = session.sessionManager.getLeafId();
 				if (!leafId) {
