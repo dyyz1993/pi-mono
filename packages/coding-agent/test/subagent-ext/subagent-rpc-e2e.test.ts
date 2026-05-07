@@ -15,7 +15,8 @@ const hasApiKey =
 	!!process.env.ANTHROPIC_API_KEY ||
 	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
 	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY;
+	!!process.env.OPENROUTER_API_KEY ||
+	existsSync(join(homedir(), ".pi/agent/models.json"));
 const PROVIDER = "zhipuai";
 const MODEL = "glm-4.7";
 

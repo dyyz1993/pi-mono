@@ -12,11 +12,11 @@ const hasApiKey =
 	!!process.env.ANTHROPIC_API_KEY ||
 	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
 	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY;
+	!!process.env.OPENROUTER_API_KEY ||
+	existsSync(join(homedir(), ".pi/agent/models.json"));
 
-const PROVIDER = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "anthropic" : "glm";
-const MODEL =
-	process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "claude-sonnet-4-5" : "DeepSeek-V3.2";
+const PROVIDER = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "anthropic" : "zhipuai";
+const MODEL = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "claude-sonnet-4-5" : "glm-4.7";
 
 interface SessionEntryBase {
 	type: string;
@@ -44,6 +44,7 @@ describe.skipIf(!hasApiKey)("RPC data consistency", () => {
 			cwd: sessionDir,
 			provider: PROVIDER,
 			model: MODEL,
+			args: ["--no-extensions"],
 		});
 	});
 

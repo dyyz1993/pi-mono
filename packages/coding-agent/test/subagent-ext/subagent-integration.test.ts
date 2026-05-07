@@ -6,7 +6,11 @@ import { describe, expect, it } from "vitest";
 import { runSubagent } from "../../extensions/subagent-ext/index.js";
 
 const hasModelConfig = existsSync(join(homedir(), ".pi/agent/models.json"));
-const hasApiKey = !!process.env.ANTHROPIC_API_KEY || !!process.env.OPENAI_API_KEY || !!process.env.OPENROUTER_API_KEY;
+const hasApiKey =
+	!!process.env.ANTHROPIC_API_KEY ||
+	!!process.env.OPENAI_API_KEY ||
+	!!process.env.OPENROUTER_API_KEY ||
+	existsSync(join(homedir(), ".pi/agent/models.json"));
 
 function createTestContext() {
 	const sessionId = randomUUID().slice(0, 8);
