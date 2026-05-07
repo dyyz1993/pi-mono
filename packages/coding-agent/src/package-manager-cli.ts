@@ -6,7 +6,7 @@ import { SettingsManager } from "./core/settings-manager.js";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
 
-interface PackageCommandOptions {
+export interface PackageCommandOptions {
 	command: PackageCommand;
 	source?: string;
 	local: boolean;
@@ -24,7 +24,7 @@ function reportSettingsErrors(settingsManager: SettingsManager, context: string)
 	}
 }
 
-function getPackageCommandUsage(command: PackageCommand): string {
+export function getPackageCommandUsage(command: PackageCommand): string {
 	switch (command) {
 		case "install":
 			return `${APP_NAME} install <source> [-l]`;
@@ -93,7 +93,7 @@ List installed packages from user and project settings.
 	}
 }
 
-function parsePackageCommand(args: string[]): PackageCommandOptions | undefined {
+export function parsePackageCommand(args: string[]): PackageCommandOptions | undefined {
 	const [rawCommand, ...rest] = args;
 	let command: PackageCommand | undefined;
 	if (rawCommand === "uninstall") {
