@@ -627,6 +627,65 @@ export class RpcClient {
 		return data;
 	}
 
+	async getBatchDiffs(options?: { fromEntryId?: string; toEntryId?: string }): Promise<{
+		files: Array<{
+			path: string;
+			status: "added" | "modified" | "deleted";
+			diff: {
+				path: string;
+				oldContent: string | null;
+				newContent: string | null;
+				unifiedDiff: string;
+			} | null;
+		}>;
+		summary: { totalFiles: number; added: number; modified: number; deleted: number };
+	}> {
+		const response = await this.send({
+			type: "get_batch_diffs",
+			fromEntryId: options?.fromEntryId,
+			toEntryId: options?.toEntryId,
+		});
+		return this.getData<{
+			files: Array<{
+				path: string;
+				status: "added" | "modified" | "deleted";
+				diff: {
+					path: string;
+					oldContent: string | null;
+					newContent: string | null;
+					unifiedDiff: string;
+				} | null;
+			}>;
+			summary: { totalFiles: number; added: number; modified: number; deleted: number };
+		}>(response);
+	}
+
+	async getFileHistory(options: { filePath: string }): Promise<{
+		history: Array<{
+			entryId: string;
+			turnIndex: number;
+			timestamp: string;
+			status: "added" | "modified" | "deleted";
+			snapshotHash: string;
+			previousHash: string | null;
+		}>;
+	}> {
+		const response = await this.send({
+			type: "get_file_history",
+			filePath: options.filePath,
+		});
+		return this.getData<{
+			history: Array<{
+				entryId: string;
+				turnIndex: number;
+				timestamp: string;
+				status: "added" | "modified" | "deleted";
+				snapshotHash: string;
+				previousHash: string | null;
+			}>;
+		}>(response);
+	}
+
 	async registerRemoteTool(tool: { name: string; description: string; parameters: object }): Promise<void> {
 		await this.send({ type: "register_remote_tool", tool });
 	}

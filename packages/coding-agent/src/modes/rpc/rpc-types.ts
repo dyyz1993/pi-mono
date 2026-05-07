@@ -87,6 +87,8 @@ export type RpcCommand =
 	// Rollback
 	| { id?: string; type: "get_modified_files"; fromEntryId?: string; toEntryId?: string }
 	| { id?: string; type: "get_file_diff"; filePath: string; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_batch_diffs"; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_file_history"; filePath: string }
 
 	// Context usage
 	| { id?: string; type: "get_context_usage" }
@@ -435,6 +437,46 @@ export type RpcResponse =
 				newContent: string | null;
 				unifiedDiff: string;
 			} | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_batch_diffs";
+			success: true;
+			data: {
+				files: Array<{
+					path: string;
+					status: "added" | "modified" | "deleted";
+					diff: {
+						path: string;
+						oldContent: string | null;
+						newContent: string | null;
+						unifiedDiff: string;
+					} | null;
+				}>;
+				summary: {
+					totalFiles: number;
+					added: number;
+					modified: number;
+					deleted: number;
+				};
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_file_history";
+			success: true;
+			data: {
+				history: Array<{
+					entryId: string;
+					turnIndex: number;
+					timestamp: string;
+					status: "added" | "modified" | "deleted";
+					snapshotHash: string;
+					previousHash: string | null;
+				}>;
+			};
 	  }
 
 	// Queue

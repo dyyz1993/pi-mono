@@ -132,6 +132,11 @@ function createMockSession() {
 		fileSnapshotManager: {
 			getModifiedFiles: vi.fn().mockReturnValue([]),
 			getFileDiff: vi.fn().mockReturnValue(null),
+			getBatchDiffs: vi.fn().mockReturnValue({
+				files: [],
+				summary: { totalFiles: 0, added: 0, modified: 0, deleted: 0 },
+			}),
+			getFileHistory: vi.fn().mockReturnValue([]),
 		},
 	};
 }
@@ -1009,6 +1014,111 @@ describe("RPC mode command handling", () => {
 
 			expect(resp.success).toBe(true);
 			expect(resp.data).toBeNull();
+		});
+	});
+
+	describe("get_batch_diffs", () => {
+		it("returns batch diffs from session", async () => {
+			const batchResult = {
+				files: [
+					{
+						path: "src/foo.ts",
+						status: "modified",
+						diff: {
+							path: "src/foo.ts",
+							oldContent: "original\n",
+							newContent: "modified\n",
+							unifiedDiff: "--- src/foo.ts\n+++ src/foo.ts\n-original\n+modified\n",
+						},
+					},
+				],
+				summary: { totalFiles: 1, added: 0, modified: 1, deleted: 0 },
+			};
+			(session as any).fileSnapshotManager.getBatchDiffs.mockReturnValueOnce(batchResult);
+
+			const resp = await sendCommand({ type: "get_batch_diffs", id: "gbd1" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.command).toBe("get_batch_diffs");
+			expect(resp.data.files).toHaveLength(1);
+			expect(resp.data.files[0].path).toBe("src/foo.ts");
+			expect(resp.data.files[0].status).toBe("modified");
+			expect(resp.data.files[0].diff.unifiedDiff).toContain("-original");
+			expect(resp.data.summary.totalFiles).toBe(1);
+			expect(resp.data.summary.modified).toBe(1);
+		});
+
+		it("passes fromEntryId and toEntryId", async () => {
+			(session as any).fileSnapshotManager.getBatchDiffs.mockReturnValueOnce({
+				files: [],
+				summary: { totalFiles: 0, added: 0, modified: 0, deleted: 0 },
+			});
+
+			await sendCommand({
+				type: "get_batch_diffs",
+				id: "gbd2",
+				fromEntryId: "entry-a",
+				toEntryId: "entry-b",
+			});
+
+			expect((session as any).fileSnapshotManager.getBatchDiffs).toHaveBeenCalledWith({
+				fromEntryId: "entry-a",
+				toEntryId: "entry-b",
+			});
+		});
+
+		it("returns empty when no fileSnapshotManager", async () => {
+			delete (session as any).fileSnapshotManager;
+
+			const resp = await sendCommand({ type: "get_batch_diffs", id: "gbd3" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.data.files).toEqual([]);
+			expect(resp.data.summary.totalFiles).toBe(0);
+		});
+	});
+
+	describe("get_file_history", () => {
+		it("returns file history from session", async () => {
+			const history = [
+				{ entryId: "snap1", turnIndex: 0, timestamp: "", status: "added", snapshotHash: "h1", previousHash: null },
+				{
+					entryId: "snap2",
+					turnIndex: 2,
+					timestamp: "",
+					status: "modified",
+					snapshotHash: "h2",
+					previousHash: "h1",
+				},
+			];
+			(session as any).fileSnapshotManager.getFileHistory.mockReturnValueOnce(history);
+
+			const resp = await sendCommand({ type: "get_file_history", id: "gfh1", filePath: "src/foo.ts" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.command).toBe("get_file_history");
+			expect(resp.data.history).toHaveLength(2);
+			expect(resp.data.history[0].status).toBe("added");
+			expect(resp.data.history[1].status).toBe("modified");
+		});
+
+		it("passes filePath", async () => {
+			(session as any).fileSnapshotManager.getFileHistory.mockReturnValueOnce([]);
+
+			await sendCommand({ type: "get_file_history", id: "gfh2", filePath: "src/bar.ts" });
+
+			expect((session as any).fileSnapshotManager.getFileHistory).toHaveBeenCalledWith({
+				filePath: "src/bar.ts",
+			});
+		});
+
+		it("returns empty history when no fileSnapshotManager", async () => {
+			delete (session as any).fileSnapshotManager;
+
+			const resp = await sendCommand({ type: "get_file_history", id: "gfh3", filePath: "src/foo.ts" });
+
+			expect(resp.success).toBe(true);
+			expect(resp.data.history).toEqual([]);
 		});
 	});
 

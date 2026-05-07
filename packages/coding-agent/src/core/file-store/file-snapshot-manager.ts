@@ -152,6 +152,29 @@ function generateUnifiedDiff(oldContent: string | null, newContent: string | nul
 	return lines.join("\n");
 }
 
+export interface BatchDiffResult {
+	files: Array<{
+		path: string;
+		status: "added" | "modified" | "deleted";
+		diff: FileDiffInfo | null;
+	}>;
+	summary: {
+		totalFiles: number;
+		added: number;
+		modified: number;
+		deleted: number;
+	};
+}
+
+export interface FileHistoryEntry {
+	entryId: string;
+	turnIndex: number;
+	timestamp: string;
+	status: "added" | "modified" | "deleted";
+	snapshotHash: string;
+	previousHash: string | null;
+}
+
 interface SnapshotWithEntryId extends StepSnapshotData {
 	entryId: string;
 }
@@ -282,6 +305,147 @@ export class FileSnapshotManager {
 			diff: snap.diff,
 			turnIndex: snap.turnIndex,
 		};
+	}
+
+	getModifiedFiles(options?: { fromEntryId?: string; toEntryId?: string }): ModifiedFileInfo[] {
+		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
+
+		const fromIdx = options?.fromEntryId ? snapshots.findIndex((s) => s.entryId === options.fromEntryId) : -1;
+		const toIdx = options?.toEntryId ? snapshots.findIndex((s) => s.entryId === options.toEntryId) : -1;
+
+		const start = fromIdx === -1 ? 0 : fromIdx;
+		const end = toIdx === -1 ? snapshots.length - 1 : toIdx;
+
+		if (start > end || snapshots.length === 0) return [];
+
+		const fileMap = new Map<string, ModifiedFileInfo>();
+		for (let i = start; i <= end; i++) {
+			const snap = snapshots[i];
+			if (!snap?.diff) continue;
+
+			for (const path of snap.diff.added) {
+				if (!fileMap.has(path)) {
+					fileMap.set(path, { path, status: "added", turnIndex: snap.turnIndex, entryId: snap.entryId });
+				}
+			}
+			for (const path of snap.diff.modified) {
+				if (!fileMap.has(path)) {
+					fileMap.set(path, { path, status: "modified", turnIndex: snap.turnIndex, entryId: snap.entryId });
+				} else {
+					const existing = fileMap.get(path)!;
+					if (existing.status !== "added") {
+						existing.status = "modified";
+					}
+				}
+			}
+			for (const path of snap.diff.deleted) {
+				if (!fileMap.has(path)) {
+					fileMap.set(path, { path, status: "deleted", turnIndex: snap.turnIndex, entryId: snap.entryId });
+				}
+			}
+		}
+
+		return [...fileMap.values()].sort((a, b) => a.path.localeCompare(b.path));
+	}
+
+	getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): FileDiffInfo | null {
+		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
+
+		const fromHash = options.fromEntryId
+			? (snapshots.find((s) => s.entryId === options.fromEntryId)?.snapshotTreeHash ?? null)
+			: this.sessionStartTreeHash;
+		const toHash = options.toEntryId
+			? (snapshots.find((s) => s.entryId === options.toEntryId)?.snapshotTreeHash ?? null)
+			: (this.lastCommittedTreeHash ?? this.sessionStartTreeHash);
+
+		if (!fromHash && !toHash) return null;
+
+		const fromFiles = fromHash ? this.git.readTree(fromHash) : new Map<string, string>();
+		const toFiles = toHash ? this.git.readTree(toHash) : new Map<string, string>();
+
+		const oldContent = fromFiles.get(options.filePath) ?? null;
+		const newContent = toFiles.get(options.filePath) ?? null;
+
+		if (oldContent === null && newContent === null) return null;
+
+		return {
+			path: options.filePath,
+			oldContent,
+			newContent,
+			oldHash: oldContent !== null ? this.git.hashContent(oldContent) : null,
+			newHash: newContent !== null ? this.git.hashContent(newContent) : null,
+			unifiedDiff: generateUnifiedDiff(oldContent, newContent, options.filePath),
+		};
+	}
+
+	getBatchDiffs(options?: { fromEntryId?: string; toEntryId?: string }): BatchDiffResult {
+		const files = this.getModifiedFiles({
+			fromEntryId: options?.fromEntryId,
+			toEntryId: options?.toEntryId,
+		});
+
+		let added = 0;
+		let modified = 0;
+		let deleted = 0;
+
+		const resultFiles = files.map((f) => {
+			if (f.status === "added") added++;
+			else if (f.status === "modified") modified++;
+			else deleted++;
+
+			let diff: FileDiffInfo | null = null;
+			try {
+				diff = this.getFileDiff({
+					filePath: f.path,
+					fromEntryId: options?.fromEntryId,
+					toEntryId: options?.toEntryId,
+				});
+			} catch {}
+
+			return { path: f.path, status: f.status, diff };
+		});
+
+		return {
+			files: resultFiles,
+			summary: {
+				totalFiles: files.length,
+				added,
+				modified,
+				deleted,
+			},
+		};
+	}
+
+	getFileHistory(options: { filePath: string }): FileHistoryEntry[] {
+		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
+		const history: FileHistoryEntry[] = [];
+
+		for (const snap of snapshots) {
+			if (!snap.diff) continue;
+
+			let status: "added" | "modified" | "deleted" | null = null;
+			if (snap.diff.added.includes(options.filePath)) {
+				status = "added";
+			} else if (snap.diff.modified.includes(options.filePath)) {
+				status = "modified";
+			} else if (snap.diff.deleted.includes(options.filePath)) {
+				status = "deleted";
+			}
+
+			if (status) {
+				const previousHash = snap.baselineTreeHash ?? null;
+				history.push({
+					entryId: snap.entryId,
+					turnIndex: snap.turnIndex,
+					timestamp: new Date(0).toISOString(),
+					status,
+					snapshotHash: snap.snapshotTreeHash,
+					previousHash,
+				});
+			}
+		}
+
+		return history;
 	}
 
 	async restoreFiles(

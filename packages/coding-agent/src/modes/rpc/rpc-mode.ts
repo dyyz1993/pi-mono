@@ -964,6 +964,47 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				});
 			}
 
+			case "get_batch_diffs": {
+				const fileSnapshotManager = (session as any).fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_batch_diffs", {
+						files: [],
+						summary: { totalFiles: 0, added: 0, modified: 0, deleted: 0 },
+					});
+				}
+				const result = fileSnapshotManager.getBatchDiffs({
+					fromEntryId: command.fromEntryId,
+					toEntryId: command.toEntryId,
+				});
+				const serializedFiles = result.files.map((f: any) => ({
+					path: f.path,
+					status: f.status,
+					diff: f.diff
+						? {
+								path: f.diff.path,
+								oldContent: f.diff.oldContent,
+								newContent: f.diff.newContent,
+								unifiedDiff: f.diff.unifiedDiff,
+							}
+						: null,
+				}));
+				return success(id, "get_batch_diffs", {
+					files: serializedFiles,
+					summary: result.summary,
+				});
+			}
+
+			case "get_file_history": {
+				const fileSnapshotManager = (session as any).fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_file_history", { history: [] });
+				}
+				const result = fileSnapshotManager.getFileHistory({
+					filePath: command.filePath,
+				});
+				return success(id, "get_file_history", { history: result });
+			}
+
 			default: {
 				const unknownCommand = command as { type: string };
 				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);

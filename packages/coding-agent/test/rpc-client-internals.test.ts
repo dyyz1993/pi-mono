@@ -674,4 +674,105 @@ describe("RpcClient internal message routing", () => {
 			expect(result).toBeNull();
 		});
 	});
+
+	describe("getBatchDiffs() - sends correct command", () => {
+		it("sends get_batch_diffs command with options", async () => {
+			const client = createClient();
+			const { written } = mockProcess(client);
+
+			const promise = client.getBatchDiffs({ fromEntryId: "a", toEntryId: "b" });
+
+			expect(written).toHaveLength(1);
+			const parsed = JSON.parse(written[0].trim());
+			expect(parsed.type).toBe("get_batch_diffs");
+			expect(parsed.fromEntryId).toBe("a");
+			expect(parsed.toEntryId).toBe("b");
+			expect(parsed.id).toBeDefined();
+
+			feedJson(client, {
+				type: "response",
+				id: parsed.id,
+				command: "get_batch_diffs",
+				success: true,
+				data: {
+					files: [
+						{
+							path: "src/foo.ts",
+							status: "modified",
+							diff: { path: "src/foo.ts", oldContent: "a", newContent: "b", unifiedDiff: "--- a\n+++ b" },
+						},
+					],
+					summary: { totalFiles: 1, added: 0, modified: 1, deleted: 0 },
+				},
+			});
+
+			const result = await promise;
+			expect(result.files).toHaveLength(1);
+			expect(result.files[0].path).toBe("src/foo.ts");
+			expect(result.summary.totalFiles).toBe(1);
+		});
+
+		it("sends get_batch_diffs without options", async () => {
+			const client = createClient();
+			const { written } = mockProcess(client);
+
+			const promise = client.getBatchDiffs();
+
+			const parsed = JSON.parse(written[0].trim());
+			expect(parsed.type).toBe("get_batch_diffs");
+			expect(parsed.fromEntryId).toBeUndefined();
+			expect(parsed.toEntryId).toBeUndefined();
+
+			feedJson(client, {
+				type: "response",
+				id: parsed.id,
+				command: "get_batch_diffs",
+				success: true,
+				data: {
+					files: [],
+					summary: { totalFiles: 0, added: 0, modified: 0, deleted: 0 },
+				},
+			});
+
+			const result = await promise;
+			expect(result.files).toEqual([]);
+		});
+	});
+
+	describe("getFileHistory() - sends correct command", () => {
+		it("sends get_file_history command", async () => {
+			const client = createClient();
+			const { written } = mockProcess(client);
+
+			const promise = client.getFileHistory({ filePath: "src/foo.ts" });
+
+			expect(written).toHaveLength(1);
+			const parsed = JSON.parse(written[0].trim());
+			expect(parsed.type).toBe("get_file_history");
+			expect(parsed.filePath).toBe("src/foo.ts");
+
+			feedJson(client, {
+				type: "response",
+				id: parsed.id,
+				command: "get_file_history",
+				success: true,
+				data: {
+					history: [
+						{
+							entryId: "s1",
+							turnIndex: 0,
+							timestamp: "",
+							status: "added",
+							snapshotHash: "h1",
+							previousHash: null,
+						},
+					],
+				},
+			});
+
+			const result = await promise;
+			expect(result.history).toHaveLength(1);
+			expect(result.history[0].status).toBe("added");
+		});
+	});
 });
