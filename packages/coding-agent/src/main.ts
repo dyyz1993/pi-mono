@@ -677,6 +677,12 @@ export async function main(args: string[], options?: MainOptions) {
 	time("createAgentSession");
 
 	if (appMode !== "interactive" && !session.model) {
+		console.error(`[DEBUG-MAIN] exiting due to error diagnostics`);
+		process.exit(1);
+	}
+	time("createAgentSession");
+
+	if (appMode !== "interactive" && !session.model) {
 		console.error(chalk.red("No models available."));
 		console.error(chalk.yellow("\nSet an API key environment variable:"));
 		console.error("  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.");
