@@ -45,6 +45,7 @@ import { ExtensionSelectorComponent } from "./modes/interactive/components/exten
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
 import { isLocalPath } from "./utils/paths.js";
+import { resolveSchema } from "./utils/structured-output.js";
 
 /**
  * Read all content from piped stdin.
@@ -736,6 +737,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessage,
 			initialImages,
 			maxTurns: parsed.maxTurns,
+			outputSchema: parsed.outputSchema ? resolveSchema(parsed.outputSchema) : undefined,
 		});
 		stopThemeWatcher();
 		restoreStdout();

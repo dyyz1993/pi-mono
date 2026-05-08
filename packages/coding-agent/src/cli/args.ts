@@ -43,6 +43,7 @@ export interface Args {
 	offline?: boolean;
 	verbose?: boolean;
 	maxTurns?: number;
+	outputSchema?: string;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -158,6 +159,8 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.diagnostics.push({ type: "warning", message: `Invalid --max-turns value "${args[i]}"` });
 			}
+		} else if (arg === "--output-schema" && i + 1 < args.length) {
+			result.outputSchema = args[++i];
 		} else if (arg === "--verbose") {
 			result.verbose = true;
 		} else if (arg === "--offline") {
@@ -242,8 +245,9 @@ ${chalk.bold("Options:")}
   --theme <path>                 Load a theme file or directory (can be used multiple times)
   --no-themes                    Disable theme discovery and loading
    --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
-   --max-turns <n>                Maximum number of agent turns before stopping
-   --export <file>                Export session file to HTML and exit
+    --max-turns <n>                Maximum number of agent turns before stopping
+   --output-schema <json|file>    JSON schema to validate output (print mode only)
+    --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
