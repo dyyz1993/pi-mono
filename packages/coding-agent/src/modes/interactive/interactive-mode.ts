@@ -1628,6 +1628,15 @@ export class InteractiveMode {
 				})();
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
+			extensionName: "",
+			projectRoot: this.sessionManager.getCwd(),
+			sessionDataDir: "",
+			projectDataDir: "",
+			cwdDataDir: "",
+			globalDataDir: "",
+			sessionSignal: AbortSignal.abort(),
+			respondUI: () => {},
+			fileSnapshotManager: this.session.fileSnapshotManager,
 		});
 
 		// Set up the extension shortcut handler on the default editor
@@ -3077,6 +3086,14 @@ export class InteractiveMode {
 			}
 			case "toolResult": {
 				// Tool results are rendered inline with tool calls, handled separately
+				break;
+			}
+			case "custom":
+			case "bashExecution":
+			case "branchSummary":
+			case "compactionSummary":
+			case "foldSummary":
+			case "segmentSummary": {
 				break;
 			}
 			default: {

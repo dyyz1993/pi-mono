@@ -40,7 +40,7 @@ export default function (pi: ExtensionAPI) {
 			"No, keep current code",
 		]);
 
-		if (choice?.startsWith("Yes")) {
+		if (typeof choice === "string" && choice.startsWith("Yes")) {
 			await pi.exec("git", ["stash", "apply", ref]);
 			ctx.ui.notify("Code restored to checkpoint", "info");
 		}

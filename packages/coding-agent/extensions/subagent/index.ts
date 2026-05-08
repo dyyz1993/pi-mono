@@ -271,7 +271,7 @@ async function runSingleAgent(
 
 	const currentResult: SingleResult = {
 		agent: agentName,
-		agentSource: agent.source,
+		agentSource: (["user", "project", "unknown"].includes(agent.source) ? agent.source : "unknown") as "user" | "project" | "unknown",
 		task,
 		exitCode: 0,
 		messages: [],

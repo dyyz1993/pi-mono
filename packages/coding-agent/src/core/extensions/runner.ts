@@ -238,6 +238,14 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private getSessionSignalFn: () => AbortSignal = () => AbortSignal.abort();
+	private getExtensionNameFn: () => string = () => "";
+	private getProjectRootFn: () => string = () => this.cwd;
+	private getSessionDataDirFn: () => string = () => "";
+	private getProjectDataDirFn: () => string = () => "";
+	private getCwdDataDirFn: () => string = () => "";
+	private getGlobalDataDirFn: () => string = () => "";
+	private respondUIFn: (id: string, result: import("./types.js").UIEventResult) => void = () => {};
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -247,6 +255,29 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private _fileSnapshotManager: import("../file-store/file-snapshot-manager.js").FileSnapshotManager | null = null;
+
+	setFileSnapshotManager(manager: import("../file-store/file-snapshot-manager.js").FileSnapshotManager | null): void {
+		this._fileSnapshotManager = manager;
+	}
+
+	setContextDirFns(fns: {
+		getExtensionName?: () => string;
+		getProjectRoot?: () => string;
+		getSessionDataDir?: () => string;
+		getProjectDataDir?: () => string;
+		getCwdDataDir?: () => string;
+		getGlobalDataDir?: () => string;
+		respondUI?: (id: string, result: import("./types.js").UIEventResult) => void;
+	}): void {
+		if (fns.getExtensionName) this.getExtensionNameFn = fns.getExtensionName;
+		if (fns.getProjectRoot) this.getProjectRootFn = fns.getProjectRoot;
+		if (fns.getSessionDataDir) this.getSessionDataDirFn = fns.getSessionDataDir;
+		if (fns.getProjectDataDir) this.getProjectDataDirFn = fns.getProjectDataDir;
+		if (fns.getCwdDataDir) this.getCwdDataDirFn = fns.getCwdDataDir;
+		if (fns.getGlobalDataDir) this.getGlobalDataDirFn = fns.getGlobalDataDir;
+		if (fns.respondUI) this.respondUIFn = fns.respondUI;
+	}
 
 	constructor(
 		extensions: Extension[],
@@ -297,6 +328,9 @@ export class ExtensionRunner {
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
+		if (contextActions.getSessionSignal) {
+			this.getSessionSignalFn = contextActions.getSessionSignal;
+		}
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
@@ -629,6 +663,42 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			get extensionName() {
+				runner.assertActive();
+				return runner.getExtensionNameFn();
+			},
+			get projectRoot() {
+				runner.assertActive();
+				return runner.getProjectRootFn();
+			},
+			get sessionDataDir() {
+				runner.assertActive();
+				return runner.getSessionDataDirFn();
+			},
+			get projectDataDir() {
+				runner.assertActive();
+				return runner.getProjectDataDirFn();
+			},
+			get cwdDataDir() {
+				runner.assertActive();
+				return runner.getCwdDataDirFn();
+			},
+			get globalDataDir() {
+				runner.assertActive();
+				return runner.getGlobalDataDirFn();
+			},
+			get sessionSignal() {
+				runner.assertActive();
+				return runner.getSessionSignalFn();
+			},
+			respondUI(id, result) {
+				runner.assertActive();
+				runner.respondUIFn(id, result);
+			},
+			get fileSnapshotManager() {
+				runner.assertActive();
+				return runner._fileSnapshotManager;
 			},
 		};
 	}

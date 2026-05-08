@@ -79,6 +79,23 @@ export function clampThinkingLevel<TApi extends Api>(
 	return availableLevels[0] ?? "off";
 }
 
+export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
+	if (model.id.includes("gpt-5.2") || model.id.includes("gpt-5.3") || model.id.includes("gpt-5.4")) {
+		return true;
+	}
+
+	if (
+		model.id.includes("opus-4-6") ||
+		model.id.includes("opus-4.6") ||
+		model.id.includes("opus-4-7") ||
+		model.id.includes("opus-4.7")
+	) {
+		return true;
+	}
+
+	return false;
+}
+
 /**
  * Check if two models are equal by comparing both their id and provider.
  * Returns false if either model is null or undefined.

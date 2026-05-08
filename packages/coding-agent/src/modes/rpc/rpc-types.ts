@@ -10,6 +10,7 @@ import type { ImageContent, Model } from "@dyyz1993/pi-ai";
 import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { Settings } from "../../core/settings-manager.js";
 import type { SourceInfo } from "../../core/source-info.js";
 
 // ============================================================================
@@ -31,6 +32,8 @@ export type RpcCommand =
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model" }
 	| { id?: string; type: "get_available_models" }
+	| { id?: string; type: "get_tier_models" }
+	| { id?: string; type: "set_tier_models"; models: { fast?: string; pro?: string; max?: string } }
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
@@ -56,7 +59,9 @@ export type RpcCommand =
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
-	| { id?: string; type: "fork"; entryId: string }
+	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
+	| { id?: string; type: "navigate_tree"; targetId: string; summarize?: boolean; skipFiles?: boolean }
+	| { id?: string; type: "rollback_preview"; targetId: string }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
@@ -64,9 +69,64 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
+	| { id?: string; type: "get_full_messages"; afterEntryId?: string; limit?: number }
+	| { id?: string; type: "get_tree" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+
+	// Resources
+	| { id?: string; type: "get_skills" }
+	| { id?: string; type: "get_extensions" }
+	| { id?: string; type: "get_tools" }
+
+	// Settings
+	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
+	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
+
+	// Rollback
+	| { id?: string; type: "get_modified_files"; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_file_diff"; filePath: string; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_batch_diffs"; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_file_history"; filePath: string }
+
+	// Context usage
+	| { id?: string; type: "get_context_usage" }
+
+	// System prompt
+	| { id?: string; type: "get_system_prompt" }
+
+	// Active tools
+	| { id?: string; type: "get_active_tools" }
+	| { id?: string; type: "set_active_tools"; toolNames: string[] }
+
+	// Queue
+	| { id?: string; type: "get_queue" }
+	| { id?: string; type: "clear_queue" }
+
+	// Flags
+	| { id?: string; type: "get_flags" }
+	| { id?: string; type: "get_flag_values" }
+	| { id?: string; type: "set_flag"; name: string; value: boolean | string }
+
+	// Reload
+	| { id?: string; type: "reload" }
+
+	// Set Cwd
+	| { id?: string; type: "set_cwd"; cwd: string }
+
+	// Agents files
+	| { id?: string; type: "get_agents_files" }
+
+	// Remote tools
+	| { id?: string; type: "register_remote_tool"; tool: { name: string; description: string; parameters: object } }
+	| { id?: string; type: "unregister_remote_tool"; name: string }
+	| {
+			id?: string;
+			type: "remote_tool_result";
+			toolCallId: string;
+			result: { content: Array<{ type: string; text: string }>; isError: boolean };
+	  };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -82,6 +142,51 @@ export interface RpcSlashCommand {
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
 	sourceInfo: SourceInfo;
+}
+
+/** A loaded skill */
+export interface RpcSkill {
+	name: string;
+	description: string;
+	filePath: string;
+	baseDir: string;
+	sourceInfo: SourceInfo;
+	disableModelInvocation: boolean;
+}
+
+/** A loaded extension */
+export interface RpcExtension {
+	path: string;
+	resolvedPath: string;
+	sourceInfo: SourceInfo;
+	toolNames: string[];
+	commandNames: string[];
+}
+
+/** A registered tool */
+export interface RpcTool {
+	name: string;
+	label: string;
+	description: string;
+	sourceInfo: SourceInfo;
+}
+
+// ============================================================================
+// RPC Types for new commands
+// ============================================================================
+
+export interface RpcContextUsage {
+	tokens: number | null;
+	contextWindow: number;
+	percent: number | null;
+}
+
+export interface RpcExtensionFlag {
+	name: string;
+	description?: string;
+	type: "boolean" | "string";
+	default?: boolean | string;
+	extensionPath: string;
 }
 
 // ============================================================================
@@ -101,6 +206,16 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+}
+
+/**
+ * Entry in the session tree.
+ */
+export interface TreeEntry {
+	id: string;
+	parentId: string | null;
+	type: string;
+	label?: string;
 }
 
 // ============================================================================
@@ -141,6 +256,16 @@ export type RpcResponse =
 			success: true;
 			data: { models: Model<any>[] };
 	  }
+
+	// Tier Models
+	| {
+			id?: string;
+			type: "response";
+			command: "get_tier_models";
+			success: true;
+			data: { models: Record<string, string> };
+	  }
+	| { id?: string; type: "response"; command: "set_tier_models"; success: true }
 
 	// Thinking
 	| { id?: string; type: "response"; command: "set_thinking_level"; success: true }
@@ -189,9 +314,35 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "rollback_preview";
+			success: true;
+			data: { restored: string[]; deleted: string[] };
+	  }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_full_messages";
+			success: true;
+			data: {
+				messages: AgentMessage[];
+				hasMore: boolean;
+				totalCount: number;
+				nextCursor: string | null;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_tree";
+			success: true;
+			data: { entries: Array<{ id: string; parentId: string | null; type: string; label?: string }> };
+	  }
 
 	// Commands
 	| {
@@ -202,6 +353,191 @@ export type RpcResponse =
 			data: { commands: RpcSlashCommand[] };
 	  }
 
+	// Skills
+	| {
+			id?: string;
+			type: "response";
+			command: "get_skills";
+			success: true;
+			data: { skills: RpcSkill[] };
+	  }
+
+	// Extensions
+	| {
+			id?: string;
+			type: "response";
+			command: "get_extensions";
+			success: true;
+			data: { extensions: RpcExtension[] };
+	  }
+
+	// Tools
+	| {
+			id?: string;
+			type: "response";
+			command: "get_tools";
+			success: true;
+			data: { tools: RpcTool[] };
+	  }
+
+	// Settings
+	| {
+			id?: string;
+			type: "response";
+			command: "get_settings";
+			success: true;
+			data: Settings;
+	  }
+	| { id?: string; type: "response"; command: "set_settings"; success: true }
+
+	// Context usage
+	| {
+			id?: string;
+			type: "response";
+			command: "get_context_usage";
+			success: true;
+			data: RpcContextUsage;
+	  }
+
+	// System prompt
+	| {
+			id?: string;
+			type: "response";
+			command: "get_system_prompt";
+			success: true;
+			data: { systemPrompt: string; appendSystemPrompt: string[] };
+	  }
+
+	// Active tools
+	| {
+			id?: string;
+			type: "response";
+			command: "get_active_tools";
+			success: true;
+			data: { toolNames: string[] };
+	  }
+	| { id?: string; type: "response"; command: "set_active_tools"; success: true }
+
+	// Rollback
+	| {
+			id?: string;
+			type: "response";
+			command: "get_modified_files";
+			success: true;
+			data: {
+				files: Array<{
+					path: string;
+					status: "added" | "modified" | "deleted";
+					turnIndex: number;
+					entryId: string;
+				}>;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_file_diff";
+			success: true;
+			data: {
+				path: string;
+				oldContent: string | null;
+				newContent: string | null;
+				unifiedDiff: string;
+			} | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_batch_diffs";
+			success: true;
+			data: {
+				files: Array<{
+					path: string;
+					status: "added" | "modified" | "deleted";
+					diff: {
+						path: string;
+						oldContent: string | null;
+						newContent: string | null;
+						unifiedDiff: string;
+					} | null;
+				}>;
+				summary: {
+					totalFiles: number;
+					added: number;
+					modified: number;
+					deleted: number;
+				};
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_file_history";
+			success: true;
+			data: {
+				history: Array<{
+					entryId: string;
+					turnIndex: number;
+					timestamp: string;
+					status: "added" | "modified" | "deleted";
+					snapshotHash: string;
+					previousHash: string | null;
+				}>;
+			};
+	  }
+
+	// Queue
+	| {
+			id?: string;
+			type: "response";
+			command: "get_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "clear_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+
+	// Flags
+	| {
+			id?: string;
+			type: "response";
+			command: "get_flags";
+			success: true;
+			data: { flags: RpcExtensionFlag[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_flag_values";
+			success: true;
+			data: { values: Record<string, boolean | string> };
+	  }
+	| { id?: string; type: "response"; command: "set_flag"; success: true }
+
+	// Reload
+	| { id?: string; type: "response"; command: "reload"; success: true }
+
+	// Set Cwd
+	| { id?: string; type: "response"; command: "set_cwd"; success: true }
+
+	// Agents files
+	| {
+			id?: string;
+			type: "response";
+			command: "get_agents_files";
+			success: true;
+			data: { agentsFiles: Array<{ path: string; content: string }> };
+	  }
+
+	// Remote tools
+	| { id?: string; type: "response"; command: "register_remote_tool"; success: true }
+	| { id?: string; type: "response"; command: "unregister_remote_tool"; success: true }
+
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
 
@@ -211,7 +547,15 @@ export type RpcResponse =
 
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
-	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "select";
+			title: string;
+			options: string[];
+			multiple?: boolean;
+			timeout?: number;
+	  }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
 	| {
 			type: "extension_ui_request";
@@ -256,6 +600,14 @@ export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
+
+/** Emitted when a remote tool is called by the child LLM */
+export interface RpcRemoteToolCall {
+	type: "remote_tool_call";
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+}
 
 // ============================================================================
 // Helper type for extracting command types

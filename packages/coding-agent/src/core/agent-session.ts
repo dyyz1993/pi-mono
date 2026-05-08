@@ -13,25 +13,31 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
-import type {
+import { basename, dirname, join, resolve } from "node:path";
+import {
 	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	ThinkingLevel,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type ThinkingLevel,
 } from "@dyyz1993/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
+import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	complete,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	modelsAreEqual,
 	resetApiProviders,
 } from "@dyyz1993/pi-ai";
+import type { Static, TSchema } from "typebox";
+import { Compile } from "typebox/compile";
+import { Value } from "typebox/value";
+import { getAgentDir } from "../config.js";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
@@ -51,11 +57,18 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
 import {
+	type BackgroundTask,
+	type CallLLMOptions,
+	type CallLLMStructuredError,
+	type CallLLMStructuredOptions,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	ExtensionRunner,
 	type ExtensionUIContext,
+	type FoldEntryHandler,
+	type ForkAgentOptions,
+	type ForkAgentResult,
 	type InputSource,
 	type MessageEndEvent,
 	type MessageStartEvent,
@@ -76,8 +89,11 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import { FileSnapshotManager } from "./file-store/file-snapshot-manager.js";
+import { InternalGit } from "./file-store/internal-git.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
+import { resolveModelAlias } from "./model-resolver.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
@@ -87,7 +103,8 @@ import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
-import { createAllToolDefinitions } from "./tools/index.js";
+import { createAllToolDefinitions, createTool, type ToolName } from "./tools/index.js";
+import { stripMarkdownCodeBlock } from "./tools/strip-markdown.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 
 // ============================================================================
@@ -137,7 +154,9 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "custom_entry"; customType: string; data: unknown; id: string; display?: boolean }
+	| { type: "session_rename"; oldName: string | undefined; newName: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -181,6 +200,7 @@ export interface ExtensionBindings {
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+	registerChannel?: (name: string) => import("./extensions/channel-types.js").Channel;
 }
 
 /** Options for AgentSession.prompt() */
@@ -296,9 +316,17 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _registerChannel?: (name: string) => import("./extensions/channel-types.js").Channel;
+
+	private _sessionAbortController = new AbortController();
+	private _backgroundTasks = new Set<BackgroundTask<unknown>>();
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
+
+	private _fileSnapshotManager: FileSnapshotManager | null = null;
+
+	private _tierModels: Record<string, string> = {};
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -339,6 +367,23 @@ export class AgentSession {
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
 		return this._modelRegistry;
+	}
+
+	get fileSnapshotManager(): FileSnapshotManager | null {
+		return this._fileSnapshotManager;
+	}
+
+	private _initFileSnapshotManager(): void {
+		try {
+			const storeRoot = join(getAgentDir(), "file-store");
+			const cwd = this._cwd;
+			const git = InternalGit.createForProject(storeRoot, cwd);
+			this._fileSnapshotManager = new FileSnapshotManager(git);
+			this._extensionRunner.setFileSnapshotManager(this._fileSnapshotManager);
+		} catch {
+			this._fileSnapshotManager = null;
+			this._extensionRunner.setFileSnapshotManager(null);
+		}
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -768,6 +813,15 @@ export class AgentSession {
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model<any> | undefined {
 		return this.agent.state.model;
+	}
+
+	getTierModels(): Record<string, string> {
+		return this._tierModels;
+	}
+
+	setTierModels(mapping: Record<string, string>): void {
+		this._tierModels = { ...mapping };
+		this.sessionManager.appendTierModelsChange(mapping);
 	}
 
 	/** Current thinking level */
@@ -1379,6 +1433,11 @@ export class AgentSession {
 
 	get resourceLoader(): ResourceLoader {
 		return this._resourceLoader;
+	}
+
+	/** Update the working directory for the session. */
+	async setCwd(newCwd: string): Promise<void> {
+		this._cwd = newCwd;
 	}
 
 	/**
@@ -2045,6 +2104,9 @@ export class AgentSession {
 		if (bindings.onError !== undefined) {
 			this._extensionErrorListener = bindings.onError;
 		}
+		if (bindings.registerChannel !== undefined) {
+			this._registerChannel = bindings.registerChannel;
+		}
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
@@ -2174,11 +2236,26 @@ export class AgentSession {
 						});
 					});
 				},
-				appendEntry: (customType, data) => {
-					this.sessionManager.appendCustomEntry(customType, data);
+				appendEntry: (customType, data, options) => {
+					const id = this.sessionManager.appendCustomEntry(customType, data, options);
+					this._emit({ type: "custom_entry", customType, data, id, display: options?.display });
+				},
+				foldEntry: (entryId, summary, originalTokens) => {
+					this.sessionManager.appendFold(entryId, summary, originalTokens);
 				},
 				setSessionName: (name) => {
-					this.setSessionName(name);
+					const oldName = this.sessionManager.getSessionName();
+					const trimmed = name.trim();
+					if (oldName === trimmed) return;
+					this.sessionManager.appendSessionInfo(name);
+					this._emit({ type: "session_rename", oldName, newName: trimmed });
+					runner.emit({ type: "session_rename", oldName, newName: trimmed }).catch((err) => {
+						runner.emitError({
+							extensionPath: "<runtime>",
+							event: "session_rename",
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
 				},
 				getSessionName: () => {
 					return this.sessionManager.getSessionName();
@@ -2198,11 +2275,21 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				registerChannel:
+					this._registerChannel ??
+					((name: string) => {
+						throw new Error(`registerChannel("${name}") is only available in RPC mode`);
+					}),
+				callLLM: (options: CallLLMOptions) => this.callLLM(options),
+				callLLMStructured: (opts) => this.callLLMStructured(opts as CallLLMStructuredOptions & { schema: any }),
+				forkAgent: (prompt, opts) => this.forkAgent(prompt, opts),
+				background: <T>(fn: (signal: AbortSignal) => Promise<T>) => this.background(fn),
 			},
 			{
 				getModel: () => this.model,
 				isIdle: () => !this.isStreaming,
 				getSignal: () => this.agent.signal,
+				getSessionSignal: () => this._sessionAbortController.signal,
 				abort: () => this.abort(),
 				hasPendingMessages: () => this.pendingMessageCount > 0,
 				shutdown: () => {
@@ -2369,6 +2456,7 @@ export class AgentSession {
 		}
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
+		this._initFileSnapshotManager();
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
@@ -2680,7 +2768,7 @@ export class AgentSession {
 	 */
 	async navigateTree(
 		targetId: string,
-		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
+		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string; skipFiles?: boolean } = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
 		const oldLeafId = this.sessionManager.getLeafId();
 
@@ -2720,6 +2808,7 @@ export class AgentSession {
 			customInstructions,
 			replaceInstructions,
 			label,
+			skipFiles: options.skipFiles,
 		};
 
 		// Set up abort controller for summarization
@@ -3106,5 +3195,353 @@ export class AgentSession {
 	 */
 	get extensionRunner(): ExtensionRunner {
 		return this._extensionRunner;
+	}
+
+	private async _resolveOptionalModel(modelSpec?: string): Promise<Model<any> | undefined> {
+		if (modelSpec) {
+			const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
+			const resolved = aliasResolved ?? modelSpec;
+			const available = await this._modelRegistry.getAvailable();
+			return available.find((m) => m.id === resolved || `${m.provider}/${m.id}` === resolved);
+		}
+		return this.model;
+	}
+
+	async callLLM(options: CallLLMOptions): Promise<string> {
+		const model = await this._resolveOptionalModel(options.model);
+		if (!model) throw new Error("No model selected");
+
+		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth?.ok) {
+			throw new Error(auth?.error ?? `No API key configured for ${model.provider}`);
+		}
+		if (!auth.apiKey) {
+			throw new Error(`No API key configured for ${model.provider}`);
+		}
+
+		if (options.signal?.aborted) {
+			throw new Error("Aborted");
+		}
+
+		const messages = options.messages.map((m) => ({
+			role: m.role,
+			content: [{ type: "text" as const, text: m.content }],
+			timestamp: Date.now(),
+		})) as Message[];
+
+		if (!options.tools || options.tools.length === 0) {
+			const context: Context = {
+				systemPrompt: options.systemPrompt,
+				messages,
+			};
+			const response = await complete(model, context, {
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				maxTokens: options.maxTokens,
+				signal: options.signal,
+			});
+			return response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+		}
+
+		const toolInstances = options.tools
+			.map((name) => {
+				try {
+					const registered = this._toolRegistry.get(name);
+					if (registered) return registered;
+					return createTool(name as ToolName, this._cwd);
+				} catch {
+					return undefined;
+				}
+			})
+			.filter((t): t is AgentTool<any> => t !== undefined);
+
+		if (toolInstances.length === 0) {
+			const context: Context = {
+				systemPrompt: options.systemPrompt,
+				messages,
+			};
+			const response = await complete(model, context, {
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				maxTokens: options.maxTokens,
+				signal: options.signal,
+			});
+			return response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+		}
+
+		const agent = new Agent({
+			getApiKey: () => auth.apiKey,
+			initialState: {
+				systemPrompt: options.systemPrompt ?? "",
+				model,
+				thinkingLevel: "off",
+				tools: toolInstances,
+				messages: [],
+			},
+		});
+
+		if (options.signal?.aborted) {
+			throw new Error("Aborted");
+		}
+
+		let resultText = "";
+		const unsub = agent.subscribe((event: AgentEvent) => {
+			if (event.type === "message_end" && "message" in event) {
+				const msg = (event as { message: AgentMessage }).message;
+				if (msg.role === "assistant") {
+					const content = msg.content;
+					if (Array.isArray(content)) {
+						resultText = content
+							.filter((c): c is { type: "text"; text: string } => c.type === "text")
+							.map((c) => c.text)
+							.join("\n");
+					}
+				}
+			}
+		});
+
+		try {
+			await agent.prompt({
+				role: "user",
+				content: [{ type: "text", text: options.messages[0]?.content ?? "" }],
+				timestamp: Date.now(),
+			});
+		} finally {
+			unsub();
+		}
+
+		return resultText;
+	}
+
+	async callLLMStructured<T extends TSchema>(options: CallLLMStructuredOptions & { schema: T }): Promise<Static<T>> {
+		const maxRetries = options.maxRetries ?? 0;
+		let lastError: CallLLMStructuredError | undefined;
+
+		const schemaJson = JSON.stringify(options.schema);
+		const structuredSystemPrompt =
+			(options.systemPrompt ?? "") +
+			`\n\nRespond with valid JSON matching this schema:\n${schemaJson}\n\nRespond with JSON only, no markdown.`;
+
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			const messages =
+				attempt === 0
+					? options.messages
+					: [
+							...options.messages,
+							{ role: "assistant" as const, content: lastError?.raw ?? "" },
+							{
+								role: "user" as const,
+								content: `Your previous response was invalid: ${lastError?.message}. Please respond with valid JSON matching the schema.`,
+							},
+						];
+
+			const raw = await this.callLLM({
+				...options,
+				systemPrompt: structuredSystemPrompt,
+				messages,
+			});
+
+			try {
+				const cleaned = stripMarkdownCodeBlock(raw);
+				const parsed = JSON.parse(cleaned);
+
+				const check = Compile(options.schema);
+				const coerced = Value.Convert(options.schema, parsed);
+				if (!check.Check(coerced)) {
+					const errors = check
+						.Errors(coerced)
+						.map((e) => `${e.instancePath}: ${e.message}`)
+						.join("; ");
+					const err = new Error(`Schema validation failed: ${errors}`) as CallLLMStructuredError;
+					err.raw = raw;
+					err.reason = "schema_validation";
+					lastError = err;
+					if (attempt >= maxRetries) throw err;
+					continue;
+				}
+				return coerced as Static<T>;
+			} catch (e) {
+				if (e instanceof SyntaxError) {
+					const err = new Error(`JSON parse failed: ${(e as Error).message}`) as CallLLMStructuredError;
+					err.raw = raw;
+					err.reason = "json_parse";
+					lastError = err;
+					if (attempt >= maxRetries) throw err;
+					continue;
+				}
+				if ((e as CallLLMStructuredError).reason) {
+					lastError = e as CallLLMStructuredError;
+					if (attempt >= maxRetries) throw lastError;
+					continue;
+				}
+				throw e;
+			}
+		}
+
+		throw lastError ?? new Error("callLLMStructured failed");
+	}
+
+	async forkAgent(promptText: string, options?: ForkAgentOptions): Promise<ForkAgentResult> {
+		const model = await this._resolveOptionalModel(options?.model);
+		if (!model) throw new Error("No model selected");
+
+		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth?.ok) {
+			throw new Error("error" in auth ? auth.error : `No API key configured for ${model.provider}`);
+		}
+		if (!auth.apiKey) {
+			throw new Error(`No API key configured for ${model.provider}`);
+		}
+		if (options?.signal?.aborted) throw new Error("Aborted");
+
+		const opts = options ?? {};
+
+		let toolNames = opts.tools ?? ["read", "grep", "find", "ls"];
+		if (opts.bash === "deny") {
+			toolNames = toolNames.filter((t) => t !== "bash");
+		}
+		const toolInstances = toolNames
+			.map((name) => {
+				try {
+					const registered = this._toolRegistry.get(name);
+					if (registered) return registered;
+					return createTool(name as ToolName, this._cwd);
+				} catch {
+					return undefined;
+				}
+			})
+			.filter((t): t is AgentTool<any> => t !== undefined);
+
+		const effectiveSystemPrompt = opts.inheritSystemPrompt
+			? (this.agent.state.systemPrompt ?? opts.systemPrompt ?? "")
+			: (opts.systemPrompt ?? "");
+
+		const messages = opts.shareContext ? [...this.agent.state.messages] : [];
+
+		const maxTurns = opts.maxTurns ?? 5;
+		let turnCount = 0;
+
+		const forkedAgent = new Agent({
+			getApiKey: () => auth.apiKey,
+			initialState: {
+				systemPrompt: effectiveSystemPrompt,
+				model,
+				thinkingLevel: "off" as const,
+				tools: toolInstances,
+				messages,
+			},
+			sessionId: opts.shareContext ? this.agent.sessionId : undefined,
+		});
+
+		let resultText = "";
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+
+		const abortHandler = opts.signal ? () => forkedAgent.abort() : undefined;
+		if (abortHandler && opts.signal) {
+			opts.signal.addEventListener("abort", abortHandler, { once: true });
+		}
+
+		const unsub = forkedAgent.subscribe((event: AgentEvent) => {
+			if (event.type === "turn_end") {
+				turnCount++;
+				if (turnCount >= maxTurns) {
+					forkedAgent.abort();
+				}
+			}
+			if (event.type === "message_end") {
+				const msg = event.message;
+				if (msg.role === "assistant") {
+					const asst = msg as AssistantMessage;
+					const content = asst.content;
+					if (Array.isArray(content)) {
+						resultText = content
+							.filter((c): c is { type: "text"; text: string } => c.type === "text")
+							.map((c) => c.text)
+							.join("\n");
+					}
+					if (asst.usage) {
+						usage.input = asst.usage.input ?? 0;
+						usage.output = asst.usage.output ?? 0;
+						usage.cacheRead = asst.usage.cacheRead ?? 0;
+						usage.cacheWrite = asst.usage.cacheWrite ?? 0;
+						if (model.cost) {
+							usage.cost =
+								(usage.input * model.cost.input +
+									usage.output * model.cost.output +
+									usage.cacheRead * model.cost.cacheRead +
+									usage.cacheWrite * model.cost.cacheWrite) /
+								1_000_000;
+						}
+					}
+				}
+			}
+		});
+
+		try {
+			await forkedAgent.prompt({
+				role: "user",
+				content: [{ type: "text" as const, text: promptText }],
+				timestamp: Date.now(),
+			});
+		} finally {
+			unsub();
+			if (abortHandler && opts.signal) {
+				opts.signal.removeEventListener("abort", abortHandler);
+			}
+		}
+
+		return { text: resultText, usage };
+	}
+
+	background<T>(fn: (signal: AbortSignal) => Promise<T>): BackgroundTask<T> {
+		const controller = new AbortController();
+		const promise = fn(controller.signal);
+		const task: BackgroundTask<T> = {
+			id: randomUUID(),
+			signal: controller.signal,
+			promise: promise as Promise<unknown> as Promise<T>,
+			cancel: () => controller.abort(),
+		};
+		this._backgroundTasks.add(task as BackgroundTask<unknown>);
+		promise.finally(() => this._backgroundTasks.delete(task as BackgroundTask<unknown>));
+		return task;
+	}
+
+	async previewRollback(targetId: string): Promise<{ restored: string[]; deleted: string[] }> {
+		const oldLeafId = this.sessionManager.getLeafId();
+
+		let newLeafId: string | null;
+		const targetEntry = this.sessionManager.getEntry(targetId);
+		if (!targetEntry) {
+			throw new Error(`Entry ${targetId} not found`);
+		}
+
+		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
+			newLeafId = targetEntry.parentId;
+		} else if (targetEntry.type === "custom_message") {
+			newLeafId = targetEntry.parentId;
+		} else {
+			newLeafId = targetId;
+		}
+
+		const result = await this._extensionRunner.emit({
+			type: "session_tree",
+			newLeafId,
+			oldLeafId,
+			preview: true,
+		} as import("./extensions/types.js").SessionTreeEvent);
+
+		return (
+			(result as unknown as import("./extensions/types.js").SessionTreePreviewResult) ?? {
+				restored: [],
+				deleted: [],
+			}
+		);
 	}
 }

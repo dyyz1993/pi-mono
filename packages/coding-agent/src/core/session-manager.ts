@@ -23,6 +23,7 @@ import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
+	createFoldSummaryMessage,
 } from "./messages.js";
 
 export const CURRENT_SESSION_VERSION = 3;
@@ -62,6 +63,11 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
 	modelId: string;
+}
+
+export interface TierModelsChangeEntry extends SessionEntryBase {
+	type: "tier_models_change";
+	tierModels: Record<string, string>;
 }
 
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
@@ -112,6 +118,19 @@ export interface LabelEntry extends SessionEntryBase {
 export interface SessionInfoEntry extends SessionEntryBase {
 	type: "session_info";
 	name?: string;
+	/** Override the session's working directory. When set, takes precedence over header cwd. */
+	cwd?: string;
+}
+
+export interface DeletionEntry extends SessionEntryBase {
+	type: "deletion";
+	targetIds: string[];
+}
+
+export interface SegmentSummaryEntry extends SessionEntryBase {
+	type: "segment_summary";
+	targetIds: string[];
+	summary: string;
 }
 
 /**
@@ -139,12 +158,23 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
+	| TierModelsChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
+	| FoldEntry
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	| DeletionEntry
+	| SegmentSummaryEntry;
+
+export interface FoldEntry extends SessionEntryBase {
+	type: "fold";
+	targetId: string;
+	summary: string;
+	originalTokens: number;
+}
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -368,16 +398,107 @@ export function buildSessionContext(
 		}
 	}
 
-	// Build messages and collect corresponding entries
-	// When there's a compaction, we need to:
-	// 1. Emit summary first (entry = compaction)
-	// 2. Emit kept messages (from firstKeptEntryId up to compaction)
-	// 3. Emit messages after compaction
+	const folds = new Map<string, FoldEntry>();
+	for (const entry of path) {
+		if (entry.type === "fold") {
+			folds.set(entry.targetId, entry);
+		}
+	}
+
+	const deletedIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "deletion") {
+			for (const targetId of (entry as DeletionEntry).targetIds) {
+				deletedIds.add(targetId);
+			}
+		}
+	}
+
+	const deletedToolCallIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "message" && deletedIds.has(entry.id)) {
+			const msg = entry.message;
+			if (msg.role === "assistant" && Array.isArray(msg.content)) {
+				for (const part of msg.content as Array<{ type: string; id?: string }>) {
+					if (part.type === "toolCall" && part.id) {
+						deletedToolCallIds.add(part.id);
+					}
+				}
+			}
+		}
+	}
+	for (const entry of path) {
+		if (entry.type === "message" && entry.message.role === "toolResult") {
+			if (deletedToolCallIds.has(entry.message.toolCallId)) {
+				deletedIds.add(entry.id);
+			}
+		}
+	}
+
+	const strippedToolCallIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "message" && deletedIds.has(entry.id) && entry.message.role === "toolResult") {
+			strippedToolCallIds.add(entry.message.toolCallId);
+		}
+	}
+
+	const segmentTargets = new Map<string, { summary: string; isFirst: boolean; timestamp: string }>();
+	for (const entry of path) {
+		if (entry.type === "segment_summary") {
+			const seg = entry as SegmentSummaryEntry;
+			if (seg.targetIds.length === 0) continue;
+			for (let i = 0; i < seg.targetIds.length; i++) {
+				const targetId = seg.targetIds[i];
+				if (deletedIds.has(targetId)) continue;
+				if (segmentTargets.has(targetId)) continue;
+				segmentTargets.set(targetId, {
+					summary: seg.summary,
+					isFirst: i === 0,
+					timestamp: entry.timestamp,
+				});
+			}
+		}
+	}
+
 	const messages: AgentMessage[] = [];
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
-			messages.push(entry.message);
+			if (deletedIds.has(entry.id)) return;
+
+			const segInfo = segmentTargets.get(entry.id);
+			if (segInfo) {
+				if (segInfo.isFirst) {
+					messages.push({
+						role: "segmentSummary",
+						summary: segInfo.summary,
+						timestamp: new Date(segInfo.timestamp).getTime(),
+					} as AgentMessage);
+				}
+				return;
+			}
+
+			const fold = folds.get(entry.id);
+			if (fold) {
+				messages.push(createFoldSummaryMessage(fold.summary, fold.originalTokens, entry.timestamp));
+			} else {
+				let msg = entry.message;
+				if (msg.role === "assistant" && Array.isArray(msg.content) && strippedToolCallIds.size > 0) {
+					const content = msg.content;
+					const needsStrip = content.some(
+						(part: { type: string; id?: string }) =>
+							part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id),
+					);
+					if (needsStrip) {
+						const filteredContent = content.filter(
+							(part: { type: string; id?: string }) =>
+								!(part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id)),
+						);
+						msg = { ...msg, content: filteredContent as typeof msg.content };
+					}
+				}
+				messages.push(msg);
+			}
 		} else if (entry.type === "custom_message") {
 			messages.push(
 				createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp),
@@ -818,6 +939,15 @@ export class SessionManager {
 		}
 	}
 
+	/** Force-flush all pending file entries to disk. */
+	flush(): void {
+		if (!this.persist || !this.sessionFile || this.flushed) return;
+		for (const e of this.fileEntries) {
+			appendFileSync(this.sessionFile, `${JSON.stringify(e)}\n`);
+		}
+		this.flushed = true;
+	}
+
 	private _appendEntry(entry: SessionEntry): void {
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
@@ -870,6 +1000,19 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Append a tier models change as child of current leaf, then advance leaf. Returns entry id. */
+	appendTierModelsChange(tierModels: Record<string, string>): string {
+		const entry: TierModelsChangeEntry = {
+			type: "tier_models_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			tierModels,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
 	appendCompaction<T = unknown>(
 		summary: string,
@@ -894,11 +1037,53 @@ export class SessionManager {
 	}
 
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-	appendCustomEntry(customType: string, data?: unknown): string {
+	appendCustomEntry(customType: string, data?: unknown, _options?: { display?: boolean }): string {
 		const entry: CustomEntry = {
 			type: "custom",
 			customType,
 			data,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a fold entry that replaces a message with a summary in LLM context. Returns entry id. */
+	appendFold(targetId: string, summary: string, originalTokens: number): string {
+		const entry: FoldEntry = {
+			type: "fold",
+			targetId,
+			summary,
+			originalTokens,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a deletion entry that excludes target messages from LLM context. Returns entry id. */
+	appendDeletion(targetIds: string[]): string {
+		const entry: DeletionEntry = {
+			type: "deletion",
+			targetIds,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a segment summary entry that replaces target messages with a summary in LLM context. Returns entry id. */
+	appendSegmentSummary(targetIds: string[], summary: string): string {
+		const entry: SegmentSummaryEntry = {
+			type: "segment_summary",
+			targetIds,
+			summary,
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
@@ -914,8 +1099,10 @@ export class SessionManager {
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
-			name: name.trim(),
 		};
+		if (name !== undefined) {
+			entry.name = name.trim();
+		}
 		this._appendEntry(entry);
 		return entry.id;
 	}

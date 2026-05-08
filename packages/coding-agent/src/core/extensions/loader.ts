@@ -161,13 +161,13 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
+		foldEntry: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
 		setActiveTools: notInitialized,
-		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
 		getCommands: notInitialized,
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
@@ -175,6 +175,13 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setThinkingLevel: notInitialized,
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
+		pendingChannelRegistrations: [],
+		resolvedChannels: new Map(),
+		registerChannel: notInitialized,
+		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
+		callLLMStructured: () => Promise.reject(new Error("Extension runtime not initialized")),
+		forkAgent: () => Promise.reject(new Error("Extension runtime not initialized")),
+		background: notInitialized,
 		assertActive,
 		invalidate: (message) => {
 			state.staleMessage ??=
@@ -347,6 +354,44 @@ function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
+		registerChannel(name: string) {
+			runtime.assertActive();
+			return runtime.registerChannel(name);
+		},
+
+		callLLM(options) {
+			runtime.assertActive();
+			return runtime.callLLM(options);
+		},
+
+		callLLMStructured(options) {
+			runtime.assertActive();
+			return runtime.callLLMStructured(options);
+		},
+
+		forkAgent(prompt, options) {
+			runtime.assertActive();
+			return runtime.forkAgent(prompt, options);
+		},
+
+		background(fn) {
+			runtime.assertActive();
+			return runtime.background(fn);
+		},
+
+		foldEntry(entryId, summary, originalTokens) {
+			runtime.assertActive();
+			runtime.foldEntry(entryId, summary, originalTokens);
+		},
+
+		setName(name: string) {
+			extension.name = name;
+		},
+
+		get extensionName() {
+			return extension.name;
+		},
+
 		events: eventBus,
 	} as ExtensionAPI;
 
@@ -376,8 +421,10 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 			? extensionPath.slice(1, -1).split(":")[0] || "temporary"
 			: "local";
 	const baseDir = extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath);
+	const name = path.basename(extensionPath, path.extname(extensionPath));
 
 	return {
+		name,
 		path: extensionPath,
 		resolvedPath,
 		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),

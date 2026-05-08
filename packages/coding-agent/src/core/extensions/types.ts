@@ -6,6 +6,7 @@
  * - Register LLM-callable tools
  * - Register commands, keyboard shortcuts, and CLI flags
  * - Interact with the user via UI primitives
+ * - Register bidirectional data channels for RPC Client communication
  */
 
 import type {
@@ -75,6 +76,7 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../tools/index.js";
+import type { Channel } from "./channel-types.js";
 
 export type { ExecOptions, ExecResult } from "../exec.js";
 export type { BuildSystemPromptOptions } from "../system-prompt.js";
@@ -91,6 +93,7 @@ export interface ExtensionUIDialogOptions {
 	signal?: AbortSignal;
 	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
 	timeout?: number;
+	multiple?: boolean;
 }
 
 /** Placement for extension widgets. */
@@ -123,7 +126,7 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  */
 export interface ExtensionUIContext {
 	/** Show a selector and return the user's choice. */
-	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | string[] | undefined>;
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
@@ -324,6 +327,29 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/** The name of the current extension. */
+	extensionName: string;
+	/** Canonical git root (worktree-aware). Falls back to cwd if not a git repo. */
+	projectRoot: string;
+	/** Per-session data directory. Automatically created on first access. Use this to store session-scoped data. */
+	sessionDataDir: string;
+	/** Per-project data directory (shared across sessions). Automatically created on first access. Use this to store project-scoped data. */
+	projectDataDir: string;
+	/** Per-cwd data directory (isolated by current working directory). Same as projectDataDir for normal repos; different in worktrees where each working directory gets its own storage. Automatically created on first access. */
+	cwdDataDir: string;
+	/** Global data directory shared across all projects. Use this for cross-project data like knowledge bases, shared caches, etc. Automatically created on first access. */
+	globalDataDir: string;
+	/** Signal that aborts on session shutdown. Available in ALL events, including agent_end. */
+	readonly sessionSignal: AbortSignal;
+	/**
+	 * Asynchronously inject a response to a pending UI event.
+	 * Use with the `ui` event: capture event.id, return undefined from handler,
+	 * then call respondUI(id, result) when the response arrives (e.g. from a remote service).
+	 * First response wins (original UI or respondUI), subsequent calls are ignored.
+	 */
+	respondUI(id: string, result: UIEventResult): void;
+	/** File snapshot manager for turn-level file tracking and restore. Null when not available. */
+	fileSnapshotManager: import("../file-store/file-snapshot-manager.js").FileSnapshotManager | null;
 }
 
 /**
@@ -554,6 +580,16 @@ export interface SessionShutdownEvent {
 	reason: "quit" | "reload" | "new" | "resume" | "fork";
 	/** Destination session file when shutting down due to session replacement. */
 	targetSessionFile?: string;
+	entryId?: string;
+}
+
+/** Fired when the session display name is changed via pi.setSessionName(). */
+export interface SessionRenameEvent {
+	type: "session_rename";
+	/** The previous session name, or undefined if there was none. */
+	oldName: string | undefined;
+	/** The new session name. Empty string explicitly clears the name. */
+	newName: string;
 }
 
 /** Preparation data for tree navigation */
@@ -569,6 +605,8 @@ export interface TreePreparation {
 	replaceInstructions?: boolean;
 	/** Label to attach to the branch summary entry */
 	label?: string;
+	skipFiles?: boolean;
+	preview?: boolean;
 }
 
 /** Fired before navigating in the session tree (can be cancelled) */
@@ -585,6 +623,8 @@ export interface SessionTreeEvent {
 	oldLeafId: string | null;
 	summaryEntry?: BranchSummaryEntry;
 	fromExtension?: boolean;
+	skipFiles?: boolean;
+	preview?: boolean;
 }
 
 export type SessionEvent =
@@ -594,8 +634,14 @@ export type SessionEvent =
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
 	| SessionShutdownEvent
+	| SessionRenameEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
+
+export interface SessionTreePreviewResult {
+	restored: string[];
+	deleted: string[];
+}
 
 // ============================================================================
 // Agent Events
@@ -631,6 +677,8 @@ export interface BeforeAgentStartEvent {
 	systemPrompt: string;
 	/** Structured options used to build the system prompt. Extensions can inspect this to understand what Pi loaded without re-discovering resources. */
 	systemPromptOptions: BuildSystemPromptOptions;
+	/** Arbitrary key-value metadata from the current execution context (e.g. agent role, permission mode). */
+	variables?: Record<string, string>;
 }
 
 /** Fired when an agent loop starts */
@@ -763,6 +811,27 @@ export type InputEventResult =
 	| { action: "continue" }
 	| { action: "transform"; text: string; images?: ImageContent[] }
 	| { action: "handled" };
+
+// ============================================================================
+// UI Interception Events
+// ============================================================================
+
+export interface UIEvent {
+	type: "ui";
+	id: string;
+	method: "confirm" | "select" | "input" | "notify" | "editor";
+	title: string;
+	message?: string;
+	options?: string[];
+	placeholder?: string;
+	prefill?: string;
+	notifyType?: "info" | "warning" | "error";
+	multiple?: boolean;
+	signal?: AbortSignal;
+	timeout?: number;
+}
+
+export type UIEventResult = { action: "responded"; confirmed?: boolean; value?: string } | undefined;
 
 // ============================================================================
 // Tool Events
@@ -969,7 +1038,8 @@ export type ExtensionEvent =
 	| UserBashEvent
 	| InputEvent
 	| ToolCallEvent
-	| ToolResultEvent;
+	| ToolResultEvent
+	| UIEvent;
 
 // ============================================================================
 // Event Results
@@ -1099,6 +1169,7 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
+	on(event: "session_rename", handler: ExtensionHandler<SessionRenameEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
@@ -1124,6 +1195,7 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+	on(event: "ui", handler: ExtensionHandler<UIEvent, UIEventResult>): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1190,7 +1262,10 @@ export interface ExtensionAPI {
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	appendEntry<T = unknown>(customType: string, data?: T, options?: { display?: boolean }): void;
+
+	/** Fold a message entry, replacing its content with a summary in LLM context. */
+	foldEntry(entryId: string, summary: string, originalTokens: number): void;
 
 	// =========================================================================
 	// Session Metadata
@@ -1204,6 +1279,11 @@ export interface ExtensionAPI {
 
 	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
 	setLabel(entryId: string, label: string | undefined): void;
+
+	/** Set the extension's display name. Used for storage path namespacing and error reporting. Must be called before any event handlers are registered. */
+	setName(name: string): void;
+	/** Get the extension's name. If not explicitly set via setName(), returns the auto-derived name. */
+	extensionName: string;
 
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
@@ -1308,6 +1388,23 @@ export interface ExtensionAPI {
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;
+
+	/** Register a named bidirectional channel for Extension <-> RPC Client communication. */
+	registerChannel(name: string): Channel;
+
+	/**
+	 * Make an LLM call using the current session's model and auth.
+	 *
+	 * Without `tools`: single-turn complete() call, returns response text.
+	 * With `tools`: starts a temporary Agent loop with the specified built-in tools.
+	 */
+	callLLM(options: CallLLMOptions): Promise<string>;
+
+	callLLMStructured<T extends TSchema>(options: CallLLMStructuredOptions & { schema: T }): Promise<Static<T>>;
+
+	forkAgent(prompt: string, options?: ForkAgentOptions): Promise<ForkAgentResult>;
+
+	background<T>(fn: (signal: AbortSignal) => Promise<T>): BackgroundTask<T>;
 }
 
 // ============================================================================
@@ -1404,6 +1501,11 @@ export interface ExtensionShortcut {
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
+/** Tool info with name, description, parameter schema, and source metadata */
+export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters"> & {
+	sourceInfo: SourceInfo;
+};
+
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
@@ -1414,18 +1516,15 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp" },
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: { display?: boolean }) => void;
+
+export type FoldEntryHandler = (entryId: string, summary: string, originalTokens: number) => void;
 
 export type SetSessionNameHandler = (name: string) => void;
 
 export type GetSessionNameHandler = () => string | undefined;
 
 export type GetActiveToolsHandler = () => string[];
-
-/** Tool info with name, description, parameter schema, and source metadata */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters"> & {
-	sourceInfo: SourceInfo;
-};
 
 export type GetAllToolsHandler = () => ToolInfo[];
 
@@ -1443,6 +1542,65 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
+// ============================================================================
+// callLLM
+// ============================================================================
+
+export interface CallLLMOptions {
+	/** Optional model override. Accepts tier aliases ("fast", "pro", "max"), provider/model format, or bare model id. Falls back to session model if not specified or resolution fails. */
+	model?: string;
+	systemPrompt?: string;
+	messages: { role: "user" | "assistant"; content: string }[];
+	tools?: string[];
+	maxTurns?: number;
+	maxTokens?: number;
+	signal?: AbortSignal;
+}
+
+export type CallLLMHandler = (options: CallLLMOptions) => Promise<string>;
+
+export interface CallLLMStructuredOptions extends Omit<CallLLMOptions, "tools"> {
+	schema: TSchema;
+	maxRetries?: number;
+}
+
+export interface CallLLMStructuredError extends Error {
+	raw: string;
+	reason: "json_parse" | "schema_validation";
+}
+
+export type CallLLMStructuredHandler = (options: CallLLMStructuredOptions) => Promise<unknown>;
+
+export interface ForkAgentOptions {
+	/** Optional model override. Accepts tier aliases ("fast", "pro", "max"), provider/model format, or bare model id. Falls back to session model if not specified or resolution fails. */
+	model?: string;
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	tools?: string[];
+	writePaths?: string[];
+	bash?: "deny" | "readonly";
+	maxTurns?: number;
+	maxTokens?: number;
+	signal?: AbortSignal;
+	shareContext?: boolean;
+}
+
+export interface ForkAgentResult {
+	text: string;
+	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+}
+
+export type ForkAgentHandler = (prompt: string, options?: ForkAgentOptions) => Promise<ForkAgentResult>;
+
+export type BackgroundHandler = <T>(fn: (signal: AbortSignal) => Promise<T>) => BackgroundTask<T>;
+
+export interface BackgroundTask<T> {
+	readonly id: string;
+	readonly signal: AbortSignal;
+	readonly promise: Promise<T>;
+	cancel(): void;
+}
+
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
@@ -1451,6 +1609,14 @@ export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+	/** Channel registrations queued during extension loading, processed when runner binds */
+	pendingChannelRegistrations: Array<{
+		name: string;
+		resolve: (channel: Channel) => void;
+		reject: (err: Error) => void;
+	}>;
+	/** Resolved channel instances, populated after bindCore flushes pending registrations */
+	resolvedChannels: Map<string, Channel>;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
@@ -1473,6 +1639,7 @@ export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
+	foldEntry: FoldEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;
@@ -1484,6 +1651,11 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	registerChannel: (name: string) => Channel;
+	callLLM: CallLLMHandler;
+	callLLMStructured: CallLLMStructuredHandler;
+	forkAgent: ForkAgentHandler;
+	background: BackgroundHandler;
 }
 
 /**
@@ -1500,6 +1672,7 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
+	getSessionSignal: () => AbortSignal;
 }
 
 /**
@@ -1536,6 +1709,7 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 
 /** Loaded extension with all registered items. */
 export interface Extension {
+	name: string;
 	path: string;
 	resolvedPath: string;
 	sourceInfo: SourceInfo;

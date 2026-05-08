@@ -96,6 +96,7 @@ export type {
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,
+	FoldEntryHandler,
 	ForkAgentHandler,
 	ForkAgentOptions,
 	ForkAgentResult,
