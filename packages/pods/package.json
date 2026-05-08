@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-pods",
-	"version": "0.74.3",
+	"version": "0.74.4",
 	"description": "CLI tool for managing vLLM deployments on GPU pods",
 	"type": "module",
 	"bin": {
@@ -36,7 +36,7 @@
 		"node": ">=20.0.0"
 	},
 	"dependencies": {
-		"@dyyz1993/pi-agent-core": "^0.74.3",
+		"@dyyz1993/pi-agent-core": "^0.74.4",
 		"chalk": "^5.5.0"
 	},
 	"devDependencies": {}
