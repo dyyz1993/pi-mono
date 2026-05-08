@@ -2,7 +2,10 @@ export function matchesMatcher(matcher: string | undefined, toolName: string): b
 	if (!matcher || matcher === "" || matcher === "*") return true;
 
 	if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
-		return matcher.split("|").includes(toolName);
+		return matcher
+			.split("|")
+			.map((s) => s.trim().toLowerCase())
+			.includes(toolName.toLowerCase());
 	}
 
 	try {

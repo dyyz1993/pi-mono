@@ -42,6 +42,14 @@ describe("matchesMatcher", () => {
 	it("handles invalid regex gracefully", () => {
 		expect(matchesMatcher("[invalid", "Bash")).toBe(false);
 	});
+
+	it("should match case-insensitively (Claude Code PascalCase)", () => {
+		expect(matchesMatcher("Write", "write")).toBe(true);
+		expect(matchesMatcher("Bash", "bash")).toBe(true);
+		expect(matchesMatcher("Edit|Write", "write")).toBe(true);
+		expect(matchesMatcher("Edit|Write", "edit")).toBe(true);
+		expect(matchesMatcher("Read", "write")).toBe(false);
+	});
 });
 
 describe("parseIfClause", () => {
