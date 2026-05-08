@@ -5,27 +5,13 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@dyyz1993/pi-agent-core";
 import type { ImageContent } from "@dyyz1993/pi-ai";
 import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
-import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.js";
-import type { Settings } from "../../core/settings-manager.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
-import type {
-	RpcCommand,
-	RpcContextUsage,
-	RpcExtension,
-	RpcExtensionFlag,
-	RpcResponse,
-	RpcSessionState,
-	RpcSkill,
-	RpcSlashCommand,
-	RpcTool,
-	TreeEntry,
-} from "./rpc-types.js";
+import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.js";
 
 // ============================================================================
 // Types
@@ -50,8 +36,6 @@ export interface RpcClientOptions {
 	model?: string;
 	/** Additional CLI arguments */
 	args?: string[];
-	/** Session-scoped variables passed to extensions via ctx.variables */
-	variables?: Record<string, string>;
 }
 
 export interface ModelInfo {
@@ -64,15 +48,6 @@ export interface ModelInfo {
 export type RpcEventListener = (event: AgentEvent) => void;
 
 // ============================================================================
-// Type exports
-// ============================================================================
-
-/**
- * Entry in the session tree.
- */
-export type { TreeEntry } from "./rpc-types.js";
-
-// ============================================================================
 // RPC Client
 // ============================================================================
 
@@ -83,12 +58,7 @@ export class RpcClient {
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
-	private channelHandlers = new Map<string, Set<(data: unknown) => void>>();
-	private remoteToolCallHandlers: Array<
-		(call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void
-	> = [];
 	private stderr = "";
-	private readyResolve: (() => void) | null = null;
 
 	constructor(private options: RpcClientOptions = {}) {}
 
@@ -113,16 +83,9 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		const mergedEnv: Record<string, string> = { ...process.env, ...this.options.env } as Record<string, string>;
-		if (this.options.variables) {
-			for (const [key, value] of Object.entries(this.options.variables)) {
-				mergedEnv[`PI_VARIABLE_${key.toUpperCase()}`] = value;
-			}
-		}
-
 		this.process = spawn("node", [cliPath, ...args], {
 			cwd: this.options.cwd,
-			env: mergedEnv,
+			env: { ...process.env, ...this.options.env },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 
@@ -137,18 +100,8 @@ export class RpcClient {
 			this.handleLine(line);
 		});
 
-		// Wait for first stdout line (agent ready)
-		await new Promise<void>((resolve, reject) => {
-			this.readyResolve = resolve;
-			const timeout = setTimeout(() => {
-				this.readyResolve = null;
-				reject(new Error(`Agent process did not become ready. Stderr: ${this.stderr}`));
-			}, 15000);
-			this.readyResolve = () => {
-				clearTimeout(timeout);
-				resolve();
-			};
-		});
+		// Wait a moment for process to initialize
+		await new Promise((resolve) => setTimeout(resolve, 100));
 
 		if (this.process.exitCode !== null) {
 			throw new Error(`Agent process exited immediately with code ${this.process.exitCode}. Stderr: ${this.stderr}`);
@@ -282,15 +235,6 @@ export class RpcClient {
 		return this.getData<{ models: ModelInfo[] }>(response).models;
 	}
 
-	async getTierModels(): Promise<Record<string, string>> {
-		const response = await this.send({ type: "get_tier_models" });
-		return this.getData<{ models: Record<string, string> }>(response).models;
-	}
-
-	async setTierModels(models: { fast?: string; pro?: string; max?: string }): Promise<void> {
-		await this.send({ type: "set_tier_models", models });
-	}
-
 	/**
 	 * Set thinking level.
 	 */
@@ -393,29 +337,8 @@ export class RpcClient {
 	 * Fork from a specific message.
 	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
 	 */
-	async fork(
-		entryId: string,
-		options?: { position?: "before" | "at" },
-	): Promise<{ text: string; cancelled: boolean; newSessionFile?: string; newSessionId?: string }> {
-		const response = await this.send({ type: "fork", entryId, position: options?.position });
-		return this.getData(response);
-	}
-
-	async navigateTree(
-		targetId: string,
-		options?: { summarize?: boolean; skipFiles?: boolean },
-	): Promise<{ cancelled: boolean }> {
-		const response = await this.send({
-			type: "navigate_tree",
-			targetId,
-			summarize: options?.summarize,
-			skipFiles: options?.skipFiles,
-		});
-		return this.getData(response);
-	}
-
-	async previewRollback(targetId: string): Promise<{ restored: string[]; deleted: string[] }> {
-		const response = await this.send({ type: "rollback_preview", targetId });
+	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
+		const response = await this.send({ type: "fork", entryId });
 		return this.getData(response);
 	}
 
@@ -459,46 +382,6 @@ export class RpcClient {
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
 	}
 
-	async getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
-		messages: AgentMessage[];
-		hasMore: boolean;
-		totalCount: number;
-		nextCursor: string | null;
-	}> {
-		const response = await this.send({
-			type: "get_full_messages",
-			afterEntryId: options?.afterEntryId,
-			limit: options?.limit,
-		});
-		return this.getData<{
-			messages: AgentMessage[];
-			hasMore: boolean;
-			totalCount: number;
-			nextCursor: string | null;
-		}>(response);
-	}
-
-	async getTree(): Promise<TreeEntry[]> {
-		const response = await this.send({ type: "get_tree" });
-		const data = this.getData<{
-			entries: TreeEntry[];
-			leafId?: string | null;
-		}>(response);
-		return data.entries;
-	}
-
-	async getTreeWithLeaf(): Promise<{
-		entries: TreeEntry[];
-		leafId: string | null;
-	}> {
-		const response = await this.send({ type: "get_tree" });
-		const data = this.getData<{
-			entries: TreeEntry[];
-			leafId?: string | null;
-		}>(response);
-		return { entries: data.entries, leafId: data.leafId ?? null };
-	}
-
 	/**
 	 * Get available commands (extension commands, prompt templates, skills).
 	 */
@@ -507,38 +390,27 @@ export class RpcClient {
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
 	}
 
-	async getSkills(): Promise<RpcSkill[]> {
-		const response = await this.send({ type: "get_skills" });
-		return this.getData<{ skills: RpcSkill[] }>(response).skills;
+	async getSettings(scope?: "global" | "project"): Promise<Record<string, unknown>> {
+		const command: Record<string, unknown> = { type: "get_settings" };
+		if (scope) command.scope = scope;
+		const response = await this.send(command as RpcCommandBody);
+		return this.getData<Record<string, unknown>>(response);
 	}
 
-	async getExtensions(): Promise<RpcExtension[]> {
-		const response = await this.send({ type: "get_extensions" });
-		return this.getData<{ extensions: RpcExtension[] }>(response).extensions;
+	async setSettings(settings: Record<string, unknown>, scope?: "global" | "project"): Promise<void> {
+		const command: Record<string, unknown> = { type: "set_settings", settings };
+		if (scope) command.scope = scope;
+		await this.send(command as RpcCommandBody);
 	}
 
-	async getTools(): Promise<RpcTool[]> {
-		const response = await this.send({ type: "get_tools" });
-		return this.getData<{ tools: RpcTool[] }>(response).tools;
-	}
-
-	async getSettings(scope?: "global" | "project"): Promise<Settings> {
-		const response = await this.send({ type: "get_settings", scope });
-		return this.getData<Settings>(response);
-	}
-
-	async setSettings(settings: Partial<Settings>, scope?: "global" | "project"): Promise<void> {
-		await this.send({ type: "set_settings", settings, scope });
-	}
-
-	async getContextUsage(): Promise<RpcContextUsage> {
+	async getContextUsage(): Promise<Record<string, unknown>> {
 		const response = await this.send({ type: "get_context_usage" });
-		return this.getData<RpcContextUsage>(response);
+		return this.getData<Record<string, unknown>>(response);
 	}
 
-	async getSystemPrompt(): Promise<{ systemPrompt: string; appendSystemPrompt: string[] }> {
+	async getSystemPrompt(): Promise<{ systemPrompt: string; appendSystemPrompt?: string }> {
 		const response = await this.send({ type: "get_system_prompt" });
-		return this.getData<{ systemPrompt: string; appendSystemPrompt: string[] }>(response);
+		return this.getData<{ systemPrompt: string; appendSystemPrompt?: string }>(response);
 	}
 
 	async getActiveTools(): Promise<string[]> {
@@ -550,27 +422,27 @@ export class RpcClient {
 		await this.send({ type: "set_active_tools", toolNames });
 	}
 
-	async getQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+	async getQueue(): Promise<{ steering: unknown[]; followUp: unknown[] }> {
 		const response = await this.send({ type: "get_queue" });
-		return this.getData<{ steering: string[]; followUp: string[] }>(response);
+		return this.getData<{ steering: unknown[]; followUp: unknown[] }>(response);
 	}
 
-	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+	async clearQueue(): Promise<{ steering: unknown[]; followUp: unknown[] }> {
 		const response = await this.send({ type: "clear_queue" });
-		return this.getData<{ steering: string[]; followUp: string[] }>(response);
+		return this.getData<{ steering: unknown[]; followUp: unknown[] }>(response);
 	}
 
-	async getFlags(): Promise<RpcExtensionFlag[]> {
+	async getFlags(): Promise<Record<string, unknown>> {
 		const response = await this.send({ type: "get_flags" });
-		return this.getData<{ flags: RpcExtensionFlag[] }>(response).flags;
+		return this.getData<{ flags: Record<string, unknown> }>(response).flags;
 	}
 
-	async getFlagValues(): Promise<Record<string, boolean | string>> {
+	async getFlagValues(): Promise<Record<string, unknown>> {
 		const response = await this.send({ type: "get_flag_values" });
-		return this.getData<{ values: Record<string, boolean | string> }>(response).values;
+		return this.getData<{ values: Record<string, unknown> }>(response).values;
 	}
 
-	async setFlag(name: string, value: boolean | string): Promise<void> {
+	async setFlag(name: string, value: unknown): Promise<void> {
 		await this.send({ type: "set_flag", name, value });
 	}
 
@@ -578,141 +450,27 @@ export class RpcClient {
 		await this.send({ type: "reload" });
 	}
 
+	async getAgentsFiles(): Promise<string[]> {
+		const response = await this.send({ type: "get_agents_files" });
+		return this.getData<{ agentsFiles: string[] }>(response).agentsFiles;
+	}
+
 	async setCwd(cwd: string): Promise<void> {
 		await this.send({ type: "set_cwd", cwd });
 	}
 
-	async getAgentsFiles(): Promise<Array<{ path: string; content: string }>> {
-		const response = await this.send({ type: "get_agents_files" });
-		return this.getData<{ agentsFiles: Array<{ path: string; content: string }> }>(response).agentsFiles;
+	async getFullMessages(
+		options?: { limit?: number; afterEntryId?: string; includeUserMessages?: boolean; direction?: "asc" | "desc" },
+	): Promise<Record<string, unknown>> {
+		const command: Record<string, unknown> = { type: "get_full_messages" };
+		if (options) Object.assign(command, options);
+		const response = await this.send(command as RpcCommandBody);
+		return this.getData<Record<string, unknown>>(response);
 	}
 
-	async getModifiedFiles(options?: {
-		fromEntryId?: string;
-		toEntryId?: string;
-	}): Promise<Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>> {
-		const response = await this.send({
-			type: "get_modified_files",
-			fromEntryId: options?.fromEntryId,
-			toEntryId: options?.toEntryId,
-		});
-		return this.getData<{
-			files: Array<{
-				path: string;
-				status: "added" | "modified" | "deleted";
-				turnIndex: number;
-				entryId: string;
-			}>;
-		}>(response).files;
-	}
-
-	async getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): Promise<{
-		path: string;
-		oldContent: string | null;
-		newContent: string | null;
-		unifiedDiff: string;
-	} | null> {
-		const response = await this.send({
-			type: "get_file_diff",
-			filePath: options.filePath,
-			fromEntryId: options.fromEntryId,
-			toEntryId: options.toEntryId,
-		});
-		const data = this.getData<{
-			path: string;
-			oldContent: string | null;
-			newContent: string | null;
-			unifiedDiff: string;
-		} | null>(response);
-		return data;
-	}
-
-	async getBatchDiffs(options?: { fromEntryId?: string; toEntryId?: string }): Promise<{
-		files: Array<{
-			path: string;
-			status: "added" | "modified" | "deleted";
-			diff: {
-				path: string;
-				oldContent: string | null;
-				newContent: string | null;
-				unifiedDiff: string;
-			} | null;
-		}>;
-		summary: { totalFiles: number; added: number; modified: number; deleted: number };
-	}> {
-		const response = await this.send({
-			type: "get_batch_diffs",
-			fromEntryId: options?.fromEntryId,
-			toEntryId: options?.toEntryId,
-		});
-		return this.getData<{
-			files: Array<{
-				path: string;
-				status: "added" | "modified" | "deleted";
-				diff: {
-					path: string;
-					oldContent: string | null;
-					newContent: string | null;
-					unifiedDiff: string;
-				} | null;
-			}>;
-			summary: { totalFiles: number; added: number; modified: number; deleted: number };
-		}>(response);
-	}
-
-	async getFileHistory(options: { filePath: string }): Promise<{
-		history: Array<{
-			entryId: string;
-			turnIndex: number;
-			timestamp: string;
-			status: "added" | "modified" | "deleted";
-			snapshotHash: string;
-			previousHash: string | null;
-		}>;
-	}> {
-		const response = await this.send({
-			type: "get_file_history",
-			filePath: options.filePath,
-		});
-		return this.getData<{
-			history: Array<{
-				entryId: string;
-				turnIndex: number;
-				timestamp: string;
-				status: "added" | "modified" | "deleted";
-				snapshotHash: string;
-				previousHash: string | null;
-			}>;
-		}>(response);
-	}
-
-	async registerRemoteTool(tool: { name: string; description: string; parameters: object }): Promise<void> {
-		await this.send({ type: "register_remote_tool", tool });
-	}
-
-	async unregisterRemoteTool(name: string): Promise<void> {
-		await this.send({ type: "unregister_remote_tool", name });
-	}
-
-	sendRemoteToolResult(
-		toolCallId: string,
-		result: { content: Array<{ type: string; text: string }>; isError: boolean },
-	): void {
-		this.writeLine({ type: "remote_tool_result", toolCallId, result });
-	}
-
-	respondUI(requestId: string, response: Record<string, unknown>): void {
-		this.writeLine({ type: "extension_ui_response", id: requestId, ...response });
-	}
-
-	onRemoteToolCall(
-		handler: (call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void,
-	): () => void {
-		this.remoteToolCallHandlers.push(handler);
-		return () => {
-			const index = this.remoteToolCallHandlers.indexOf(handler);
-			if (index !== -1) this.remoteToolCallHandlers.splice(index, 1);
-		};
+	async getTree(): Promise<{ entries: unknown[]; leafId: string }> {
+		const response = await this.send({ type: "get_tree" });
+		return this.getData<{ entries: unknown[]; leafId: string }>(response);
 	}
 
 	// =========================================================================
@@ -771,64 +529,6 @@ export class RpcClient {
 		return eventsPromise;
 	}
 
-	channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke" | "call"> {
-		const invokeImpl = (data: unknown, timeoutMs: number = 30_000): Promise<unknown> => {
-			return new Promise((resolve, reject) => {
-				const invokeId = `inv_${randomUUID().slice(0, 8)}`;
-				const timer = setTimeout(() => {
-					reject(new Error(`Channel invoke "${name}" timed out after ${timeoutMs}ms`));
-				}, timeoutMs);
-
-				const handler = (responseData: unknown) => {
-					const d = responseData as Record<string, unknown>;
-					if (d && d.invokeId === invokeId) {
-						clearTimeout(timer);
-						const handlers = this.channelHandlers.get(name);
-						if (handlers) handlers.delete(handler);
-						resolve(responseData);
-					}
-				};
-
-				let handlers = this.channelHandlers.get(name);
-				if (!handlers) {
-					handlers = new Set();
-					this.channelHandlers.set(name, handlers);
-				}
-				handlers.add(handler);
-
-				this.writeLine({
-					type: "channel_data",
-					name,
-					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
-				} as ChannelDataMessage);
-			});
-		};
-
-		return {
-			name,
-			send: (data: unknown) => {
-				this.writeLine({ type: "channel_data", name, data } as ChannelDataMessage);
-			},
-			onReceive: (handler: (data: unknown) => void) => {
-				let handlers = this.channelHandlers.get(name);
-				if (!handlers) {
-					handlers = new Set();
-					this.channelHandlers.set(name, handlers);
-				}
-				handlers.add(handler);
-				return () => {
-					handlers!.delete(handler);
-					if (handlers!.size === 0) this.channelHandlers.delete(name);
-				};
-			},
-			invoke: invokeImpl,
-			call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
-				const payload = { ...params, __call: method };
-				return invokeImpl(payload, timeoutMs ?? 30_000);
-			},
-		};
-	}
-
 	// =========================================================================
 	// Internal
 	// =========================================================================
@@ -837,47 +537,11 @@ export class RpcClient {
 		try {
 			const data = JSON.parse(line);
 
-			if (this.readyResolve && data.type === "ready") {
-				const resolve = this.readyResolve;
-				this.readyResolve = null;
-				resolve();
-				return;
-			}
-
 			// Check if it's a response to a pending request
 			if (data.type === "response" && data.id && this.pendingRequests.has(data.id)) {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
-				return;
-			}
-
-			// Check if it's channel data
-			if (data.type === "channel_data" && data.name) {
-				const handlers = this.channelHandlers.get(data.name as string);
-				if (handlers) {
-					const payload = data.data as Record<string, unknown> | undefined;
-					const invokeId = payload?.invokeId as string | undefined;
-
-					for (const handler of handlers) {
-						const result = handler(data.data);
-						if (invokeId && result !== undefined) {
-							this.writeLine({
-								type: "channel_data",
-								name: data.name,
-								data: { ...(typeof result === "object" ? result : { value: result }), invokeId },
-							} as ChannelDataMessage);
-						}
-					}
-				}
-				return;
-			}
-
-			// Check if it's a remote tool call
-			if (data.type === "remote_tool_call" && data.toolCallId && data.toolName) {
-				for (const handler of this.remoteToolCallHandlers) {
-					handler({ toolCallId: data.toolCallId, toolName: data.toolName, args: data.args ?? {} });
-				}
 				return;
 			}
 
@@ -926,14 +590,9 @@ export class RpcClient {
 			const errorResponse = response as Extract<RpcResponse, { success: false }>;
 			throw new Error(errorResponse.error);
 		}
+		// Type assertion: we trust response.data matches T based on the command sent.
+		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
-	}
-
-	private writeLine(obj: object): void {
-		if (!this.process?.stdin) {
-			throw new Error("Client not started");
-		}
-		this.process.stdin.write(serializeJsonLine(obj));
 	}
 }

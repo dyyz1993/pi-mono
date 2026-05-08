@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-web-ui",
-	"version": "0.70.6",
+	"version": "0.74.0",
 	"description": "Reusable web UI components for AI chat interfaces powered by @dyyz1993/pi-ai",
 	"type": "module",
 	"main": "dist/index.js",
@@ -11,22 +11,21 @@
 	},
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "tsgo -p tsconfig.build.json && tailwindcss -i ./src/app.css -o ./dist/app.css --minify",
-		"dev": "concurrently --names \"build,example\" --prefix-colors \"cyan,green\" \"tsgo -p tsconfig.build.json --watch --preserveWatchOutput\" \"tailwindcss -i ./src/app.css -o ./dist/app.css --watch\" \"npm run dev --prefix example\"",
-		"dev:tsc": "concurrently --names \"build\" --prefix-colors \"cyan\" \"tsgo -p tsconfig.build.json --watch --preserveWatchOutput\" \"tailwindcss -i ./src/app.css -o ./dist/app.css --watch\"",
-		"check": "biome check --write --error-on-warnings . && tsc --noEmit && cd example && biome check --write --error-on-warnings . && tsc --noEmit",
-		"test": "vitest --run"
+		"build": "tsc -p tsconfig.build.json && tailwindcss -i ./src/app.css -o ./dist/app.css --minify",
+		"dev": "concurrently --names \"build,example\" --prefix-colors \"cyan,green\" \"tsc -p tsconfig.build.json --watch --preserveWatchOutput\" \"tailwindcss -i ./src/app.css -o ./dist/app.css --watch\" \"npm run dev --prefix example\"",
+		"dev:tsc": "concurrently --names \"build\" --prefix-colors \"cyan\" \"tsc -p tsconfig.build.json --watch --preserveWatchOutput\" \"tailwindcss -i ./src/app.css -o ./dist/app.css --watch\"",
+		"check": "biome check --write --error-on-warnings . && tsc --noEmit && cd example && biome check --write --error-on-warnings . && tsc --noEmit"
 	},
 	"dependencies": {
-		"@dyyz1993/pi-ai": "^0.70.6",
-		"@dyyz1993/pi-tui": "^0.70.6",
 		"@lmstudio/sdk": "^1.5.0",
+		"@dyyz1993/pi-ai": "^0.74.0",
+		"@dyyz1993/pi-tui": "^0.74.0",
+		"typebox": "^1.1.24",
 		"docx-preview": "^0.3.7",
 		"jszip": "^3.10.1",
 		"lucide": "^0.544.0",
 		"ollama": "^0.6.0",
 		"pdfjs-dist": "5.4.394",
-		"typebox": "^1.1.24",
 		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
 	},
 	"peerDependencies": {
@@ -37,7 +36,6 @@
 		"@mariozechner/mini-lit": "^0.2.0",
 		"@tailwindcss/cli": "^4.0.0-beta.14",
 		"concurrently": "^9.2.1",
-		"happy-dom": "^20.9.0",
 		"typescript": "^5.7.3"
 	},
 	"keywords": [
@@ -50,8 +48,5 @@
 		"mini-lit"
 	],
 	"author": "Mario Zechner",
-	"license": "MIT",
-	"publishConfig": {
-		"access": "public"
-	}
+	"license": "MIT"
 }

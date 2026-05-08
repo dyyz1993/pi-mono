@@ -626,6 +626,18 @@ describe("Editor component", () => {
 			}
 		});
 
+		it("renders isolated Thai and Lao AM clusters without width drift", () => {
+			for (const text of ["ำabc", "ຳabc"]) {
+				const editor = new Editor(createTestTUI(), defaultEditorTheme);
+				const width = 8;
+				editor.setText(text);
+
+				for (const line of editor.render(width)) {
+					assert.strictEqual(visibleWidth(line), width, `line width drift for ${JSON.stringify(text)}: ${line}`);
+				}
+			}
+		});
+
 		it("wraps CJK characters correctly (each is 2 columns wide)", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const width = 10 + 1; // +1 col reserved for cursor
@@ -1675,6 +1687,16 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.getText(), "look at @node_modules/react/index.js please");
 			assert.strictEqual(suggestionCalls, 0);
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("decodes CSI-u Ctrl+letter sequences inside bracketed paste (tmux popup)", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			// tmux popups with extended-keys-format=csi-u re-encode \n in pastes as
+			// \x1b[106;5u (Ctrl+J). Without decoding, the per-char filter strips ESC
+			// and leaks "[106;5u" between lines. See issue #3599.
+			editor.handleInput("\x1b[200~line1\x1b[106;5uline2\x1b[106;5uline3\x1b[201~");
+			assert.strictEqual(editor.getText(), "line1\nline2\nline3");
 		});
 
 		it("undoes multi-line paste atomically", () => {

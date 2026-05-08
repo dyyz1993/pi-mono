@@ -15,7 +15,6 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	Agent,
@@ -26,14 +25,23 @@ import {
 	type ThinkingLevel,
 } from "@dyyz1993/pi-agent-core";
 import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
-import { complete, isContextOverflow, modelsAreEqual, resetApiProviders, supportsXhigh } from "@dyyz1993/pi-ai";
+import {
+	clampThinkingLevel,
+	cleanupSessionResources,
+	complete,
+	getSupportedThinkingLevels,
+	isContextOverflow,
+	modelsAreEqual,
+	resetApiProviders,
+} from "@dyyz1993/pi-ai";
 import type { Static, TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
-import { getAgentDir, getDocsPath } from "../config.js";
+import { getAgentDir } from "../config.js";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
+import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
 	type CompactionResult,
@@ -41,7 +49,6 @@ import {
 	collectEntriesForBranchSummary,
 	compact,
 	estimateContextTokens,
-	estimateTokens,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -59,6 +66,7 @@ import {
 	type ExtensionErrorListener,
 	ExtensionRunner,
 	type ExtensionUIContext,
+	type FoldEntryHandler,
 	type ForkAgentOptions,
 	type ForkAgentResult,
 	type InputSource,
@@ -81,9 +89,8 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
-import { FileSnapshotManager } from "./file-store/index.js";
+import { FileSnapshotManager } from "./file-store/file-snapshot-manager.js";
 import { InternalGit } from "./file-store/internal-git.js";
-import { handleLargeInput } from "./large-input.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { resolveModelAlias } from "./model-resolver.js";
@@ -136,6 +143,8 @@ export type AgentSessionEvent =
 			followUp: readonly string[];
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "session_info_changed"; name: string | undefined }
+	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -146,7 +155,7 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "custom_entry"; customType: string; data?: unknown; id: string; display?: boolean }
+	| { type: "custom_entry"; customType: string; data: unknown; id: string; display?: boolean }
 	| { type: "session_rename"; oldName: string | undefined; newName: string };
 
 /** Listener function for agent session events */
@@ -248,9 +257,6 @@ interface ToolDefinitionEntry {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
-/** Thinking levels including xhigh (for supported models) */
-const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
-
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -295,7 +301,6 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
-	private _toolCallVariables?: Record<string, string>;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -316,6 +321,7 @@ export class AgentSession {
 	private _sessionAbortController = new AbortController();
 	private _backgroundTasks = new Set<BackgroundTask<unknown>>();
 
+	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
 
 	private _fileSnapshotManager: FileSnapshotManager | null = null;
@@ -367,12 +373,28 @@ export class AgentSession {
 		return this._fileSnapshotManager;
 	}
 
+	private _initFileSnapshotManager(): void {
+		try {
+			const storeRoot = join(getAgentDir(), "file-store");
+			const cwd = this._cwd;
+			const git = InternalGit.createForProject(storeRoot, cwd);
+			this._fileSnapshotManager = new FileSnapshotManager(git);
+			this._extensionRunner.setFileSnapshotManager(this._fileSnapshotManager);
+		} catch {
+			this._fileSnapshotManager = null;
+			this._extensionRunner.setFileSnapshotManager(null);
+		}
+	}
+
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
 		apiKey: string;
 		headers?: Record<string, string>;
 	}> {
 		const result = await this._modelRegistry.getApiKeyAndHeaders(model);
 		if (!result.ok) {
+			if (result.error.startsWith("No API key found")) {
+				throw new Error(formatNoApiKeyFoundMessage(model.provider));
+			}
 			throw new Error(result.error);
 		}
 		if (result.apiKey) {
@@ -387,10 +409,7 @@ export class AgentSession {
 					`Run '/login ${model.provider}' to re-authenticate.`,
 			);
 		}
-		throw new Error(
-			`No API key found for ${model.provider}.\n\n` +
-				`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}`,
-		);
+		throw new Error(formatNoApiKeyFoundMessage(model.provider));
 	}
 
 	/**
@@ -416,7 +435,6 @@ export class AgentSession {
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
 					input: args as Record<string, unknown>,
-					variables: this._toolCallVariables,
 				});
 			} catch (err) {
 				if (err instanceof Error) {
@@ -547,12 +565,18 @@ export class AgentSession {
 			}
 		}
 
-		// Handle session persistence BEFORE emitting for message_end,
-		// so we can inject the entry ID into the event for RPC clients.
+		// Emit to extensions first
+		await this._emitExtensionEvent(event);
+
+		// Notify all listeners
+		this._emit(event);
+
+		// Handle session persistence
 		if (event.type === "message_end") {
-			let entryId: string | undefined;
+			// Check if this is a custom message from extensions
 			if (event.message.role === "custom") {
-				entryId = this.sessionManager.appendCustomMessageEntry(
+				// Persist as CustomMessageEntry
+				this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
@@ -563,11 +587,10 @@ export class AgentSession {
 				event.message.role === "assistant" ||
 				event.message.role === "toolResult"
 			) {
-				entryId = this.sessionManager.appendMessage(event.message);
+				// Regular LLM message - persist as SessionMessageEntry
+				this.sessionManager.appendMessage(event.message);
 			}
-			if (entryId) {
-				(event as Record<string, unknown>).entryId = entryId;
-			}
+			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
@@ -590,12 +613,6 @@ export class AgentSession {
 				}
 			}
 		}
-
-		// Emit to extensions first
-		await this._emitExtensionEvent(event);
-
-		// Notify all listeners
-		this._emit(event);
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end" && this._lastAssistantMessage) {
@@ -643,6 +660,22 @@ export class AgentSession {
 		return undefined;
 	}
 
+	private _replaceMessageInPlace(target: AgentMessage, replacement: AgentMessage): void {
+		// Agent-core stores the finalized message object in its state before emitting message_end.
+		// SessionManager persistence happens later in _processAgentEvent() with event.message.
+		// Mutating this object in place keeps agent state, later turn/agent events, listeners,
+		// and the eventual SessionManager.appendMessage(event.message) persistence in sync.
+		if (target === replacement) {
+			return;
+		}
+
+		const targetRecord = target as unknown as Record<string, unknown>;
+		for (const key of Object.keys(targetRecord)) {
+			delete targetRecord[key];
+		}
+		Object.assign(targetRecord, replacement);
+	}
+
 	/** Emit extension events based on agent events */
 	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
 		if (event.type === "agent_start") {
@@ -683,9 +716,11 @@ export class AgentSession {
 			const extensionEvent: MessageEndEvent = {
 				type: "message_end",
 				message: event.message,
-				entryId: (event as Record<string, unknown>).entryId as string | undefined,
 			};
-			await this._extensionRunner.emit(extensionEvent);
+			const replacement = await this._extensionRunner.emitMessageEnd(extensionEvent);
+			if (replacement) {
+				this._replaceMessageInPlace(event.message, replacement);
+			}
 		} else if (event.type === "tool_execution_start") {
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
@@ -759,16 +794,11 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		this._extensionRunner.invalidate(
-			"This extension instance is stale after session replacement or reload. Use the provided replacement-session context instead.",
+			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
-		this._sessionAbortController.abort();
-		for (const task of this._backgroundTasks) {
-			task.cancel();
-		}
-		void Promise.allSettled([...this._backgroundTasks].map((t) => t.promise));
-		this._backgroundTasks.clear();
 		this._disconnectFromAgent();
 		this._eventListeners = [];
+		cleanupSessionResources(this.sessionId);
 	}
 
 	// =========================================================================
@@ -799,22 +829,9 @@ export class AgentSession {
 		return this.agent.state.thinkingLevel;
 	}
 
-	set toolCallVariables(vars: Record<string, string> | undefined) {
-		this._toolCallVariables = vars;
-	}
-
-	get toolCallVariables(): Record<string, string> | undefined {
-		return this._toolCallVariables;
-	}
-
 	/** Whether agent is currently streaming a response */
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming;
-	}
-
-	/** Signal that aborts on session shutdown */
-	get sessionSignal(): AbortSignal {
-		return this._sessionAbortController.signal;
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -1051,11 +1068,10 @@ export class AgentSession {
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 					);
 				}
-				const { text: streamingText } = handleLargeInput(expandedText);
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(streamingText, currentImages);
+					await this._queueFollowUp(expandedText, currentImages);
 				} else {
-					await this._queueSteer(streamingText, currentImages);
+					await this._queueSteer(expandedText, currentImages);
 				}
 				preflightResult?.(true);
 				return;
@@ -1066,11 +1082,7 @@ export class AgentSession {
 
 			// Validate model
 			if (!this.model) {
-				throw new Error(
-					"No model selected.\n\n" +
-						`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}\n\n` +
-						"Then use /model to select a model.",
-				);
+				throw new Error(formatNoModelSelectedMessage());
 			}
 
 			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
@@ -1082,10 +1094,7 @@ export class AgentSession {
 							`Run '/login ${this.model.provider}' to re-authenticate.`,
 					);
 				}
-				throw new Error(
-					`No API key found for ${this.model.provider}.\n\n` +
-						`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}`,
-				);
+				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
 			// Check if we need to compact before sending (catches aborted responses)
@@ -1097,11 +1106,8 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
-			// Handle large input: save to temp file and replace with preview
-			const { text: finalText } = handleLargeInput(expandedText);
-
 			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: finalText }];
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
@@ -1171,7 +1177,7 @@ export class AgentSession {
 		if (!command) return false;
 
 		// Get command context from extension runner (includes session control methods)
-		const ctx = this._extensionRunner.createCommandContext(commandName);
+		const ctx = this._extensionRunner.createCommandContext();
 
 		try {
 			await command.handler(args, ctx);
@@ -1227,15 +1233,16 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async steer(text: string, images?: ImageContent[]): Promise<void> {
+		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
 
+		// Expand skill commands and prompt templates
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		const { text: finalText } = handleLargeInput(expandedText);
-		await this._queueSteer(finalText, images);
+		await this._queueSteer(expandedText, images);
 	}
 
 	/**
@@ -1246,15 +1253,16 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
 
+		// Expand skill commands and prompt templates
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		const { text: finalText } = handleLargeInput(expandedText);
-		await this._queueFollowUp(finalText, images);
+		await this._queueFollowUp(expandedText, images);
 	}
 
 	/**
@@ -1427,6 +1435,11 @@ export class AgentSession {
 		return this._resourceLoader;
 	}
 
+	/** Update the working directory for the session. */
+	async setCwd(newCwd: string): Promise<void> {
+		this._cwd = newCwd;
+	}
+
 	/**
 	 * Abort current operation and wait for agent to become idle.
 	 */
@@ -1557,7 +1570,8 @@ export class AgentSession {
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
 		// Only persist if actually changing
-		const isChanging = effectiveLevel !== this.agent.state.thinkingLevel;
+		const previousLevel = this.agent.state.thinkingLevel;
+		const isChanging = effectiveLevel !== previousLevel;
 
 		this.agent.state.thinkingLevel = effectiveLevel;
 
@@ -1566,6 +1580,12 @@ export class AgentSession {
 			if (this.supportsThinking() || effectiveLevel !== "off") {
 				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
 			}
+			this._emit({ type: "thinking_level_changed", level: effectiveLevel });
+			void this._extensionRunner.emit({
+				type: "thinking_level_select",
+				level: effectiveLevel,
+				previousLevel,
+			});
 		}
 	}
 
@@ -1590,15 +1610,8 @@ export class AgentSession {
 	 * The provider will clamp to what the specific model supports internally.
 	 */
 	getAvailableThinkingLevels(): ThinkingLevel[] {
-		if (!this.supportsThinking()) return ["off"];
-		return this.supportsXhighThinking() ? THINKING_LEVELS_WITH_XHIGH : THINKING_LEVELS;
-	}
-
-	/**
-	 * Check if current model supports xhigh thinking level.
-	 */
-	supportsXhighThinking(): boolean {
-		return this.model ? supportsXhigh(this.model) : false;
+		if (!this.model) return THINKING_LEVELS;
+		return getSupportedThinkingLevels(this.model) as ThinkingLevel[];
 	}
 
 	/**
@@ -1618,22 +1631,8 @@ export class AgentSession {
 		return this.thinkingLevel;
 	}
 
-	private _clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel {
-		const ordered = THINKING_LEVELS_WITH_XHIGH;
-		const available = new Set(availableLevels);
-		const requestedIndex = ordered.indexOf(level);
-		if (requestedIndex === -1) {
-			return availableLevels[0] ?? "off";
-		}
-		for (let i = requestedIndex; i < ordered.length; i++) {
-			const candidate = ordered[i];
-			if (available.has(candidate)) return candidate;
-		}
-		for (let i = requestedIndex - 1; i >= 0; i--) {
-			const candidate = ordered[i];
-			if (available.has(candidate)) return candidate;
-		}
-		return availableLevels[0] ?? "off";
+	private _clampThinkingLevel(level: ThinkingLevel, _availableLevels: ThinkingLevel[]): ThinkingLevel {
+		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
 	// =========================================================================
@@ -1675,7 +1674,7 @@ export class AgentSession {
 
 		try {
 			if (!this.model) {
-				throw new Error("No model selected");
+				throw new Error(formatNoModelSelectedMessage());
 			}
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
@@ -2043,13 +2042,6 @@ export class AgentSession {
 				tokensBefore,
 				details,
 			};
-
-			let tokensAfter = 0;
-			for (const msg of sessionContext.messages) {
-				tokensAfter += estimateTokens(msg);
-			}
-			result.tokensAfter = tokensAfter;
-
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
@@ -2114,14 +2106,11 @@ export class AgentSession {
 		}
 		if (bindings.registerChannel !== undefined) {
 			this._registerChannel = bindings.registerChannel;
-			this._extensionRunner.flushPendingChannels(bindings.registerChannel);
-			this._extensionRunner.updateRegisterChannel(bindings.registerChannel);
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
-		await this._initMcpServers();
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -2177,59 +2166,6 @@ export class AgentSession {
 		return `extension:${name}`;
 	}
 
-	private _mcpManager: import("./mcp/mcp-manager.js").McpManager | undefined;
-	private _createMcpToolDef:
-		| ((
-				tool: import("./mcp/types.js").DiscoveredTool,
-				manager: import("./mcp/mcp-manager.js").McpManager,
-		  ) => import("./extensions/types.js").ToolDefinition)
-		| undefined;
-
-	private async _initMcpServers(): Promise<void> {
-		const settings = this.settingsManager.getProjectSettings();
-		const servers = settings?.mcp?.servers;
-		if (!servers || Object.keys(servers).length === 0) return;
-
-		const { McpManager } = await import("./mcp/mcp-manager.js");
-		const { createMcpToolDefinition } = await import("./mcp/tool-converter.js");
-
-		this._createMcpToolDef = createMcpToolDefinition;
-
-		const mcpOptions = settings?.mcp?.options;
-		const manager = new McpManager({
-			...mcpOptions,
-			onConnectionChange: () => {
-				this._syncMcpTools();
-			},
-		});
-		this._mcpManager = manager;
-
-		try {
-			await manager.connectAll(servers);
-			this._syncMcpTools();
-		} catch (e) {
-			console.error("[mcp] Failed to initialize:", e);
-		}
-
-		this.sessionSignal.addEventListener("abort", () => {
-			this._mcpManager?.dispose().catch(() => {});
-			this._mcpManager = undefined;
-		});
-	}
-
-	private _syncMcpTools(): void {
-		this._customTools = this._customTools.filter((t) => !t.name.startsWith("mcp__"));
-		if (!this._createMcpToolDef || !this._mcpManager) return;
-
-		const tools = this._mcpManager.getAllTools();
-		for (const tool of tools) {
-			this._customTools.push(this._createMcpToolDef(tool, this._mcpManager));
-		}
-		if (tools.length > 0) {
-			this._refreshToolRegistry();
-		}
-	}
-
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
 		runner.setUIContext(this._extensionUIContext);
 		runner.bindCommandContext(this._extensionCommandContextActions);
@@ -2238,19 +2174,6 @@ export class AgentSession {
 		this._extensionErrorUnsubscriber = this._extensionErrorListener
 			? runner.onError(this._extensionErrorListener)
 			: undefined;
-	}
-
-	private _initFileSnapshotManager(): void {
-		try {
-			const storeRoot = join(getAgentDir(), "file-store");
-			const cwd = this._cwd;
-			const git = InternalGit.createForProject(storeRoot, cwd);
-			this._fileSnapshotManager = new FileSnapshotManager(git);
-			this._extensionRunner.setFileSnapshotManager(this._fileSnapshotManager);
-		} catch {
-			this._fileSnapshotManager = null;
-			this._extensionRunner.setFileSnapshotManager(null);
-		}
 	}
 
 	private _refreshCurrentModelFromRegistry(): void {
@@ -2359,7 +2282,7 @@ export class AgentSession {
 					}),
 				callLLM: (options: CallLLMOptions) => this.callLLM(options),
 				callLLMStructured: (opts) => this.callLLMStructured(opts as CallLLMStructuredOptions & { schema: any }),
-				forkAgent: (prompt, options) => this.forkAgent(prompt, options),
+				forkAgent: (prompt, opts) => this.forkAgent(prompt, opts),
 				background: <T>(fn: (signal: AbortSignal) => Promise<T>) => this.background(fn),
 			},
 			{
@@ -2399,35 +2322,894 @@ export class AgentSession {
 		);
 	}
 
-	private async _resolveOptionalModel(modelSpec?: string): Promise<Model<any> | undefined> {
-		if (!modelSpec) return this.model;
+	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
+		const previousRegistryNames = new Set(this._toolRegistry.keys());
+		const previousActiveToolNames = this.getActiveToolNames();
+		const allowedToolNames = this._allowedToolNames;
+		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
 
-		const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
-		const candidate = aliasResolved ?? modelSpec;
+		const registeredTools = this._extensionRunner.getAllRegisteredTools();
+		const allCustomTools = [
+			...registeredTools,
+			...this._customTools.map((definition) => ({
+				definition,
+				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
+			})),
+		].filter((tool) => isAllowedTool(tool.definition.name));
+		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
+			Array.from(this._baseToolDefinitions.entries())
+				.filter(([name]) => isAllowedTool(name))
+				.map(([name, definition]) => [
+					name,
+					{
+						definition,
+						sourceInfo: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
+					},
+				]),
+		);
+		for (const tool of allCustomTools) {
+			definitionRegistry.set(tool.definition.name, {
+				definition: tool.definition,
+				sourceInfo: tool.sourceInfo,
+			});
+		}
+		this._toolDefinitions = definitionRegistry;
+		this._toolPromptSnippets = new Map(
+			Array.from(definitionRegistry.values())
+				.map(({ definition }) => {
+					const snippet = this._normalizePromptSnippet(definition.promptSnippet);
+					return snippet ? ([definition.name, snippet] as const) : undefined;
+				})
+				.filter((entry): entry is readonly [string, string] => entry !== undefined),
+		);
+		this._toolPromptGuidelines = new Map(
+			Array.from(definitionRegistry.values())
+				.map(({ definition }) => {
+					const guidelines = this._normalizePromptGuidelines(definition.promptGuidelines);
+					return guidelines.length > 0 ? ([definition.name, guidelines] as const) : undefined;
+				})
+				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
+		);
+		const runner = this._extensionRunner;
+		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
+		const wrappedBuiltInTools = wrapRegisteredTools(
+			Array.from(this._baseToolDefinitions.values())
+				.filter((definition) => isAllowedTool(definition.name))
+				.map((definition) => ({
+					definition,
+					sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
+				})),
+			runner,
+		);
 
-		let provider: string | undefined;
-		let modelId: string;
-		if (candidate.includes("/")) {
-			const slashIdx = candidate.indexOf("/");
-			provider = candidate.substring(0, slashIdx);
-			modelId = candidate.substring(slashIdx + 1);
+		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
+		for (const tool of wrappedExtensionTools as AgentTool[]) {
+			toolRegistry.set(tool.name, tool);
+		}
+		this._toolRegistry = toolRegistry;
+
+		const nextActiveToolNames = (
+			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
+		).filter((name) => isAllowedTool(name));
+
+		if (allowedToolNames) {
+			for (const toolName of this._toolRegistry.keys()) {
+				if (allowedToolNames.has(toolName)) {
+					nextActiveToolNames.push(toolName);
+				}
+			}
+		} else if (options?.includeAllExtensionTools) {
+			for (const tool of wrappedExtensionTools) {
+				nextActiveToolNames.push(tool.name);
+			}
+		} else if (!options?.activeToolNames) {
+			for (const toolName of this._toolRegistry.keys()) {
+				if (!previousRegistryNames.has(toolName)) {
+					nextActiveToolNames.push(toolName);
+				}
+			}
+		}
+
+		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
+	}
+
+	private _buildRuntime(options: {
+		activeToolNames?: string[];
+		flagValues?: Map<string, boolean | string>;
+		includeAllExtensionTools?: boolean;
+	}): void {
+		const autoResizeImages = this.settingsManager.getImageAutoResize();
+		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
+		const shellPath = this.settingsManager.getShellPath();
+		const baseToolDefinitions = this._baseToolsOverride
+			? Object.fromEntries(
+					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
+						name,
+						createToolDefinitionFromAgentTool(tool),
+					]),
+				)
+			: createAllToolDefinitions(this._cwd, {
+					read: { autoResizeImages },
+					bash: { commandPrefix: shellCommandPrefix, shellPath },
+				});
+
+		this._baseToolDefinitions = new Map(
+			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
+		);
+
+		const extensionsResult = this._resourceLoader.getExtensions();
+		if (options.flagValues) {
+			for (const [name, value] of options.flagValues) {
+				extensionsResult.runtime.flagValues.set(name, value);
+			}
+		}
+
+		this._extensionRunner = new ExtensionRunner(
+			extensionsResult.extensions,
+			extensionsResult.runtime,
+			this._cwd,
+			this.sessionManager,
+			this._modelRegistry,
+		);
+		if (this._extensionRunnerRef) {
+			this._extensionRunnerRef.current = this._extensionRunner;
+		}
+		this._bindExtensionCore(this._extensionRunner);
+		this._applyExtensionBindings(this._extensionRunner);
+		this._initFileSnapshotManager();
+
+		const defaultActiveToolNames = this._baseToolsOverride
+			? Object.keys(this._baseToolsOverride)
+			: ["read", "bash", "edit", "write"];
+		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+		this._refreshToolRegistry({
+			activeToolNames: baseActiveToolNames,
+			includeAllExtensionTools: options.includeAllExtensionTools,
+		});
+	}
+
+	async reload(): Promise<void> {
+		const previousFlagValues = this._extensionRunner.getFlagValues();
+		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
+		await this.settingsManager.reload();
+		resetApiProviders();
+		await this._resourceLoader.reload();
+		this._buildRuntime({
+			activeToolNames: this.getActiveToolNames(),
+			flagValues: previousFlagValues,
+			includeAllExtensionTools: true,
+		});
+
+		const hasBindings =
+			this._extensionUIContext ||
+			this._extensionCommandContextActions ||
+			this._extensionShutdownHandler ||
+			this._extensionErrorListener;
+		if (hasBindings) {
+			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+			await this.extendResourcesFromExtensions("reload");
+		}
+	}
+
+	// =========================================================================
+	// Auto-Retry
+	// =========================================================================
+
+	/**
+	 * Check if an error is retryable (overloaded, rate limit, server errors).
+	 * Context overflow errors are NOT retryable (handled by compaction instead).
+	 */
+	private _isRetryableError(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error" || !message.errorMessage) return false;
+
+		// Context overflow is handled by compaction, not retry
+		const contextWindow = this.model?.contextWindow ?? 0;
+		if (isContextOverflow(message, contextWindow)) return false;
+
+		const err = message.errorMessage;
+		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded
+		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
+			err,
+		);
+	}
+
+	/**
+	 * Handle retryable errors with exponential backoff.
+	 * @returns true if retry was initiated, false if max retries exceeded or disabled
+	 */
+	private async _handleRetryableError(message: AssistantMessage): Promise<boolean> {
+		const settings = this.settingsManager.getRetrySettings();
+		if (!settings.enabled) {
+			this._resolveRetry();
+			return false;
+		}
+
+		// Retry promise is created synchronously in _handleAgentEvent for agent_end.
+		// Keep a defensive fallback here in case a future refactor bypasses that path.
+		if (!this._retryPromise) {
+			this._retryPromise = new Promise((resolve) => {
+				this._retryResolve = resolve;
+			});
+		}
+
+		this._retryAttempt++;
+
+		if (this._retryAttempt > settings.maxRetries) {
+			// Max retries exceeded, emit final failure and reset
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt: this._retryAttempt - 1,
+				finalError: message.errorMessage,
+			});
+			this._retryAttempt = 0;
+			this._resolveRetry(); // Resolve so waitForRetry() completes
+			return false;
+		}
+
+		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+
+		this._emit({
+			type: "auto_retry_start",
+			attempt: this._retryAttempt,
+			maxAttempts: settings.maxRetries,
+			delayMs,
+			errorMessage: message.errorMessage || "Unknown error",
+		});
+
+		// Remove error message from agent state (keep in session for history)
+		const messages = this.agent.state.messages;
+		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+			this.agent.state.messages = messages.slice(0, -1);
+		}
+
+		// Wait with exponential backoff (abortable)
+		this._retryAbortController = new AbortController();
+		try {
+			await sleep(delayMs, this._retryAbortController.signal);
+		} catch {
+			// Aborted during sleep - emit end event so UI can clean up
+			const attempt = this._retryAttempt;
+			this._retryAttempt = 0;
+			this._retryAbortController = undefined;
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt,
+				finalError: "Retry cancelled",
+			});
+			this._resolveRetry();
+			return false;
+		}
+		this._retryAbortController = undefined;
+
+		// Retry via continue() - use setTimeout to break out of event handler chain
+		setTimeout(() => {
+			this.agent.continue().catch(() => {
+				// Retry failed - will be caught by next agent_end
+			});
+		}, 0);
+
+		return true;
+	}
+
+	/**
+	 * Cancel in-progress retry.
+	 */
+	abortRetry(): void {
+		this._retryAbortController?.abort();
+		// Note: _retryAttempt is reset in the catch block of _autoRetry
+		this._resolveRetry();
+	}
+
+	/**
+	 * Wait for any in-progress retry to complete.
+	 * Returns immediately if no retry is in progress.
+	 */
+	private async waitForRetry(): Promise<void> {
+		if (!this._retryPromise) {
+			return;
+		}
+
+		await this._retryPromise;
+		await this.agent.waitForIdle();
+	}
+
+	/** Whether auto-retry is currently in progress */
+	get isRetrying(): boolean {
+		return this._retryPromise !== undefined;
+	}
+
+	/** Whether auto-retry is enabled */
+	get autoRetryEnabled(): boolean {
+		return this.settingsManager.getRetryEnabled();
+	}
+
+	/**
+	 * Toggle auto-retry setting.
+	 */
+	setAutoRetryEnabled(enabled: boolean): void {
+		this.settingsManager.setRetryEnabled(enabled);
+	}
+
+	// =========================================================================
+	// Bash Execution
+	// =========================================================================
+
+	/**
+	 * Execute a bash command.
+	 * Adds result to agent context and session.
+	 * @param command The bash command to execute
+	 * @param onChunk Optional streaming callback for output
+	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
+	 * @param options.operations Custom BashOperations for remote execution
+	 */
+	async executeBash(
+		command: string,
+		onChunk?: (chunk: string) => void,
+		options?: { excludeFromContext?: boolean; operations?: BashOperations },
+	): Promise<BashResult> {
+		this._bashAbortController = new AbortController();
+
+		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
+		const prefix = this.settingsManager.getShellCommandPrefix();
+		const shellPath = this.settingsManager.getShellPath();
+		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
+
+		try {
+			const result = await executeBashWithOperations(
+				resolvedCommand,
+				this.sessionManager.getCwd(),
+				options?.operations ?? createLocalBashOperations({ shellPath }),
+				{
+					onChunk,
+					signal: this._bashAbortController.signal,
+				},
+			);
+
+			this.recordBashResult(command, result, options);
+			return result;
+		} finally {
+			this._bashAbortController = undefined;
+		}
+	}
+
+	/**
+	 * Record a bash execution result in session history.
+	 * Used by executeBash and by extensions that handle bash execution themselves.
+	 */
+	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void {
+		const bashMessage: BashExecutionMessage = {
+			role: "bashExecution",
+			command,
+			output: result.output,
+			exitCode: result.exitCode,
+			cancelled: result.cancelled,
+			truncated: result.truncated,
+			fullOutputPath: result.fullOutputPath,
+			timestamp: Date.now(),
+			excludeFromContext: options?.excludeFromContext,
+		};
+
+		// If agent is streaming, defer adding to avoid breaking tool_use/tool_result ordering
+		if (this.isStreaming) {
+			// Queue for later - will be flushed on agent_end
+			this._pendingBashMessages.push(bashMessage);
 		} else {
-			modelId = candidate;
+			// Add to agent state immediately
+			this.agent.state.messages.push(bashMessage);
+
+			// Save to session
+			this.sessionManager.appendMessage(bashMessage);
+		}
+	}
+
+	/**
+	 * Cancel running bash command.
+	 */
+	abortBash(): void {
+		this._bashAbortController?.abort();
+	}
+
+	/** Whether a bash command is currently running */
+	get isBashRunning(): boolean {
+		return this._bashAbortController !== undefined;
+	}
+
+	/** Whether there are pending bash messages waiting to be flushed */
+	get hasPendingBashMessages(): boolean {
+		return this._pendingBashMessages.length > 0;
+	}
+
+	/**
+	 * Flush pending bash messages to agent state and session.
+	 * Called after agent turn completes to maintain proper message ordering.
+	 */
+	private _flushPendingBashMessages(): void {
+		if (this._pendingBashMessages.length === 0) return;
+
+		for (const bashMessage of this._pendingBashMessages) {
+			// Add to agent state
+			this.agent.state.messages.push(bashMessage);
+
+			// Save to session
+			this.sessionManager.appendMessage(bashMessage);
 		}
 
-		let resolved: Model<any> | undefined;
-		if (provider) {
-			resolved = this._modelRegistry.find(provider, modelId);
-		}
-		if (!resolved) {
-			const available = this._modelRegistry.getAvailable();
-			resolved = available.find((m) => m.id === modelId);
+		this._pendingBashMessages = [];
+	}
+
+	// =========================================================================
+	// Session Management
+	// =========================================================================
+
+	/**
+	 * Set a display name for the current session.
+	 */
+	setSessionName(name: string): void {
+		this.sessionManager.appendSessionInfo(name);
+		this._emit({ type: "session_info_changed", name: this.sessionManager.getSessionName() });
+	}
+
+	// =========================================================================
+	// Tree Navigation
+	// =========================================================================
+
+	/**
+	 * Navigate to a different node in the session tree.
+	 * Unlike fork() which creates a new session file, this stays in the same file.
+	 *
+	 * @param targetId The entry ID to navigate to
+	 * @param options.summarize Whether user wants to summarize abandoned branch
+	 * @param options.customInstructions Custom instructions for summarizer
+	 * @param options.replaceInstructions If true, customInstructions replaces the default prompt
+	 * @param options.label Label to attach to the branch summary entry
+	 * @returns Result with editorText (if user message) and cancelled status
+	 */
+	async navigateTree(
+		targetId: string,
+		options: {
+			summarize?: boolean;
+			customInstructions?: string;
+			replaceInstructions?: boolean;
+			label?: string;
+			skipFiles?: boolean;
+		} = {},
+	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
+		const oldLeafId = this.sessionManager.getLeafId();
+
+		// No-op if already at target
+		if (targetId === oldLeafId) {
+			return { cancelled: false };
 		}
 
-		if (resolved && this._modelRegistry.hasConfiguredAuth(resolved)) {
-			return resolved;
+		// Model required for summarization
+		if (options.summarize && !this.model) {
+			throw new Error("No model available for summarization");
 		}
 
+		const targetEntry = this.sessionManager.getEntry(targetId);
+		if (!targetEntry) {
+			throw new Error(`Entry ${targetId} not found`);
+		}
+
+		// Collect entries to summarize (from old leaf to common ancestor)
+		const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(
+			this.sessionManager,
+			oldLeafId,
+			targetId,
+		);
+
+		// Prepare event data - mutable so extensions can override
+		let customInstructions = options.customInstructions;
+		let replaceInstructions = options.replaceInstructions;
+		let label = options.label;
+
+		const preparation: TreePreparation = {
+			targetId,
+			oldLeafId,
+			commonAncestorId,
+			entriesToSummarize,
+			userWantsSummary: options.summarize ?? false,
+			customInstructions,
+			replaceInstructions,
+			label,
+			skipFiles: options.skipFiles,
+		};
+
+		// Set up abort controller for summarization
+		this._branchSummaryAbortController = new AbortController();
+
+		try {
+			let extensionSummary: { summary: string; details?: unknown } | undefined;
+			let fromExtension = false;
+
+			// Emit session_before_tree event
+			if (this._extensionRunner.hasHandlers("session_before_tree")) {
+				const result = (await this._extensionRunner.emit({
+					type: "session_before_tree",
+					preparation,
+					signal: this._branchSummaryAbortController.signal,
+				})) as SessionBeforeTreeResult | undefined;
+
+				if (result?.cancel) {
+					return { cancelled: true };
+				}
+
+				if (result?.summary && options.summarize) {
+					extensionSummary = result.summary;
+					fromExtension = true;
+				}
+
+				// Allow extensions to override instructions and label
+				if (result?.customInstructions !== undefined) {
+					customInstructions = result.customInstructions;
+				}
+				if (result?.replaceInstructions !== undefined) {
+					replaceInstructions = result.replaceInstructions;
+				}
+				if (result?.label !== undefined) {
+					label = result.label;
+				}
+			}
+
+			// Run default summarizer if needed
+			let summaryText: string | undefined;
+			let summaryDetails: unknown;
+			if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
+				const model = this.model!;
+				const { apiKey, headers } = await this._getRequiredRequestAuth(model);
+				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
+				const result = await generateBranchSummary(entriesToSummarize, {
+					model,
+					apiKey,
+					headers,
+					signal: this._branchSummaryAbortController.signal,
+					customInstructions,
+					replaceInstructions,
+					reserveTokens: branchSummarySettings.reserveTokens,
+				});
+				if (result.aborted) {
+					return { cancelled: true, aborted: true };
+				}
+				if (result.error) {
+					throw new Error(result.error);
+				}
+				summaryText = result.summary;
+				summaryDetails = {
+					readFiles: result.readFiles || [],
+					modifiedFiles: result.modifiedFiles || [],
+				};
+			} else if (extensionSummary) {
+				summaryText = extensionSummary.summary;
+				summaryDetails = extensionSummary.details;
+			}
+
+			// Determine the new leaf position based on target type
+			let newLeafId: string | null;
+			let editorText: string | undefined;
+
+			if (targetEntry.type === "message" && targetEntry.message.role === "user") {
+				// User message: leaf = parent (null if root), text goes to editor
+				newLeafId = targetEntry.parentId;
+				editorText = this._extractUserMessageText(targetEntry.message.content);
+			} else if (targetEntry.type === "custom_message") {
+				// Custom message: leaf = parent (null if root), text goes to editor
+				newLeafId = targetEntry.parentId;
+				editorText =
+					typeof targetEntry.content === "string"
+						? targetEntry.content
+						: targetEntry.content
+								.filter((c): c is { type: "text"; text: string } => c.type === "text")
+								.map((c) => c.text)
+								.join("");
+			} else {
+				// Non-user message: leaf = selected node
+				newLeafId = targetId;
+			}
+
+			// Switch leaf (with or without summary)
+			// Summary is attached at the navigation target position (newLeafId), not the old branch
+			let summaryEntry: BranchSummaryEntry | undefined;
+			if (summaryText) {
+				// Create summary at target position (can be null for root)
+				const summaryId = this.sessionManager.branchWithSummary(
+					newLeafId,
+					summaryText,
+					summaryDetails,
+					fromExtension,
+				);
+				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
+
+				// Attach label to the summary entry
+				if (label) {
+					this.sessionManager.appendLabelChange(summaryId, label);
+				}
+			} else if (newLeafId === null) {
+				// No summary, navigating to root - reset leaf
+				this.sessionManager.resetLeaf();
+			} else {
+				// No summary, navigating to non-root
+				this.sessionManager.branch(newLeafId);
+			}
+
+			// Attach label to target entry when not summarizing (no summary entry to label)
+			if (label && !summaryText) {
+				this.sessionManager.appendLabelChange(targetId, label);
+			}
+
+			// Update agent state
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+
+			// Emit session_tree event
+			await this._extensionRunner.emit({
+				type: "session_tree",
+				newLeafId: this.sessionManager.getLeafId(),
+				oldLeafId,
+				summaryEntry,
+				fromExtension: summaryText ? fromExtension : undefined,
+			});
+
+			// Emit to custom tools
+
+			return { editorText, cancelled: false, summaryEntry };
+		} finally {
+			this._branchSummaryAbortController = undefined;
+		}
+	}
+
+	/**
+	 * Get all user messages from session for fork selector.
+	 */
+	getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
+		const entries = this.sessionManager.getEntries();
+		const result: Array<{ entryId: string; text: string }> = [];
+
+		for (const entry of entries) {
+			if (entry.type !== "message") continue;
+			if (entry.message.role !== "user") continue;
+
+			const text = this._extractUserMessageText(entry.message.content);
+			if (text) {
+				result.push({ entryId: entry.id, text });
+			}
+		}
+
+		return result;
+	}
+
+	private _extractUserMessageText(content: string | Array<{ type: string; text?: string }>): string {
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("");
+		}
+		return "";
+	}
+
+	/**
+	 * Get session statistics.
+	 */
+	getSessionStats(): SessionStats {
+		const state = this.state;
+		const userMessages = state.messages.filter((m) => m.role === "user").length;
+		const assistantMessages = state.messages.filter((m) => m.role === "assistant").length;
+		const toolResults = state.messages.filter((m) => m.role === "toolResult").length;
+
+		let toolCalls = 0;
+		let totalInput = 0;
+		let totalOutput = 0;
+		let totalCacheRead = 0;
+		let totalCacheWrite = 0;
+		let totalCost = 0;
+
+		for (const message of state.messages) {
+			if (message.role === "assistant") {
+				const assistantMsg = message as AssistantMessage;
+				toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
+				totalInput += assistantMsg.usage.input;
+				totalOutput += assistantMsg.usage.output;
+				totalCacheRead += assistantMsg.usage.cacheRead;
+				totalCacheWrite += assistantMsg.usage.cacheWrite;
+				totalCost += assistantMsg.usage.cost.total;
+			}
+		}
+
+		return {
+			sessionFile: this.sessionFile,
+			sessionId: this.sessionId,
+			userMessages,
+			assistantMessages,
+			toolCalls,
+			toolResults,
+			totalMessages: state.messages.length,
+			tokens: {
+				input: totalInput,
+				output: totalOutput,
+				cacheRead: totalCacheRead,
+				cacheWrite: totalCacheWrite,
+				total: totalInput + totalOutput + totalCacheRead + totalCacheWrite,
+			},
+			cost: totalCost,
+			contextUsage: this.getContextUsage(),
+		};
+	}
+
+	getContextUsage(): ContextUsage | undefined {
+		const model = this.model;
+		if (!model) return undefined;
+
+		const contextWindow = model.contextWindow ?? 0;
+		if (contextWindow <= 0) return undefined;
+
+		// After compaction, the last assistant usage reflects pre-compaction context size.
+		// We can only trust usage from an assistant that responded after the latest compaction.
+		// If no such assistant exists, context token count is unknown until the next LLM response.
+		const branchEntries = this.sessionManager.getBranch();
+		const latestCompaction = getLatestCompactionEntry(branchEntries);
+
+		if (latestCompaction) {
+			// Check if there's a valid assistant usage after the compaction boundary
+			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
+			let hasPostCompactionUsage = false;
+			for (let i = branchEntries.length - 1; i > compactionIndex; i--) {
+				const entry = branchEntries[i];
+				if (entry.type === "message" && entry.message.role === "assistant") {
+					const assistant = entry.message;
+					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
+						const contextTokens = calculateContextTokens(assistant.usage);
+						if (contextTokens > 0) {
+							hasPostCompactionUsage = true;
+						}
+						break;
+					}
+				}
+			}
+
+			if (!hasPostCompactionUsage) {
+				return { tokens: null, contextWindow, percent: null };
+			}
+		}
+
+		const estimate = estimateContextTokens(this.messages);
+		const percent = (estimate.tokens / contextWindow) * 100;
+
+		return {
+			tokens: estimate.tokens,
+			contextWindow,
+			percent,
+		};
+	}
+
+	/**
+	 * Export session to HTML.
+	 * @param outputPath Optional output path (defaults to session directory)
+	 * @returns Path to exported file
+	 */
+	async exportToHtml(outputPath?: string): Promise<string> {
+		const themeName = this.settingsManager.getTheme();
+
+		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
+		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
+			getToolDefinition: (name) => this.getToolDefinition(name),
+			theme,
+			cwd: this.sessionManager.getCwd(),
+		});
+
+		return await exportSessionToHtml(this.sessionManager, this.state, {
+			outputPath,
+			themeName,
+			toolRenderer,
+		});
+	}
+
+	/**
+	 * Export the current session branch to a JSONL file.
+	 * Writes the session header followed by all entries on the current branch path.
+	 * @param outputPath Target file path. If omitted, generates a timestamped file in cwd.
+	 * @returns The resolved output file path.
+	 */
+	exportToJsonl(outputPath?: string): string {
+		const filePath = resolve(outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
+		const dir = dirname(filePath);
+		if (!existsSync(dir)) {
+			mkdirSync(dir, { recursive: true });
+		}
+
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: this.sessionManager.getSessionId(),
+			timestamp: new Date().toISOString(),
+			cwd: this.sessionManager.getCwd(),
+		};
+
+		const branchEntries = this.sessionManager.getBranch();
+		const lines = [JSON.stringify(header)];
+
+		// Re-chain parentIds to form a linear sequence
+		let prevId: string | null = null;
+		for (const entry of branchEntries) {
+			const linear = { ...entry, parentId: prevId };
+			lines.push(JSON.stringify(linear));
+			prevId = entry.id;
+		}
+
+		writeFileSync(filePath, `${lines.join("\n")}\n`);
+		return filePath;
+	}
+
+	// =========================================================================
+	// Utilities
+	// =========================================================================
+
+	/**
+	 * Get text content of last assistant message.
+	 * Useful for /copy command.
+	 * @returns Text content, or undefined if no assistant message exists
+	 */
+	getLastAssistantText(): string | undefined {
+		const lastAssistant = this.messages
+			.slice()
+			.reverse()
+			.find((m) => {
+				if (m.role !== "assistant") return false;
+				const msg = m as AssistantMessage;
+				// Skip aborted messages with no content
+				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
+				return true;
+			});
+
+		if (!lastAssistant) return undefined;
+
+		let text = "";
+		for (const content of (lastAssistant as AssistantMessage).content) {
+			if (content.type === "text") {
+				text += content.text;
+			}
+		}
+
+		return text.trim() || undefined;
+	}
+
+	// =========================================================================
+	// Extension System
+	// =========================================================================
+
+	createReplacedSessionContext(): ReplacedSessionContext {
+		const context = Object.defineProperties(
+			{},
+			Object.getOwnPropertyDescriptors(this._extensionRunner.createCommandContext()),
+		) as ReplacedSessionContext;
+		context.sendMessage = (message, options) => this.sendCustomMessage(message, options);
+		context.sendUserMessage = (content, options) => this.sendUserMessage(content, options);
+		return context;
+	}
+
+	/**
+	 * Check if extensions have handlers for a specific event type.
+	 */
+	hasExtensionHandlers(eventType: string): boolean {
+		return this._extensionRunner.hasHandlers(eventType);
+	}
+
+	/**
+	 * Get the extension runner (for setting UI context and error handlers).
+	 */
+	get extensionRunner(): ExtensionRunner {
+		return this._extensionRunner;
+	}
+
+	private async _resolveOptionalModel(modelSpec?: string): Promise<Model<any> | undefined> {
+		if (modelSpec) {
+			const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
+			const resolved = aliasResolved ?? modelSpec;
+			const available = await this._modelRegistry.getAvailable();
+			return available.find((m) => m.id === resolved || `${m.provider}/${m.id}` === resolved);
+		}
 		return this.model;
 	}
 
@@ -2737,649 +3519,6 @@ export class AgentSession {
 		return task;
 	}
 
-	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
-		const previousRegistryNames = new Set(this._toolRegistry.keys());
-		const previousActiveToolNames = this.getActiveToolNames();
-		const allowedToolNames = this._allowedToolNames;
-		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
-
-		const registeredTools = this._extensionRunner.getAllRegisteredTools();
-		const allCustomTools = [
-			...registeredTools,
-			...this._customTools.map((definition) => ({
-				definition,
-				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
-			})),
-		].filter((tool) => isAllowedTool(tool.definition.name));
-		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
-			Array.from(this._baseToolDefinitions.entries())
-				.filter(([name]) => isAllowedTool(name))
-				.map(([name, definition]) => [
-					name,
-					{
-						definition,
-						sourceInfo: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
-					},
-				]),
-		);
-		for (const tool of allCustomTools) {
-			definitionRegistry.set(tool.definition.name, {
-				definition: tool.definition,
-				sourceInfo: tool.sourceInfo,
-			});
-		}
-		this._toolDefinitions = definitionRegistry;
-		this._toolPromptSnippets = new Map(
-			Array.from(definitionRegistry.values())
-				.map(({ definition }) => {
-					const snippet = this._normalizePromptSnippet(definition.promptSnippet);
-					return snippet ? ([definition.name, snippet] as const) : undefined;
-				})
-				.filter((entry): entry is readonly [string, string] => entry !== undefined),
-		);
-		this._toolPromptGuidelines = new Map(
-			Array.from(definitionRegistry.values())
-				.map(({ definition }) => {
-					const guidelines = this._normalizePromptGuidelines(definition.promptGuidelines);
-					return guidelines.length > 0 ? ([definition.name, guidelines] as const) : undefined;
-				})
-				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
-		);
-		const runner = this._extensionRunner;
-		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
-		const wrappedBuiltInTools = wrapRegisteredTools(
-			Array.from(this._baseToolDefinitions.values())
-				.filter((definition) => isAllowedTool(definition.name))
-				.map((definition) => ({
-					definition,
-					sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
-				})),
-			runner,
-		);
-
-		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
-		for (const tool of wrappedExtensionTools as AgentTool[]) {
-			toolRegistry.set(tool.name, tool);
-		}
-		this._toolRegistry = toolRegistry;
-
-		const nextActiveToolNames = (
-			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
-		).filter((name) => isAllowedTool(name));
-
-		if (allowedToolNames) {
-			for (const toolName of this._toolRegistry.keys()) {
-				if (allowedToolNames.has(toolName)) {
-					nextActiveToolNames.push(toolName);
-				}
-			}
-		} else if (options?.includeAllExtensionTools) {
-			for (const tool of wrappedExtensionTools) {
-				nextActiveToolNames.push(tool.name);
-			}
-		} else if (!options?.activeToolNames) {
-			for (const toolName of this._toolRegistry.keys()) {
-				if (!previousRegistryNames.has(toolName)) {
-					nextActiveToolNames.push(toolName);
-				}
-			}
-		}
-
-		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
-	}
-
-	private _buildRuntime(options: {
-		activeToolNames?: string[];
-		flagValues?: Map<string, boolean | string>;
-		includeAllExtensionTools?: boolean;
-	}): void {
-		const autoResizeImages = this.settingsManager.getImageAutoResize();
-		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
-		const shellPath = this.settingsManager.getShellPath();
-		const baseToolDefinitions = this._baseToolsOverride
-			? Object.fromEntries(
-					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
-						name,
-						createToolDefinitionFromAgentTool(tool),
-					]),
-				)
-			: createAllToolDefinitions(this._cwd, {
-					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
-				});
-
-		this._baseToolDefinitions = new Map(
-			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
-		);
-
-		const extensionsResult = this._resourceLoader.getExtensions();
-		if (options.flagValues) {
-			for (const [name, value] of options.flagValues) {
-				extensionsResult.runtime.flagValues.set(name, value);
-			}
-		}
-
-		this._extensionRunner = new ExtensionRunner(
-			extensionsResult.extensions,
-			extensionsResult.runtime,
-			this._cwd,
-			this.sessionManager,
-			this._modelRegistry,
-		);
-		if (this._extensionRunnerRef) {
-			this._extensionRunnerRef.current = this._extensionRunner;
-		}
-		this._bindExtensionCore(this._extensionRunner);
-		this._applyExtensionBindings(this._extensionRunner);
-		this._initFileSnapshotManager();
-
-		const defaultActiveToolNames = this._baseToolsOverride
-			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
-		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
-		this._refreshToolRegistry({
-			activeToolNames: baseActiveToolNames,
-			includeAllExtensionTools: options.includeAllExtensionTools,
-		});
-	}
-
-	async reload(): Promise<void> {
-		const previousFlagValues = this._extensionRunner.getFlagValues();
-		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
-		await this.settingsManager.reload();
-		resetApiProviders();
-		await this._resourceLoader.reload();
-		this._buildRuntime({
-			activeToolNames: this.getActiveToolNames(),
-			flagValues: previousFlagValues,
-			includeAllExtensionTools: true,
-		});
-
-		const hasBindings =
-			this._extensionUIContext ||
-			this._extensionCommandContextActions ||
-			this._extensionShutdownHandler ||
-			this._extensionErrorListener;
-		if (hasBindings) {
-			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
-			await this.extendResourcesFromExtensions("reload");
-		}
-	}
-
-	async setCwd(newCwd: string): Promise<void> {
-		this._cwd = newCwd;
-		this._buildRuntime({
-			activeToolNames: this.getActiveToolNames(),
-			flagValues: this._extensionRunner.getFlagValues(),
-			includeAllExtensionTools: true,
-		});
-	}
-
-	// =========================================================================
-	// Auto-Retry
-	// =========================================================================
-
-	/**
-	 * Check if an error is retryable (overloaded, rate limit, server errors).
-	 * Context overflow errors are NOT retryable (handled by compaction instead).
-	 */
-	private _isRetryableError(message: AssistantMessage): boolean {
-		if (message.stopReason !== "error" || !message.errorMessage) return false;
-
-		// Context overflow is handled by compaction, not retry
-		const contextWindow = this.model?.contextWindow ?? 0;
-		if (isContextOverflow(message, contextWindow)) return false;
-
-		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), fetch failed, request ended without sending chunks, terminated, retry delay exceeded
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|timed? out|timeout|terminated|retry delay/i.test(
-			err,
-		);
-	}
-
-	/**
-	 * Handle retryable errors with exponential backoff.
-	 * @returns true if retry was initiated, false if max retries exceeded or disabled
-	 */
-	private async _handleRetryableError(message: AssistantMessage): Promise<boolean> {
-		const settings = this.settingsManager.getRetrySettings();
-		if (!settings.enabled) {
-			this._resolveRetry();
-			return false;
-		}
-
-		// Retry promise is created synchronously in _handleAgentEvent for agent_end.
-		// Keep a defensive fallback here in case a future refactor bypasses that path.
-		if (!this._retryPromise) {
-			this._retryPromise = new Promise((resolve) => {
-				this._retryResolve = resolve;
-			});
-		}
-
-		this._retryAttempt++;
-
-		if (this._retryAttempt > settings.maxRetries) {
-			// Max retries exceeded, emit final failure and reset
-			this._emit({
-				type: "auto_retry_end",
-				success: false,
-				attempt: this._retryAttempt - 1,
-				finalError: message.errorMessage,
-			});
-			this._retryAttempt = 0;
-			this._resolveRetry(); // Resolve so waitForRetry() completes
-			return false;
-		}
-
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
-
-		this._emit({
-			type: "auto_retry_start",
-			attempt: this._retryAttempt,
-			maxAttempts: settings.maxRetries,
-			delayMs,
-			errorMessage: message.errorMessage || "Unknown error",
-		});
-
-		// Remove error message from agent state (keep in session for history)
-		const messages = this.agent.state.messages;
-		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-			this.agent.state.messages = messages.slice(0, -1);
-		}
-
-		// Wait with exponential backoff (abortable)
-		this._retryAbortController = new AbortController();
-		try {
-			await sleep(delayMs, this._retryAbortController.signal);
-		} catch {
-			// Aborted during sleep - emit end event so UI can clean up
-			const attempt = this._retryAttempt;
-			this._retryAttempt = 0;
-			this._retryAbortController = undefined;
-			this._emit({
-				type: "auto_retry_end",
-				success: false,
-				attempt,
-				finalError: "Retry cancelled",
-			});
-			this._resolveRetry();
-			return false;
-		}
-		this._retryAbortController = undefined;
-
-		// Retry via continue() - use setTimeout to break out of event handler chain
-		setTimeout(() => {
-			this.agent.continue().catch(() => {
-				// Retry failed - will be caught by next agent_end
-			});
-		}, 0);
-
-		return true;
-	}
-
-	/**
-	 * Cancel in-progress retry.
-	 */
-	abortRetry(): void {
-		this._retryAbortController?.abort();
-		// Note: _retryAttempt is reset in the catch block of _autoRetry
-		this._resolveRetry();
-	}
-
-	/**
-	 * Wait for any in-progress retry to complete.
-	 * Returns immediately if no retry is in progress.
-	 */
-	private async waitForRetry(): Promise<void> {
-		if (!this._retryPromise) {
-			return;
-		}
-
-		await this._retryPromise;
-		await this.agent.waitForIdle();
-	}
-
-	/** Whether auto-retry is currently in progress */
-	get isRetrying(): boolean {
-		return this._retryPromise !== undefined;
-	}
-
-	/** Whether auto-retry is enabled */
-	get autoRetryEnabled(): boolean {
-		return this.settingsManager.getRetryEnabled();
-	}
-
-	/**
-	 * Toggle auto-retry setting.
-	 */
-	setAutoRetryEnabled(enabled: boolean): void {
-		this.settingsManager.setRetryEnabled(enabled);
-	}
-
-	// =========================================================================
-	// Bash Execution
-	// =========================================================================
-
-	/**
-	 * Execute a bash command.
-	 * Adds result to agent context and session.
-	 * @param command The bash command to execute
-	 * @param onChunk Optional streaming callback for output
-	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
-	 * @param options.operations Custom BashOperations for remote execution
-	 */
-	async executeBash(
-		command: string,
-		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; operations?: BashOperations },
-	): Promise<BashResult> {
-		this._bashAbortController = new AbortController();
-
-		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
-		const prefix = this.settingsManager.getShellCommandPrefix();
-		const shellPath = this.settingsManager.getShellPath();
-		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
-
-		try {
-			const result = await executeBashWithOperations(
-				resolvedCommand,
-				this.sessionManager.getCwd(),
-				options?.operations ?? createLocalBashOperations({ shellPath }),
-				{
-					onChunk,
-					signal: this._bashAbortController.signal,
-				},
-			);
-
-			this.recordBashResult(command, result, options);
-			return result;
-		} finally {
-			this._bashAbortController = undefined;
-		}
-	}
-
-	/**
-	 * Record a bash execution result in session history.
-	 * Used by executeBash and by extensions that handle bash execution themselves.
-	 */
-	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void {
-		const bashMessage: BashExecutionMessage = {
-			role: "bashExecution",
-			command,
-			output: result.output,
-			exitCode: result.exitCode,
-			cancelled: result.cancelled,
-			truncated: result.truncated,
-			fullOutputPath: result.fullOutputPath,
-			timestamp: Date.now(),
-			excludeFromContext: options?.excludeFromContext,
-		};
-
-		// If agent is streaming, defer adding to avoid breaking tool_use/tool_result ordering
-		if (this.isStreaming) {
-			// Queue for later - will be flushed on agent_end
-			this._pendingBashMessages.push(bashMessage);
-		} else {
-			// Add to agent state immediately
-			this.agent.state.messages.push(bashMessage);
-
-			// Save to session
-			this.sessionManager.appendMessage(bashMessage);
-		}
-	}
-
-	/**
-	 * Cancel running bash command.
-	 */
-	abortBash(): void {
-		this._bashAbortController?.abort();
-	}
-
-	/** Whether a bash command is currently running */
-	get isBashRunning(): boolean {
-		return this._bashAbortController !== undefined;
-	}
-
-	/** Whether there are pending bash messages waiting to be flushed */
-	get hasPendingBashMessages(): boolean {
-		return this._pendingBashMessages.length > 0;
-	}
-
-	/**
-	 * Flush pending bash messages to agent state and session.
-	 * Called after agent turn completes to maintain proper message ordering.
-	 */
-	private _flushPendingBashMessages(): void {
-		if (this._pendingBashMessages.length === 0) return;
-
-		for (const bashMessage of this._pendingBashMessages) {
-			// Add to agent state
-			this.agent.state.messages.push(bashMessage);
-
-			// Save to session
-			this.sessionManager.appendMessage(bashMessage);
-		}
-
-		this._pendingBashMessages = [];
-	}
-
-	// =========================================================================
-	// Session Management
-	// =========================================================================
-
-	/**
-	 * Set a display name for the current session.
-	 */
-	setSessionName(name: string): void {
-		this.sessionManager.appendSessionInfo(name);
-	}
-
-	// =========================================================================
-	// Tree Navigation
-	// =========================================================================
-
-	/**
-	 * Navigate to a different node in the session tree.
-	 * Unlike fork() which creates a new session file, this stays in the same file.
-	 *
-	 * @param targetId The entry ID to navigate to
-	 * @param options.summarize Whether user wants to summarize abandoned branch
-	 * @param options.customInstructions Custom instructions for summarizer
-	 * @param options.replaceInstructions If true, customInstructions replaces the default prompt
-	 * @param options.label Label to attach to the branch summary entry
-	 * @returns Result with editorText (if user message) and cancelled status
-	 */
-	async navigateTree(
-		targetId: string,
-		options: {
-			summarize?: boolean;
-			customInstructions?: string;
-			replaceInstructions?: boolean;
-			label?: string;
-			skipFiles?: boolean;
-		} = {},
-	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
-		const oldLeafId = this.sessionManager.getLeafId();
-
-		// No-op if already at target
-		if (targetId === oldLeafId) {
-			return { cancelled: false };
-		}
-
-		// Model required for summarization
-		if (options.summarize && !this.model) {
-			throw new Error("No model available for summarization");
-		}
-
-		const targetEntry = this.sessionManager.getEntry(targetId);
-		if (!targetEntry) {
-			throw new Error(`Entry ${targetId} not found`);
-		}
-
-		// Collect entries to summarize (from old leaf to common ancestor)
-		const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(
-			this.sessionManager,
-			oldLeafId,
-			targetId,
-		);
-
-		// Prepare event data - mutable so extensions can override
-		let customInstructions = options.customInstructions;
-		let replaceInstructions = options.replaceInstructions;
-		let label = options.label;
-
-		const preparation: TreePreparation = {
-			targetId,
-			oldLeafId,
-			commonAncestorId,
-			entriesToSummarize,
-			userWantsSummary: options.summarize ?? false,
-			customInstructions,
-			replaceInstructions,
-			label,
-		};
-
-		// Set up abort controller for summarization
-		this._branchSummaryAbortController = new AbortController();
-		let extensionSummary: { summary: string; details?: unknown } | undefined;
-		let fromExtension = false;
-
-		// Emit session_before_tree event
-		if (this._extensionRunner.hasHandlers("session_before_tree")) {
-			const result = (await this._extensionRunner.emit({
-				type: "session_before_tree",
-				preparation,
-				signal: this._branchSummaryAbortController.signal,
-			})) as SessionBeforeTreeResult | undefined;
-
-			if (result?.cancel) {
-				return { cancelled: true };
-			}
-
-			if (result?.summary && options.summarize) {
-				extensionSummary = result.summary;
-				fromExtension = true;
-			}
-
-			// Allow extensions to override instructions and label
-			if (result?.customInstructions !== undefined) {
-				customInstructions = result.customInstructions;
-			}
-			if (result?.replaceInstructions !== undefined) {
-				replaceInstructions = result.replaceInstructions;
-			}
-			if (result?.label !== undefined) {
-				label = result.label;
-			}
-		}
-
-		// Run default summarizer if needed
-		let summaryText: string | undefined;
-		let summaryDetails: unknown;
-		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
-			const model = this.model!;
-			const { apiKey, headers } = await this._getRequiredRequestAuth(model);
-			const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
-			const result = await generateBranchSummary(entriesToSummarize, {
-				model,
-				apiKey,
-				headers,
-				signal: this._branchSummaryAbortController.signal,
-				customInstructions,
-				replaceInstructions,
-				reserveTokens: branchSummarySettings.reserveTokens,
-			});
-			this._branchSummaryAbortController = undefined;
-			if (result.aborted) {
-				return { cancelled: true, aborted: true };
-			}
-			if (result.error) {
-				throw new Error(result.error);
-			}
-			summaryText = result.summary;
-			summaryDetails = {
-				readFiles: result.readFiles || [],
-				modifiedFiles: result.modifiedFiles || [],
-			};
-		} else if (extensionSummary) {
-			summaryText = extensionSummary.summary;
-			summaryDetails = extensionSummary.details;
-		}
-
-		// Determine the new leaf position based on target type
-		let newLeafId: string | null;
-		let editorText: string | undefined;
-
-		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-			// User message: leaf = parent (null if root), text goes to editor
-			newLeafId = targetEntry.parentId;
-			editorText = this._extractUserMessageText(targetEntry.message.content);
-		} else if (targetEntry.type === "custom_message") {
-			// Custom message: leaf = parent (null if root), text goes to editor
-			newLeafId = targetEntry.parentId;
-			editorText =
-				typeof targetEntry.content === "string"
-					? targetEntry.content
-					: targetEntry.content
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
-							.map((c) => c.text)
-							.join("");
-		} else {
-			// Non-user message: leaf = selected node
-			newLeafId = targetId;
-		}
-
-		// Switch leaf (with or without summary)
-		// Summary is attached at the navigation target position (newLeafId), not the old branch
-		let summaryEntry: BranchSummaryEntry | undefined;
-		if (summaryText) {
-			// Create summary at target position (can be null for root)
-			const summaryId = this.sessionManager.branchWithSummary(
-				newLeafId,
-				summaryText,
-				summaryDetails,
-				fromExtension,
-				options.skipFiles,
-			);
-			summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
-
-			// Attach label to the summary entry
-			if (label) {
-				this.sessionManager.appendLabelChange(summaryId, label);
-			}
-		} else if (newLeafId === null) {
-			// No summary, navigating to root - reset leaf
-			this.sessionManager.resetLeaf();
-		} else {
-			// No summary, navigating to non-root
-			this.sessionManager.branch(newLeafId);
-		}
-
-		// Attach label to target entry when not summarizing (no summary entry to label)
-		if (label && !summaryText) {
-			this.sessionManager.appendLabelChange(targetId, label);
-		}
-
-		// Update agent state
-		const sessionContext = this.sessionManager.buildSessionContext();
-		this.agent.state.messages = sessionContext.messages;
-
-		// Emit session_tree event
-		await this._extensionRunner.emit({
-			type: "session_tree",
-			newLeafId: this.sessionManager.getLeafId(),
-			oldLeafId,
-			summaryEntry,
-			fromExtension: summaryText ? fromExtension : undefined,
-			skipFiles: options.skipFiles,
-		});
-
-		// Emit to custom tools
-
-		this._branchSummaryAbortController = undefined;
-		return { editorText, cancelled: false, summaryEntry };
-	}
-
 	async previewRollback(targetId: string): Promise<{ restored: string[]; deleted: string[] }> {
 		const oldLeafId = this.sessionManager.getLeafId();
 
@@ -3410,257 +3549,5 @@ export class AgentSession {
 				deleted: [],
 			}
 		);
-	}
-
-	/**
-	 * Get all user messages from session for fork selector.
-	 */
-	getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
-		const entries = this.sessionManager.getEntries();
-		const result: Array<{ entryId: string; text: string }> = [];
-
-		for (const entry of entries) {
-			if (entry.type !== "message") continue;
-			if (entry.message.role !== "user") continue;
-
-			const text = this._extractUserMessageText(entry.message.content);
-			if (text) {
-				result.push({ entryId: entry.id, text });
-			}
-		}
-
-		return result;
-	}
-
-	private _extractUserMessageText(content: string | Array<{ type: string; text?: string }>): string {
-		if (typeof content === "string") return content;
-		if (Array.isArray(content)) {
-			return content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("");
-		}
-		return "";
-	}
-
-	/**
-	 * Get session statistics.
-	 */
-	getSessionStats(): SessionStats {
-		const state = this.state;
-		const userMessages = state.messages.filter((m) => m.role === "user").length;
-		const assistantMessages = state.messages.filter((m) => m.role === "assistant").length;
-		const toolResults = state.messages.filter((m) => m.role === "toolResult").length;
-
-		let toolCalls = 0;
-		let totalInput = 0;
-		let totalOutput = 0;
-		let totalCacheRead = 0;
-		let totalCacheWrite = 0;
-		let totalCost = 0;
-
-		for (const message of state.messages) {
-			if (message.role === "assistant") {
-				const assistantMsg = message as AssistantMessage;
-				toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
-				totalInput += assistantMsg.usage.input;
-				totalOutput += assistantMsg.usage.output;
-				totalCacheRead += assistantMsg.usage.cacheRead;
-				totalCacheWrite += assistantMsg.usage.cacheWrite;
-				totalCost += assistantMsg.usage.cost.total;
-			}
-		}
-
-		return {
-			sessionFile: this.sessionFile,
-			sessionId: this.sessionId,
-			userMessages,
-			assistantMessages,
-			toolCalls,
-			toolResults,
-			totalMessages: state.messages.length,
-			tokens: {
-				input: totalInput,
-				output: totalOutput,
-				cacheRead: totalCacheRead,
-				cacheWrite: totalCacheWrite,
-				total: totalInput + totalOutput + totalCacheRead + totalCacheWrite,
-			},
-			cost: totalCost,
-			contextUsage: this.getContextUsage(),
-		};
-	}
-
-	getContextUsage(): ContextUsage | undefined {
-		const model = this.model;
-		if (!model) return undefined;
-
-		const contextWindow = model.contextWindow ?? 0;
-		if (contextWindow <= 0) return undefined;
-
-		const branchEntries = this.sessionManager.getBranch();
-		const latestCompaction = getLatestCompactionEntry(branchEntries);
-
-		if (latestCompaction) {
-			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
-			for (let i = branchEntries.length - 1; i > compactionIndex; i--) {
-				const entry = branchEntries[i];
-				if (entry.type === "message" && entry.message.role === "assistant") {
-					const assistant = entry.message;
-					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
-						const contextTokens = calculateContextTokens(assistant.usage);
-						if (contextTokens > 0) {
-							const percent = (contextTokens / contextWindow) * 100;
-							return { tokens: contextTokens, contextWindow, percent };
-						}
-					}
-					break;
-				}
-			}
-		}
-
-		const estimate = estimateContextTokens(this.messages);
-
-		if (latestCompaction && estimate.lastUsageIndex !== null) {
-			const usageMsg = this.messages[estimate.lastUsageIndex];
-			if (
-				usageMsg?.role === "assistant" &&
-				(usageMsg as AssistantMessage).timestamp <= new Date(latestCompaction.timestamp).getTime()
-			) {
-				let estimated = 0;
-				for (const message of this.messages) {
-					estimated += estimateTokens(message);
-				}
-				const fallbackPercent = contextWindow > 0 ? (estimated / contextWindow) * 100 : 0;
-				return { tokens: estimated, contextWindow, percent: fallbackPercent };
-			}
-		}
-
-		const percent = contextWindow > 0 ? (estimate.tokens / contextWindow) * 100 : 0;
-
-		return {
-			tokens: estimate.tokens,
-			contextWindow,
-			percent,
-		};
-	}
-
-	/**
-	 * Export session to HTML.
-	 * @param outputPath Optional output path (defaults to session directory)
-	 * @returns Path to exported file
-	 */
-	async exportToHtml(outputPath?: string): Promise<string> {
-		const themeName = this.settingsManager.getTheme();
-
-		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
-		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
-			getToolDefinition: (name) => this.getToolDefinition(name),
-			theme,
-			cwd: this.sessionManager.getCwd(),
-		});
-
-		return await exportSessionToHtml(this.sessionManager, this.state, {
-			outputPath,
-			themeName,
-			toolRenderer,
-		});
-	}
-
-	/**
-	 * Export the current session branch to a JSONL file.
-	 * Writes the session header followed by all entries on the current branch path.
-	 * @param outputPath Target file path. If omitted, generates a timestamped file in cwd.
-	 * @returns The resolved output file path.
-	 */
-	exportToJsonl(outputPath?: string): string {
-		const filePath = resolve(outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
-		const dir = dirname(filePath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
-		}
-
-		const header: SessionHeader = {
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: this.sessionManager.getSessionId(),
-			timestamp: new Date().toISOString(),
-			cwd: this.sessionManager.getCwd(),
-		};
-
-		const branchEntries = this.sessionManager.getBranch();
-		const lines = [JSON.stringify(header)];
-
-		// Re-chain parentIds to form a linear sequence
-		let prevId: string | null = null;
-		for (const entry of branchEntries) {
-			const linear = { ...entry, parentId: prevId };
-			lines.push(JSON.stringify(linear));
-			prevId = entry.id;
-		}
-
-		writeFileSync(filePath, `${lines.join("\n")}\n`);
-		return filePath;
-	}
-
-	// =========================================================================
-	// Utilities
-	// =========================================================================
-
-	/**
-	 * Get text content of last assistant message.
-	 * Useful for /copy command.
-	 * @returns Text content, or undefined if no assistant message exists
-	 */
-	getLastAssistantText(): string | undefined {
-		const lastAssistant = this.messages
-			.slice()
-			.reverse()
-			.find((m) => {
-				if (m.role !== "assistant") return false;
-				const msg = m as AssistantMessage;
-				// Skip aborted messages with no content
-				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
-				return true;
-			});
-
-		if (!lastAssistant) return undefined;
-
-		let text = "";
-		for (const content of (lastAssistant as AssistantMessage).content) {
-			if (content.type === "text") {
-				text += content.text;
-			}
-		}
-
-		return text.trim() || undefined;
-	}
-
-	// =========================================================================
-	// Extension System
-	// =========================================================================
-
-	createReplacedSessionContext(): ReplacedSessionContext {
-		const context = Object.defineProperties(
-			{},
-			Object.getOwnPropertyDescriptors(this._extensionRunner.createCommandContext()),
-		) as ReplacedSessionContext;
-		context.sendMessage = (message, options) => this.sendCustomMessage(message, options);
-		context.sendUserMessage = (content, options) => this.sendUserMessage(content, options);
-		return context;
-	}
-
-	/**
-	 * Check if extensions have handlers for a specific event type.
-	 */
-	hasExtensionHandlers(eventType: string): boolean {
-		return this._extensionRunner.hasHandlers(eventType);
-	}
-
-	/**
-	 * Get the extension runner (for setting UI context and error handlers).
-	 */
-	get extensionRunner(): ExtensionRunner {
-		return this._extensionRunner;
 	}
 }

@@ -1,7 +1,6 @@
 /**
  * Extension loader - loads TypeScript extension modules using jiti.
  *
- * Uses @mariozechner/jiti fork with virtualModules support for compiled Bun binaries.
  */
 
 import * as fs from "node:fs";
@@ -14,14 +13,14 @@ import * as _bundledPiAi from "@dyyz1993/pi-ai";
 import * as _bundledPiAiOauth from "@dyyz1993/pi-ai/oauth";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import * as _bundledPiTui from "@dyyz1993/pi-tui";
-import { createJiti } from "@mariozechner/jiti";
+import { createJiti } from "jiti/static";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
 import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
-import { getAgentDir, isBunBinary } from "../../config.js";
+import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.js";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @dyyz1993/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.js";
@@ -29,7 +28,6 @@ import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
 import { createSyntheticSourceInfo } from "../source-info.js";
-import type { Channel } from "./channel-types.js";
 import type {
 	Extension,
 	ExtensionAPI,
@@ -55,6 +53,11 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@dyyz1993/pi-ai": _bundledPiAi,
 	"@dyyz1993/pi-ai/oauth": _bundledPiAiOauth,
 	"@dyyz1993/pi-coding-agent": _bundledPiCodingAgent,
+	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
+	"@mariozechner/pi-tui": _bundledPiTui,
+	"@mariozechner/pi-ai": _bundledPiAi,
+	"@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
+	"@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
 };
 
 const require = createRequire(import.meta.url);
@@ -84,12 +87,23 @@ function getAliases(): Record<string, string> {
 		return fileURLToPath(import.meta.resolve(specifier));
 	};
 
+	const piCodingAgentEntry = packageIndex;
+	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@dyyz1993/pi-agent-core");
+	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@dyyz1993/pi-tui");
+	const piAiEntry = resolveWorkspaceOrImport("ai/dist/index.js", "@dyyz1993/pi-ai");
+	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@dyyz1993/pi-ai/oauth");
+
 	_aliases = {
-		"@dyyz1993/pi-coding-agent": packageIndex,
-		"@dyyz1993/pi-agent-core": resolveWorkspaceOrImport("agent/dist/index.js", "@dyyz1993/pi-agent-core"),
-		"@dyyz1993/pi-tui": resolveWorkspaceOrImport("tui/dist/index.js", "@dyyz1993/pi-tui"),
-		"@dyyz1993/pi-ai": resolveWorkspaceOrImport("ai/dist/index.js", "@dyyz1993/pi-ai"),
-		"@dyyz1993/pi-ai/oauth": resolveWorkspaceOrImport("ai/dist/oauth.js", "@dyyz1993/pi-ai/oauth"),
+		"@dyyz1993/pi-coding-agent": piCodingAgentEntry,
+		"@dyyz1993/pi-agent-core": piAgentCoreEntry,
+		"@dyyz1993/pi-tui": piTuiEntry,
+		"@dyyz1993/pi-ai": piAiEntry,
+		"@dyyz1993/pi-ai/oauth": piAiOauthEntry,
+		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
+		"@mariozechner/pi-agent-core": piAgentCoreEntry,
+		"@mariozechner/pi-tui": piTuiEntry,
+		"@mariozechner/pi-ai": piAiEntry,
+		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
 		"typebox/value": typeboxValueEntry,
@@ -154,91 +168,25 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
 		setActiveTools: notInitialized,
-		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
 		getCommands: notInitialized,
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
-		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
-		callLLMStructured: () => Promise.reject(new Error("Extension runtime not initialized")),
-		forkAgent: () => Promise.reject(new Error("Extension runtime not initialized")),
-		background: <T>(_fn: (signal: AbortSignal) => Promise<T>) => {
-			throw new Error("Extension runtime not initialized");
-		},
-		registerChannel: (name: string) => {
-			if (runtime.resolvedChannels.has(name)) {
-				return runtime.resolvedChannels.get(name)!;
-			}
-			const existing = runtime.pendingChannelRegistrations.find((p) => p.name === name);
-			if (existing) {
-				throw new Error(`Channel "${name}" is already registered`);
-			}
-
-			const bufferedSends: unknown[] = [];
-			const bufferedHandlers: ((data: unknown) => void)[] = [];
-			let realChannel: Channel | undefined;
-
-			const deferred: Channel = {
-				name,
-				send: (data: unknown) => {
-					if (realChannel) {
-						realChannel.send(data);
-					} else {
-						bufferedSends.push(data);
-					}
-				},
-				onReceive: (handler: (data: unknown) => void) => {
-					if (realChannel) {
-						return realChannel.onReceive(handler);
-					}
-					bufferedHandlers.push(handler);
-					return () => {
-						const idx = bufferedHandlers.indexOf(handler);
-						if (idx >= 0) bufferedHandlers.splice(idx, 1);
-					};
-				},
-				invoke: (data: unknown, timeoutMs?: number) => {
-					if (realChannel) {
-						return realChannel.invoke(data, timeoutMs);
-					}
-					return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
-				},
-				call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
-					if (realChannel) {
-						return realChannel.call(method, params, timeoutMs);
-					}
-					return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
-				},
-			};
-
-			runtime.pendingChannelRegistrations.push({
-				name,
-				resolve: (channel: Channel) => {
-					realChannel = channel;
-					for (const handler of bufferedHandlers) {
-						channel.onReceive(handler);
-					}
-					bufferedHandlers.length = 0;
-					for (const buffered of bufferedSends) {
-						channel.send(buffered);
-					}
-					bufferedSends.length = 0;
-				},
-				reject: (_err: Error) => {},
-			});
-
-			return deferred;
-		},
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 		pendingChannelRegistrations: [],
 		resolvedChannels: new Map(),
+		registerChannel: notInitialized,
+		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
+		callLLMStructured: () => Promise.reject(new Error("Extension runtime not initialized")),
+		forkAgent: () => Promise.reject(new Error("Extension runtime not initialized")),
+		background: notInitialized,
 		assertActive,
 		invalidate: (message) => {
 			state.staleMessage ??=
 				message ??
-				"This extension instance is stale after session replacement or reload. Use the provided replacement-session context instead.";
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
 		},
 		// Pre-bind: queue registrations so bindCore() can flush them once the
 		// model registry is available. bindCore() replaces both with direct calls.
@@ -265,28 +213,12 @@ function createExtensionAPI(
 	eventBus: EventBus,
 ): ExtensionAPI {
 	const api = {
-		setName(name: string): void {
-			runtime.assertActive();
-			extension.name = name;
-		},
-		get extensionName(): string {
-			runtime.assertActive();
-			return extension.name;
-		},
-
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): () => void {
+		on(event: string, handler: HandlerFn): void {
 			runtime.assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
-			return () => {
-				const handlers = extension.handlers.get(event);
-				if (handlers) {
-					const idx = handlers.indexOf(handler);
-					if (idx !== -1) handlers.splice(idx, 1);
-				}
-			};
 		},
 
 		registerTool(tool: ToolDefinition): void {
@@ -352,14 +284,9 @@ function createExtensionAPI(
 			runtime.sendUserMessage(content, options);
 		},
 
-		appendEntry(customType: string, data?: unknown, options?: { display?: boolean }): void {
+		appendEntry(customType: string, data?: unknown): void {
 			runtime.assertActive();
-			runtime.appendEntry(customType, data, options);
-		},
-
-		foldEntry(entryId: string, summary: string, originalTokens: number): void {
-			runtime.assertActive();
-			runtime.foldEntry(entryId, summary, originalTokens);
+			runtime.appendEntry(customType, data);
 		},
 
 		setSessionName(name: string): void {
@@ -427,8 +354,6 @@ function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
-		events: eventBus,
-
 		registerChannel(name: string) {
 			runtime.assertActive();
 			return runtime.registerChannel(name);
@@ -448,6 +373,26 @@ function createExtensionAPI(
 			runtime.assertActive();
 			return runtime.forkAgent(prompt, options);
 		},
+
+		background(fn) {
+			runtime.assertActive();
+			return runtime.background(fn);
+		},
+
+		foldEntry(entryId, summary, originalTokens) {
+			runtime.assertActive();
+			runtime.foldEntry(entryId, summary, originalTokens);
+		},
+
+		setName(name: string) {
+			extension.name = name;
+		},
+
+		get extensionName() {
+			return extension.name;
+		},
+
+		events: eventBus,
 	} as ExtensionAPI;
 
 	return api;
@@ -467,26 +412,6 @@ async function loadExtensionModule(extensionPath: string) {
 	return typeof factory !== "function" ? undefined : factory;
 }
 
-function deriveExtensionName(resolvedPath: string): string {
-	const basename = path.basename(resolvedPath);
-
-	if (basename === "index.ts" || basename === "index.js") {
-		const dir = path.dirname(resolvedPath);
-		const pkgPath = path.join(dir, "package.json");
-		if (fs.existsSync(pkgPath)) {
-			try {
-				const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-				if (pkg.name) {
-					return pkg.name.includes("/") ? pkg.name.split("/").pop()! : pkg.name;
-				}
-			} catch {}
-		}
-		return path.basename(dir);
-	}
-
-	return basename.replace(/\.(ts|js|mjs)$/, "");
-}
-
 /**
  * Create an Extension object with empty collections.
  */
@@ -496,7 +421,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 			? extensionPath.slice(1, -1).split(":")[0] || "temporary"
 			: "local";
 	const baseDir = extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath);
-	const name = deriveExtensionName(resolvedPath);
+	const name = path.basename(extensionPath, path.extname(extensionPath));
 
 	return {
 		name,
@@ -575,22 +500,8 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 		}
 	}
 
-	const names = new Map<string, string>();
-	for (const ext of extensions) {
-		const existing = names.get(ext.name);
-		if (existing) {
-			errors.push({
-				path: ext.path,
-				error: `Duplicate extension name "${ext.name}". Extension at "${existing}" already uses this name. Use pi.setName() to set a unique name.`,
-			});
-		} else {
-			names.set(ext.name, ext.path);
-		}
-	}
-	const validExtensions = extensions.filter((ext) => !errors.some((e) => e.path === ext.path));
-
 	return {
-		extensions: validExtensions,
+		extensions,
 		errors,
 		runtime,
 	};
@@ -727,8 +638,8 @@ export async function discoverAndLoadExtensions(
 		}
 	};
 
-	// 1. Project-local extensions: cwd/.pi/extensions/
-	const localExtDir = path.join(cwd, ".pi", "extensions");
+	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
+	const localExtDir = path.join(cwd, CONFIG_DIR_NAME, "extensions");
 	addPaths(discoverExtensionsInDir(localExtDir));
 
 	// 2. Global extensions: agentDir/extensions/

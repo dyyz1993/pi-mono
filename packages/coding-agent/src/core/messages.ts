@@ -8,14 +8,6 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@dyyz1993/pi-ai";
 
-export const FOLD_SUMMARY_PREFIX = `An earlier message in this conversation was folded into the following summary:
-
-<fold>
-`;
-
-export const FOLD_SUMMARY_SUFFIX = `
-</fold>`;
-
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
 <summary>
@@ -30,6 +22,14 @@ export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch tha
 `;
 
 export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+
+export const FOLD_SUMMARY_PREFIX = `An earlier message in this conversation was folded into the following summary:
+
+<fold>
+`;
+
+export const FOLD_SUMMARY_SUFFIX = `
+</fold>`;
 
 export const SEGMENT_SUMMARY_PREFIX = `A segment of the conversation was compressed into this summary:
 

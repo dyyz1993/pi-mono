@@ -36,6 +36,7 @@ export {
 export {
 	type ApiKeyCredential,
 	type AuthCredential,
+	type AuthStatus,
 	AuthStorage,
 	type AuthStorageBackend,
 	FileAuthStorageBackend,

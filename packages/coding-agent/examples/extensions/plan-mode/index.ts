@@ -265,7 +265,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 			"Refine the plan",
 		]);
 
-		if (choice?.startsWith("Execute")) {
+		if (typeof choice === "string" && choice.startsWith("Execute")) {
 			planModeEnabled = false;
 			executionMode = todoItems.length > 0;
 			pi.setActiveTools(NORMAL_MODE_TOOLS);

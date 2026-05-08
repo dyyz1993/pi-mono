@@ -438,6 +438,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			_extensionRunner?: {
 				hasHandlers: (eventType: string) => boolean;
 				emit: (event: { type: string; message?: { role?: string } }) => Promise<void>;
+				emitMessageEnd: (event: { type: string; message?: { role?: string } }) => Promise<undefined>;
 				emitToolCall: (event: { type: string; toolCallId: string }) => Promise<undefined>;
 				emitInput: (
 					text: string,
@@ -450,12 +451,13 @@ describe("AgentSession concurrent prompt guard", () => {
 					systemPrompt: string,
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<undefined>;
+				invalidate: (message?: string) => void;
 			};
 		};
 		sessionWithRunner._extensionRunner = {
 			hasHandlers: (eventType) => eventType === "tool_call",
 			emit: async () => {},
-			invalidate: vi.fn(),
+			emitMessageEnd: async () => undefined,
 			emitToolCall: async () => {
 				snapshots.push(
 					sessionManager
@@ -467,6 +469,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			},
 			emitInput: async () => ({ action: "continue" }),
 			emitBeforeAgentStart: async () => undefined,
+			invalidate: () => {},
 		};
 
 		await session.prompt("hi");
@@ -580,6 +583,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			_extensionRunner?: {
 				hasHandlers: (eventType: string) => boolean;
 				emit: (event: { type: string; message?: { role?: string } }) => Promise<void>;
+				emitMessageEnd: (event: { type: string; message?: { role?: string } }) => Promise<undefined>;
 				emitInput: (
 					text: string,
 					images: unknown,
@@ -591,18 +595,21 @@ describe("AgentSession concurrent prompt guard", () => {
 					systemPrompt: string,
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<undefined>;
+				invalidate: (message?: string) => void;
 			};
 		};
 		sessionWithRunner._extensionRunner = {
 			hasHandlers: () => false,
-			invalidate: vi.fn(),
-			emit: async (event) => {
+			emit: async () => {},
+			emitMessageEnd: async (event) => {
 				if (event.type === "message_end" && event.message?.role === "assistant") {
 					await new Promise((resolve) => setTimeout(resolve, 40));
 				}
+				return undefined;
 			},
 			emitInput: async () => ({ action: "continue" }),
 			emitBeforeAgentStart: async () => undefined,
+			invalidate: () => {},
 		};
 
 		await session.prompt("hi");

@@ -1,36 +1,190 @@
+/**
+ * Subagent Tool - Delegate tasks to specialized agents
+ *
+ * Spawns a separate `pi` process for each subagent invocation,
+ * giving it an isolated context window.
+ *
+ * Supports three modes:
+ *   - Single: { agent: "name", task: "..." }
+ *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
+ *   - Chain: { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
+ *
+ * Uses JSON mode to capture structured output from subagents.
+ */
+
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@dyyz1993/pi-agent-core";
 import type { Message } from "@dyyz1993/pi-ai";
 import { StringEnum } from "@dyyz1993/pi-ai";
-import { type ExtensionAPI, getMarkdownTheme } from "@dyyz1993/pi-coding-agent";
+import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@dyyz1993/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
-import {
-	aggregateUsage,
-	COLLAPSED_ITEM_COUNT,
-	cleanupTempFiles,
-	formatToolCall,
-	formatUsageStats,
-	getDisplayItems,
-	getFinalOutput,
-	renderDisplayItems,
-	type SingleResult,
-	type DisplayItem,
-	type UsageStats,
-	writePromptToTempFile,
-} from "../subagent-shared/index.js";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
+const COLLAPSED_ITEM_COUNT = 10;
+
+function formatTokens(count: number): string {
+	if (count < 1000) return count.toString();
+	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+	if (count < 1000000) return `${Math.round(count / 1000)}k`;
+	return `${(count / 1000000).toFixed(1)}M`;
+}
+
+function formatUsageStats(
+	usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		cost: number;
+		contextTokens?: number;
+		turns?: number;
+	},
+	model?: string,
+): string {
+	const parts: string[] = [];
+	if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
+	if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
+	if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
+	if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
+	if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
+	if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+	if (usage.contextTokens && usage.contextTokens > 0) {
+		parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
+	}
+	if (model) parts.push(model);
+	return parts.join(" ");
+}
+
+function formatToolCall(
+	toolName: string,
+	args: Record<string, unknown>,
+	themeFg: (color: any, text: string) => string,
+): string {
+	const shortenPath = (p: string) => {
+		const home = os.homedir();
+		return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+	};
+
+	switch (toolName) {
+		case "bash": {
+			const command = (args.command as string) || "...";
+			const preview = command.length > 60 ? `${command.slice(0, 60)}...` : command;
+			return themeFg("muted", "$ ") + themeFg("toolOutput", preview);
+		}
+		case "read": {
+			const rawPath = (args.file_path || args.path || "...") as string;
+			const filePath = shortenPath(rawPath);
+			const offset = args.offset as number | undefined;
+			const limit = args.limit as number | undefined;
+			let text = themeFg("accent", filePath);
+			if (offset !== undefined || limit !== undefined) {
+				const startLine = offset ?? 1;
+				const endLine = limit !== undefined ? startLine + limit - 1 : "";
+				text += themeFg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
+			}
+			return themeFg("muted", "read ") + text;
+		}
+		case "write": {
+			const rawPath = (args.file_path || args.path || "...") as string;
+			const filePath = shortenPath(rawPath);
+			const content = (args.content || "") as string;
+			const lines = content.split("\n").length;
+			let text = themeFg("muted", "write ") + themeFg("accent", filePath);
+			if (lines > 1) text += themeFg("dim", ` (${lines} lines)`);
+			return text;
+		}
+		case "edit": {
+			const rawPath = (args.file_path || args.path || "...") as string;
+			return themeFg("muted", "edit ") + themeFg("accent", shortenPath(rawPath));
+		}
+		case "ls": {
+			const rawPath = (args.path || ".") as string;
+			return themeFg("muted", "ls ") + themeFg("accent", shortenPath(rawPath));
+		}
+		case "find": {
+			const pattern = (args.pattern || "*") as string;
+			const rawPath = (args.path || ".") as string;
+			return themeFg("muted", "find ") + themeFg("accent", pattern) + themeFg("dim", ` in ${shortenPath(rawPath)}`);
+		}
+		case "grep": {
+			const pattern = (args.pattern || "") as string;
+			const rawPath = (args.path || ".") as string;
+			return (
+				themeFg("muted", "grep ") +
+				themeFg("accent", `/${pattern}/`) +
+				themeFg("dim", ` in ${shortenPath(rawPath)}`)
+			);
+		}
+		default: {
+			const argsStr = JSON.stringify(args);
+			const preview = argsStr.length > 50 ? `${argsStr.slice(0, 50)}...` : argsStr;
+			return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
+		}
+	}
+}
+
+interface UsageStats {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	contextTokens: number;
+	turns: number;
+}
+
+interface SingleResult {
+	agent: string;
+	agentSource: "user" | "project" | "unknown";
+	task: string;
+	exitCode: number;
+	messages: Message[];
+	stderr: string;
+	usage: UsageStats;
+	model?: string;
+	stopReason?: string;
+	errorMessage?: string;
+	step?: number;
+}
 
 interface SubagentDetails {
 	mode: "single" | "parallel" | "chain";
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
 	results: SingleResult[];
+}
+
+function getFinalOutput(messages: Message[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role === "assistant") {
+			for (const part of msg.content) {
+				if (part.type === "text") return part.text;
+			}
+		}
+	}
+	return "";
+}
+
+type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
+
+function getDisplayItems(messages: Message[]): DisplayItem[] {
+	const items: DisplayItem[] = [];
+	for (const msg of messages) {
+		if (msg.role === "assistant") {
+			for (const part of msg.content) {
+				if (part.type === "text") items.push({ type: "text", text: part.text });
+				else if (part.type === "toolCall") items.push({ type: "toolCall", name: part.name, args: part.arguments });
+			}
+		}
+	}
+	return items;
 }
 
 async function mapWithConcurrencyLimit<TIn, TOut>(
@@ -53,6 +207,16 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 	return results;
 }
 
+async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
+	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+	const safeName = agentName.replace(/[^\w.-]+/g, "_");
+	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
+	await withFileMutationQueue(filePath, async () => {
+		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+	});
+	return { dir: tmpDir, filePath };
+}
+
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
@@ -70,15 +234,6 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
-
-export function buildAgentCliArgs(agent: AgentConfig): string[] {
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (agent.model) args.push("--model", agent.model);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
-	if (agent.maxTurns && agent.maxTurns > 0) args.push("--max-turns", String(agent.maxTurns));
-	if (agent.effort) args.push("--thinking", agent.effort);
-	return args;
-}
 
 async function runSingleAgent(
 	defaultCwd: string,
@@ -107,14 +262,16 @@ async function runSingleAgent(
 		};
 	}
 
-	const args = buildAgentCliArgs(agent);
+	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	if (agent.model) args.push("--model", agent.model);
+	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
 
 	const currentResult: SingleResult = {
 		agent: agentName,
-		agentSource: agent.source,
+		agentSource: (["user", "project", "unknown"].includes(agent.source) ? agent.source : "unknown") as "user" | "project" | "unknown",
 		task,
 		exitCode: 0,
 		messages: [],
@@ -158,8 +315,7 @@ async function runSingleAgent(
 				let event: any;
 				try {
 					event = JSON.parse(line);
-				} catch (err) {
-					console.debug("[subagent] event JSON parse failed:", err instanceof Error ? err.message : err);
+				} catch {
 					return;
 				}
 
@@ -228,7 +384,18 @@ async function runSingleAgent(
 		if (wasAborted) throw new Error("Subagent was aborted");
 		return currentResult;
 	} finally {
-		cleanupTempFiles(tmpPromptPath, tmpPromptDir, "subagent");
+		if (tmpPromptPath)
+			try {
+				fs.unlinkSync(tmpPromptPath);
+			} catch {
+				/* ignore */
+			}
+		if (tmpPromptDir)
+			try {
+				fs.rmdirSync(tmpPromptDir);
+			} catch {
+				/* ignore */
+			}
 	}
 }
 
@@ -339,8 +506,10 @@ export default function (pi: ExtensionAPI) {
 					const step = params.chain[i];
 					const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
 
+					// Create update callback that includes all previous results
 					const chainUpdate: OnUpdateCallback | undefined = onUpdate
 						? (partial) => {
+								// Combine completed results with current streaming result
 								const currentResult = partial.details?.results[0];
 								if (currentResult) {
 									const allResults = [...results, currentResult];
@@ -396,14 +565,16 @@ export default function (pi: ExtensionAPI) {
 						details: makeDetails("parallel")([]),
 					};
 
+				// Track all results for streaming updates
 				const allResults: SingleResult[] = new Array(params.tasks.length);
 
+				// Initialize placeholder results
 				for (let i = 0; i < params.tasks.length; i++) {
 					allResults[i] = {
 						agent: params.tasks[i].agent,
 						agentSource: "unknown",
 						task: params.tasks[i].task,
-						exitCode: -1,
+						exitCode: -1, // -1 = still running
 						messages: [],
 						stderr: "",
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -432,6 +603,7 @@ export default function (pi: ExtensionAPI) {
 						t.cwd,
 						undefined,
 						signal,
+						// Per-task update callback
 						(partial) => {
 							if (partial.details?.results[0]) {
 								allResults[index] = partial.details.results[0];
@@ -506,6 +678,7 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("muted", ` [${scope}]`);
 				for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
 					const step = args.chain[i];
+					// Clean up {previous} placeholder for display
 					const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
 					const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
 					text +=
@@ -549,7 +722,7 @@ export default function (pi: ExtensionAPI) {
 
 			const mdTheme = getMarkdownTheme();
 
-			const renderDisplayItemsLocal = (items: DisplayItem[], limit?: number) => {
+			const renderDisplayItems = (items: DisplayItem[], limit?: number) => {
 				const toShow = limit ? items.slice(-limit) : items;
 				const skipped = limit && items.length > limit ? items.length - limit : 0;
 				let text = "";
@@ -615,13 +788,26 @@ export default function (pi: ExtensionAPI) {
 				if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
 				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 				else {
-					text += `\n${renderDisplayItemsLocal(displayItems, COLLAPSED_ITEM_COUNT)}`;
+					text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
 					if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
 				}
 				const usageStr = formatUsageStats(r.usage, r.model);
 				if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
 				return new Text(text, 0, 0);
 			}
+
+			const aggregateUsage = (results: SingleResult[]) => {
+				const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+				for (const r of results) {
+					total.input += r.usage.input;
+					total.output += r.usage.output;
+					total.cacheRead += r.usage.cacheRead;
+					total.cacheWrite += r.usage.cacheWrite;
+					total.cost += r.usage.cost;
+					total.turns += r.usage.turns;
+				}
+				return total;
+			};
 
 			if (details.mode === "chain") {
 				const successCount = details.results.filter((r) => r.exitCode === 0).length;
@@ -655,6 +841,7 @@ export default function (pi: ExtensionAPI) {
 						);
 						container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
 
+						// Show tool calls
 						for (const item of displayItems) {
 							if (item.type === "toolCall") {
 								container.addChild(
@@ -667,6 +854,7 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
+						// Show final output as markdown
 						if (finalOutput) {
 							container.addChild(new Spacer(1));
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
@@ -684,6 +872,7 @@ export default function (pi: ExtensionAPI) {
 					return container;
 				}
 
+				// Collapsed view
 				let text =
 					icon +
 					" " +
@@ -694,7 +883,7 @@ export default function (pi: ExtensionAPI) {
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-					else text += `\n${renderDisplayItemsLocal(displayItems, 5)}`;
+					else text += `\n${renderDisplayItems(displayItems, 5)}`;
 				}
 				const usageStr = formatUsageStats(aggregateUsage(details.results));
 				if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
@@ -737,6 +926,7 @@ export default function (pi: ExtensionAPI) {
 						);
 						container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
 
+						// Show tool calls
 						for (const item of displayItems) {
 							if (item.type === "toolCall") {
 								container.addChild(
@@ -749,6 +939,7 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
+						// Show final output as markdown
 						if (finalOutput) {
 							container.addChild(new Spacer(1));
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
@@ -766,6 +957,7 @@ export default function (pi: ExtensionAPI) {
 					return container;
 				}
 
+				// Collapsed view (or still running)
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
 				for (const r of details.results) {
 					const rIcon =
@@ -778,7 +970,7 @@ export default function (pi: ExtensionAPI) {
 					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
 					if (displayItems.length === 0)
 						text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
-					else text += `\n${renderDisplayItemsLocal(displayItems, 5)}`;
+					else text += `\n${renderDisplayItems(displayItems, 5)}`;
 				}
 				if (!isRunning) {
 					const usageStr = formatUsageStats(aggregateUsage(details.results));

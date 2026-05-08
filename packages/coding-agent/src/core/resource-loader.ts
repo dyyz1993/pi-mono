@@ -5,11 +5,10 @@ import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
-import { resolveIncludes } from "./include-resolver.js";
 
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.js";
 
-import { isLocalPath } from "../utils/paths.js";
+import { canonicalizePath, isLocalPath } from "../utils/paths.js";
 import { createEventBus, type EventBus } from "./event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.js";
@@ -56,29 +55,15 @@ function resolvePromptInput(input: string | undefined, description: string): str
 	return input;
 }
 
-function loadContextFileFromDir(
-	dir: string,
-	options?: { cwd: string; agentDir: string },
-): { path: string; content: string } | null {
-	const candidates = ["AGENTS.md", "CLAUDE.md"];
+function loadContextFileFromDir(dir: string): { path: string; content: string } | null {
+	const candidates = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 	for (const filename of candidates) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
 			try {
-				let content = readFileSync(filePath, "utf-8");
-				if (options) {
-					const result = resolveIncludes(content, filePath, {
-						cwd: options.cwd,
-						agentDir: options.agentDir,
-					});
-					content = result.content;
-					for (const diag of result.diagnostics) {
-						console.error(chalk.yellow(`Warning: @include ${diag.path} in ${filePath}: ${diag.message}`));
-					}
-				}
 				return {
 					path: filePath,
-					content,
+					content: readFileSync(filePath, "utf-8"),
 				};
 			} catch (error) {
 				console.error(chalk.yellow(`Warning: Could not read ${filePath}: ${error}`));
@@ -98,9 +83,7 @@ export function loadProjectContextFiles(options: {
 	const contextFiles: Array<{ path: string; content: string }> = [];
 	const seenPaths = new Set<string>();
 
-	const loadOpts = { cwd: options.cwd, agentDir: options.agentDir };
-
-	const globalContext = loadContextFileFromDir(resolvedAgentDir, loadOpts);
+	const globalContext = loadContextFileFromDir(resolvedAgentDir);
 	if (globalContext) {
 		contextFiles.push(globalContext);
 		seenPaths.add(globalContext.path);
@@ -112,7 +95,7 @@ export function loadProjectContextFiles(options: {
 	const root = resolve("/");
 
 	while (true) {
-		const contextFile = loadContextFileFromDir(currentDir, loadOpts);
+		const contextFile = loadContextFileFromDir(currentDir);
 		if (contextFile && !seenPaths.has(contextFile.path)) {
 			ancestorContextFiles.unshift(contextFile);
 			seenPaths.add(contextFile.path);
@@ -681,8 +664,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		for (const p of [...primary, ...additional]) {
 			const resolved = this.resolveResourcePath(p);
-			if (seen.has(resolved)) continue;
-			seen.add(resolved);
+			const canonicalPath = canonicalizePath(resolved);
+			if (seen.has(canonicalPath)) continue;
+			seen.add(canonicalPath);
 			merged.push(resolved);
 		}
 

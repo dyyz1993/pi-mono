@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@dyyz1993/pi-agent-core";
@@ -8,59 +8,21 @@ import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const hasApiKey =
-	!!process.env.ANTHROPIC_API_KEY ||
-	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
-	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY ||
-	existsSync(join(homedir(), ".pi/agent/models.json"));
-
-const PROVIDER = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "anthropic" : "zhipuai";
-const MODEL = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "claude-sonnet-4-5" : "glm-4.7";
-const GLM_EXT_PATH = join(homedir(), ".pi/agent/extensions/glm-provider.ts");
-
 /**
  * RPC mode tests.
  */
-describe.skipIf(!hasApiKey)("RPC mode", () => {
+describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_TOKEN)("RPC mode", () => {
 	let client: RpcClient;
 	let sessionDir: string;
 
-	async function getSessionFile(): Promise<string> {
-		const state = await client.getState();
-		expect(state.sessionFile).toBeDefined();
-		expect(existsSync(state.sessionFile!)).toBe(true);
-		return state.sessionFile!;
-	}
-
-	async function readSessionEntries(): Promise<Array<{ type: string } & Record<string, unknown>>> {
-		const sessionFile = await getSessionFile();
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		const content = readFileSync(sessionFile, "utf8");
-		return content
-			.trim()
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => JSON.parse(line));
-	}
-
 	beforeEach(() => {
 		sessionDir = join(tmpdir(), `pi-rpc-test-${Date.now()}`);
-		const args = ["--no-extensions"];
-		if (PROVIDER === "zhipuai" && existsSync(GLM_EXT_PATH)) {
-			args.push("-e", GLM_EXT_PATH);
-		}
-		const env: Record<string, string> = {};
-		if (PROVIDER === "anthropic") {
-			env.PI_CODING_AGENT_DIR = sessionDir;
-		}
 		client = new RpcClient({
 			cliPath: join(__dirname, "..", "dist", "cli.js"),
 			cwd: join(__dirname, ".."),
-			env: Object.keys(env).length > 0 ? env : undefined,
-			provider: PROVIDER,
-			model: MODEL,
-			args,
+			env: { PI_CODING_AGENT_DIR: sessionDir },
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
 		});
 	});
 
@@ -76,8 +38,8 @@ describe.skipIf(!hasApiKey)("RPC mode", () => {
 		const state = await client.getState();
 
 		expect(state.model).toBeDefined();
-		expect(state.model?.provider).toBe(PROVIDER);
-		expect(state.model?.id).toBe(MODEL);
+		expect(state.model?.provider).toBe("anthropic");
+		expect(state.model?.id).toBe("claude-sonnet-4-5");
 		expect(state.isStreaming).toBe(false);
 		expect(state.messageCount).toBe(0);
 	}, 30000);
@@ -96,7 +58,21 @@ describe.skipIf(!hasApiKey)("RPC mode", () => {
 		await new Promise((resolve) => setTimeout(resolve, 200));
 
 		// Verify session file
-		const entries = await readSessionEntries();
+		const sessionsPath = join(sessionDir, "sessions");
+		expect(existsSync(sessionsPath)).toBe(true);
+
+		const sessionDirs = readdirSync(sessionsPath);
+		expect(sessionDirs.length).toBeGreaterThan(0);
+
+		const cwdSessionDir = join(sessionsPath, sessionDirs[0]);
+		const sessionFiles = readdirSync(cwdSessionDir).filter((f) => f.endsWith(".jsonl"));
+		expect(sessionFiles.length).toBe(1);
+
+		const sessionContent = readFileSync(join(cwdSessionDir, sessionFiles[0]), "utf8");
+		const entries = sessionContent
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
 
 		// First entry should be session header
 		expect(entries[0].type).toBe("session");
@@ -125,7 +101,15 @@ describe.skipIf(!hasApiKey)("RPC mode", () => {
 		await new Promise((resolve) => setTimeout(resolve, 200));
 
 		// Verify compaction in session file
-		const entries = await readSessionEntries();
+		const sessionsPath = join(sessionDir, "sessions");
+		const sessionDirs = readdirSync(sessionsPath);
+		const cwdSessionDir = join(sessionsPath, sessionDirs[0]);
+		const sessionFiles = readdirSync(cwdSessionDir).filter((f) => f.endsWith(".jsonl"));
+		const sessionContent = readFileSync(join(cwdSessionDir, sessionFiles[0]), "utf8");
+		const entries = sessionContent
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
 
 		const compactionEntries = entries.filter((e: { type: string }) => e.type === "compaction");
 		expect(compactionEntries.length).toBe(1);
@@ -155,7 +139,15 @@ describe.skipIf(!hasApiKey)("RPC mode", () => {
 		await new Promise((resolve) => setTimeout(resolve, 200));
 
 		// Verify bash message in session
-		const entries = await readSessionEntries();
+		const sessionsPath = join(sessionDir, "sessions");
+		const sessionDirs = readdirSync(sessionsPath);
+		const cwdSessionDir = join(sessionsPath, sessionDirs[0]);
+		const sessionFiles = readdirSync(cwdSessionDir).filter((f) => f.endsWith(".jsonl"));
+		const sessionContent = readFileSync(join(cwdSessionDir, sessionFiles[0]), "utf8");
+		const entries = sessionContent
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
 
 		const bashMessages = entries.filter(
 			(e: { type: string; message?: { role: string } }) =>
@@ -312,7 +304,15 @@ describe.skipIf(!hasApiKey)("RPC mode", () => {
 		await new Promise((resolve) => setTimeout(resolve, 200));
 
 		// Verify session_info entry in session file
-		const entries = await readSessionEntries();
+		const sessionsPath = join(sessionDir, "sessions");
+		const sessionDirs = readdirSync(sessionsPath);
+		const cwdSessionDir = join(sessionsPath, sessionDirs[0]);
+		const sessionFiles = readdirSync(cwdSessionDir).filter((f) => f.endsWith(".jsonl"));
+		const sessionContent = readFileSync(join(cwdSessionDir, sessionFiles[0]), "utf8");
+		const entries = sessionContent
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
 
 		const sessionInfoEntries = entries.filter((e: { type: string }) => e.type === "session_info");
 		expect(sessionInfoEntries.length).toBe(1);
