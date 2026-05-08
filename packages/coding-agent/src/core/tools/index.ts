@@ -51,6 +51,7 @@ export {
 	type ReadToolOptions,
 } from "./read.js";
 export {
+	DEFAULT_INPUT_MAX_BYTES,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,

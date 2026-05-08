@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
@@ -497,4 +497,45 @@ export function getSessionsDir(): string {
 /** Get path to debug log file */
 export function getDebugLogPath(): string {
 	return join(getAgentDir(), `${APP_NAME}-debug.log`);
+}
+
+export function findCanonicalGitRoot(cwd: string): string | null {
+	let dir = realpathSync(cwd);
+	for (;;) {
+		const gitPath = join(dir, ".git");
+		if (!existsSync(gitPath)) {
+			const parent = dirname(dir);
+			if (parent === dir) return null;
+			dir = parent;
+			continue;
+		}
+
+		const stat = lstatSync(gitPath);
+		if (stat.isDirectory()) {
+			return dir;
+		}
+
+		if (stat.isFile()) {
+			const content = readFileSync(gitPath, "utf-8").trim();
+			const match = content.match(/^gitdir:\s*(.+)/);
+			if (!match) return null;
+			const gitdir = match[1]!.trim();
+
+			if (gitdir.includes("/worktrees/")) {
+				const commonPrefix = gitdir.replace(/\/worktrees\/[^/]+\/?$/, "");
+				let rootDir = commonPrefix;
+				if (rootDir.endsWith("/.git")) {
+					rootDir = rootDir.slice(0, -4);
+				}
+				if (!existsSync(join(rootDir, ".git"))) return null;
+				return realpathSync(rootDir);
+			}
+
+			const parent = dirname(gitdir);
+			if (!existsSync(parent)) return null;
+			return parent;
+		}
+
+		return null;
+	}
 }

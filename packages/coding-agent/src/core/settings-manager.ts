@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import { DEFAULT_TIER_ALIASES } from "./defaults.js";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -73,6 +74,24 @@ export type PackageSource =
 			themes?: string[];
 	  };
 
+import type {
+	McpManagerOptions,
+	McpServerConfig,
+	McpSettings,
+	McpSseServerConfig,
+	McpStdioServerConfig,
+	McpStreamableHttpServerConfig,
+} from "./mcp/types.js";
+
+export type {
+	McpManagerOptions,
+	McpServerConfig,
+	McpSettings,
+	McpSseServerConfig,
+	McpStdioServerConfig,
+	McpStreamableHttpServerConfig,
+} from "./mcp/types.js";
+
 export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
@@ -110,6 +129,8 @@ export interface Settings {
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
+	mcp?: McpSettings;
+	tierModels?: Record<string, string>;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -1063,5 +1084,9 @@ export class SettingsManager {
 		this.globalSettings.warnings = { ...warnings };
 		this.markModified("warnings");
 		this.save();
+	}
+
+	getTierModels(): Record<string, string> {
+		return { ...DEFAULT_TIER_ALIASES, ...(this.settings.tierModels ?? {}) };
 	}
 }

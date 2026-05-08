@@ -390,6 +390,89 @@ export class RpcClient {
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
 	}
 
+	async getSettings(scope?: "global" | "project"): Promise<Record<string, unknown>> {
+		const command: Record<string, unknown> = { type: "get_settings" };
+		if (scope) command.scope = scope;
+		const response = await this.send(command as RpcCommandBody);
+		return this.getData<Record<string, unknown>>(response);
+	}
+
+	async setSettings(settings: Record<string, unknown>, scope?: "global" | "project"): Promise<void> {
+		const command: Record<string, unknown> = { type: "set_settings", settings };
+		if (scope) command.scope = scope;
+		await this.send(command as RpcCommandBody);
+	}
+
+	async getContextUsage(): Promise<Record<string, unknown>> {
+		const response = await this.send({ type: "get_context_usage" });
+		return this.getData<Record<string, unknown>>(response);
+	}
+
+	async getSystemPrompt(): Promise<{ systemPrompt: string; appendSystemPrompt?: string }> {
+		const response = await this.send({ type: "get_system_prompt" });
+		return this.getData<{ systemPrompt: string; appendSystemPrompt?: string }>(response);
+	}
+
+	async getActiveTools(): Promise<string[]> {
+		const response = await this.send({ type: "get_active_tools" });
+		return this.getData<{ toolNames: string[] }>(response).toolNames;
+	}
+
+	async setActiveTools(toolNames: string[]): Promise<void> {
+		await this.send({ type: "set_active_tools", toolNames });
+	}
+
+	async getQueue(): Promise<{ steering: unknown[]; followUp: unknown[] }> {
+		const response = await this.send({ type: "get_queue" });
+		return this.getData<{ steering: unknown[]; followUp: unknown[] }>(response);
+	}
+
+	async clearQueue(): Promise<{ steering: unknown[]; followUp: unknown[] }> {
+		const response = await this.send({ type: "clear_queue" });
+		return this.getData<{ steering: unknown[]; followUp: unknown[] }>(response);
+	}
+
+	async getFlags(): Promise<Record<string, unknown>> {
+		const response = await this.send({ type: "get_flags" });
+		return this.getData<{ flags: Record<string, unknown> }>(response).flags;
+	}
+
+	async getFlagValues(): Promise<Record<string, unknown>> {
+		const response = await this.send({ type: "get_flag_values" });
+		return this.getData<{ values: Record<string, unknown> }>(response).values;
+	}
+
+	async setFlag(name: string, value: unknown): Promise<void> {
+		await this.send({ type: "set_flag", name, value });
+	}
+
+	async reload(): Promise<void> {
+		await this.send({ type: "reload" });
+	}
+
+	async getAgentsFiles(): Promise<string[]> {
+		const response = await this.send({ type: "get_agents_files" });
+		return this.getData<{ agentsFiles: string[] }>(response).agentsFiles;
+	}
+
+	async setCwd(cwd: string): Promise<void> {
+		await this.send({ type: "set_cwd", cwd });
+	}
+
+	async getFullMessages(
+		options?: { limit?: number; afterEntryId?: string; includeUserMessages?: boolean; direction?: "asc" | "desc" },
+	): Promise<Record<string, unknown>> {
+		const command: Record<string, unknown> = { type: "get_full_messages" };
+		if (options) Object.assign(command, options);
+		const response = await this.send(command as RpcCommandBody);
+		return this.getData<Record<string, unknown>>(response);
+	}
+
+	async getTree(): Promise<{ entries: unknown[]; leafId: string }> {
+		const response = await this.send({ type: "get_tree" });
+		return this.getData<{ entries: unknown[]; leafId: string }>(response);
+	}
+
 	// =========================================================================
 	// Helpers
 	// =========================================================================

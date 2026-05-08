@@ -146,9 +146,7 @@ describe("detectInstallMethod", () => {
 		);
 
 		expect(detectInstallMethod()).toBe("pnpm");
-		expect(getUpdateInstruction("@dyyz1993/pi-coding-agent")).toBe(
-			"Run: pnpm install -g @dyyz1993/pi-coding-agent",
-		);
+		expect(getUpdateInstruction("@dyyz1993/pi-coding-agent")).toBe("Run: pnpm install -g @dyyz1993/pi-coding-agent");
 	});
 
 	test("does not self-update unknown wrapper installs", () => {
@@ -232,9 +230,7 @@ describe("detectInstallMethod", () => {
 		setExecPath(`${packageDir}\\dist\\cli.js`);
 
 		expect(detectInstallMethod()).toBe("npm");
-		expect(getUpdateInstruction("@dyyz1993/pi-coding-agent")).toBe(
-			"Run: npm install -g @dyyz1993/pi-coding-agent",
-		);
+		expect(getUpdateInstruction("@dyyz1993/pi-coding-agent")).toBe("Run: npm install -g @dyyz1993/pi-coding-agent");
 	});
 
 	test("self-updates bun global installs from bun pm bin", () => {
