@@ -492,7 +492,7 @@ export class RpcClient {
 		return this.getData<{ values: Record<string, unknown> }>(response).values;
 	}
 
-	async setFlag(name: string, value: unknown): Promise<void> {
+	async setFlag(name: string, value: string | boolean): Promise<void> {
 		await this.send({ type: "set_flag", name, value });
 	}
 

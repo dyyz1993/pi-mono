@@ -3088,10 +3088,6 @@ export class InteractiveMode {
 				// Tool results are rendered inline with tool calls, handled separately
 				break;
 			}
-			case "custom":
-			case "bashExecution":
-			case "branchSummary":
-			case "compactionSummary":
 			case "foldSummary":
 			case "segmentSummary": {
 				break;
