@@ -5,6 +5,7 @@
 import type { Api, Model } from "@dyyz1993/pi-ai";
 import { fuzzyFilter } from "@dyyz1993/pi-tui";
 import chalk from "chalk";
+import { formatNoModelsAvailableMessage } from "../core/auth-guidance.js";
 import type { ModelRegistry } from "../core/model-registry.js";
 
 /**
@@ -34,7 +35,7 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	const models = modelRegistry.getAvailable();
 
 	if (models.length === 0) {
-		console.log("No models available. Set API keys in environment variables.");
+		console.log(formatNoModelsAvailableMessage());
 		return;
 	}
 

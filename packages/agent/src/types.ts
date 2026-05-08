@@ -100,6 +100,18 @@ export interface AfterToolCallContext {
 	context: AgentContext;
 }
 
+/** Context passed to `shouldStopAfterTurn`. */
+export interface ShouldStopAfterTurnContext {
+	/** The assistant message that completed the turn. */
+	message: AssistantMessage;
+	/** Tool result messages passed to the preceding `turn_end` event. */
+	toolResults: ToolResultMessage[];
+	/** Current agent context after the turn's assistant message and tool results have been appended. */
+	context: AgentContext;
+	/** Messages that this loop invocation will return if it exits at this point. Prompt runs include the initial prompt messages; continuation runs do not include pre-existing context messages. */
+	newMessages: AgentMessage[];
+}
+
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
 
@@ -164,9 +176,21 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 
 	/**
+	 * Called after each turn fully completes and `turn_end` has been emitted.
+	 *
+	 * If it returns true, the loop emits `agent_end` and exits before polling steering or follow-up queues,
+	 * without starting another LLM call. The current assistant response and any tool executions finish normally.
+	 *
+	 * Use this to request a graceful stop after the current turn, e.g. before context gets too full.
+	 *
+	 * Contract: must not throw or reject. Throwing interrupts the low-level agent loop without producing a normal event sequence.
+	 */
+	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
+
+	/**
 	 * Returns steering messages to inject into the conversation mid-run.
 	 *
-	 * Called after the current assistant turn finishes executing its tool calls.
+	 * Called after the current assistant turn finishes executing its tool calls, unless `shouldStopAfterTurn` exits first.
 	 * If messages are returned, they are added to the context before the next LLM call.
 	 * Tool calls from the current assistant message are not skipped.
 	 *
@@ -225,7 +249,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 /**
  * Thinking/reasoning level for models that support it.
- * Note: "xhigh" is only supported by OpenAI gpt-5.1-codex-max, gpt-5.2, gpt-5.2-codex, gpt-5.3, and gpt-5.3-codex models.
+ * Note: "xhigh" is only supported by selected model families. Use model thinking-level metadata
+ * from @dyyz1993/pi-ai to detect support for a concrete model.
  */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -359,18 +384,6 @@ export type AgentEvent =
 	| { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
 	| { type: "message_end"; message: AgentMessage }
 	// Tool execution lifecycle
-	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: Record<string, unknown> }
-	| {
-			type: "tool_execution_update";
-			toolCallId: string;
-			toolName: string;
-			args: Record<string, unknown>;
-			partialResult: AgentToolResult<unknown>;
-	  }
-	| {
-			type: "tool_execution_end";
-			toolCallId: string;
-			toolName: string;
-			result: AgentToolResult<unknown>;
-			isError: boolean;
-	  };
+	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
+	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };

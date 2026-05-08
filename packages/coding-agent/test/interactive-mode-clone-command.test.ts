@@ -6,7 +6,6 @@ type CloneCommandContext = {
 	runtimeHost: {
 		fork: (entryId: string, options?: { position?: "before" | "at" }) => Promise<{ cancelled: boolean }>;
 	};
-	handleRuntimeSessionChange: () => Promise<void>;
 	renderCurrentSessionState: () => void;
 	editor: { setText: (text: string) => void };
 	showStatus: (message: string) => void;
@@ -23,7 +22,6 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
 describe("InteractiveMode /clone", () => {
 	it("clones the current leaf into a new session", async () => {
 		const fork = vi.fn(async () => ({ cancelled: false }));
-		const handleRuntimeSessionChange = vi.fn(async () => {});
 		const renderCurrentSessionState = vi.fn();
 		const setText = vi.fn();
 		const showStatus = vi.fn();
@@ -33,7 +31,6 @@ describe("InteractiveMode /clone", () => {
 		const context: CloneCommandContext = {
 			sessionManager: { getLeafId: () => "leaf-123" },
 			runtimeHost: { fork },
-			handleRuntimeSessionChange,
 			renderCurrentSessionState,
 			editor: { setText },
 			showStatus,
@@ -59,7 +56,6 @@ describe("InteractiveMode /clone", () => {
 		const context: CloneCommandContext = {
 			sessionManager: { getLeafId: () => null },
 			runtimeHost: { fork },
-			handleRuntimeSessionChange: vi.fn(async () => {}),
 			renderCurrentSessionState: vi.fn(),
 			editor: { setText: vi.fn() },
 			showStatus,

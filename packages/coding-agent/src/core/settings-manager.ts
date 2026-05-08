@@ -4,7 +4,6 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
-import { DEFAULT_TIER_ALIASES } from "./defaults.js";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -17,17 +16,24 @@ export interface BranchSummarySettings {
 	skipPrompt?: boolean; // default: false - when true, skips "Summarize branch?" prompt and defaults to no summary
 }
 
+export interface ProviderRetrySettings {
+	timeoutMs?: number; // SDK/provider request timeout in milliseconds
+	maxRetries?: number; // SDK/provider retry attempts
+	maxRetryDelayMs?: number; // default: 60000 (max server-requested delay before failing)
+}
+
 export interface RetrySettings {
 	enabled?: boolean; // default: true
 	maxRetries?: number; // default: 3
 	baseDelayMs?: number; // default: 2000 (exponential backoff: 2s, 4s, 8s)
-	maxDelayMs?: number; // default: 60000 (max server-requested delay before failing)
+	provider?: ProviderRetrySettings;
 }
 
 export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
 	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
+	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
 }
 
 export interface ImageSettings {
@@ -44,6 +50,10 @@ export interface ThinkingBudgetsSettings {
 
 export interface MarkdownSettings {
 	codeBlockIndent?: string; // default: "  "
+}
+
+export interface WarningSettings {
+	anthropicExtraUsage?: boolean; // default: true
 }
 
 export type TransportSetting = Transport;
@@ -63,30 +73,12 @@ export type PackageSource =
 			themes?: string[];
 	  };
 
-import type {
-	McpManagerOptions,
-	McpServerConfig,
-	McpSettings,
-	McpSseServerConfig,
-	McpStdioServerConfig,
-	McpStreamableHttpServerConfig,
-} from "./mcp/types.js";
-
-export type {
-	McpManagerOptions,
-	McpServerConfig,
-	McpSettings,
-	McpSseServerConfig,
-	McpStdioServerConfig,
-	McpStreamableHttpServerConfig,
-} from "./mcp/types.js";
-
 export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-	transport?: TransportSetting; // default: "sse"
+	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
@@ -116,9 +108,8 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
+	warnings?: WarningSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
-	mcp?: McpSettings;
-	tierModels?: Record<string, string>;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -309,7 +300,9 @@ export class SettingsManager {
 	/** Create an in-memory SettingsManager (no file I/O) */
 	static inMemory(settings: Partial<Settings> = {}): SettingsManager {
 		const storage = new InMemorySettingsStorage();
-		return new SettingsManager(storage, settings, {});
+		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as Record<string, unknown>);
+		storage.withLock("global", () => JSON.stringify(initialSettings, null, 2));
+		return SettingsManager.fromStorage(storage);
 	}
 
 	private static loadFromStorage(storage: SettingsStorage, scope: SettingsScope): Settings {
@@ -370,6 +363,30 @@ export class SettingsManager {
 			} else {
 				delete settings.skills;
 			}
+		}
+
+		// Migrate retry.maxDelayMs -> retry.provider.maxRetryDelayMs
+		if (
+			"retry" in settings &&
+			typeof settings.retry === "object" &&
+			settings.retry !== null &&
+			!Array.isArray(settings.retry)
+		) {
+			const retrySettings = settings.retry as Record<string, unknown>;
+			const providerSettings =
+				typeof retrySettings.provider === "object" && retrySettings.provider !== null
+					? (retrySettings.provider as Record<string, unknown>)
+					: undefined;
+			if (
+				typeof retrySettings.maxDelayMs === "number" &&
+				(providerSettings?.maxRetryDelayMs === undefined || providerSettings?.maxRetryDelayMs === null)
+			) {
+				retrySettings.provider = {
+					...(providerSettings ?? {}),
+					maxRetryDelayMs: retrySettings.maxDelayMs,
+				};
+			}
+			delete retrySettings.maxDelayMs;
 		}
 
 		return settings as Settings;
@@ -578,10 +595,6 @@ export class SettingsManager {
 		return this.settings.defaultModel;
 	}
 
-	getTierModels(): Record<string, string> {
-		return { ...DEFAULT_TIER_ALIASES, ...this.settings.tierModels };
-	}
-
 	setDefaultProvider(provider: string): void {
 		this.globalSettings.defaultProvider = provider;
 		this.markModified("defaultProvider");
@@ -643,7 +656,7 @@ export class SettingsManager {
 	}
 
 	getTransport(): TransportSetting {
-		return this.settings.transport ?? "sse";
+		return this.settings.transport ?? "auto";
 	}
 
 	setTransport(transport: TransportSetting): void {
@@ -705,12 +718,19 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number; maxDelayMs: number } {
+	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number } {
 		return {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? 3,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
-			maxDelayMs: this.settings.retry?.maxDelayMs ?? 60000,
+		};
+	}
+
+	getProviderRetrySettings(): { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs: number } {
+		return {
+			timeoutMs: this.settings.retry?.provider?.timeoutMs,
+			maxRetries: this.settings.retry?.provider?.maxRetries,
+			maxRetryDelayMs: this.settings.retry?.provider?.maxRetryDelayMs ?? 60000,
 		};
 	}
 
@@ -930,6 +950,19 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getShowTerminalProgress(): boolean {
+		return this.settings.terminal?.showTerminalProgress ?? false;
+	}
+
+	setShowTerminalProgress(enabled: boolean): void {
+		if (!this.globalSettings.terminal) {
+			this.globalSettings.terminal = {};
+		}
+		this.globalSettings.terminal.showTerminalProgress = enabled;
+		this.markModified("terminal", "showTerminalProgress");
+		this.save();
+	}
+
 	getImageAutoResize(): boolean {
 		return this.settings.images?.autoResize ?? true;
 	}
@@ -1020,5 +1053,15 @@ export class SettingsManager {
 
 	getCodeBlockIndent(): string {
 		return this.settings.markdown?.codeBlockIndent ?? "  ";
+	}
+
+	getWarnings(): WarningSettings {
+		return { ...(this.settings.warnings ?? {}) };
+	}
+
+	setWarnings(warnings: WarningSettings): void {
+		this.globalSettings.warnings = { ...warnings };
+		this.markModified("warnings");
+		this.save();
 	}
 }

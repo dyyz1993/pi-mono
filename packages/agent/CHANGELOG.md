@@ -2,15 +2,41 @@
 
 ## [Unreleased]
 
-## [0.70.5] - 2026-05-05
+## [0.74.0] - 2026-05-07
 
-## [0.70.4] - 2026-05-05
+## [0.73.1] - 2026-05-07
 
-## [0.69.26] - 2026-05-04
+## [0.73.0] - 2026-05-04
 
-## [0.69.24] - 2026-05-03
+## [0.72.1] - 2026-05-02
 
-## [0.69.11] - 2026-04-26
+### Changed
+
+- Changed the default agent transport to `auto` so providers can use their best available transport by default ([#4083](https://github.com/badlogic/pi-mono/issues/4083)).
+
+## [0.72.0] - 2026-05-01
+
+### Added
+
+- Added `shouldStopAfterTurn` to the low-level agent loop config for gracefully exiting after a completed turn before polling queued messages or starting another LLM call.
+
+## [0.71.1] - 2026-05-01
+
+## [0.71.0] - 2026-04-30
+
+## [0.70.6] - 2026-04-28
+
+## [0.70.5] - 2026-04-27
+
+## [0.70.4] - 2026-04-27
+
+## [0.70.3] - 2026-04-27
+
+## [0.70.2] - 2026-04-24
+
+## [0.70.1] - 2026-04-24
+
+## [0.70.0] - 2026-04-23
 
 ## [0.69.0] - 2026-04-22
 

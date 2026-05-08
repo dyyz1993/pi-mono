@@ -192,6 +192,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Working message not supported in RPC mode - requires TUI loader access
 		},
 
+		setWorkingVisible(_visible: boolean): void {
+			// Working visibility not supported in RPC mode - requires TUI loader access
+		},
+
 		setWorkingIndicator(_options?: WorkingIndicatorOptions): void {
 			// Working indicator customization not supported in RPC mode - requires TUI loader access
 		},
@@ -284,6 +288,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 		setEditorComponent(): void {
 			// Custom editor components not supported in RPC mode
+		},
+
+		getEditorComponent() {
+			// Custom editor components not supported in RPC mode
+			return undefined;
 		},
 
 		get theme() {

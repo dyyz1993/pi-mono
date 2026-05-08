@@ -13,27 +13,29 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import {
+import { basename, dirname, resolve } from "node:path";
+import type {
 	Agent,
-	type AgentEvent,
-	type AgentMessage,
-	type AgentState,
-	type AgentTool,
-	type ThinkingLevel,
+	AgentEvent,
+	AgentMessage,
+	AgentState,
+	AgentTool,
+	ThinkingLevel,
 } from "@dyyz1993/pi-agent-core";
-import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
-import { complete, isContextOverflow, modelsAreEqual, resetApiProviders, supportsXhigh } from "@dyyz1993/pi-ai";
-import type { Static, TSchema } from "typebox";
-import { Compile } from "typebox/compile";
-import { Value } from "typebox/value";
-import { getAgentDir, getDocsPath } from "../config.js";
+import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
+import {
+	clampThinkingLevel,
+	cleanupSessionResources,
+	getSupportedThinkingLevels,
+	isContextOverflow,
+	modelsAreEqual,
+	resetApiProviders,
+} from "@dyyz1993/pi-ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
+import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
 	type CompactionResult,
@@ -41,7 +43,6 @@ import {
 	collectEntriesForBranchSummary,
 	compact,
 	estimateContextTokens,
-	estimateTokens,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -50,17 +51,11 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
 import {
-	type BackgroundTask,
-	type CallLLMOptions,
-	type CallLLMStructuredError,
-	type CallLLMStructuredOptions,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	ExtensionRunner,
 	type ExtensionUIContext,
-	type ForkAgentOptions,
-	type ForkAgentResult,
 	type InputSource,
 	type MessageEndEvent,
 	type MessageStartEvent,
@@ -81,12 +76,8 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
-import { FileSnapshotManager } from "./file-store/index.js";
-import { InternalGit } from "./file-store/internal-git.js";
-import { handleLargeInput } from "./large-input.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
-import { resolveModelAlias } from "./model-resolver.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
@@ -96,8 +87,7 @@ import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
-import { createAllToolDefinitions, createTool, type ToolName } from "./tools/index.js";
-import { stripMarkdownCodeBlock } from "./tools/strip-markdown.js";
+import { createAllToolDefinitions } from "./tools/index.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 
 // ============================================================================
@@ -136,6 +126,8 @@ export type AgentSessionEvent =
 			followUp: readonly string[];
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "session_info_changed"; name: string | undefined }
+	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -145,9 +137,7 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "custom_entry"; customType: string; data?: unknown; id: string; display?: boolean }
-	| { type: "session_rename"; oldName: string | undefined; newName: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -191,7 +181,6 @@ export interface ExtensionBindings {
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
-	registerChannel?: (name: string) => import("./extensions/channel-types.js").Channel;
 }
 
 /** Options for AgentSession.prompt() */
@@ -248,9 +237,6 @@ interface ToolDefinitionEntry {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
-/** Thinking levels including xhigh (for supported models) */
-const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
-
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -295,7 +281,6 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
-	private _toolCallVariables?: Record<string, string>;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -311,16 +296,9 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
-	private _registerChannel?: (name: string) => import("./extensions/channel-types.js").Channel;
 
-	private _sessionAbortController = new AbortController();
-	private _backgroundTasks = new Set<BackgroundTask<unknown>>();
-
+	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
-
-	private _fileSnapshotManager: FileSnapshotManager | null = null;
-
-	private _tierModels: Record<string, string> = {};
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -363,16 +341,15 @@ export class AgentSession {
 		return this._modelRegistry;
 	}
 
-	get fileSnapshotManager(): FileSnapshotManager | null {
-		return this._fileSnapshotManager;
-	}
-
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
 		apiKey: string;
 		headers?: Record<string, string>;
 	}> {
 		const result = await this._modelRegistry.getApiKeyAndHeaders(model);
 		if (!result.ok) {
+			if (result.error.startsWith("No API key found")) {
+				throw new Error(formatNoApiKeyFoundMessage(model.provider));
+			}
 			throw new Error(result.error);
 		}
 		if (result.apiKey) {
@@ -387,10 +364,7 @@ export class AgentSession {
 					`Run '/login ${model.provider}' to re-authenticate.`,
 			);
 		}
-		throw new Error(
-			`No API key found for ${model.provider}.\n\n` +
-				`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}`,
-		);
+		throw new Error(formatNoApiKeyFoundMessage(model.provider));
 	}
 
 	/**
@@ -416,7 +390,6 @@ export class AgentSession {
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
 					input: args as Record<string, unknown>,
-					variables: this._toolCallVariables,
 				});
 			} catch (err) {
 				if (err instanceof Error) {
@@ -547,12 +520,18 @@ export class AgentSession {
 			}
 		}
 
-		// Handle session persistence BEFORE emitting for message_end,
-		// so we can inject the entry ID into the event for RPC clients.
+		// Emit to extensions first
+		await this._emitExtensionEvent(event);
+
+		// Notify all listeners
+		this._emit(event);
+
+		// Handle session persistence
 		if (event.type === "message_end") {
-			let entryId: string | undefined;
+			// Check if this is a custom message from extensions
 			if (event.message.role === "custom") {
-				entryId = this.sessionManager.appendCustomMessageEntry(
+				// Persist as CustomMessageEntry
+				this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
@@ -563,11 +542,10 @@ export class AgentSession {
 				event.message.role === "assistant" ||
 				event.message.role === "toolResult"
 			) {
-				entryId = this.sessionManager.appendMessage(event.message);
+				// Regular LLM message - persist as SessionMessageEntry
+				this.sessionManager.appendMessage(event.message);
 			}
-			if (entryId) {
-				(event as Record<string, unknown>).entryId = entryId;
-			}
+			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
@@ -590,12 +568,6 @@ export class AgentSession {
 				}
 			}
 		}
-
-		// Emit to extensions first
-		await this._emitExtensionEvent(event);
-
-		// Notify all listeners
-		this._emit(event);
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end" && this._lastAssistantMessage) {
@@ -643,6 +615,22 @@ export class AgentSession {
 		return undefined;
 	}
 
+	private _replaceMessageInPlace(target: AgentMessage, replacement: AgentMessage): void {
+		// Agent-core stores the finalized message object in its state before emitting message_end.
+		// SessionManager persistence happens later in _processAgentEvent() with event.message.
+		// Mutating this object in place keeps agent state, later turn/agent events, listeners,
+		// and the eventual SessionManager.appendMessage(event.message) persistence in sync.
+		if (target === replacement) {
+			return;
+		}
+
+		const targetRecord = target as unknown as Record<string, unknown>;
+		for (const key of Object.keys(targetRecord)) {
+			delete targetRecord[key];
+		}
+		Object.assign(targetRecord, replacement);
+	}
+
 	/** Emit extension events based on agent events */
 	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
 		if (event.type === "agent_start") {
@@ -683,9 +671,11 @@ export class AgentSession {
 			const extensionEvent: MessageEndEvent = {
 				type: "message_end",
 				message: event.message,
-				entryId: (event as Record<string, unknown>).entryId as string | undefined,
 			};
-			await this._extensionRunner.emit(extensionEvent);
+			const replacement = await this._extensionRunner.emitMessageEnd(extensionEvent);
+			if (replacement) {
+				this._replaceMessageInPlace(event.message, replacement);
+			}
 		} else if (event.type === "tool_execution_start") {
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
@@ -759,16 +749,11 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		this._extensionRunner.invalidate(
-			"This extension instance is stale after session replacement or reload. Use the provided replacement-session context instead.",
+			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
-		this._sessionAbortController.abort();
-		for (const task of this._backgroundTasks) {
-			task.cancel();
-		}
-		void Promise.allSettled([...this._backgroundTasks].map((t) => t.promise));
-		this._backgroundTasks.clear();
 		this._disconnectFromAgent();
 		this._eventListeners = [];
+		cleanupSessionResources(this.sessionId);
 	}
 
 	// =========================================================================
@@ -785,36 +770,14 @@ export class AgentSession {
 		return this.agent.state.model;
 	}
 
-	getTierModels(): Record<string, string> {
-		return this._tierModels;
-	}
-
-	setTierModels(mapping: Record<string, string>): void {
-		this._tierModels = { ...mapping };
-		this.sessionManager.appendTierModelsChange(mapping);
-	}
-
 	/** Current thinking level */
 	get thinkingLevel(): ThinkingLevel {
 		return this.agent.state.thinkingLevel;
 	}
 
-	set toolCallVariables(vars: Record<string, string> | undefined) {
-		this._toolCallVariables = vars;
-	}
-
-	get toolCallVariables(): Record<string, string> | undefined {
-		return this._toolCallVariables;
-	}
-
 	/** Whether agent is currently streaming a response */
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming;
-	}
-
-	/** Signal that aborts on session shutdown */
-	get sessionSignal(): AbortSignal {
-		return this._sessionAbortController.signal;
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -1051,11 +1014,10 @@ export class AgentSession {
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 					);
 				}
-				const { text: streamingText } = handleLargeInput(expandedText);
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(streamingText, currentImages);
+					await this._queueFollowUp(expandedText, currentImages);
 				} else {
-					await this._queueSteer(streamingText, currentImages);
+					await this._queueSteer(expandedText, currentImages);
 				}
 				preflightResult?.(true);
 				return;
@@ -1066,11 +1028,7 @@ export class AgentSession {
 
 			// Validate model
 			if (!this.model) {
-				throw new Error(
-					"No model selected.\n\n" +
-						`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}\n\n` +
-						"Then use /model to select a model.",
-				);
+				throw new Error(formatNoModelSelectedMessage());
 			}
 
 			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
@@ -1082,10 +1040,7 @@ export class AgentSession {
 							`Run '/login ${this.model.provider}' to re-authenticate.`,
 					);
 				}
-				throw new Error(
-					`No API key found for ${this.model.provider}.\n\n` +
-						`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}`,
-				);
+				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
 			// Check if we need to compact before sending (catches aborted responses)
@@ -1097,11 +1052,8 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
-			// Handle large input: save to temp file and replace with preview
-			const { text: finalText } = handleLargeInput(expandedText);
-
 			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: finalText }];
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
@@ -1171,7 +1123,7 @@ export class AgentSession {
 		if (!command) return false;
 
 		// Get command context from extension runner (includes session control methods)
-		const ctx = this._extensionRunner.createCommandContext(commandName);
+		const ctx = this._extensionRunner.createCommandContext();
 
 		try {
 			await command.handler(args, ctx);
@@ -1227,15 +1179,16 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async steer(text: string, images?: ImageContent[]): Promise<void> {
+		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
 
+		// Expand skill commands and prompt templates
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		const { text: finalText } = handleLargeInput(expandedText);
-		await this._queueSteer(finalText, images);
+		await this._queueSteer(expandedText, images);
 	}
 
 	/**
@@ -1246,15 +1199,16 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
 
+		// Expand skill commands and prompt templates
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		const { text: finalText } = handleLargeInput(expandedText);
-		await this._queueFollowUp(finalText, images);
+		await this._queueFollowUp(expandedText, images);
 	}
 
 	/**
@@ -1557,7 +1511,8 @@ export class AgentSession {
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
 		// Only persist if actually changing
-		const isChanging = effectiveLevel !== this.agent.state.thinkingLevel;
+		const previousLevel = this.agent.state.thinkingLevel;
+		const isChanging = effectiveLevel !== previousLevel;
 
 		this.agent.state.thinkingLevel = effectiveLevel;
 
@@ -1566,6 +1521,12 @@ export class AgentSession {
 			if (this.supportsThinking() || effectiveLevel !== "off") {
 				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
 			}
+			this._emit({ type: "thinking_level_changed", level: effectiveLevel });
+			void this._extensionRunner.emit({
+				type: "thinking_level_select",
+				level: effectiveLevel,
+				previousLevel,
+			});
 		}
 	}
 
@@ -1590,15 +1551,8 @@ export class AgentSession {
 	 * The provider will clamp to what the specific model supports internally.
 	 */
 	getAvailableThinkingLevels(): ThinkingLevel[] {
-		if (!this.supportsThinking()) return ["off"];
-		return this.supportsXhighThinking() ? THINKING_LEVELS_WITH_XHIGH : THINKING_LEVELS;
-	}
-
-	/**
-	 * Check if current model supports xhigh thinking level.
-	 */
-	supportsXhighThinking(): boolean {
-		return this.model ? supportsXhigh(this.model) : false;
+		if (!this.model) return THINKING_LEVELS;
+		return getSupportedThinkingLevels(this.model) as ThinkingLevel[];
 	}
 
 	/**
@@ -1618,22 +1572,8 @@ export class AgentSession {
 		return this.thinkingLevel;
 	}
 
-	private _clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel {
-		const ordered = THINKING_LEVELS_WITH_XHIGH;
-		const available = new Set(availableLevels);
-		const requestedIndex = ordered.indexOf(level);
-		if (requestedIndex === -1) {
-			return availableLevels[0] ?? "off";
-		}
-		for (let i = requestedIndex; i < ordered.length; i++) {
-			const candidate = ordered[i];
-			if (available.has(candidate)) return candidate;
-		}
-		for (let i = requestedIndex - 1; i >= 0; i--) {
-			const candidate = ordered[i];
-			if (available.has(candidate)) return candidate;
-		}
-		return availableLevels[0] ?? "off";
+	private _clampThinkingLevel(level: ThinkingLevel, _availableLevels: ThinkingLevel[]): ThinkingLevel {
+		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
 	// =========================================================================
@@ -1675,7 +1615,7 @@ export class AgentSession {
 
 		try {
 			if (!this.model) {
-				throw new Error("No model selected");
+				throw new Error(formatNoModelSelectedMessage());
 			}
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
@@ -2043,13 +1983,6 @@ export class AgentSession {
 				tokensBefore,
 				details,
 			};
-
-			let tokensAfter = 0;
-			for (const msg of sessionContext.messages) {
-				tokensAfter += estimateTokens(msg);
-			}
-			result.tokensAfter = tokensAfter;
-
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
@@ -2112,16 +2045,10 @@ export class AgentSession {
 		if (bindings.onError !== undefined) {
 			this._extensionErrorListener = bindings.onError;
 		}
-		if (bindings.registerChannel !== undefined) {
-			this._registerChannel = bindings.registerChannel;
-			this._extensionRunner.flushPendingChannels(bindings.registerChannel);
-			this._extensionRunner.updateRegisterChannel(bindings.registerChannel);
-		}
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
-		await this._initMcpServers();
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -2177,59 +2104,6 @@ export class AgentSession {
 		return `extension:${name}`;
 	}
 
-	private _mcpManager: import("./mcp/mcp-manager.js").McpManager | undefined;
-	private _createMcpToolDef:
-		| ((
-				tool: import("./mcp/types.js").DiscoveredTool,
-				manager: import("./mcp/mcp-manager.js").McpManager,
-		  ) => import("./extensions/types.js").ToolDefinition)
-		| undefined;
-
-	private async _initMcpServers(): Promise<void> {
-		const settings = this.settingsManager.getProjectSettings();
-		const servers = settings?.mcp?.servers;
-		if (!servers || Object.keys(servers).length === 0) return;
-
-		const { McpManager } = await import("./mcp/mcp-manager.js");
-		const { createMcpToolDefinition } = await import("./mcp/tool-converter.js");
-
-		this._createMcpToolDef = createMcpToolDefinition;
-
-		const mcpOptions = settings?.mcp?.options;
-		const manager = new McpManager({
-			...mcpOptions,
-			onConnectionChange: () => {
-				this._syncMcpTools();
-			},
-		});
-		this._mcpManager = manager;
-
-		try {
-			await manager.connectAll(servers);
-			this._syncMcpTools();
-		} catch (e) {
-			console.error("[mcp] Failed to initialize:", e);
-		}
-
-		this.sessionSignal.addEventListener("abort", () => {
-			this._mcpManager?.dispose().catch(() => {});
-			this._mcpManager = undefined;
-		});
-	}
-
-	private _syncMcpTools(): void {
-		this._customTools = this._customTools.filter((t) => !t.name.startsWith("mcp__"));
-		if (!this._createMcpToolDef || !this._mcpManager) return;
-
-		const tools = this._mcpManager.getAllTools();
-		for (const tool of tools) {
-			this._customTools.push(this._createMcpToolDef(tool, this._mcpManager));
-		}
-		if (tools.length > 0) {
-			this._refreshToolRegistry();
-		}
-	}
-
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
 		runner.setUIContext(this._extensionUIContext);
 		runner.bindCommandContext(this._extensionCommandContextActions);
@@ -2238,19 +2112,6 @@ export class AgentSession {
 		this._extensionErrorUnsubscriber = this._extensionErrorListener
 			? runner.onError(this._extensionErrorListener)
 			: undefined;
-	}
-
-	private _initFileSnapshotManager(): void {
-		try {
-			const storeRoot = join(getAgentDir(), "file-store");
-			const cwd = this._cwd;
-			const git = InternalGit.createForProject(storeRoot, cwd);
-			this._fileSnapshotManager = new FileSnapshotManager(git);
-			this._extensionRunner.setFileSnapshotManager(this._fileSnapshotManager);
-		} catch {
-			this._fileSnapshotManager = null;
-			this._extensionRunner.setFileSnapshotManager(null);
-		}
 	}
 
 	private _refreshCurrentModelFromRegistry(): void {
@@ -2313,26 +2174,11 @@ export class AgentSession {
 						});
 					});
 				},
-				appendEntry: (customType, data, options) => {
-					const id = this.sessionManager.appendCustomEntry(customType, data, options);
-					this._emit({ type: "custom_entry", customType, data, id, display: options?.display });
-				},
-				foldEntry: (entryId, summary, originalTokens) => {
-					this.sessionManager.appendFold(entryId, summary, originalTokens);
+				appendEntry: (customType, data) => {
+					this.sessionManager.appendCustomEntry(customType, data);
 				},
 				setSessionName: (name) => {
-					const oldName = this.sessionManager.getSessionName();
-					const trimmed = name.trim();
-					if (oldName === trimmed) return;
-					this.sessionManager.appendSessionInfo(name);
-					this._emit({ type: "session_rename", oldName, newName: trimmed });
-					runner.emit({ type: "session_rename", oldName, newName: trimmed }).catch((err) => {
-						runner.emitError({
-							extensionPath: "<runtime>",
-							event: "session_rename",
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
+					this.setSessionName(name);
 				},
 				getSessionName: () => {
 					return this.sessionManager.getSessionName();
@@ -2352,21 +2198,11 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
-				registerChannel:
-					this._registerChannel ??
-					((name: string) => {
-						throw new Error(`registerChannel("${name}") is only available in RPC mode`);
-					}),
-				callLLM: (options: CallLLMOptions) => this.callLLM(options),
-				callLLMStructured: (opts) => this.callLLMStructured(opts as CallLLMStructuredOptions & { schema: any }),
-				forkAgent: (prompt, options) => this.forkAgent(prompt, options),
-				background: <T>(fn: (signal: AbortSignal) => Promise<T>) => this.background(fn),
 			},
 			{
 				getModel: () => this.model,
 				isIdle: () => !this.isStreaming,
 				getSignal: () => this.agent.signal,
-				getSessionSignal: () => this._sessionAbortController.signal,
 				abort: () => this.abort(),
 				hasPendingMessages: () => this.pendingMessageCount > 0,
 				shutdown: () => {
@@ -2397,344 +2233,6 @@ export class AgentSession {
 				},
 			},
 		);
-	}
-
-	private async _resolveOptionalModel(modelSpec?: string): Promise<Model<any> | undefined> {
-		if (!modelSpec) return this.model;
-
-		const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
-		const candidate = aliasResolved ?? modelSpec;
-
-		let provider: string | undefined;
-		let modelId: string;
-		if (candidate.includes("/")) {
-			const slashIdx = candidate.indexOf("/");
-			provider = candidate.substring(0, slashIdx);
-			modelId = candidate.substring(slashIdx + 1);
-		} else {
-			modelId = candidate;
-		}
-
-		let resolved: Model<any> | undefined;
-		if (provider) {
-			resolved = this._modelRegistry.find(provider, modelId);
-		}
-		if (!resolved) {
-			const available = this._modelRegistry.getAvailable();
-			resolved = available.find((m) => m.id === modelId);
-		}
-
-		if (resolved && this._modelRegistry.hasConfiguredAuth(resolved)) {
-			return resolved;
-		}
-
-		return this.model;
-	}
-
-	async callLLM(options: CallLLMOptions): Promise<string> {
-		const model = await this._resolveOptionalModel(options.model);
-		if (!model) throw new Error("No model selected");
-
-		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth?.ok) {
-			throw new Error(auth?.error ?? `No API key configured for ${model.provider}`);
-		}
-		if (!auth.apiKey) {
-			throw new Error(`No API key configured for ${model.provider}`);
-		}
-
-		if (options.signal?.aborted) {
-			throw new Error("Aborted");
-		}
-
-		const messages = options.messages.map((m) => ({
-			role: m.role,
-			content: [{ type: "text" as const, text: m.content }],
-			timestamp: Date.now(),
-		})) as Message[];
-
-		if (!options.tools || options.tools.length === 0) {
-			const context: Context = {
-				systemPrompt: options.systemPrompt,
-				messages,
-			};
-			const response = await complete(model, context, {
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				maxTokens: options.maxTokens,
-				signal: options.signal,
-			});
-			return response.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("\n");
-		}
-
-		const toolInstances = options.tools
-			.map((name) => {
-				try {
-					const registered = this._toolRegistry.get(name);
-					if (registered) return registered;
-					return createTool(name as ToolName, this._cwd);
-				} catch {
-					return undefined;
-				}
-			})
-			.filter((t): t is AgentTool<any> => t !== undefined);
-
-		if (toolInstances.length === 0) {
-			const context: Context = {
-				systemPrompt: options.systemPrompt,
-				messages,
-			};
-			const response = await complete(model, context, {
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				maxTokens: options.maxTokens,
-				signal: options.signal,
-			});
-			return response.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("\n");
-		}
-
-		const agent = new Agent({
-			getApiKey: () => auth.apiKey,
-			initialState: {
-				systemPrompt: options.systemPrompt ?? "",
-				model,
-				thinkingLevel: "off",
-				tools: toolInstances,
-				messages: [],
-			},
-		});
-
-		if (options.signal?.aborted) {
-			throw new Error("Aborted");
-		}
-
-		let resultText = "";
-		const unsub = agent.subscribe((event: AgentEvent) => {
-			if (event.type === "message_end" && "message" in event) {
-				const msg = (event as { message: AgentMessage }).message;
-				if (msg.role === "assistant") {
-					const content = msg.content;
-					if (Array.isArray(content)) {
-						resultText = content
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
-							.map((c) => c.text)
-							.join("\n");
-					}
-				}
-			}
-		});
-
-		try {
-			await agent.prompt({
-				role: "user",
-				content: [{ type: "text", text: options.messages[0]?.content ?? "" }],
-				timestamp: Date.now(),
-			});
-		} finally {
-			unsub();
-		}
-
-		return resultText;
-	}
-
-	async callLLMStructured<T extends TSchema>(options: CallLLMStructuredOptions & { schema: T }): Promise<Static<T>> {
-		const maxRetries = options.maxRetries ?? 0;
-		let lastError: CallLLMStructuredError | undefined;
-
-		const schemaJson = JSON.stringify(options.schema);
-		const structuredSystemPrompt =
-			(options.systemPrompt ?? "") +
-			`\n\nRespond with valid JSON matching this schema:\n${schemaJson}\n\nRespond with JSON only, no markdown.`;
-
-		for (let attempt = 0; attempt <= maxRetries; attempt++) {
-			const messages =
-				attempt === 0
-					? options.messages
-					: [
-							...options.messages,
-							{ role: "assistant" as const, content: lastError?.raw ?? "" },
-							{
-								role: "user" as const,
-								content: `Your previous response was invalid: ${lastError?.message}. Please respond with valid JSON matching the schema.`,
-							},
-						];
-
-			const raw = await this.callLLM({
-				...options,
-				systemPrompt: structuredSystemPrompt,
-				messages,
-			});
-
-			try {
-				const cleaned = stripMarkdownCodeBlock(raw);
-				const parsed = JSON.parse(cleaned);
-
-				const check = Compile(options.schema);
-				const coerced = Value.Convert(options.schema, parsed);
-				if (!check.Check(coerced)) {
-					const errors = check
-						.Errors(coerced)
-						.map((e) => `${e.instancePath}: ${e.message}`)
-						.join("; ");
-					const err = new Error(`Schema validation failed: ${errors}`) as CallLLMStructuredError;
-					err.raw = raw;
-					err.reason = "schema_validation";
-					lastError = err;
-					if (attempt >= maxRetries) throw err;
-					continue;
-				}
-				return coerced as Static<T>;
-			} catch (e) {
-				if (e instanceof SyntaxError) {
-					const err = new Error(`JSON parse failed: ${(e as Error).message}`) as CallLLMStructuredError;
-					err.raw = raw;
-					err.reason = "json_parse";
-					lastError = err;
-					if (attempt >= maxRetries) throw err;
-					continue;
-				}
-				if ((e as CallLLMStructuredError).reason) {
-					lastError = e as CallLLMStructuredError;
-					if (attempt >= maxRetries) throw lastError;
-					continue;
-				}
-				throw e;
-			}
-		}
-
-		throw lastError ?? new Error("callLLMStructured failed");
-	}
-
-	async forkAgent(promptText: string, options?: ForkAgentOptions): Promise<ForkAgentResult> {
-		const model = await this._resolveOptionalModel(options?.model);
-		if (!model) throw new Error("No model selected");
-
-		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth?.ok) {
-			throw new Error("error" in auth ? auth.error : `No API key configured for ${model.provider}`);
-		}
-		if (!auth.apiKey) {
-			throw new Error(`No API key configured for ${model.provider}`);
-		}
-		if (options?.signal?.aborted) throw new Error("Aborted");
-
-		const opts = options ?? {};
-
-		let toolNames = opts.tools ?? ["read", "grep", "find", "ls"];
-		if (opts.bash === "deny") {
-			toolNames = toolNames.filter((t) => t !== "bash");
-		}
-		const toolInstances = toolNames
-			.map((name) => {
-				try {
-					const registered = this._toolRegistry.get(name);
-					if (registered) return registered;
-					return createTool(name as ToolName, this._cwd);
-				} catch {
-					return undefined;
-				}
-			})
-			.filter((t): t is AgentTool<any> => t !== undefined);
-
-		const effectiveSystemPrompt = opts.inheritSystemPrompt
-			? (this.agent.state.systemPrompt ?? opts.systemPrompt ?? "")
-			: (opts.systemPrompt ?? "");
-
-		const messages = opts.shareContext ? [...this.agent.state.messages] : [];
-
-		const maxTurns = opts.maxTurns ?? 5;
-		let turnCount = 0;
-
-		const forkedAgent = new Agent({
-			getApiKey: () => auth.apiKey,
-			initialState: {
-				systemPrompt: effectiveSystemPrompt,
-				model,
-				thinkingLevel: "off" as const,
-				tools: toolInstances,
-				messages,
-			},
-			sessionId: opts.shareContext ? this.agent.sessionId : undefined,
-		});
-
-		let resultText = "";
-		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-
-		const abortHandler = opts.signal ? () => forkedAgent.abort() : undefined;
-		if (abortHandler && opts.signal) {
-			opts.signal.addEventListener("abort", abortHandler, { once: true });
-		}
-
-		const unsub = forkedAgent.subscribe((event: AgentEvent) => {
-			if (event.type === "turn_end") {
-				turnCount++;
-				if (turnCount >= maxTurns) {
-					forkedAgent.abort();
-				}
-			}
-			if (event.type === "message_end") {
-				const msg = event.message;
-				if (msg.role === "assistant") {
-					const asst = msg as AssistantMessage;
-					const content = asst.content;
-					if (Array.isArray(content)) {
-						resultText = content
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
-							.map((c) => c.text)
-							.join("\n");
-					}
-					if (asst.usage) {
-						usage.input = asst.usage.input ?? 0;
-						usage.output = asst.usage.output ?? 0;
-						usage.cacheRead = asst.usage.cacheRead ?? 0;
-						usage.cacheWrite = asst.usage.cacheWrite ?? 0;
-						if (model.cost) {
-							usage.cost =
-								(usage.input * model.cost.input +
-									usage.output * model.cost.output +
-									usage.cacheRead * model.cost.cacheRead +
-									usage.cacheWrite * model.cost.cacheWrite) /
-								1_000_000;
-						}
-					}
-				}
-			}
-		});
-
-		try {
-			await forkedAgent.prompt({
-				role: "user",
-				content: [{ type: "text" as const, text: promptText }],
-				timestamp: Date.now(),
-			});
-		} finally {
-			unsub();
-			if (abortHandler && opts.signal) {
-				opts.signal.removeEventListener("abort", abortHandler);
-			}
-		}
-
-		return { text: resultText, usage };
-	}
-
-	background<T>(fn: (signal: AbortSignal) => Promise<T>): BackgroundTask<T> {
-		const controller = new AbortController();
-		const promise = fn(controller.signal);
-		const task: BackgroundTask<T> = {
-			id: randomUUID(),
-			signal: controller.signal,
-			promise: promise as Promise<unknown> as Promise<T>,
-			cancel: () => controller.abort(),
-		};
-		this._backgroundTasks.add(task as BackgroundTask<unknown>);
-		promise.finally(() => this._backgroundTasks.delete(task as BackgroundTask<unknown>));
-		return task;
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
@@ -2871,7 +2369,6 @@ export class AgentSession {
 		}
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
-		this._initFileSnapshotManager();
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
@@ -2906,15 +2403,6 @@ export class AgentSession {
 		}
 	}
 
-	async setCwd(newCwd: string): Promise<void> {
-		this._cwd = newCwd;
-		this._buildRuntime({
-			activeToolNames: this.getActiveToolNames(),
-			flagValues: this._extensionRunner.getFlagValues(),
-			includeAllExtensionTools: true,
-		});
-	}
-
 	// =========================================================================
 	// Auto-Retry
 	// =========================================================================
@@ -2931,8 +2419,8 @@ export class AgentSession {
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), fetch failed, request ended without sending chunks, terminated, retry delay exceeded
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|timed? out|timeout|terminated|retry delay/i.test(
+		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded
+		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
 			err,
 		);
 	}
@@ -3172,6 +2660,7 @@ export class AgentSession {
 	 */
 	setSessionName(name: string): void {
 		this.sessionManager.appendSessionInfo(name);
+		this._emit({ type: "session_info_changed", name: this.sessionManager.getSessionName() });
 	}
 
 	// =========================================================================
@@ -3191,13 +2680,7 @@ export class AgentSession {
 	 */
 	async navigateTree(
 		targetId: string,
-		options: {
-			summarize?: boolean;
-			customInstructions?: string;
-			replaceInstructions?: boolean;
-			label?: string;
-			skipFiles?: boolean;
-		} = {},
+		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
 		const oldLeafId = this.sessionManager.getLeafId();
 
@@ -3241,175 +2724,144 @@ export class AgentSession {
 
 		// Set up abort controller for summarization
 		this._branchSummaryAbortController = new AbortController();
-		let extensionSummary: { summary: string; details?: unknown } | undefined;
-		let fromExtension = false;
 
-		// Emit session_before_tree event
-		if (this._extensionRunner.hasHandlers("session_before_tree")) {
-			const result = (await this._extensionRunner.emit({
-				type: "session_before_tree",
-				preparation,
-				signal: this._branchSummaryAbortController.signal,
-			})) as SessionBeforeTreeResult | undefined;
+		try {
+			let extensionSummary: { summary: string; details?: unknown } | undefined;
+			let fromExtension = false;
 
-			if (result?.cancel) {
-				return { cancelled: true };
+			// Emit session_before_tree event
+			if (this._extensionRunner.hasHandlers("session_before_tree")) {
+				const result = (await this._extensionRunner.emit({
+					type: "session_before_tree",
+					preparation,
+					signal: this._branchSummaryAbortController.signal,
+				})) as SessionBeforeTreeResult | undefined;
+
+				if (result?.cancel) {
+					return { cancelled: true };
+				}
+
+				if (result?.summary && options.summarize) {
+					extensionSummary = result.summary;
+					fromExtension = true;
+				}
+
+				// Allow extensions to override instructions and label
+				if (result?.customInstructions !== undefined) {
+					customInstructions = result.customInstructions;
+				}
+				if (result?.replaceInstructions !== undefined) {
+					replaceInstructions = result.replaceInstructions;
+				}
+				if (result?.label !== undefined) {
+					label = result.label;
+				}
 			}
 
-			if (result?.summary && options.summarize) {
-				extensionSummary = result.summary;
-				fromExtension = true;
+			// Run default summarizer if needed
+			let summaryText: string | undefined;
+			let summaryDetails: unknown;
+			if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
+				const model = this.model!;
+				const { apiKey, headers } = await this._getRequiredRequestAuth(model);
+				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
+				const result = await generateBranchSummary(entriesToSummarize, {
+					model,
+					apiKey,
+					headers,
+					signal: this._branchSummaryAbortController.signal,
+					customInstructions,
+					replaceInstructions,
+					reserveTokens: branchSummarySettings.reserveTokens,
+				});
+				if (result.aborted) {
+					return { cancelled: true, aborted: true };
+				}
+				if (result.error) {
+					throw new Error(result.error);
+				}
+				summaryText = result.summary;
+				summaryDetails = {
+					readFiles: result.readFiles || [],
+					modifiedFiles: result.modifiedFiles || [],
+				};
+			} else if (extensionSummary) {
+				summaryText = extensionSummary.summary;
+				summaryDetails = extensionSummary.details;
 			}
 
-			// Allow extensions to override instructions and label
-			if (result?.customInstructions !== undefined) {
-				customInstructions = result.customInstructions;
-			}
-			if (result?.replaceInstructions !== undefined) {
-				replaceInstructions = result.replaceInstructions;
-			}
-			if (result?.label !== undefined) {
-				label = result.label;
-			}
-		}
+			// Determine the new leaf position based on target type
+			let newLeafId: string | null;
+			let editorText: string | undefined;
 
-		// Run default summarizer if needed
-		let summaryText: string | undefined;
-		let summaryDetails: unknown;
-		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
-			const model = this.model!;
-			const { apiKey, headers } = await this._getRequiredRequestAuth(model);
-			const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
-			const result = await generateBranchSummary(entriesToSummarize, {
-				model,
-				apiKey,
-				headers,
-				signal: this._branchSummaryAbortController.signal,
-				customInstructions,
-				replaceInstructions,
-				reserveTokens: branchSummarySettings.reserveTokens,
+			if (targetEntry.type === "message" && targetEntry.message.role === "user") {
+				// User message: leaf = parent (null if root), text goes to editor
+				newLeafId = targetEntry.parentId;
+				editorText = this._extractUserMessageText(targetEntry.message.content);
+			} else if (targetEntry.type === "custom_message") {
+				// Custom message: leaf = parent (null if root), text goes to editor
+				newLeafId = targetEntry.parentId;
+				editorText =
+					typeof targetEntry.content === "string"
+						? targetEntry.content
+						: targetEntry.content
+								.filter((c): c is { type: "text"; text: string } => c.type === "text")
+								.map((c) => c.text)
+								.join("");
+			} else {
+				// Non-user message: leaf = selected node
+				newLeafId = targetId;
+			}
+
+			// Switch leaf (with or without summary)
+			// Summary is attached at the navigation target position (newLeafId), not the old branch
+			let summaryEntry: BranchSummaryEntry | undefined;
+			if (summaryText) {
+				// Create summary at target position (can be null for root)
+				const summaryId = this.sessionManager.branchWithSummary(
+					newLeafId,
+					summaryText,
+					summaryDetails,
+					fromExtension,
+				);
+				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
+
+				// Attach label to the summary entry
+				if (label) {
+					this.sessionManager.appendLabelChange(summaryId, label);
+				}
+			} else if (newLeafId === null) {
+				// No summary, navigating to root - reset leaf
+				this.sessionManager.resetLeaf();
+			} else {
+				// No summary, navigating to non-root
+				this.sessionManager.branch(newLeafId);
+			}
+
+			// Attach label to target entry when not summarizing (no summary entry to label)
+			if (label && !summaryText) {
+				this.sessionManager.appendLabelChange(targetId, label);
+			}
+
+			// Update agent state
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+
+			// Emit session_tree event
+			await this._extensionRunner.emit({
+				type: "session_tree",
+				newLeafId: this.sessionManager.getLeafId(),
+				oldLeafId,
+				summaryEntry,
+				fromExtension: summaryText ? fromExtension : undefined,
 			});
+
+			// Emit to custom tools
+
+			return { editorText, cancelled: false, summaryEntry };
+		} finally {
 			this._branchSummaryAbortController = undefined;
-			if (result.aborted) {
-				return { cancelled: true, aborted: true };
-			}
-			if (result.error) {
-				throw new Error(result.error);
-			}
-			summaryText = result.summary;
-			summaryDetails = {
-				readFiles: result.readFiles || [],
-				modifiedFiles: result.modifiedFiles || [],
-			};
-		} else if (extensionSummary) {
-			summaryText = extensionSummary.summary;
-			summaryDetails = extensionSummary.details;
 		}
-
-		// Determine the new leaf position based on target type
-		let newLeafId: string | null;
-		let editorText: string | undefined;
-
-		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-			// User message: leaf = parent (null if root), text goes to editor
-			newLeafId = targetEntry.parentId;
-			editorText = this._extractUserMessageText(targetEntry.message.content);
-		} else if (targetEntry.type === "custom_message") {
-			// Custom message: leaf = parent (null if root), text goes to editor
-			newLeafId = targetEntry.parentId;
-			editorText =
-				typeof targetEntry.content === "string"
-					? targetEntry.content
-					: targetEntry.content
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
-							.map((c) => c.text)
-							.join("");
-		} else {
-			// Non-user message: leaf = selected node
-			newLeafId = targetId;
-		}
-
-		// Switch leaf (with or without summary)
-		// Summary is attached at the navigation target position (newLeafId), not the old branch
-		let summaryEntry: BranchSummaryEntry | undefined;
-		if (summaryText) {
-			// Create summary at target position (can be null for root)
-			const summaryId = this.sessionManager.branchWithSummary(
-				newLeafId,
-				summaryText,
-				summaryDetails,
-				fromExtension,
-				options.skipFiles,
-			);
-			summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
-
-			// Attach label to the summary entry
-			if (label) {
-				this.sessionManager.appendLabelChange(summaryId, label);
-			}
-		} else if (newLeafId === null) {
-			// No summary, navigating to root - reset leaf
-			this.sessionManager.resetLeaf();
-		} else {
-			// No summary, navigating to non-root
-			this.sessionManager.branch(newLeafId);
-		}
-
-		// Attach label to target entry when not summarizing (no summary entry to label)
-		if (label && !summaryText) {
-			this.sessionManager.appendLabelChange(targetId, label);
-		}
-
-		// Update agent state
-		const sessionContext = this.sessionManager.buildSessionContext();
-		this.agent.state.messages = sessionContext.messages;
-
-		// Emit session_tree event
-		await this._extensionRunner.emit({
-			type: "session_tree",
-			newLeafId: this.sessionManager.getLeafId(),
-			oldLeafId,
-			summaryEntry,
-			fromExtension: summaryText ? fromExtension : undefined,
-			skipFiles: options.skipFiles,
-		});
-
-		// Emit to custom tools
-
-		this._branchSummaryAbortController = undefined;
-		return { editorText, cancelled: false, summaryEntry };
-	}
-
-	async previewRollback(targetId: string): Promise<{ restored: string[]; deleted: string[] }> {
-		const oldLeafId = this.sessionManager.getLeafId();
-
-		let newLeafId: string | null;
-		const targetEntry = this.sessionManager.getEntry(targetId);
-		if (!targetEntry) {
-			throw new Error(`Entry ${targetId} not found`);
-		}
-
-		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-			newLeafId = targetEntry.parentId;
-		} else if (targetEntry.type === "custom_message") {
-			newLeafId = targetEntry.parentId;
-		} else {
-			newLeafId = targetId;
-		}
-
-		const result = await this._extensionRunner.emit({
-			type: "session_tree",
-			newLeafId,
-			oldLeafId,
-			preview: true,
-		} as import("./extensions/types.js").SessionTreeEvent);
-
-		return (
-			(result as unknown as import("./extensions/types.js").SessionTreePreviewResult) ?? {
-				restored: [],
-				deleted: [],
-			}
-		);
 	}
 
 	/**
@@ -3498,11 +2950,16 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
+		// After compaction, the last assistant usage reflects pre-compaction context size.
+		// We can only trust usage from an assistant that responded after the latest compaction.
+		// If no such assistant exists, context token count is unknown until the next LLM response.
 		const branchEntries = this.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 
 		if (latestCompaction) {
+			// Check if there's a valid assistant usage after the compaction boundary
 			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
+			let hasPostCompactionUsage = false;
 			for (let i = branchEntries.length - 1; i > compactionIndex; i--) {
 				const entry = branchEntries[i];
 				if (entry.type === "message" && entry.message.role === "assistant") {
@@ -3510,33 +2967,20 @@ export class AgentSession {
 					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
 						const contextTokens = calculateContextTokens(assistant.usage);
 						if (contextTokens > 0) {
-							const percent = (contextTokens / contextWindow) * 100;
-							return { tokens: contextTokens, contextWindow, percent };
+							hasPostCompactionUsage = true;
 						}
+						break;
 					}
-					break;
 				}
+			}
+
+			if (!hasPostCompactionUsage) {
+				return { tokens: null, contextWindow, percent: null };
 			}
 		}
 
 		const estimate = estimateContextTokens(this.messages);
-
-		if (latestCompaction && estimate.lastUsageIndex !== null) {
-			const usageMsg = this.messages[estimate.lastUsageIndex];
-			if (
-				usageMsg?.role === "assistant" &&
-				(usageMsg as AssistantMessage).timestamp <= new Date(latestCompaction.timestamp).getTime()
-			) {
-				let estimated = 0;
-				for (const message of this.messages) {
-					estimated += estimateTokens(message);
-				}
-				const fallbackPercent = contextWindow > 0 ? (estimated / contextWindow) * 100 : 0;
-				return { tokens: estimated, contextWindow, percent: fallbackPercent };
-			}
-		}
-
-		const percent = contextWindow > 0 ? (estimate.tokens / contextWindow) * 100 : 0;
+		const percent = (estimate.tokens / contextWindow) * 100;
 
 		return {
 			tokens: estimate.tokens,

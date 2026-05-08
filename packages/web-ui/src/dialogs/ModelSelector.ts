@@ -21,7 +21,7 @@ import { discoverModels } from "../utils/model-discovery.js";
  * Higher score = tighter match (fewer gaps between matched characters).
  * Returns 0 if no match.
  */
-export function subsequenceScore(query: string, text: string): number {
+function subsequenceScore(query: string, text: string): number {
 	let qi = 0;
 	let ti = 0;
 	let gaps = 0;

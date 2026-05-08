@@ -7,7 +7,7 @@
 
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { type ImageContent, modelsAreEqual, supportsXhigh } from "@dyyz1993/pi-ai";
+import { type ImageContent, modelsAreEqual } from "@dyyz1993/pi-ai";
 import { ProcessTerminal, setKeybindings, TUI } from "@dyyz1993/pi-tui";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.js";
@@ -15,19 +15,20 @@ import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
 import { selectSession } from "./cli/session-picker.js";
-import { getAgentDir, getModelsPath, VERSION } from "./config.js";
+import { ENV_SESSION_DIR, expandTildePath, getAgentDir, VERSION } from "./config.js";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.js";
 import {
 	type AgentSessionRuntimeDiagnostic,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.js";
+import { formatNoModelsAvailableMessage } from "./core/auth-guidance.js";
 import { AuthStorage } from "./core/auth-storage.js";
 import { exportFromFile } from "./core/export-html/index.js";
 import type { ExtensionFactory } from "./core/extensions/types.js";
 import { KeybindingsManager } from "./core/keybindings.js";
 import type { ModelRegistry } from "./core/model-registry.js";
-import { resolveCliModel, resolveModelAlias, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
+import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.js";
 import {
@@ -45,7 +46,6 @@ import { ExtensionSelectorComponent } from "./modes/interactive/components/exten
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
 import { isLocalPath } from "./utils/paths.js";
-import { resolveSchema } from "./utils/structured-output.js";
 
 /**
  * Read all content from piped stdin.
@@ -329,22 +329,7 @@ function buildSessionOptions(
 		// Check if saved default is in scoped models - use it if so, otherwise first scoped model
 		const savedProvider = settingsManager.getDefaultProvider();
 		const savedModelId = settingsManager.getDefaultModel();
-		let resolvedProvider = savedProvider;
-		let resolvedModelId = savedModelId;
-		if (savedModelId) {
-			const aliasTarget = resolveModelAlias(savedModelId, settingsManager.getTierModels());
-			if (aliasTarget) {
-				const slashIndex = aliasTarget.indexOf("/");
-				if (slashIndex !== -1) {
-					resolvedProvider = aliasTarget.substring(0, slashIndex);
-					resolvedModelId = aliasTarget.substring(slashIndex + 1);
-				} else {
-					resolvedModelId = aliasTarget;
-				}
-			}
-		}
-		const savedModel =
-			resolvedProvider && resolvedModelId ? modelRegistry.find(resolvedProvider, resolvedModelId) : undefined;
+		const savedModel = savedProvider && savedModelId ? modelRegistry.find(savedProvider, savedModelId) : undefined;
 		const savedInScope = savedModel ? scopedModels.find((sm) => modelsAreEqual(sm.model, savedModel)) : undefined;
 
 		if (savedInScope) {
@@ -382,10 +367,11 @@ function buildSessionOptions(
 
 	// Tools
 	if (parsed.noTools) {
-		// --no-tools: start with no built-in tools
-		// --tools can still add specific ones back, including extension tools.
-		options.tools = parsed.tools && parsed.tools.length > 0 ? [...parsed.tools] : [];
-	} else if (parsed.tools) {
+		options.noTools = "all";
+	} else if (parsed.noBuiltinTools) {
+		options.noTools = "builtin";
+	}
+	if (parsed.tools) {
 		options.tools = [...parsed.tools];
 	}
 
@@ -507,7 +493,11 @@ export async function main(args: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
-	const sessionDir = parsed.sessionDir ?? startupSettingsManager.getSessionDir();
+	const envSessionDir = process.env[ENV_SESSION_DIR];
+	const sessionDir =
+		parsed.sessionDir ??
+		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
+		startupSettingsManager.getSessionDir();
 	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
@@ -600,19 +590,12 @@ export async function main(args: string[], options?: MainOptions) {
 			thinkingLevel: sessionOptions.thinkingLevel,
 			scopedModels: sessionOptions.scopedModels,
 			tools: sessionOptions.tools,
+			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
 		});
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
-			let effectiveThinking = created.session.thinkingLevel;
-			if (!created.session.model.reasoning) {
-				effectiveThinking = "off";
-			} else if (effectiveThinking === "xhigh" && !supportsXhigh(created.session.model)) {
-				effectiveThinking = "high";
-			}
-			if (effectiveThinking !== created.session.thinkingLevel) {
-				created.session.setThinkingLevel(effectiveThinking);
-			}
+			created.session.setThinkingLevel(created.session.thinkingLevel);
 		}
 
 		return {
@@ -677,16 +660,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("createAgentSession");
 
 	if (appMode !== "interactive" && !session.model) {
-		console.error(`[DEBUG-MAIN] exiting due to error diagnostics`);
-		process.exit(1);
-	}
-	time("createAgentSession");
-
-	if (appMode !== "interactive" && !session.model) {
-		console.error(chalk.red("No models available."));
-		console.error(chalk.yellow("\nSet an API key environment variable:"));
-		console.error("  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.");
-		console.error(chalk.yellow(`\nOr create ${getModelsPath()}`));
+		console.error(chalk.red(formatNoModelsAvailableMessage()));
 		process.exit(1);
 	}
 
@@ -742,8 +716,6 @@ export async function main(args: string[], options?: MainOptions) {
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
-			maxTurns: parsed.maxTurns,
-			outputSchema: parsed.outputSchema ? resolveSchema(parsed.outputSchema) : undefined,
 		});
 		stopThemeWatcher();
 		restoreStdout();
