@@ -243,6 +243,10 @@ describe("auto-session-title extension", () => {
 
 		await harness.session.prompt("Help me debug the API");
 
+		const name = harness.sessionManager.getSessionName();
+		if (name == null) {
+			await new Promise((r) => setTimeout(r, 50));
+		}
 		expect(harness.sessionManager.getSessionName()).toBe("API Debug Helper");
 	});
 

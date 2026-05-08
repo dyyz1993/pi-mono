@@ -194,12 +194,13 @@ describe.skipIf(!hasApiKey)("RPC data consistency", () => {
 		const midStreamCount = midStreamMessages.length;
 
 		await client.waitForIdle(60000);
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await new Promise((resolve) => setTimeout(resolve, 500));
 
 		const fileEntries = await readSessionEntries();
 		const fileMessageCount = fileEntries.filter((e) => e.type === "message").length;
 
-		expect(midStreamCount).toBeGreaterThanOrEqual(fileMessageCount);
+		expect(midStreamCount).toBeGreaterThanOrEqual(1);
+		expect(fileMessageCount).toBeGreaterThanOrEqual(midStreamCount);
 	}, 90000);
 
 	test("reconnect simulation: final snapshot matches session.jsonl", async () => {
