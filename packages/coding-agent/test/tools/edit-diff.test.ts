@@ -450,7 +450,7 @@ describe("edit-diff", () => {
 
 		it("returns error for non-existent file", async () => {
 			const result = await computeEditsDiff("nonexistent.txt", [{ oldText: "x", newText: "y" }], tempDir);
-			expect(result).toEqual({ error: "File not found: nonexistent.txt" });
+			expect(result).toEqual({ error: "Could not edit file: nonexistent.txt. Error code: ENOENT." });
 		});
 
 		it("computes diff for a single edit", async () => {
@@ -539,7 +539,7 @@ describe("edit-diff", () => {
 
 		it("returns error for non-existent file", async () => {
 			const result = await computeEditDiff("missing.txt", "x", "y", tempDir);
-			expect(result).toEqual({ error: "File not found: missing.txt" });
+			expect(result).toEqual({ error: "Could not edit file: missing.txt. Error code: ENOENT." });
 		});
 
 		it("computes diff for a single oldText/newText pair", async () => {
