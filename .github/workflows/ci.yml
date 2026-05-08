@@ -6,7 +6,14 @@ on:
   pull_request:
     branches: [main]
 
-concurrency:
+  workflow_dispatch:
+    inputs:
+      branch:
+        required: false
+        description: 'Branch to run on'
+        type: string
+
+  concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
