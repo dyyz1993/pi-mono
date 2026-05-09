@@ -33,6 +33,7 @@ import type {
 	RpcExtension,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcMcpServer,
 	RpcResponse,
 	RpcSessionState,
 	RpcSkill,
@@ -46,6 +47,7 @@ export type {
 	RpcExtension,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcMcpServer,
 	RpcResponse,
 	RpcSessionState,
 	RpcSkill,
@@ -797,6 +799,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					sourceInfo: t.sourceInfo,
 				}));
 				return success(id, "get_tools", { tools: rpcTools });
+			}
+
+			case "get_mcp_servers": {
+				const servers: RpcMcpServer[] = session.getMcpConnections();
+				return success(id, "get_mcp_servers", { servers });
 			}
 
 			// =================================================================

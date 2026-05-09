@@ -79,6 +79,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_skills" }
 	| { id?: string; type: "get_extensions" }
 	| { id?: string; type: "get_tools" }
+	| { id?: string; type: "get_mcp_servers" }
 
 	// Settings
 	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
@@ -169,6 +170,19 @@ export interface RpcTool {
 	label: string;
 	description: string;
 	sourceInfo: SourceInfo;
+}
+
+export interface RpcMcpServerTool {
+	originalName: string;
+	fullName: string;
+	description: string;
+}
+
+export interface RpcMcpServer {
+	name: string;
+	status: "connecting" | "connected" | "error" | "disconnected";
+	error?: string;
+	tools: RpcMcpServerTool[];
 }
 
 // ============================================================================
@@ -378,6 +392,15 @@ export type RpcResponse =
 			command: "get_tools";
 			success: true;
 			data: { tools: RpcTool[] };
+	  }
+
+	// MCP Servers
+	| {
+			id?: string;
+			type: "response";
+			command: "get_mcp_servers";
+			success: true;
+			data: { servers: RpcMcpServer[] };
 	  }
 
 	// Settings

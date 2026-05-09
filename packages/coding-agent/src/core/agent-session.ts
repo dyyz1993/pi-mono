@@ -845,6 +845,29 @@ export class AgentSession {
 		cleanupSessionResources(this.sessionId);
 	}
 
+	getMcpConnections(): Array<{
+		name: string;
+		status: "connecting" | "connected" | "error" | "disconnected";
+		error?: string;
+		tools: Array<{
+			originalName: string;
+			fullName: string;
+			description: string;
+		}>;
+	}> {
+		if (!this._mcpManager) return [];
+		return this._mcpManager.getConnections().map((c) => ({
+			name: c.name,
+			status: c.status,
+			error: c.error,
+			tools: c.tools.map((t) => ({
+				originalName: t.originalName,
+				fullName: t.fullName,
+				description: t.description,
+			})),
+		}));
+	}
+
 	// =========================================================================
 	// Read-only State Access
 	// =========================================================================
