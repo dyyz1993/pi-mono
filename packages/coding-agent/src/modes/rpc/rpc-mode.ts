@@ -760,6 +760,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}));
 				return success(id, "get_tree", { entries: treeEntries, leafId: session.sessionManager.getLeafId() });
 			}
+			case "get_tree_with_leaf": {
+				const entries = session.sessionManager.getEntries();
+				const treeEntries = entries.map((e) => ({
+					id: e.id,
+					parentId: e.parentId,
+					type: e.type,
+					label:
+						e.type === "message"
+							? (e as any).message?.role
+							: e.type === "custom"
+								? (e as any).customType
+								: undefined,
+				}));
+				return success(id, "get_tree_with_leaf", {
+					entries: treeEntries,
+					leafId: session.sessionManager.getLeafId(),
+				});
+			}
 
 			// =================================================================
 			// Resources (skills, extensions, tools)

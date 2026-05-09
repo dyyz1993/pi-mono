@@ -71,6 +71,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 	| { id?: string; type: "get_full_messages"; afterEntryId?: string; limit?: number }
 	| { id?: string; type: "get_tree" }
+	| { id?: string; type: "get_tree_with_leaf" }
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
@@ -356,6 +357,16 @@ export type RpcResponse =
 			command: "get_tree";
 			success: true;
 			data: { entries: Array<{ id: string; parentId: string | null; type: string; label?: string }> };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_tree_with_leaf";
+			success: true;
+			data: {
+				entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+				leafId: string | null;
+			};
 	  }
 
 	// Commands

@@ -13,6 +13,7 @@ import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
+import type { TreeWithLeaf } from "./rpc-client-types.js";
 import type {
 	RpcCommand,
 	RpcExtension,
@@ -524,6 +525,11 @@ export class RpcClient {
 	async getTree(): Promise<{ entries: unknown[]; leafId: string }> {
 		const response = await this.send({ type: "get_tree" });
 		return this.getData<{ entries: unknown[]; leafId: string }>(response);
+	}
+
+	async getTreeWithLeaf(): Promise<TreeWithLeaf> {
+		const response = await this.send({ type: "get_tree_with_leaf" });
+		return this.getData<TreeWithLeaf>(response);
 	}
 
 	async getModifiedFiles(options?: {
