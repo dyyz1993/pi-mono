@@ -92,6 +92,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.js";
 import { FileSnapshotManager } from "./file-store/file-snapshot-manager.js";
 import { InternalGit } from "./file-store/internal-git.js";
 import { McpManager } from "./mcp/mcp-manager.js";
+import { createMcpToolDefinition } from "./mcp/tool-converter.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { resolveModelAlias } from "./model-resolver.js";
@@ -205,6 +206,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Skip MCP server initialization entirely. */
+	noMcp?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -339,6 +342,8 @@ export class AgentSession {
 	private _fileSnapshotManager: FileSnapshotManager | null = null;
 
 	private _mcpManager: McpManager | undefined;
+	private _mcpToolDefinitions: Map<string, ToolDefinition> = new Map();
+	private _noMcp: boolean;
 
 	private _tierModels: Record<string, string> = {};
 
@@ -366,6 +371,7 @@ export class AgentSession {
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._noMcp = config.noMcp ?? false;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -401,6 +407,8 @@ export class AgentSession {
 	}
 
 	private _initMcpServers(): void {
+		if (this._noMcp) return;
+
 		if (this._mcpManager) {
 			this._mcpManager.dispose().catch(() => {});
 			this._mcpManager = undefined;
@@ -423,6 +431,23 @@ export class AgentSession {
 						description: t.description,
 					})),
 				});
+
+				if (conn.status === "connected" && this._mcpManager) {
+					this._mcpToolDefinitions.clear();
+					const allTools = this._mcpManager.getAllTools();
+					for (const tool of allTools) {
+						this._mcpToolDefinitions.set(tool.fullName, createMcpToolDefinition(tool, this._mcpManager));
+					}
+					this._refreshToolRegistry();
+				} else if (conn.status === "error" || conn.status === "disconnected") {
+					const staleKeys = [...this._mcpToolDefinitions.keys()].filter((key) =>
+						key.startsWith(`mcp__${conn.name}__`),
+					);
+					for (const key of staleKeys) {
+						this._mcpToolDefinitions.delete(key);
+					}
+					this._refreshToolRegistry();
+				}
 			},
 		});
 
@@ -2398,12 +2423,19 @@ export class AgentSession {
 		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
+		const mcpTools = [...this._mcpToolDefinitions.values()]
+			.filter((def) => isAllowedTool(def.name))
+			.map((definition) => ({
+				definition,
+				sourceInfo: createSyntheticSourceInfo(`<mcp:${definition.name}>`, { source: "mcp" }),
+			}));
 		const allCustomTools = [
 			...registeredTools,
 			...this._customTools.map((definition) => ({
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
+			...mcpTools,
 		].filter((tool) => isAllowedTool(tool.definition.name));
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 			Array.from(this._baseToolDefinitions.entries())

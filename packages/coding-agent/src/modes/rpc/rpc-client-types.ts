@@ -16,6 +16,7 @@ import type {
 	RpcContextUsage,
 	RpcExtension,
 	RpcExtensionFlag,
+	RpcMcpServer,
 	RpcSessionState,
 	RpcSkill,
 	RpcSlashCommand,
@@ -229,6 +230,9 @@ export interface RpcClientAPI {
 	// Active tools
 	getActiveTools(): Promise<string[]>;
 	setActiveTools(toolNames: string[]): Promise<void>;
+
+	// MCP
+	getMcpServers(): Promise<RpcMcpServer[]>;
 
 	// Queue
 	getQueue(): Promise<QueueState>;

@@ -31,6 +31,7 @@ export interface Args {
 	noBuiltinTools?: boolean;
 	extensions?: string[];
 	noExtensions?: boolean;
+	noMcp?: boolean;
 	print?: boolean;
 	export?: string;
 	noSkills?: boolean;
@@ -138,6 +139,8 @@ export function parseArgs(args: string[]): Args {
 			result.extensions.push(args[++i]);
 		} else if (arg === "--no-extensions" || arg === "-ne") {
 			result.noExtensions = true;
+		} else if (arg === "--no-mcp" || arg === "-nm") {
+			result.noMcp = true;
 		} else if (arg === "--skill" && i + 1 < args.length) {
 			result.skills = result.skills ?? [];
 			result.skills.push(args[++i]);

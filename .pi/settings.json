@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "servers": {
+      "knowledge-base": {
+        "command": "npx",
+        "args": ["-y", "@dyyz1993/kb-mcp@1.2.0", "--stdio"]
+      }
+    }
+  }
+}

@@ -67,6 +67,9 @@ export interface CreateAgentSessionOptions {
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
 
+	/** Skip MCP server initialization entirely. */
+	noMcp?: boolean;
+
 	/** Resource loader. When omitted, DefaultResourceLoader is used. */
 	resourceLoader?: ResourceLoader;
 
@@ -402,6 +405,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		allowedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		noMcp: options.noMcp,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

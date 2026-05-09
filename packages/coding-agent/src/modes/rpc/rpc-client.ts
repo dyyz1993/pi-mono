@@ -473,6 +473,11 @@ export class RpcClient {
 		await this.send({ type: "set_active_tools", toolNames });
 	}
 
+	async getMcpServers(): Promise<Array<import("./rpc-types.js").RpcMcpServer>> {
+		const response = await this.send({ type: "get_mcp_servers" });
+		return this.getData<{ servers: Array<import("./rpc-types.js").RpcMcpServer> }>(response).servers;
+	}
+
 	async getQueue(): Promise<{ steering: unknown[]; followUp: unknown[] }> {
 		const response = await this.send({ type: "get_queue" });
 		return this.getData<{ steering: unknown[]; followUp: unknown[] }>(response);

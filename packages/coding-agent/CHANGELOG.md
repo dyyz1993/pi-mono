@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- MCP tools are now registered into the agent tool registry after connection, making them callable by the LLM. Previously, the built-in MCP system connected servers and discovered tools but never registered them into the tool registry.
+- RPC client now exposes typed `getMcpServers()` method via `RpcClientAPI` interface.
+
+### Added
+
+- `--no-mcp` / `-nm` CLI flag to skip MCP server initialization entirely.
+- `noMcp` SDK option on `CreateAgentSessionOptions` to disable MCP programmatically.
+- MCP tool definitions include `sourceInfo` with `source: "mcp"` for identification.
+- Integration tests verifying MCP tools appear in `getAllTools()`, `getActiveToolNames()`, and `getMcpConnections()`.
+
+### Changed
+
+- MCP configuration is now read exclusively from `settings.json` (`mcp.servers`). The separate `mcp.json` config file is no longer supported by the built-in MCP system. Project-level config goes in `.pi/settings.json`, global config in `~/.pi/agent/settings.json`.
+- Removed `.pi/extensions/pi-mcp/` extension in favor of the built-in MCP core.
+
 ## [0.74.8] - 2026-05-09
 
 ### Fixed

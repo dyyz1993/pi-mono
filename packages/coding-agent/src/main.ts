@@ -374,6 +374,9 @@ function buildSessionOptions(
 	if (parsed.tools) {
 		options.tools = [...parsed.tools];
 	}
+	if (parsed.noMcp) {
+		options.noMcp = true;
+	}
 
 	return { options, cliThinkingFromModel, diagnostics };
 }
