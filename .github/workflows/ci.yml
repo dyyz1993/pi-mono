@@ -6,14 +6,7 @@ on:
   pull_request:
     branches: [main]
 
-  workflow_dispatch:
-    inputs:
-      branch:
-        required: false
-        description: 'Branch to run on'
-        type: string
-
-  concurrency:
+concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
@@ -47,18 +40,3 @@ jobs:
 
       - name: Test
         run: npm test
-
-  feishu-notify:
-    name: Feishu Notification
-    if: always()
-    needs: [build-check-test]
-    uses: dyyz1993/ci-tools/.github/workflows/feishu-notify.yml@main
-    with:
-      jobs: '{"build-check-test":"${{ needs.build-check-test.result }}"}'
-      sha: ${{ github.sha }}
-      ref: ${{ github.ref_name }}
-      actor: ${{ github.actor }}
-      repo: ${{ github.repository }}
-      run-id: ${{ github.run_id }}
-    secrets:
-      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
