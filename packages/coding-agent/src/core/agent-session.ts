@@ -2173,6 +2173,8 @@ export class AgentSession {
 		}
 		if (bindings.registerChannel !== undefined) {
 			this._registerChannel = bindings.registerChannel;
+			this._extensionRunner.flushPendingChannels(bindings.registerChannel);
+			this._extensionRunner.updateRegisterChannel(bindings.registerChannel);
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);

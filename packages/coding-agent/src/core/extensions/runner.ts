@@ -306,6 +306,7 @@ export class ExtensionRunner {
 		this.runtime.sendMessage = actions.sendMessage;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
+		this.runtime.foldEntry = actions.foldEntry;
 		this.runtime.setSessionName = actions.setSessionName;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setLabel = actions.setLabel;
@@ -317,6 +318,10 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.registerChannel = actions.registerChannel;
+		this.runtime.callLLM = actions.callLLM;
+		this.runtime.callLLMStructured = actions.callLLMStructured;
+		this.runtime.background = actions.background;
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
@@ -350,6 +355,8 @@ export class ExtensionRunner {
 			}
 		}
 		this.runtime.pendingProviderRegistrations = [];
+
+		this.runtime.registerChannel = actions.registerChannel;
 
 		// From this point on, provider registration/unregistration takes effect immediately
 		// without requiring a /reload.
@@ -386,6 +393,26 @@ export class ExtensionRunner {
 		this.navigateTreeHandler = async () => ({ cancelled: false });
 		this.switchSessionHandler = async () => ({ cancelled: false });
 		this.reloadHandler = async () => {};
+	}
+
+	flushPendingChannels(registerChannel: (name: string) => import("./channel-types.js").Channel): void {
+		if (this.runtime.pendingChannelRegistrations.length === 0) return;
+
+		for (const pending of this.runtime.pendingChannelRegistrations) {
+			try {
+				const channel = registerChannel(pending.name);
+				this.runtime.resolvedChannels.set(pending.name, channel);
+				pending.resolve(channel);
+			} catch (err) {
+				pending.reject(err instanceof Error ? err : new Error(String(err)));
+			}
+		}
+		this.runtime.pendingChannelRegistrations = [];
+		this.runtime.registerChannel = registerChannel;
+	}
+
+	updateRegisterChannel(registerChannel: (name: string) => import("./channel-types.js").Channel): void {
+		this.runtime.registerChannel = registerChannel;
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext): void {

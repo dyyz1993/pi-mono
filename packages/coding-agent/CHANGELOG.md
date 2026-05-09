@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed merge regression that broke deferred `registerChannel` mechanism for extensions — `loader.ts` deferred proxy, `runner.ts` `flushPendingChannels()`/`updateRegisterChannel()` methods, and `agent-session.ts` flush calls were accidentally deleted during upstream merge.
+
 ## [0.74.2] - 2026-05-08
 
 ## [0.74.0] - 2026-05-07
