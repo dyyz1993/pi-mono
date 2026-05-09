@@ -91,6 +91,7 @@ import {
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
 import { FileSnapshotManager } from "./file-store/file-snapshot-manager.js";
 import { InternalGit } from "./file-store/internal-git.js";
+import { McpManager } from "./mcp/mcp-manager.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { resolveModelAlias } from "./model-resolver.js";
@@ -156,7 +157,18 @@ export type AgentSessionEvent =
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "custom_entry"; customType: string; data: unknown; id: string; display?: boolean }
-	| { type: "session_rename"; oldName: string | undefined; newName: string };
+	| { type: "session_rename"; oldName: string | undefined; newName: string }
+	| {
+			type: "mcp_connection_change";
+			name: string;
+			status: "connecting" | "connected" | "error" | "disconnected";
+			error?: string;
+			tools: Array<{
+				originalName: string;
+				fullName: string;
+				description: string;
+			}>;
+	  };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -326,6 +338,8 @@ export class AgentSession {
 
 	private _fileSnapshotManager: FileSnapshotManager | null = null;
 
+	private _mcpManager: McpManager | undefined;
+
 	private _tierModels: Record<string, string> = {};
 
 	// Tool registry for extension getTools/setTools
@@ -384,6 +398,30 @@ export class AgentSession {
 			this._fileSnapshotManager = null;
 			this._extensionRunner.setFileSnapshotManager(null);
 		}
+	}
+
+	private _initMcpServers(): void {
+		const settings = this.settingsManager.getMergedSettings();
+		const servers = settings?.mcp?.servers;
+		if (!servers || Object.keys(servers).length === 0) return;
+
+		this._mcpManager = new McpManager({
+			onConnectionChange: (conn) => {
+				this._emit({
+					type: "mcp_connection_change",
+					name: conn.name,
+					status: conn.status,
+					error: conn.error,
+					tools: conn.tools.map((t) => ({
+						originalName: t.originalName,
+						fullName: t.fullName,
+						description: t.description,
+					})),
+				});
+			},
+		});
+
+		this._mcpManager.connectAll(servers).catch(() => {});
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -796,6 +834,7 @@ export class AgentSession {
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
+		this._mcpManager?.dispose().catch(() => {});
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
@@ -2466,6 +2505,8 @@ export class AgentSession {
 			activeToolNames: baseActiveToolNames,
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
+
+		this._initMcpServers();
 	}
 
 	async reload(): Promise<void> {
