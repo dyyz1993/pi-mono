@@ -401,6 +401,11 @@ export class AgentSession {
 	}
 
 	private _initMcpServers(): void {
+		if (this._mcpManager) {
+			this._mcpManager.dispose().catch(() => {});
+			this._mcpManager = undefined;
+		}
+
 		const settings = this.settingsManager.getMergedSettings();
 		const servers = settings?.mcp?.servers;
 		if (!servers || Object.keys(servers).length === 0) return;
