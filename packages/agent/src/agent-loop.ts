@@ -381,11 +381,13 @@ async function executeToolCallsSequential(
 	const messages: ToolResultMessage[] = [];
 
 	for (const toolCall of toolCalls) {
+		const startedAt = Date.now();
 		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
 			args: toolCall.arguments,
+			timestamp: startedAt,
 		});
 
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
@@ -408,7 +410,7 @@ async function executeToolCallsSequential(
 			);
 		}
 
-		await emitToolExecutionEnd(finalized, emit);
+		await emitToolExecutionEnd(finalized, emit, startedAt);
 		const toolResultMessage = createToolResultMessage(finalized);
 		await emitToolResultMessage(toolResultMessage, emit);
 		finalizedCalls.push(finalized);
@@ -432,11 +434,13 @@ async function executeToolCallsParallel(
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
 
 	for (const toolCall of toolCalls) {
+		const startedAt = Date.now();
 		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
 			args: toolCall.arguments,
+			timestamp: startedAt,
 		});
 
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
@@ -446,7 +450,7 @@ async function executeToolCallsParallel(
 				result: preparation.result,
 				isError: preparation.isError,
 			} satisfies FinalizedToolCallOutcome;
-			await emitToolExecutionEnd(finalized, emit);
+			await emitToolExecutionEnd(finalized, emit, startedAt);
 			finalizedCalls.push(finalized);
 			continue;
 		}
@@ -461,7 +465,7 @@ async function executeToolCallsParallel(
 				config,
 				signal,
 			);
-			await emitToolExecutionEnd(finalized, emit);
+			await emitToolExecutionEnd(finalized, emit, startedAt);
 			return finalized;
 		});
 	}
@@ -667,13 +671,20 @@ function createErrorToolResult(message: string): AgentToolResult<any> {
 	};
 }
 
-async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: AgentEventSink): Promise<void> {
+async function emitToolExecutionEnd(
+	finalized: FinalizedToolCallOutcome,
+	emit: AgentEventSink,
+	startedAt: number,
+): Promise<void> {
+	const now = Date.now();
 	await emit({
 		type: "tool_execution_end",
 		toolCallId: finalized.toolCall.id,
 		toolName: finalized.toolCall.name,
 		result: finalized.result,
 		isError: finalized.isError,
+		timestamp: now,
+		durationMs: now - startedAt,
 	});
 }
 

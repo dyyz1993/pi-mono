@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `tool_execution_start` and `tool_execution_end` extension events now include `timestamp` and `durationMs` fields from the underlying agent, enabling precise server-side tool execution timing in extensions and RPC clients.
+
 ## [0.74.10] - 2026-05-09
 
 ### Fixed

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `timestamp` to `tool_execution_start` event and `timestamp` + `durationMs` to `tool_execution_end` event, providing server-side timing data for all tool executions.
+
 ## [0.74.2] - 2026-05-08
 
 ## [0.74.0] - 2026-05-07

@@ -510,7 +510,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			pendingTools.set(agentEvent.toolCallId, {
 				toolName: agentEvent.toolName,
 				args: agentEvent.args,
-				startTime: Date.now(),
+				startTime: agentEvent.timestamp,
 			});
 
 			log.logToolStart(logCtx, agentEvent.toolName, label, agentEvent.args as Record<string, unknown>);
@@ -521,7 +521,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			const pending = pendingTools.get(agentEvent.toolCallId);
 			pendingTools.delete(agentEvent.toolCallId);
 
-			const durationMs = pending ? Date.now() - pending.startTime : 0;
+			const durationMs = agentEvent.durationMs;
 
 			if (agentEvent.isError) {
 				log.logToolError(logCtx, agentEvent.toolName, durationMs, resultStr);

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Tool duration logging now uses the `timestamp` and `durationMs` fields from `tool_execution_start`/`tool_execution_end` events instead of manual `Date.now()` calls, improving timing accuracy.
+
 ## [0.74.2] - 2026-05-08
 
 ## [0.70.5] - 2026-05-05
