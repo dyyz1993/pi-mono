@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryPrefetch } from "../../extensions/auto-memory/index.js";
 import {
 	applyPurification,
@@ -326,15 +326,21 @@ describe("prefetch-purify-C: edge cases + stress + persistence + concurrency", (
 
 			const { callLLM } = mockLLM([{ selected: ["testing.md"] }]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			for (let i = 0; i < 50; i++) {
+				fakeTime += 31_000;
 				prefetch.start(`query-${i}`, memoryDir, callLLM);
 				await waitForSettled(prefetch);
 			}
 
 			const store = getStore(prefetch);
 			expect(store.history.length).toBeLessThanOrEqual(20);
+
+			dateSpy.mockRestore();
 		});
 	});
 
@@ -396,14 +402,10 @@ describe("prefetch-purify-C: edge cases + stress + persistence + concurrency", (
 
 			const prefetch2 = new MemoryPrefetch();
 			prefetch2.start("继续吧", memoryDir, callLLM2);
-			await waitForSettled(prefetch2);
 
 			expect(llm2Called).toBe(false);
-
-			const store2 = getStore(prefetch2);
-			const lastEntry = store2.history[store2.history.length - 1];
-			expect(lastEntry.skipped).toBe(true);
-			expect(lastEntry.skip_hits).toContain("继续吧");
+			expect(prefetch2.debugInfo?.layer).toBe("skip");
+			expect(prefetch2.debugInfo?.skipHits.some((h) => h.pattern === "继续吧")).toBe(true);
 		});
 
 		it("16. store file corrupted (invalid JSON) -> loadSkipWordStore returns default store", async () => {
@@ -425,6 +427,9 @@ describe("prefetch-purify-C: edge cases + stress + persistence + concurrency", (
 
 			const { callLLM, getCallCount } = mockLLM([{ selected: ["alpha.md"] }, { selected: ["beta.md"] }]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("first query", memoryDir, callLLM);
@@ -433,6 +438,7 @@ describe("prefetch-purify-C: edge cases + stress + persistence + concurrency", (
 			expect(result1).toContain("Alpha content.");
 			expect(getCallCount()).toBe(1);
 
+			fakeTime += 31_000;
 			prefetch.start("second query", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 			const result2 = prefetch.collect();
@@ -443,6 +449,8 @@ describe("prefetch-purify-C: edge cases + stress + persistence + concurrency", (
 			expect(store.history.length).toBe(2);
 			expect(store.history[0].selected).toEqual(["alpha.md"]);
 			expect(store.history[1].selected).toEqual(["beta.md"]);
+
+			dateSpy.mockRestore();
 		});
 	});
 });

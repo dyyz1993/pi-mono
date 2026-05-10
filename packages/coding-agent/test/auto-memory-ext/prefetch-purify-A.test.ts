@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryPrefetch } from "../../extensions/auto-memory/index.js";
 import {
 	evaluateRules,
@@ -100,11 +100,15 @@ describe("prefetch-purify-A: 正向净化", () => {
 				},
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("how to test", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("more about testing", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -114,6 +118,8 @@ describe("prefetch-purify-A: 正向净化", () => {
 			const added = store.rules.find((r) => r.pattern === "继续吧" && r.mode === "exact" && r.action === "skip");
 			expect(added).toBeDefined();
 			expect(added!.builtin).toBe(false);
+
+			dateSpy.mockRestore();
 		});
 
 		it("3. third query '继续吧' -> hits skip rule -> skips LLM", async () => {
@@ -129,28 +135,27 @@ describe("prefetch-purify-A: 正向净化", () => {
 				},
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("how to test", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("more about testing", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
 			const countBeforeSkip = getCallCount();
 
+			fakeTime += 31_000;
 			prefetch.start("继续吧", memoryDir, callLLM);
-			await waitForSettled(prefetch);
 
 			expect(getCallCount()).toBe(countBeforeSkip);
+			expect(prefetch.debugInfo?.layer).toBe("skip");
 
-			const result = prefetch.collect();
-			expect(result).toContain("Never mock database.");
-
-			const store = getStore(prefetch);
-			const lastEntry = store.history[store.history.length - 1];
-			expect(lastEntry.skipped).toBe(true);
-			expect(lastEntry.skip_hits).toContain("继续吧");
+			dateSpy.mockRestore();
 		});
 
 		it("4. skip rule persisted to disk after purification", async () => {
@@ -166,10 +171,14 @@ describe("prefetch-purify-A: 正向净化", () => {
 				},
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 			prefetch.start("how to test", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("more about testing", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -179,6 +188,8 @@ describe("prefetch-purify-A: 正向净化", () => {
 			);
 			expect(persisted).toBeDefined();
 			expect(persisted!.builtin).toBe(false);
+
+			dateSpy.mockRestore();
 		});
 
 		it("5. multiple continuations -> accumulate multiple skip rules", async () => {
@@ -206,17 +217,23 @@ describe("prefetch-purify-A: 正向净化", () => {
 				},
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("query 1", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("query 2", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("query 3", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("query 4", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -228,6 +245,8 @@ describe("prefetch-purify-A: 正向净化", () => {
 			expect(patterns).toContain("继续吧");
 			expect(patterns).toContain("go on");
 			expect(patterns).toContain("next please");
+
+			dateSpy.mockRestore();
 		});
 
 		it("6. skip rule from regex pattern", async () => {
@@ -243,21 +262,25 @@ describe("prefetch-purify-A: 正向净化", () => {
 				},
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("how to test", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("more testing", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("接着做", memoryDir, callLLM);
-			await waitForSettled(prefetch);
 
-			const store = getStore(prefetch);
-			const lastEntry = store.history[store.history.length - 1];
-			expect(lastEntry.skipped).toBe(true);
-			expect(lastEntry.skip_hits).toContain("^接着.{0,3}$");
+			expect(prefetch.debugInfo?.layer).toBe("skip");
+			expect(prefetch.debugInfo?.skipHits.some((h) => h.pattern === "^接着.{0,3}$")).toBe(true);
+
+			dateSpy.mockRestore();
 		});
 	});
 
@@ -300,11 +323,15 @@ describe("prefetch-purify-A: 正向净化", () => {
 				{ selected: ["testing.md"], purification },
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("query 1", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("query 2", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -313,6 +340,8 @@ describe("prefetch-purify-A: 正向净化", () => {
 				(r) => r.pattern === "dedup-test" && r.mode === "exact" && r.action === "skip",
 			);
 			expect(matches).toHaveLength(1);
+
+			dateSpy.mockRestore();
 		});
 
 		it("9. add_rules exceeding max -> oldest non-builtin removed", async () => {
@@ -413,6 +442,9 @@ describe("prefetch-purify-A: 正向净化", () => {
 				{ selected: ["testing.md"] },
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("deploy strategy", memoryDir, callLLM);
@@ -420,6 +452,7 @@ describe("prefetch-purify-A: 正向净化", () => {
 
 			expect(getCallCount()).toBe(1);
 
+			fakeTime += 31_000;
 			prefetch.start("继续部署", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -430,6 +463,8 @@ describe("prefetch-purify-A: 正向净化", () => {
 			expect(lastEntry.skipped).toBe(false);
 			expect(lastEntry.guard_hits).toContain("部署");
 			expect(lastEntry.skip_hits).toContain("继续");
+
+			dateSpy.mockRestore();
 		});
 
 		it("13. multiple guard rules accumulated over multiple turns", async () => {
@@ -456,14 +491,19 @@ describe("prefetch-purify-A: 正向净化", () => {
 				},
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("deploy strategy", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("test strategy", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("release process", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -475,6 +515,8 @@ describe("prefetch-purify-A: 正向净化", () => {
 			expect(patterns).toContain("部署");
 			expect(patterns).toContain("测试");
 			expect(patterns).toContain("发布");
+
+			dateSpy.mockRestore();
 		});
 
 		it("14. guard rule with regex pattern works correctly", async () => {
@@ -493,11 +535,15 @@ describe("prefetch-purify-A: 正向净化", () => {
 				{ selected: ["testing.md"] },
 			]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("setup query", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("go ahead and deploy", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -508,29 +554,32 @@ describe("prefetch-purify-A: 正向净化", () => {
 			expect(lastEntry.skipped).toBe(false);
 			expect(lastEntry.skip_hits).toContain("go");
 			expect(lastEntry.guard_hits).toContain("^go.*deploy$");
+
+			dateSpy.mockRestore();
 		});
 	});
 
 	describe("正向净化 — 历史 record 正确性", () => {
-		it("15. history records skip_hits correctly when skipped", async () => {
+		it("15. debugInfo records skip_hits correctly when skipped", async () => {
 			createMemoryFile("testing.md", "Test content.");
 
 			const { callLLM } = mockLLM([{ selected: ["testing.md"] }]);
+
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
 
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("some query", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("继续", memoryDir, callLLM);
-			await waitForSettled(prefetch);
 
-			const store = getStore(prefetch);
-			const lastEntry = store.history[store.history.length - 1];
-			expect(lastEntry.skipped).toBe(true);
-			expect(lastEntry.skip_hits.length).toBeGreaterThan(0);
-			expect(lastEntry.skip_hits).toContain("继续");
-			expect(lastEntry.selected).toEqual(["testing.md"]);
+			expect(prefetch.debugInfo?.layer).toBe("skip");
+			expect(prefetch.debugInfo?.skipHits.some((h) => h.pattern === "继续")).toBe(true);
+
+			dateSpy.mockRestore();
 		});
 
 		it("16. history records guard_hits correctly when guard blocks skip", async () => {
@@ -538,11 +587,15 @@ describe("prefetch-purify-A: 正向净化", () => {
 
 			const { callLLM } = mockLLM([{ selected: ["testing.md"] }]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("some query", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("继续吗", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -551,6 +604,8 @@ describe("prefetch-purify-A: 正向净化", () => {
 			expect(lastEntry.skipped).toBe(false);
 			expect(lastEntry.skip_hits).toContain("继续");
 			expect(lastEntry.guard_hits).toContain("吗");
+
+			dateSpy.mockRestore();
 		});
 
 		it("17. history records both skip_hits and guard_hits when both match", async () => {
@@ -558,11 +613,15 @@ describe("prefetch-purify-A: 正向净化", () => {
 
 			const { callLLM } = mockLLM([{ selected: ["testing.md"] }]);
 
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
+
 			const prefetch = new MemoryPrefetch();
 
 			prefetch.start("some query", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
+			fakeTime += 31_000;
 			prefetch.start("继续？但我想问部署", memoryDir, callLLM);
 			await waitForSettled(prefetch);
 
@@ -571,26 +630,33 @@ describe("prefetch-purify-A: 正向净化", () => {
 			expect(lastEntry.skipped).toBe(false);
 			expect(lastEntry.skip_hits).toContain("继续");
 			expect(lastEntry.guard_hits).toContain("？");
+
+			dateSpy.mockRestore();
 		});
 
 		it("18. history is trimmed to 20 entries after many turns", async () => {
-			createMemoryFile("testing.md", "Test content.");
+			for (let i = 0; i < 25; i++) {
+				createMemoryFile(`file-${i}.md`, `Content ${i}.`);
+			}
 
-			const { callLLM } = mockLLM([{ selected: ["testing.md"] }]);
+			const { callLLM } = mockLLM(Array.from({ length: 25 }, (_, i) => ({ selected: [`file-${i}.md`] })));
+
+			let fakeTime = 1000000;
+			const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => fakeTime);
 
 			const prefetch = new MemoryPrefetch();
 
-			prefetch.start("initial query", memoryDir, callLLM);
-			await waitForSettled(prefetch);
-
-			for (let i = 0; i < 24; i++) {
-				prefetch.start("ok", memoryDir, callLLM);
+			for (let i = 0; i < 25; i++) {
+				fakeTime += 31_000;
+				prefetch.start(`turn-${i}`, memoryDir, callLLM);
 				await waitForSettled(prefetch);
 			}
 
 			const store = getStore(prefetch);
 			expect(store.history.length).toBe(20);
-			expect(store.history[0].query).toBe("ok");
+			expect(store.history[0].query).toBe("turn-5");
+
+			dateSpy.mockRestore();
 		});
 	});
 });

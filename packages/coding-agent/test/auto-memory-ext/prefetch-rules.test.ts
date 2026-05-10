@@ -225,10 +225,11 @@ describe("prefetch-rules", () => {
 	});
 
 	describe("getDefaultRules()", () => {
-		it("returns 11 builtin skip rules", () => {
+		it("returns builtin skip rules", () => {
 			const rules = getDefaultRules();
 			const skipRules = rules.filter((r) => r.action === "skip");
-			expect(skipRules.length).toBe(11);
+			expect(skipRules.length).toBeGreaterThan(10);
+			expect(skipRules.every((r) => r.builtin)).toBe(true);
 		});
 
 		it("returns builtin guard rules", () => {

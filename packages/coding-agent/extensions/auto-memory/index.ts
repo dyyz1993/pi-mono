@@ -79,25 +79,23 @@ function serializeMessages(messages: AgentMessage[], options?: { lastN?: number 
 		.join("\n");
 }
 
-function buildPrefetchUserMessage(query: string, manifest: string, rules: SkipRule[], history: HistoryEntry[]): string {
-	const rulesSummary = rules
-		.map((r) => {
-			const builtin = r.builtin ? " (builtin)" : "";
-			return `{ "pattern": "${r.pattern}", "mode": "${r.mode}", "action": "${r.action}" }${builtin}`;
-		})
-		.join("\n");
+export function buildPrefetchUserMessage(query: string, manifest: string, rules: SkipRule[], history: HistoryEntry[]): string {
+	const customRules = rules.filter((r) => !r.builtin);
+	const rulesSummary = customRules.length > 0
+		? customRules
+				.map((r) => `{ "pattern": "${r.pattern}", "mode": "${r.mode}", "action": "${r.action}" }`)
+				.join("\n")
+		: "(no custom rules)";
 
 	const historySummary = JSON.stringify(
 		history.map((h) => ({
 			query: h.query,
 			selected: h.selected,
 			skipped: h.skipped,
-			skip_hits: h.skip_hits,
-			guard_hits: h.guard_hits,
 		})),
 	);
 
-	return `## 当前查询\n${query}\n\n## 可用文件\n${manifest}\n\n## 当前规则库\n${rulesSummary}\n\n## 最近 Prefetch 历史\n${historySummary}`;
+	return `## 当前查询\n${query}\n\n## 可用文件\n${manifest}\n\n## 自定义规则库\n${rulesSummary}\n\n## 最近 Prefetch 历史\n${historySummary}`;
 }
 
 interface PrefetchDebugInfo {
@@ -110,6 +108,9 @@ interface PrefetchDebugInfo {
 	query: string;
 }
 
+const PREFETCH_MIN_INTERVAL_MS = 30_000;
+const PREFETCH_REPEAT_THRESHOLD = 3;
+
 class MemoryPrefetch {
 	private promise: Promise<string> | null = null;
 	private settled = false;
@@ -118,6 +119,8 @@ class MemoryPrefetch {
 	private resultEntryWritten = false;
 	private store: SkipWordStore | null = null;
 	private _debugInfo: PrefetchDebugInfo | null = null;
+	private lastPrefetchTime = 0;
+	private consecutiveSameCount = 0;
 
 	get debugInfo(): PrefetchDebugInfo | null {
 		return this._debugInfo;
@@ -130,6 +133,73 @@ class MemoryPrefetch {
 	}
 
 	start(query: string, memoryDir: string, callLLM: CallLLMFn): void {
+		const now = Date.now();
+		const elapsed = now - this.lastPrefetchTime;
+
+		if (this.lastPrefetchTime > 0 && elapsed < PREFETCH_MIN_INTERVAL_MS) {
+			this._debugInfo = {
+				selectedFiles: this.lastSelected,
+				durationMs: 0,
+				layer: "skip",
+				skipHits: [{ pattern: `min-interval(${Math.round(elapsed / 1000)}s<${PREFETCH_MIN_INTERVAL_MS / 1000}s)`, mode: "builtin" }],
+				guardHits: [],
+				availableFiles: 0,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.result = this.result ?? "";
+			this.resultEntryWritten = false;
+			this.promise = Promise.resolve(this.result);
+			return;
+		}
+
+		if (this.consecutiveSameCount >= PREFETCH_REPEAT_THRESHOLD && this.lastSelected.length > 0) {
+			this._debugInfo = {
+				selectedFiles: this.lastSelected,
+				durationMs: 0,
+				layer: "skip",
+				skipHits: [{ pattern: `repeat-detect(${this.consecutiveSameCount}x)`, mode: "builtin" }],
+				guardHits: [],
+				availableFiles: 0,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.resultEntryWritten = false;
+			this.lastPrefetchTime = now;
+			this.promise = this.runReadCached(this.lastSelected, memoryDir);
+			void this.promise.then((r) => {
+				this.result = r;
+			});
+			return;
+		}
+
+		const store = this.ensureStore();
+		const { shouldSkip, skipHits, guardHits } = evaluateRules(query, store.rules);
+		if (shouldSkip) {
+			const matchedRules = store.rules
+				.filter((r) => skipHits.includes(r.pattern) || guardHits.includes(r.pattern))
+				.map((r) => ({ pattern: r.pattern, mode: r.mode, action: r.action }));
+			const matchedSkip = matchedRules.filter((r) => r.action === "skip").map(({ pattern, mode }) => ({ pattern, mode }));
+			const matchedGuard = matchedRules.filter((r) => r.action !== "skip").map(({ pattern, mode }) => ({ pattern, mode }));
+
+			this._debugInfo = {
+				selectedFiles: [],
+				durationMs: 0,
+				layer: "skip",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: 0,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.result = "";
+			this.resultEntryWritten = false;
+			this.lastPrefetchTime = now;
+			this.promise = Promise.resolve("");
+			return;
+		}
+
+		this.lastPrefetchTime = now;
 		this.settled = false;
 		this.result = null;
 		this._debugInfo = null;
@@ -169,38 +239,13 @@ class MemoryPrefetch {
 	private async run(query: string, memoryDir: string, callLLM: CallLLMFn): Promise<string> {
 		try {
 			let store = this.ensureStore();
-			const { shouldSkip, skipHits, guardHits } = evaluateRules(query, store.rules);
+			const { skipHits, guardHits } = evaluateRules(query, store.rules);
 
 			const matchedRules = store.rules
 				.filter((r) => skipHits.includes(r.pattern) || guardHits.includes(r.pattern))
 				.map((r) => ({ pattern: r.pattern, mode: r.mode, action: r.action }));
 			const matchedSkip = matchedRules.filter((r) => r.action === "skip").map(({ pattern, mode }) => ({ pattern, mode }));
 			const matchedGuard = matchedRules.filter((r) => r.action !== "skip").map(({ pattern, mode }) => ({ pattern, mode }));
-
-		if (shouldSkip) {
-			this._debugInfo = {
-				selectedFiles: this.lastSelected,
-				durationMs: 0,
-				layer: "skip",
-				skipHits: matchedSkip,
-				guardHits: matchedGuard,
-				availableFiles: 0,
-				query: query.slice(0, 200),
-			};
-			store = addHistoryEntry(store, {
-				query: query.slice(0, 200),
-				selected: this.lastSelected,
-				skipped: true,
-				skip_hits: skipHits,
-				guard_hits: guardHits,
-				timestamp: Date.now(),
-			});
-			this.store = store;
-			await saveSkipWordStore(getGlobalMemoryDir(), this.store);
-
-			if (this.lastSelected.length === 0) return "";
-			return await this.readFiles(this.lastSelected, memoryDir);
-		}
 
 		const memories = await scanMemoryFiles(memoryDir);
 		if (memories.length === 0) {
@@ -217,7 +262,7 @@ class MemoryPrefetch {
 		}
 
 			const manifest = formatManifest(memories);
-			const recentHistory = store.history.slice(-5);
+			const recentHistory = store.history.slice(-3);
 			const startTime = Date.now();
 
 			const llmResult = await callLLM({
@@ -248,6 +293,12 @@ class MemoryPrefetch {
 			}
 
 			const selected = (parsed.selected ?? []).slice(0, MAX_RELEVANT_MEMORIES);
+
+			if (this.arraysEqual(selected, this.lastSelected)) {
+				this.consecutiveSameCount++;
+			} else {
+				this.consecutiveSameCount = 0;
+			}
 			this.lastSelected = selected;
 
 			if (parsed.purification && typeof parsed.purification === "object") {
@@ -298,19 +349,26 @@ class MemoryPrefetch {
 	}
 
 	private async readFiles(filenames: string[], memoryDir: string): Promise<string> {
-		const memories = await scanMemoryFiles(memoryDir);
 		const parts: string[] = [];
 		for (const name of filenames) {
-			const header = memories.find((m) => m.filename === name);
-			if (!header) continue;
 			try {
-				const content = await readFile(header.filePath, "utf-8");
+				const content = await readFile(join(memoryDir, name), "utf-8");
 				parts.push(`### ${name}\n${content}`);
 			} catch (err) {
 				console.debug("[auto-memory] memory file read failed:", err instanceof Error ? err.message : err);
 			}
 		}
 		return parts.join("\n\n");
+	}
+
+	private async runReadCached(filenames: string[], memoryDir: string): Promise<string> {
+		return await this.readFiles(filenames, memoryDir);
+	}
+
+	private arraysEqual(a: string[], b: string[]): boolean {
+		if (a.length !== b.length) return false;
+		const setB = new Set(b);
+		return a.every((item) => setB.has(item));
 	}
 }
 

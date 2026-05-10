@@ -650,12 +650,8 @@ describe("auto-memory integration", () => {
 			prefetch.start("ok", memoryDir, callLLM);
 			await new Promise((r) => setTimeout(r, 100));
 
-			const priv = prefetch as unknown as { store: SkipWordStore };
-			expect(priv.store).not.toBeNull();
-			const lastEntry = priv.store.history[priv.store.history.length - 1];
-			expect(lastEntry.skipped).toBe(true);
-			expect(lastEntry.skip_hits).toContain("ok");
-			expect(lastEntry.selected).toEqual(["test.md"]);
+			expect(prefetch.debugInfo?.layer).toBe("skip");
+			expect(prefetch.debugInfo?.skipHits?.length).toBeGreaterThan(0);
 		});
 	});
 

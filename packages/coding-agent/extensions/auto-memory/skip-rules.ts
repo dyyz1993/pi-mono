@@ -58,6 +58,41 @@ export function getDefaultRules(): SkipRule[] {
 		{ pattern: "对", mode: "exact" },
 		{ pattern: "嗯", mode: "exact" },
 		{ pattern: "继续", mode: "prefix" },
+		{ pattern: "谢谢", mode: "exact" },
+		{ pattern: "感谢", mode: "exact" },
+		{ pattern: "thanks", mode: "exact" },
+		{ pattern: "thx", mode: "exact" },
+		{ pattern: "收到", mode: "exact" },
+		{ pattern: "明白", mode: "exact" },
+		{ pattern: "了解", mode: "exact" },
+		{ pattern: "知道了", mode: "exact" },
+		{ pattern: "行", mode: "exact" },
+		{ pattern: "可以", mode: "exact" },
+		{ pattern: "没问题", mode: "exact" },
+		{ pattern: "不用了", mode: "exact" },
+		{ pattern: "算了", mode: "exact" },
+		{ pattern: "稍等", mode: "exact" },
+		{ pattern: "等一下", mode: "exact" },
+		{ pattern: "好的谢谢", mode: "exact" },
+		{ pattern: "好", mode: "exact" },
+		{ pattern: "done", mode: "exact" },
+		{ pattern: "got it", mode: "exact" },
+		{ pattern: "right", mode: "exact" },
+		{ pattern: "sure", mode: "exact" },
+		{ pattern: "no", mode: "exact" },
+		{ pattern: "nope", mode: "exact" },
+		{ pattern: "嗯嗯", mode: "exact" },
+		{ pattern: "哦", mode: "exact" },
+		{ pattern: "啊", mode: "exact" },
+		{ pattern: "哈哈", mode: "exact" },
+		{ pattern: "懂了", mode: "exact" },
+		{ pattern: "没错", mode: "exact" },
+		{ pattern: "对的", mode: "exact" },
+		{ pattern: "那就这样", mode: "exact" },
+		{ pattern: "可以的", mode: "exact" },
+		{ pattern: "差不多", mode: "exact" },
+		{ pattern: "看起来不错", mode: "exact" },
+		{ pattern: "就这样吧", mode: "exact" },
 	];
 
 	const guardPatterns: Array<{ pattern: string; mode: SkipRule["mode"] }> = [
@@ -75,6 +110,23 @@ export function getDefaultRules(): SkipRule[] {
 		{ pattern: "请", mode: "prefix" },
 		{ pattern: "麻烦", mode: "prefix" },
 		{ pattern: "\n", mode: "contains" },
+		{ pattern: "看看", mode: "contains" },
+		{ pattern: "查看", mode: "prefix" },
+		{ pattern: "查一下", mode: "prefix" },
+		{ pattern: "找", mode: "prefix" },
+		{ pattern: "搜", mode: "prefix" },
+		{ pattern: "分析", mode: "prefix" },
+		{ pattern: "解释", mode: "prefix" },
+		{ pattern: "写", mode: "prefix" },
+		{ pattern: "改", mode: "prefix" },
+		{ pattern: "修", mode: "prefix" },
+		{ pattern: "删", mode: "prefix" },
+		{ pattern: "新增", mode: "prefix" },
+		{ pattern: "优化", mode: "prefix" },
+		{ pattern: "重构", mode: "prefix" },
+		{ pattern: "设计", mode: "prefix" },
+		{ pattern: "实现", mode: "prefix" },
+		{ pattern: "创建", mode: "prefix" },
 	];
 
 	return [
@@ -205,11 +257,11 @@ export function applyPurification(store: SkipWordStore, result: PurificationResu
 						rules.splice(idx, 1);
 					}
 				} else {
-					const isBuiltin = rules.some((r) => r.pattern === matchedPattern && r.action === "skip" && r.builtin);
-					if (isBuiltin && bad.suggestion === "add_guard") {
+					const builtinRule = rules.find((r) => r.pattern === matchedPattern && r.action === "skip" && r.builtin);
+					if (builtinRule && bad.suggestion === "add_guard") {
 						rules.push({
-							pattern: matchedPattern,
-							mode: "exact",
+							pattern: builtinRule.pattern,
+							mode: builtinRule.mode,
 							action: "guard",
 							builtin: false,
 						});

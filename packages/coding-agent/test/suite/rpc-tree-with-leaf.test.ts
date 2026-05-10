@@ -31,11 +31,7 @@ describe("getTreeWithLeaf RPC handler data mapping", () => {
 			parentId: e.parentId,
 			type: e.type,
 			label:
-				e.type === "message"
-					? (e as any).message?.role
-					: e.type === "custom"
-						? (e as any).customType
-						: undefined,
+				e.type === "message" ? (e as any).message?.role : e.type === "custom" ? (e as any).customType : undefined,
 		}));
 
 		for (const entry of mapped) {
