@@ -1093,4 +1093,39 @@ export class SettingsManager {
 	getTierModels(): Record<string, string> {
 		return { ...DEFAULT_TIER_ALIASES, ...(this.settings.tierModels ?? {}) };
 	}
+
+	setMcpServerDisabled(name: string, disabled: boolean, scope: "global" | "project"): void {
+		if (scope === "project") {
+			if (!this.projectSettings.mcp) this.projectSettings.mcp = {};
+			if (!this.projectSettings.mcp.servers) this.projectSettings.mcp.servers = {};
+			if (this.projectSettings.mcp.servers[name]) {
+				this.projectSettings.mcp.servers[name] = {
+					...this.projectSettings.mcp.servers[name],
+					disabled,
+				};
+			} else {
+				throw new Error(`MCP server "${name}" not found in project settings`);
+			}
+			this.markProjectModified("mcp");
+			this.saveProjectSettings(this.projectSettings);
+		} else {
+			if (!this.globalSettings.mcp) this.globalSettings.mcp = {};
+			if (!this.globalSettings.mcp.servers) this.globalSettings.mcp.servers = {};
+			if (this.globalSettings.mcp.servers[name]) {
+				this.globalSettings.mcp.servers[name] = {
+					...this.globalSettings.mcp.servers[name],
+					disabled,
+				};
+			} else {
+				throw new Error(`MCP server "${name}" not found in global settings`);
+			}
+			this.markModified("mcp");
+			this.save();
+		}
+	}
+
+	getMcpServers(scope: "global" | "project"): Record<string, McpServerConfig> {
+		if (scope === "project") return this.projectSettings.mcp?.servers ?? {};
+		return this.globalSettings.mcp?.servers ?? {};
+	}
 }

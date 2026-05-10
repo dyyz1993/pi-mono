@@ -233,6 +233,8 @@ export interface RpcClientAPI {
 
 	// MCP
 	getMcpServers(): Promise<RpcMcpServer[]>;
+	toggleMcpServer(name: string, enabled: boolean): Promise<void>;
+	restartMcpServer(name: string): Promise<void>;
 
 	// Queue
 	getQueue(): Promise<QueueState>;

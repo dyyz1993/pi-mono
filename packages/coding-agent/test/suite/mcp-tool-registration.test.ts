@@ -5,11 +5,9 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
 	return {
 		Client: vi.fn().mockImplementation(() => ({
 			connect: vi.fn().mockResolvedValue(undefined),
-			listTools: vi
-				.fn()
-				.mockResolvedValue({
-					tools: [{ name: "search", description: "Search docs", inputSchema: { type: "object" } }],
-				}),
+			listTools: vi.fn().mockResolvedValue({
+				tools: [{ name: "search", description: "Search docs", inputSchema: { type: "object" } }],
+			}),
 			callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
 			close: vi.fn().mockResolvedValue(undefined),
 		})),
@@ -162,5 +160,111 @@ describe("MCP tool registration into agent session", () => {
 			.map((t) => t.name)
 			.filter((n) => n.startsWith("mcp__"));
 		expect(mcpToolNames).toHaveLength(0);
+	});
+
+	it("getMcpConnections returns scope and disabled fields", async () => {
+		const harness = await createHarness({
+			settings: {
+				mcp: {
+					servers: {
+						testSrv: { command: "echo", args: [] },
+					},
+				},
+			},
+		});
+		harnesses.push(harness);
+
+		await vi.waitFor(() => {
+			const mcpEvents = harness.eventsOfType("mcp_connection_change");
+			expect(mcpEvents.some((e) => e.status === "connected")).toBe(true);
+		});
+
+		const connections = harness.session.getMcpConnections();
+		expect(connections).toHaveLength(1);
+		expect(connections[0].scope).toBe("global");
+		expect(connections[0].disabled).toBeFalsy();
+	});
+
+	it("toggleMcpServer disables and enables a server", async () => {
+		const harness = await createHarness({
+			settings: {
+				mcp: {
+					servers: {
+						testSrv: { command: "echo", args: [] },
+					},
+				},
+			},
+		});
+		harnesses.push(harness);
+
+		await vi.waitFor(() => {
+			const mcpEvents = harness.eventsOfType("mcp_connection_change");
+			expect(mcpEvents.some((e) => e.status === "connected")).toBe(true);
+		});
+
+		await harness.session.toggleMcpServer("testSrv", false);
+
+		const connections = harness.session.getMcpConnections();
+		expect(connections[0].status).toBe("disconnected");
+		expect(connections[0].disabled).toBe(true);
+	});
+
+	it("toggleMcpServer throws for unknown server", async () => {
+		const harness = await createHarness({
+			settings: {
+				mcp: {
+					servers: {
+						testSrv: { command: "echo", args: [] },
+					},
+				},
+			},
+		});
+		harnesses.push(harness);
+
+		await expect(harness.session.toggleMcpServer("nonexistent", false)).rejects.toThrow(
+			'MCP server "nonexistent" not found',
+		);
+	});
+
+	it("restartMcpServer restarts a connected server", async () => {
+		const harness = await createHarness({
+			settings: {
+				mcp: {
+					servers: {
+						testSrv: { command: "echo", args: [] },
+					},
+				},
+			},
+		});
+		harnesses.push(harness);
+
+		await vi.waitFor(() => {
+			const mcpEvents = harness.eventsOfType("mcp_connection_change");
+			expect(mcpEvents.some((e) => e.status === "connected")).toBe(true);
+		});
+
+		await harness.session.restartMcpServer("testSrv");
+
+		await vi.waitFor(() => {
+			const connections = harness.session.getMcpConnections();
+			expect(connections[0].status).toBe("connected");
+		});
+	});
+
+	it("restartMcpServer throws for unknown server", async () => {
+		const harness = await createHarness({
+			settings: {
+				mcp: {
+					servers: {
+						testSrv: { command: "echo", args: [] },
+					},
+				},
+			},
+		});
+		harnesses.push(harness);
+
+		await expect(harness.session.restartMcpServer("nonexistent")).rejects.toThrow(
+			'MCP server "nonexistent" not found',
+		);
 	});
 });

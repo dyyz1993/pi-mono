@@ -247,6 +247,38 @@ export class McpManager {
 		await this.connectServer(name, config);
 	}
 
+	async restartServer(name: string): Promise<void> {
+		const conn = this.connections.get(name);
+		if (!conn) throw new Error(`MCP server "${name}" not found`);
+		if (conn.config.disabled) throw new Error(`MCP server "${name}" is disabled, enable it first`);
+
+		const timer = this.reconnectTimers.get(name);
+		if (timer) {
+			clearTimeout(timer);
+			this.reconnectTimers.delete(name);
+		}
+
+		if (conn.client) {
+			try {
+				await conn.client.close();
+			} catch {}
+			conn.client = undefined;
+		}
+
+		conn.status = "connecting";
+		conn.error = undefined;
+		this.notifyChange(conn);
+
+		try {
+			await this.doConnectWithTimeout(name, conn.config);
+		} catch (e) {
+			conn.status = "error";
+			conn.error = e instanceof Error ? e.message : String(e);
+			this.notifyChange(conn);
+			throw e;
+		}
+	}
+
 	async removeServer(name: string): Promise<void> {
 		const timer = this.reconnectTimers.get(name);
 		if (timer) {
@@ -267,6 +299,11 @@ export class McpManager {
 			}
 		}
 
+		if (conn) {
+			conn.status = "disconnected";
+			conn.tools = [];
+			this.notifyChange(conn);
+		}
 		this.connections.delete(name);
 	}
 

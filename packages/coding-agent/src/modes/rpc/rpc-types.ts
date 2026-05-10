@@ -82,6 +82,10 @@ export type RpcCommand =
 	| { id?: string; type: "get_tools" }
 	| { id?: string; type: "get_mcp_servers" }
 
+	// MCP Management
+	| { id?: string; type: "mcp_toggle_server"; name: string; enabled: boolean }
+	| { id?: string; type: "mcp_restart_server"; name: string }
+
 	// Settings
 	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
 	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
@@ -184,6 +188,8 @@ export interface RpcMcpServer {
 	status: "connecting" | "connected" | "error" | "disconnected";
 	error?: string;
 	tools: RpcMcpServerTool[];
+	scope: "global" | "project";
+	disabled?: boolean;
 }
 
 // ============================================================================
@@ -413,6 +419,8 @@ export type RpcResponse =
 			success: true;
 			data: { servers: RpcMcpServer[] };
 	  }
+	| { id?: string; type: "response"; command: "mcp_toggle_server"; success: true }
+	| { id?: string; type: "response"; command: "mcp_restart_server"; success: true }
 
 	// Settings
 	| {

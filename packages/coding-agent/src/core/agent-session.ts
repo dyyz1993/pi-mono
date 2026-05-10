@@ -343,6 +343,7 @@ export class AgentSession {
 
 	private _mcpManager: McpManager | undefined;
 	private _mcpToolDefinitions: Map<string, ToolDefinition> = new Map();
+	private _mcpServerScopes: Map<string, "global" | "project"> = new Map();
 	private _noMcp: boolean;
 
 	private _tierModels: Record<string, string> = {};
@@ -414,9 +415,18 @@ export class AgentSession {
 			this._mcpManager = undefined;
 		}
 
+		this._mcpServerScopes.clear();
+
+		const globalServers = this.settingsManager.getMcpServers("global");
+		const projectServers = this.settingsManager.getMcpServers("project");
+
 		const settings = this.settingsManager.getMergedSettings();
 		const servers = settings?.mcp?.servers;
 		if (!servers || Object.keys(servers).length === 0) return;
+
+		for (const name of Object.keys(servers)) {
+			this._mcpServerScopes.set(name, projectServers[name] ? "project" : "global");
+		}
 
 		this._mcpManager = new McpManager({
 			onConnectionChange: (conn) => {
@@ -879,6 +889,8 @@ export class AgentSession {
 			fullName: string;
 			description: string;
 		}>;
+		scope: "global" | "project";
+		disabled?: boolean;
 	}> {
 		if (!this._mcpManager) return [];
 		return this._mcpManager.getConnections().map((c) => ({
@@ -890,7 +902,22 @@ export class AgentSession {
 				fullName: t.fullName,
 				description: t.description,
 			})),
+			scope: this._mcpServerScopes.get(c.name) ?? "global",
+			disabled: c.config.disabled,
 		}));
+	}
+
+	async toggleMcpServer(name: string, enabled: boolean): Promise<void> {
+		if (!this._mcpManager) throw new Error("MCP is not initialized");
+		const scope = this._mcpServerScopes.get(name);
+		if (!scope) throw new Error(`MCP server "${name}" not found`);
+		await this._mcpManager.setServerEnabled(name, enabled);
+		this.settingsManager.setMcpServerDisabled(name, !enabled, scope);
+	}
+
+	async restartMcpServer(name: string): Promise<void> {
+		if (!this._mcpManager) throw new Error("MCP is not initialized");
+		await this._mcpManager.restartServer(name);
 	}
 
 	// =========================================================================

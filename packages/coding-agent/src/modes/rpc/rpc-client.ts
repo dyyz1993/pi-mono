@@ -478,6 +478,14 @@ export class RpcClient {
 		return this.getData<{ servers: Array<import("./rpc-types.js").RpcMcpServer> }>(response).servers;
 	}
 
+	async toggleMcpServer(name: string, enabled: boolean): Promise<void> {
+		await this.send({ type: "mcp_toggle_server", name, enabled });
+	}
+
+	async restartMcpServer(name: string): Promise<void> {
+		await this.send({ type: "mcp_restart_server", name });
+	}
+
 	async getQueue(): Promise<{ steering: unknown[]; followUp: unknown[] }> {
 		const response = await this.send({ type: "get_queue" });
 		return this.getData<{ steering: unknown[]; followUp: unknown[] }>(response);

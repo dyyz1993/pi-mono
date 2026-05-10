@@ -824,6 +824,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_mcp_servers", { servers });
 			}
 
+			case "mcp_toggle_server": {
+				try {
+					await session.toggleMcpServer(command.name, command.enabled);
+					return success(id, "mcp_toggle_server");
+				} catch (e) {
+					return error(id, "mcp_toggle_server", e instanceof Error ? e.message : String(e));
+				}
+			}
+
+			case "mcp_restart_server": {
+				try {
+					await session.restartMcpServer(command.name);
+					return success(id, "mcp_restart_server");
+				} catch (e) {
+					return error(id, "mcp_restart_server", e instanceof Error ? e.message : String(e));
+				}
+			}
+
 			// =================================================================
 			// Commands (available for invocation via prompt)
 			// =================================================================
