@@ -561,4 +561,124 @@ describe("dependency-resolver", () => {
 		const dependents = await resolver.resolveDependents([]);
 		expect(dependents).toEqual([]);
 	});
+
+	it("handles subdirectory imports", async () => {
+		const tmpDir = join(tmpdir(), `lsp-dep-subdir-${Date.now()}`);
+		await mkdir(tmpDir, { recursive: true });
+		await mkdir(join(tmpDir, "utils"), { recursive: true });
+
+		await writeFile(join(tmpDir, "utils", "helpers.ts"), "export const add = (a: number, b: number) => a + b;");
+		await writeFile(join(tmpDir, "main.ts"), `import { add } from "./utils/helpers";\nconsole.log(add(1, 2));`);
+
+		const resolver = createDependencyResolver({ cwd: tmpDir });
+		const dependents = await resolver.resolveDependents(["utils/helpers.ts"]);
+
+		expect(dependents).toContain("main.ts");
+	});
+
+	it("skips node_modules and dot directories", async () => {
+		const tmpDir = join(tmpdir(), `lsp-dep-skip-${Date.now()}`);
+		await mkdir(tmpDir, { recursive: true });
+		await mkdir(join(tmpDir, "node_modules", "pkg"), { recursive: true });
+		await mkdir(join(tmpDir, ".hidden"), { recursive: true });
+
+		await writeFile(join(tmpDir, "core.ts"), "export const x = 1;");
+		await writeFile(join(tmpDir, "node_modules", "pkg", "index.ts"), `import { x } from "../../core";`);
+		await writeFile(join(tmpDir, ".hidden", "secret.ts"), `import { x } from "../core";`);
+
+		const resolver = createDependencyResolver({ cwd: tmpDir });
+		const dependents = await resolver.resolveDependents(["core.ts"]);
+
+		expect(dependents).toEqual([]);
+	});
+});
+
+describe("diagnostics-wait", () => {
+	it("returns immediately when diagnostics are already published", async () => {
+		const mockRuntime = {
+			getPublishedDiagnostics: vi.fn().mockReturnValue([{ message: "err" }]),
+		} as any;
+
+		const { waitForPushDiagnostics } = await import("./utils/diagnostics-wait.js");
+		const start = Date.now();
+		await waitForPushDiagnostics(mockRuntime, "test.ts", {
+			initialDelayMs: 10,
+			pollIntervalMs: 10,
+			maxWaitMs: 2000,
+		});
+		const elapsed = Date.now() - start;
+		expect(elapsed).toBeLessThan(200);
+	});
+
+	it("waits and finds diagnostics after polling", async () => {
+		let callCount = 0;
+		const mockRuntime = {
+			getPublishedDiagnostics: vi.fn(() => {
+				callCount++;
+				return callCount >= 3 ? [{ message: "late error" }] : [];
+			}),
+		} as any;
+
+		const { waitForPushDiagnostics } = await import("./utils/diagnostics-wait.js");
+		await waitForPushDiagnostics(mockRuntime, "test.ts", {
+			initialDelayMs: 10,
+			pollIntervalMs: 10,
+			maxWaitMs: 5000,
+		});
+		expect(callCount).toBeGreaterThanOrEqual(3);
+	});
+
+	it("gives up after maxWaitMs with no diagnostics", async () => {
+		const mockRuntime = {
+			getPublishedDiagnostics: vi.fn().mockReturnValue([]),
+		} as any;
+
+		const { waitForPushDiagnostics } = await import("./utils/diagnostics-wait.js");
+		const start = Date.now();
+		await waitForPushDiagnostics(mockRuntime, "test.ts", {
+			initialDelayMs: 10,
+			pollIntervalMs: 10,
+			maxWaitMs: 100,
+		});
+		const elapsed = Date.now() - start;
+		expect(elapsed).toBeGreaterThanOrEqual(80);
+		expect(elapsed).toBeLessThan(500);
+	});
+});
+
+describe("config maxOpenFiles", () => {
+	it("defaults to 30 when not configured", async () => {
+		const tmpDir = join(tmpdir(), `lsp-cfg-default-${Date.now()}`);
+		await mkdir(join(tmpDir, ".pi"), { recursive: true });
+
+		const { createLspConfigResolver } = await import("./config/resolver.js");
+		const resolver = createLspConfigResolver({ cwd: tmpDir, homeDir: tmpDir });
+		const config = resolver.resolve();
+
+		expect(config.maxOpenFiles).toBe(30);
+	});
+
+	it("reads maxOpenFiles from lsp.json", async () => {
+		const tmpDir = join(tmpdir(), `lsp-cfg-max-${Date.now()}`);
+		await mkdir(join(tmpDir, ".pi"), { recursive: true });
+		await writeFile(join(tmpDir, ".pi", "lsp.json"), JSON.stringify({ maxOpenFiles: 50 }));
+
+		const { createLspConfigResolver } = await import("./config/resolver.js");
+		const resolver = createLspConfigResolver({ cwd: tmpDir, homeDir: tmpDir });
+		const config = resolver.resolve();
+
+		expect(config.maxOpenFiles).toBe(50);
+	});
+
+	it("ignores invalid maxOpenFiles and uses default", async () => {
+		const tmpDir = join(tmpdir(), `lsp-cfg-invalid-${Date.now()}`);
+		await mkdir(join(tmpDir, ".pi"), { recursive: true });
+		await writeFile(join(tmpDir, ".pi", "lsp.json"), JSON.stringify({ maxOpenFiles: -5 }));
+
+		const { createLspConfigResolver } = await import("./config/resolver.js");
+		const resolver = createLspConfigResolver({ cwd: tmpDir, homeDir: tmpDir });
+		const config = resolver.resolve();
+
+		expect(config.maxOpenFiles).toBe(30);
+	});
 });
