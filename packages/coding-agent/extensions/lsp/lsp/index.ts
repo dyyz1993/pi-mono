@@ -7,6 +7,7 @@ import { createLspRuntimeRegistry } from "./client/registry.js";
 import { createLspConfigResolver } from "./config/resolver.js";
 import { createAgentEndHook, type FileDiagnostics, summarizeDiagnostics } from "./hooks/agent-end.js";
 import { createDiagnosticsMode, type DiagnosticsModeName } from "./hooks/diagnostics-mode.js";
+import { createDependencyResolver } from "./utils/dependency-resolver.js";
 import { createWriteThroughHooks } from "./hooks/writethrough.js";
 import { createLspToolRouter } from "./tools/lsp-tool.js";
 
@@ -40,9 +41,10 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		getResolvedConfig: () => configResolver.resolve(),
 	});
 	const mode = createDiagnosticsMode();
-	const fileTracker = createFileTracker({ maxOpenFiles: 30 });
+	const fileTracker = createFileTracker({ maxOpenFiles: configResolver.resolve().maxOpenFiles });
+	const dependencyResolver = createDependencyResolver();
 	const writeThroughHooks = createWriteThroughHooks(runtime, {}, mode, fileTracker);
-	const agentEndHook = createAgentEndHook(runtime, mode, fileTracker, (results: FileDiagnostics[]) => {
+	const agentEndHook = createAgentEndHook(runtime, mode, fileTracker, dependencyResolver, (results: FileDiagnostics[]) => {
 		for (const { filePath, diagnostics } of results) {
 			lspChannel?.emit("diagnostics_update", {
 				event: "diagnostics_update",

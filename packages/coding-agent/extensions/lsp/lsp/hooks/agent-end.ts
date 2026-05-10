@@ -4,12 +4,15 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import type { FileTracker } from "../client/file-tracker.js";
 import type { LspRuntimeRegistry } from "../client/registry.js";
+import type { DependencyResolver } from "../utils/dependency-resolver.js";
+import { waitForPushDiagnostics } from "../utils/diagnostics-wait.js";
 import { extractPullDiagnostics, type LspDiagnostic, languageIdFromPath } from "../utils/lsp-helpers.js";
 import type { DiagnosticsMode } from "./diagnostics-mode.js";
 
 export interface FileDiagnostics {
 	filePath: string;
 	diagnostics: LspDiagnostic[];
+	source: "touched" | "dependent";
 }
 
 export interface AgentEndHook {
@@ -20,6 +23,7 @@ export function createAgentEndHook(
 	runtime: LspRuntimeRegistry,
 	mode: DiagnosticsMode,
 	fileTracker?: FileTracker,
+	dependencyResolver?: DependencyResolver,
 	onDiagnostics?: (results: FileDiagnostics[]) => void,
 ): AgentEndHook {
 	return {
@@ -40,13 +44,32 @@ export function createAgentEndHook(
 			return;
 		}
 
+		const allFilesToCheck = new Set<string>(touchedFiles);
+
+		if (dependencyResolver) {
+			try {
+				const dependents = await dependencyResolver.resolveDependents(touchedFiles);
+				for (const dep of dependents) {
+					allFilesToCheck.add(dep);
+				}
+				if (dependents.length > 0) {
+					console.debug(
+						`[lsp] dependency expansion: ${touchedFiles.length} touched -> ${dependents.length} dependents -> ${allFilesToCheck.size} total`,
+					);
+				}
+			} catch (err) {
+				console.debug("[lsp] dependency resolution failed:", err instanceof Error ? err.message : err);
+			}
+		}
+
 		const results: FileDiagnostics[] = [];
 
-		for (const filePath of touchedFiles) {
+		for (const filePath of allFilesToCheck) {
 			try {
+				const source = touchedFiles.includes(filePath) ? "touched" as const : "dependent" as const;
 				const diagnostics = await runDiagnosticsForFile(filePath);
 				if (diagnostics.length > 0) {
-					results.push({ filePath, diagnostics });
+					results.push({ filePath, diagnostics, source });
 				}
 			} catch (err) {
 				console.debug("[lsp] diagnostics for file failed:", filePath, err instanceof Error ? err.message : err);
@@ -91,7 +114,7 @@ export function createAgentEndHook(
 			{ path: filePath },
 		);
 
-		await new Promise((r) => setTimeout(r, 2000));
+		await waitForPushDiagnostics(runtime, filePath);
 
 		let diagnostics = runtime.getPublishedDiagnostics(filePath);
 

@@ -27,6 +27,7 @@ interface LspConfigFile {
 	args?: string[];
 	serverCandidates?: string[];
 	servers?: Record<string, LspConfigServerFile> | LspConfigServerFile[];
+	maxOpenFiles?: number;
 }
 
 interface NormalizedLspServerConfig {
@@ -40,6 +41,7 @@ interface NormalizedLspConfig {
 	serverCommand?: string[];
 	serverCandidates?: string[];
 	servers?: NormalizedLspServerConfig[];
+	maxOpenFiles?: number;
 }
 
 export interface ResolvedLspServerConfig {
@@ -51,6 +53,7 @@ export interface ResolvedLspServerConfig {
 export interface ResolvedLspConfig {
 	serverCommand: string[] | undefined;
 	servers: ResolvedLspServerConfig[];
+	maxOpenFiles: number;
 }
 
 export interface LspConfigResolver {
@@ -75,6 +78,7 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 			const userConfig = loadUserConfig(homeDir, warn);
 			const projectConfig = loadConfigFromDir(join(cwd, ".pi"), warn);
 			const config = mergeConfig(userConfig, projectConfig);
+			const resolvedMaxOpenFiles = config.maxOpenFiles ?? 30;
 
 			const searchDirs = getSearchDirs(homeDir, env);
 			const resolvedServers = resolveServers(config.servers, searchDirs, cwd, homeDir);
@@ -82,6 +86,7 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 				return {
 					serverCommand: resolvedServers[0]?.command,
 					servers: resolvedServers,
+					maxOpenFiles: resolvedMaxOpenFiles,
 				};
 			}
 
@@ -90,6 +95,7 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 				return {
 					serverCommand: explicitCommand,
 					servers: [{ name: DEFAULT_SERVER_NAME, command: explicitCommand }],
+					maxOpenFiles: resolvedMaxOpenFiles,
 				};
 			}
 
@@ -116,12 +122,14 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 				return {
 					serverCommand: resolvedDefaultServers[0]?.command,
 					servers: resolvedDefaultServers as ResolvedLspServerConfig[],
+					maxOpenFiles: resolvedMaxOpenFiles,
 				};
 			}
 
 			return {
 				serverCommand: undefined,
 				servers: [],
+				maxOpenFiles: resolvedMaxOpenFiles,
 			};
 		},
 	};
@@ -175,6 +183,7 @@ function normalizeConfig(config: LspConfigFile): NormalizedLspConfig {
 		serverCommand: normalizedServerCommand,
 		serverCandidates: normalizedCandidates,
 		servers: normalizedServers,
+		maxOpenFiles: typeof config.maxOpenFiles === "number" && config.maxOpenFiles > 0 ? config.maxOpenFiles : undefined,
 	};
 }
 
@@ -338,6 +347,7 @@ function mergeConfig(base: NormalizedLspConfig, override: NormalizedLspConfig): 
 		serverCommand: override.serverCommand ?? base.serverCommand,
 		serverCandidates: override.serverCandidates ?? base.serverCandidates,
 		servers: mergeServers(base.servers, override.servers),
+		maxOpenFiles: override.maxOpenFiles ?? base.maxOpenFiles,
 	};
 }
 

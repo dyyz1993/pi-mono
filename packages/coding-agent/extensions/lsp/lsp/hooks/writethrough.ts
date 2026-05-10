@@ -13,6 +13,7 @@ import {
 	normalizeRange,
 } from "../utils/lsp-helpers.js";
 import type { DiagnosticsMode } from "./diagnostics-mode.js";
+import { waitForPushDiagnostics } from "../utils/diagnostics-wait.js";
 
 interface LspTextEdit {
 	range: LspRange;
@@ -132,7 +133,7 @@ export function createWriteThroughHooks(
 		}
 
 		if (diagnosticsOnWrite) {
-			await new Promise((resolve) => setTimeout(resolve, 2000));
+			await waitForPushDiagnostics(runtime, filePath);
 			let diagnostics = runtime.getPublishedDiagnostics(filePath);
 
 			try {

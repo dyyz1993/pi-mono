@@ -1,8 +1,11 @@
 import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { createFileTracker } from "./client/file-tracker.js";
 import { createDiagnosticsMode, type DiagnosticsModeName } from "./hooks/diagnostics-mode.js";
+import { createDependencyResolver } from "./utils/dependency-resolver.js";
 import lspExtensionDefault, { type LspChannelEvent } from "./index.js";
 
 	function createMockPi() {
@@ -484,5 +487,78 @@ describe("file-tracker", () => {
 		tracker.closeAll((f) => closed.push(f));
 		expect(closed).toEqual(["x.ts", "y.ts"]);
 		expect(tracker.getOpenFiles()).toEqual([]);
+	});
+});
+
+describe("dependency-resolver", () => {
+	it("finds files that import a touched file", async () => {
+		const tmpDir = join(tmpdir(), `lsp-dep-test-${Date.now()}`);
+		await mkdir(tmpDir, { recursive: true });
+
+		await writeFile(
+			join(tmpDir, "types.ts"),
+			"export interface User { name: string }",
+		);
+		await writeFile(
+			join(tmpDir, "user.ts"),
+			`import { User } from "./types";\nconst u: User = { name: "test" };`,
+		);
+		await writeFile(
+			join(tmpDir, "other.ts"),
+			`export const x = 1;`,
+		);
+
+		const resolver = createDependencyResolver({ cwd: tmpDir });
+		const dependents = await resolver.resolveDependents(["types.ts"]);
+
+		expect(dependents).toContain("user.ts");
+		expect(dependents).not.toContain("other.ts");
+		expect(dependents).not.toContain("types.ts");
+	});
+
+	it("returns empty for files with no dependents", async () => {
+		const tmpDir = join(tmpdir(), `lsp-dep-empty-${Date.now()}`);
+		await mkdir(tmpDir, { recursive: true });
+
+		await writeFile(join(tmpDir, "isolated.ts"), "export const x = 1;");
+
+		const resolver = createDependencyResolver({ cwd: tmpDir });
+		const dependents = await resolver.resolveDependents(["isolated.ts"]);
+
+		expect(dependents).toEqual([]);
+	});
+
+	it("handles require-style imports", async () => {
+		const tmpDir = join(tmpdir(), `lsp-dep-require-${Date.now()}`);
+		await mkdir(tmpDir, { recursive: true });
+
+		await writeFile(join(tmpDir, "config.js"), "module.exports = {};");
+		await writeFile(join(tmpDir, "app.js"), `const config = require("./config");`);
+
+		const resolver = createDependencyResolver({ cwd: tmpDir });
+		const dependents = await resolver.resolveDependents(["config.js"]);
+
+		expect(dependents).toContain("app.js");
+	});
+
+	it("respects maxDependents limit", async () => {
+		const tmpDir = join(tmpdir(), `lsp-dep-max-${Date.now()}`);
+		await mkdir(tmpDir, { recursive: true });
+
+		await writeFile(join(tmpDir, "shared.ts"), "export const shared = 1;");
+		for (let i = 0; i < 10; i++) {
+			await writeFile(join(tmpDir, `file${i}.ts`), `import { shared } from "./shared";`);
+		}
+
+		const resolver = createDependencyResolver({ cwd: tmpDir, maxDependents: 3 });
+		const dependents = await resolver.resolveDependents(["shared.ts"]);
+
+		expect(dependents.length).toBeLessThanOrEqual(3);
+	});
+
+	it("returns empty for empty input", async () => {
+		const resolver = createDependencyResolver();
+		const dependents = await resolver.resolveDependents([]);
+		expect(dependents).toEqual([]);
 	});
 });

@@ -1,10 +1,11 @@
-import { readFile as fsReadFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile as fsReadFile, readdir } from "node:fs/promises";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Static, Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import type { LspRuntimeRegistry } from "../client/registry.js";
 import type { ResolvedLspConfig } from "../config/resolver.js";
+import { waitForPushDiagnostics } from "../utils/diagnostics-wait.js";
 import { extractPullDiagnostics, languageIdFromPath } from "../utils/lsp-helpers.js";
 
 export interface LspToolRouter {
@@ -25,6 +26,7 @@ const LspActionSchema = Type.Union([
 	Type.Literal("rename"),
 	Type.Literal("status"),
 	Type.Literal("reload"),
+	Type.Literal("full_check"),
 ]);
 
 const LspToolSchema = Type.Object({
@@ -37,6 +39,8 @@ const LspToolSchema = Type.Object({
 	includeDeclaration: Type.Optional(
 		Type.Boolean({ description: "Whether references action should include declaration locations" }),
 	),
+	directory: Type.Optional(Type.String({ description: "Directory to scan for full_check action (defaults to cwd)" })),
+	maxFiles: Type.Optional(Type.Number({ description: "Maximum files to check in full_check (default 50)" })),
 });
 
 type LspToolParams = Static<typeof LspToolSchema>;
@@ -55,7 +59,7 @@ export function createLspToolRouter(runtime: LspRuntimeRegistry, options: LspToo
 				name: "lsp",
 				label: "LSP",
 				description:
-					"Run LSP actions (diagnostics, definition, references, hover, symbols, rename, status, reload)",
+					"Run LSP actions (diagnostics, definition, references, hover, symbols, rename, status, reload, full_check)",
 				parameters: LspToolSchema,
 				execute: async (_toolCallId: string, params: LspToolParams) => {
 					const details = await executeAction(runtime, params, cwd, options.getResolvedConfig);
@@ -222,6 +226,89 @@ async function executeAction(
 			);
 			return { action: "rename", payload };
 		}
+		case "full_check": {
+			const scanDir = params.directory ? resolve(cwd, params.directory) : cwd;
+			const maxFiles = params.maxFiles ?? 50;
+			const files = await collectSourceFiles(scanDir, maxFiles);
+			if (files.length === 0) {
+				return { action: "full_check", payload: { hint: "no source files found", directory: scanDir } };
+			}
+
+			const results: Array<{ filePath: string; errorCount: number; warningCount: number; errors: Array<{ line: number; message: string }> }> = [];
+			let totalErrors = 0;
+			let totalWarnings = 0;
+
+			for (const file of files) {
+				try {
+					const relPath = relative(cwd, file);
+					const uri = pathToFileURL(file).href;
+					const content = await fsReadFile(file, "utf8");
+
+					runtime.notify(
+						"textDocument/didOpen",
+						{
+							textDocument: {
+								uri,
+								languageId: languageIdFromPath(file),
+								version: Date.now(),
+								text: content,
+							},
+						},
+						{ path: relPath },
+					);
+
+					await waitForPushDiagnostics(runtime, relPath);
+
+					let diagnostics = runtime.getPublishedDiagnostics(relPath);
+
+					try {
+						const pullResults = await runtime.requestAll(
+							"textDocument/diagnostic",
+							{ textDocument: { uri } },
+							{ path: relPath, timeoutMs: 5000 },
+						);
+						for (const result of pullResults) {
+							if (!result) continue;
+							const pulled = extractPullDiagnostics(result);
+							if (pulled.length > 0) {
+								diagnostics = diagnostics.concat(pulled);
+							}
+						}
+					} catch {
+						// pull diagnostics optional
+					}
+
+					const errors = diagnostics.filter((d) => d.severity === 1);
+					const warnings = diagnostics.filter((d) => d.severity === 2);
+					totalErrors += errors.length;
+					totalWarnings += warnings.length;
+
+					if (errors.length > 0) {
+						results.push({
+							filePath: relPath,
+							errorCount: errors.length,
+							warningCount: warnings.length,
+							errors: errors.slice(0, 5).map((d) => ({
+								line: d.range.start.line + 1,
+								message: d.message,
+							})),
+						});
+					}
+				} catch {
+					continue;
+				}
+			}
+
+			return {
+				action: "full_check",
+				payload: {
+					scannedFiles: files.length,
+					totalErrors,
+					totalWarnings,
+					filesWithErrors: results,
+				},
+			};
+		}
 	}
 }
 
@@ -277,4 +364,39 @@ function safeJsonStringify(payload: unknown, maxChars: number): string {
 		return rendered;
 	}
 	return `${rendered.slice(0, maxChars)}\n... (truncated at ${maxChars} chars)`;
+}
+
+const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rs", ".go"]);
+const SKIP_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".nuxt", "coverage"]);
+
+async function collectSourceFiles(dir: string, maxFiles: number): Promise<string[]> {
+	const files: string[] = [];
+
+	async function walk(currentDir: string, depth: number): Promise<void> {
+		if (files.length >= maxFiles || depth > 8) return;
+
+		let entries;
+		try {
+			entries = await readdir(currentDir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+
+		for (const entry of entries) {
+			if (files.length >= maxFiles) return;
+
+			if (entry.isDirectory()) {
+				if (SKIP_SCAN_DIRS.has(entry.name)) continue;
+				await walk(join(currentDir, entry.name), depth + 1);
+			} else if (entry.isFile()) {
+				const ext = extname(entry.name).toLowerCase();
+				if (SOURCE_EXTENSIONS.has(ext)) {
+					files.push(join(currentDir, entry.name));
+				}
+			}
+		}
+	}
+
+	await walk(dir, 0);
+	return files;
 }
