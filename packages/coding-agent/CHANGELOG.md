@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.74.16] - 2026-05-11
+
+### Fixed
+
+- Extension `setSessionName()` now emits `session_info_changed` event (via `_emit`) in addition to `session_rename` (via runner). Previously only `session_rename` was emitted, causing RPC clients to miss session name changes.
+- Restored UI interception layer in `ExtensionRunner`: `wrapUIForInterception()`, `emitUIEventAsync()`, `createAsyncUIPromise()`, `respondUI()`, and `emitUI()` methods. Extension `pi.on("ui")` handlers can now intercept and respond to `ctx.ui.confirm()`, `ctx.ui.select()`, `ctx.ui.input()`, and `ctx.ui.editor()` calls. Async injection via `ctx.respondUI()` is also restored.
+- `setUIContext()` now wraps the UI context through `wrapUIForInterception`, ensuring interception works before `bindExtensions` is called.
+- `hasUI()` now checks the original UI context instead of the always-wrapped one.
+- PreToolUse hook block test now checks `message_end` final text instead of streaming `message_update` fragments, avoiding false failures from LLM rephrasing.
+
 ## [0.74.15] - 2026-05-11
 
 ### Changed
