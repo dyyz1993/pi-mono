@@ -464,6 +464,10 @@ function createExtensionAPI(
 
 let sharedJiti: ReturnType<typeof createJiti> | undefined;
 
+export function invalidateExtensionModuleCache(): void {
+	sharedJiti = undefined;
+}
+
 async function loadExtensionModule(extensionPath: string) {
 	if (!sharedJiti) {
 		sharedJiti = createJiti(import.meta.url, {
