@@ -462,16 +462,17 @@ function createExtensionAPI(
 	return api;
 }
 
-async function loadExtensionModule(extensionPath: string) {
-	const jiti = createJiti(import.meta.url, {
-		moduleCache: false,
-		// In Bun binary: use virtualModules for bundled packages (no filesystem resolution)
-		// Also disable tryNative so jiti handles ALL imports (not just the entry point)
-		// In Node.js/dev: use aliases to resolve to node_modules paths
-		...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
-	});
+let sharedJiti: ReturnType<typeof createJiti> | undefined;
 
-	const module = await jiti.import(extensionPath, { default: true });
+async function loadExtensionModule(extensionPath: string) {
+	if (!sharedJiti) {
+		sharedJiti = createJiti(import.meta.url, {
+			moduleCache: true,
+			...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
+		});
+	}
+
+	const module = await sharedJiti.import(extensionPath, { default: true });
 	const factory = module as ExtensionFactory;
 	return typeof factory !== "function" ? undefined : factory;
 }
@@ -551,16 +552,33 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const runtime = createExtensionRuntime();
 
-	for (const extPath of paths) {
-		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
-
-		if (error) {
-			errors.push({ path: extPath, error });
-			continue;
+	if (paths.length <= 1) {
+		for (const extPath of paths) {
+			const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
+			if (error) {
+				errors.push({ path: extPath, error });
+				continue;
+			}
+			if (extension) {
+				extensions.push(extension);
+			}
 		}
-
-		if (extension) {
-			extensions.push(extension);
+	} else {
+		const results = await Promise.allSettled(
+			paths.map((extPath) => loadExtension(extPath, cwd, resolvedEventBus, runtime)),
+		);
+		for (let i = 0; i < results.length; i++) {
+			const result = results[i];
+			if (result.status === "fulfilled") {
+				const { extension, error } = result.value;
+				if (error) {
+					errors.push({ path: paths[i], error });
+				} else if (extension) {
+					extensions.push(extension);
+				}
+			} else {
+				errors.push({ path: paths[i], error: `Failed to load extension: ${result.reason}` });
+			}
 		}
 	}
 

@@ -1193,58 +1193,89 @@ export class DefaultPackageManager implements PackageManager {
 		accumulator: ResourceAccumulator,
 		onMissing?: (source: string) => Promise<MissingSourceAction>,
 	): Promise<void> {
-		for (const { pkg, scope } of sources) {
+		const localSources: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
+		const remoteSources: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
+
+		for (const entry of sources) {
+			const sourceStr = typeof entry.pkg === "string" ? entry.pkg : entry.pkg.source;
+			const parsed = this.parseSource(sourceStr);
+			if (parsed.type === "local") {
+				localSources.push(entry);
+			} else {
+				remoteSources.push(entry);
+			}
+		}
+
+		for (const { pkg, scope } of localSources) {
 			const sourceStr = typeof pkg === "string" ? pkg : pkg.source;
 			const filter = typeof pkg === "object" ? pkg : undefined;
 			const parsed = this.parseSource(sourceStr);
 			const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
+			const baseDir = this.getBaseDirForScope(scope);
+			this.resolveLocalExtensionSource(parsed, accumulator, filter, metadata, baseDir);
+		}
 
-			if (parsed.type === "local") {
-				const baseDir = this.getBaseDirForScope(scope);
-				this.resolveLocalExtensionSource(parsed, accumulator, filter, metadata, baseDir);
-				continue;
+		if (remoteSources.length <= 1) {
+			for (const { pkg, scope } of remoteSources) {
+				await this.resolveOneRemotePackage(pkg, scope, accumulator, onMissing);
 			}
+		} else {
+			await Promise.allSettled(
+				remoteSources.map(({ pkg, scope }) => this.resolveOneRemotePackage(pkg, scope, accumulator, onMissing)),
+			);
+		}
+	}
 
-			const installMissing = async (): Promise<boolean> => {
-				if (isOfflineModeEnabled()) {
-					return false;
-				}
-				if (!onMissing) {
-					await this.installParsedSource(parsed, scope);
-					return true;
-				}
-				const action = await onMissing(sourceStr);
-				if (action === "skip") return false;
-				if (action === "error") throw new Error(`Missing source: ${sourceStr}`);
+	private async resolveOneRemotePackage(
+		pkg: PackageSource,
+		scope: SourceScope,
+		accumulator: ResourceAccumulator,
+		onMissing?: (source: string) => Promise<MissingSourceAction>,
+	): Promise<void> {
+		const sourceStr = typeof pkg === "string" ? pkg : pkg.source;
+		const filter = typeof pkg === "object" ? pkg : undefined;
+		const parsed = this.parseSource(sourceStr);
+		const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
+
+		const installMissing = async (): Promise<boolean> => {
+			if (isOfflineModeEnabled()) {
+				return false;
+			}
+			if (!onMissing) {
 				await this.installParsedSource(parsed, scope);
 				return true;
-			};
-
-			if (parsed.type === "npm") {
-				const installedPath = this.getNpmInstallPath(parsed, scope);
-				const needsInstall =
-					!existsSync(installedPath) ||
-					(parsed.pinned && !(await this.installedNpmMatchesPinnedVersion(parsed, installedPath)));
-				if (needsInstall) {
-					const installed = await installMissing();
-					if (!installed) continue;
-				}
-				metadata.baseDir = installedPath;
-				this.collectPackageResources(installedPath, accumulator, filter, metadata);
-				continue;
 			}
+			const action = await onMissing(sourceStr);
+			if (action === "skip") return false;
+			if (action === "error") throw new Error(`Missing source: ${sourceStr}`);
+			await this.installParsedSource(parsed, scope);
+			return true;
+		};
 
-			if (parsed.type === "git") {
-				const installedPath = this.getGitInstallPath(parsed, scope);
-				if (!existsSync(installedPath)) {
-					const installed = await installMissing();
-					if (!installed) continue;
-				} else if (scope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
-					await this.refreshTemporaryGitSource(parsed, sourceStr);
-				}
-				metadata.baseDir = installedPath;
-				this.collectPackageResources(installedPath, accumulator, filter, metadata);
+		if (parsed.type === "npm") {
+			const installedPath = this.getNpmInstallPath(parsed, scope);
+			const needsInstall =
+				!existsSync(installedPath) ||
+				(parsed.pinned && !(await this.installedNpmMatchesPinnedVersion(parsed, installedPath)));
+			if (needsInstall) {
+				const installed = await installMissing();
+				if (!installed) return;
 			}
+			metadata.baseDir = installedPath;
+			this.collectPackageResources(installedPath, accumulator, filter, metadata);
+			return;
+		}
+
+		if (parsed.type === "git") {
+			const installedPath = this.getGitInstallPath(parsed, scope);
+			if (!existsSync(installedPath)) {
+				const installed = await installMissing();
+				if (!installed) return;
+			} else if (scope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
+				await this.refreshTemporaryGitSource(parsed, sourceStr);
+			}
+			metadata.baseDir = installedPath;
+			this.collectPackageResources(installedPath, accumulator, filter, metadata);
 		}
 	}
 
