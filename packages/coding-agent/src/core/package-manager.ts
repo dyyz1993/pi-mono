@@ -1193,23 +1193,22 @@ export class DefaultPackageManager implements PackageManager {
 		accumulator: ResourceAccumulator,
 		onMissing?: (source: string) => Promise<MissingSourceAction>,
 	): Promise<void> {
-		const localSources: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
+		const localSources: Array<{ pkg: PackageSource; scope: SourceScope; parsed: LocalSource }> = [];
 		const remoteSources: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
 
 		for (const entry of sources) {
 			const sourceStr = typeof entry.pkg === "string" ? entry.pkg : entry.pkg.source;
 			const parsed = this.parseSource(sourceStr);
 			if (parsed.type === "local") {
-				localSources.push(entry);
+				localSources.push({ ...entry, parsed });
 			} else {
 				remoteSources.push(entry);
 			}
 		}
 
-		for (const { pkg, scope } of localSources) {
+		for (const { pkg, scope, parsed } of localSources) {
 			const sourceStr = typeof pkg === "string" ? pkg : pkg.source;
 			const filter = typeof pkg === "object" ? pkg : undefined;
-			const parsed = this.parseSource(sourceStr);
 			const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
 			const baseDir = this.getBaseDirForScope(scope);
 			this.resolveLocalExtensionSource(parsed, accumulator, filter, metadata, baseDir);
