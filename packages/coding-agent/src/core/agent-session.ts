@@ -96,6 +96,7 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { resolveModelAlias } from "./model-resolver.js";
+import { getCwdDataDir, getGlobalDataDir, getProjectDataDir, getSessionDataDir, resolveProjectIdentity } from "./storage.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
@@ -2372,7 +2373,7 @@ export class AgentSession {
 					const trimmed = name.trim();
 					if (oldName === trimmed) return;
 					this.sessionManager.appendSessionInfo(name);
-					this._emit({ type: "session_rename", oldName, newName: trimmed });
+					this._emit({ type: "session_info_changed", name: trimmed });
 					runner.emit({ type: "session_rename", oldName, newName: trimmed }).catch((err) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
@@ -2582,6 +2583,14 @@ export class AgentSession {
 			this.sessionManager,
 			this._modelRegistry,
 		);
+		const projectRoot = resolveProjectIdentity(this._cwd);
+		this._extensionRunner.setContextDirFns({
+			getProjectRoot: () => projectRoot,
+			getSessionDataDir: (extName: string) => getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
+			getProjectDataDir: (extName: string) => getProjectDataDir(projectRoot, extName),
+			getCwdDataDir: (extName: string) => getCwdDataDir(this._cwd, extName),
+			getGlobalDataDir: (extName: string) => getGlobalDataDir(extName),
+		});
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
 		}
@@ -3082,6 +3091,7 @@ export class AgentSession {
 				oldLeafId,
 				summaryEntry,
 				fromExtension: summaryText ? fromExtension : undefined,
+				skipFiles: options.skipFiles,
 			});
 
 			// Emit to custom tools

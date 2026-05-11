@@ -328,6 +328,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		await rebindSession();
 	});
 
+	let rebindDone: Promise<void>;
 	const rebindSession = async (): Promise<void> => {
 		session = runtimeHost.session;
 		await session.bindExtensions({
@@ -386,12 +387,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 	};
 
-	await rebindSession();
+	rebindDone = rebindSession();
 	registerSignalHandlers();
 	output({ type: "ready" });
 
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {
+		await rebindDone;
 		const id = command.id;
 
 		switch (command.type) {
@@ -717,6 +719,38 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const allMessages = [...persistedMessages, ...unPersisted];
 				const totalCount = allMessages.length;
 
+				const leafId = session.sessionManager.getLeafId();
+
+				const treeEntries = allEntries.map((e) => ({
+					id: e.id,
+					parentId: e.parentId,
+					type: e.type,
+					label:
+						e.type === "message"
+							? (e as any).message?.role
+							: e.type === "custom"
+								? (e as any).customType
+								: undefined,
+				}));
+
+				const customEntries = allEntries
+					.filter((e) => e.type === "custom")
+					.map((e) => ({
+						id: e.id,
+						customType: (e as any).customType ?? "unknown",
+						data: (e as any).data,
+						timestamp: new Date(e.timestamp).getTime(),
+					}));
+
+				const compactionEntries = allEntries
+					.filter((e) => e.type === "compaction")
+					.map((e) => ({
+						id: e.id,
+						summary: (e as any).summary ?? "",
+						tokensBefore: (e as any).tokensBefore,
+						timestamp: new Date(e.timestamp).getTime(),
+					}));
+
 				if (command.limit !== undefined) {
 					const limit = command.limit;
 					let startIndex = 0;
@@ -734,6 +768,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						hasMore,
 						totalCount,
 						nextCursor: hasMore && lastPersisted ? lastPersisted.id : null,
+						tree: { entries: treeEntries, leafId },
+						customEntries,
+						compactionEntries,
 					});
 				}
 
@@ -742,6 +779,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					hasMore: false,
 					totalCount,
 					nextCursor: null,
+					tree: { entries: treeEntries, leafId },
+					customEntries,
+					compactionEntries,
 				});
 			}
 
@@ -893,7 +933,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "set_settings": {
-				session.settingsManager.applyOverrides(command.settings);
+				type Scope = import("../../core/settings-manager.js").SettingsScope;
+				const setScope = (command.scope as Scope | undefined) ?? "global";
+				session.settingsManager.applyOverrides(command.settings, setScope);
 				return success(id, "set_settings");
 			}
 

@@ -1500,6 +1500,7 @@ export interface ExtensionShortcut {
 	description?: string;
 	handler: (ctx: ExtensionContext) => Promise<void> | void;
 	extensionPath: string;
+	extensionName: string;
 }
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;

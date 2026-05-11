@@ -488,6 +488,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
+	const startupSettingsManagerCwd = cwd;
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
 
@@ -532,6 +533,7 @@ export async function main(args: string[], options?: MainOptions) {
 			cwd,
 			agentDir,
 			authStorage,
+			settingsManager: cwd === startupSettingsManagerCwd ? startupSettingsManager : undefined,
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
@@ -548,6 +550,7 @@ export async function main(args: string[], options?: MainOptions) {
 				extensionFactories: options?.extensionFactories,
 			},
 		});
+		time("  createAgentSessionServices");
 		const { settingsManager, modelRegistry, resourceLoader } = services;
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...services.diagnostics,
@@ -596,6 +599,7 @@ export async function main(args: string[], options?: MainOptions) {
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
 		});
+		time("  createAgentSessionFromServices");
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);
@@ -607,12 +611,13 @@ export async function main(args: string[], options?: MainOptions) {
 			diagnostics,
 		};
 	};
-	time("createRuntime");
+	time("createRuntime(definition)");
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
 		sessionManager,
 	});
+	time("createAgentSessionRuntime(execution)");
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRegistry, resourceLoader } = services;
 

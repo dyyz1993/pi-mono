@@ -18,6 +18,7 @@ import { loadPromptTemplates } from "./prompt-templates.js";
 import { SettingsManager } from "./settings-manager.js";
 import type { Skill } from "./skills.js";
 import { loadSkills } from "./skills.js";
+import { time } from "./timings.js";
 import { createSourceInfo, type SourceInfo } from "./source-info.js";
 
 export interface ResourceExtensionPaths {
@@ -322,10 +323,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 	async reload(): Promise<void> {
 		invalidateExtensionModuleCache();
 		await this.settingsManager.reload();
+		time("    settingsManager.reload");
 		const resolvedPaths = await this.packageManager.resolve();
+		time("    packageManager.resolve");
 		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
+		time("    packageManager.resolveExtensionSources");
 		const metadataByPath = new Map<string, PathMetadata>();
 
 		this.extensionSkillSourceInfos = new Map();
@@ -398,7 +402,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
 
 		const extensionsResult = await loadExtensions(extensionPaths, this.cwd, this.eventBus);
+		time("    loadExtensions");
 		const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime);
+		time("    loadExtensionFactories");
 		extensionsResult.extensions.push(...inlineExtensions.extensions);
 		extensionsResult.errors.push(...inlineExtensions.errors);
 

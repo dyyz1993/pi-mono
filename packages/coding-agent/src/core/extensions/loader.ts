@@ -14,6 +14,7 @@ import * as _bundledPiAiOauth from "@dyyz1993/pi-ai/oauth";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import * as _bundledPiTui from "@dyyz1993/pi-tui";
 import { createJiti } from "jiti/static";
+import { time } from "../timings.js";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
@@ -311,7 +312,7 @@ function createExtensionAPI(
 			},
 		): void {
 			runtime.assertActive();
-			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
+			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, extensionName: extension.name, ...options });
 		},
 
 		registerFlag(
@@ -513,9 +514,11 @@ async function loadExtension(
 	runtime: ExtensionRuntime,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
+	const extName = path.basename(extensionPath, path.extname(extensionPath));
 
 	try {
 		const factory = await loadExtensionModule(resolvedPath);
+		time(`      jiti.import(${extName})`);
 		if (!factory) {
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
@@ -523,6 +526,7 @@ async function loadExtension(
 		const extension = createExtension(extensionPath, resolvedPath);
 		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
 		await factory(api);
+		time(`      factory(${extName})`);
 
 		return { extension, error: null };
 	} catch (err) {

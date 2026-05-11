@@ -25,8 +25,8 @@ export interface ProviderRetrySettings {
 
 export interface RetrySettings {
 	enabled?: boolean; // default: true
-	maxRetries?: number; // default: 3
-	baseDelayMs?: number; // default: 2000 (exponential backoff: 2s, 4s, 8s)
+	maxRetries?: number; // default: 20
+	baseDelayMs?: number; // default: 5000 (exponential backoff: 5s, 10s, 20s...)
 	provider?: ProviderRetrySettings;
 }
 
@@ -453,9 +453,33 @@ export class SettingsManager {
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 	}
 
-	/** Apply additional overrides on top of current settings */
-	applyOverrides(overrides: Partial<Settings>): void {
+	/** Apply additional overrides on top of current settings and persist to disk */
+	applyOverrides(overrides: Partial<Settings>, scope: SettingsScope = "global"): void {
 		this.settings = deepMergeSettings(this.settings, overrides);
+
+		// Also update the underlying scoped settings so changes persist
+		if (scope === "global") {
+			this.globalSettings = deepMergeSettings(this.globalSettings, overrides);
+		} else {
+			this.projectSettings = deepMergeSettings(this.projectSettings, overrides);
+		}
+
+		// Mark all top-level keys as modified
+		for (const key of Object.keys(overrides) as (keyof Settings)[]) {
+			if (overrides[key] !== undefined) {
+				if (scope === "global") {
+					this.markModified(key);
+				} else {
+					this.markProjectModified(key);
+				}
+			}
+		}
+
+		if (scope === "global") {
+			this.save();
+		} else {
+			this.saveProjectSettings(this.projectSettings);
+		}
 	}
 
 	/** Mark a global field as modified during this session */
@@ -746,8 +770,8 @@ export class SettingsManager {
 	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number } {
 		return {
 			enabled: this.getRetryEnabled(),
-			maxRetries: this.settings.retry?.maxRetries ?? 3,
-			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
+			maxRetries: this.settings.retry?.maxRetries ?? 20,
+			baseDelayMs: this.settings.retry?.baseDelayMs ?? 5000,
 		};
 	}
 

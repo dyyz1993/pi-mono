@@ -13,7 +13,7 @@ import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
-import type { TreeWithLeaf } from "./rpc-client-types.js";
+import type { RollbackPreviewResult, TreeWithLeaf } from "./rpc-client-types.js";
 import type {
 	RpcCommand,
 	RpcExtension,
@@ -373,8 +373,11 @@ export class RpcClient {
 	 * Fork from a specific message.
 	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
 	 */
-	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
-		const response = await this.send({ type: "fork", entryId });
+	async fork(
+		entryId: string,
+		options?: { position?: "before" | "at" },
+	): Promise<{ text: string; cancelled: boolean; newSessionFile?: string; newSessionId?: string }> {
+		const response = await this.send({ type: "fork", entryId, position: options?.position });
 		return this.getData(response);
 	}
 
@@ -384,6 +387,24 @@ export class RpcClient {
 	 */
 	async clone(): Promise<{ cancelled: boolean }> {
 		const response = await this.send({ type: "clone" });
+		return this.getData(response);
+	}
+
+	async navigateTree(
+		targetId: string,
+		options?: { summarize?: boolean; skipFiles?: boolean },
+	): Promise<{ cancelled: boolean }> {
+		const response = await this.send({
+			type: "navigate_tree",
+			targetId,
+			summarize: options?.summarize,
+			skipFiles: options?.skipFiles,
+		});
+		return this.getData(response);
+	}
+
+	async previewRollback(targetId: string): Promise<RollbackPreviewResult> {
+		const response = await this.send({ type: "rollback_preview", targetId });
 		return this.getData(response);
 	}
 

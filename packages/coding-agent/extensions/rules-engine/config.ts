@@ -30,6 +30,7 @@ export async function loadConfig(projectDir: string): Promise<RulesConfig> {
 
 	for (const name of configFiles) {
 		const fp = path.resolve(projectDir, name);
+		if (!fs.existsSync(fp)) continue;
 		try {
 			const raw = fs.readFileSync(fp, "utf-8");
 			const parsed = JSON.parse(raw);

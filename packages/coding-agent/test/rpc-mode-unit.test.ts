@@ -459,7 +459,14 @@ describe("RPC mode command handling", () => {
 			const resp = await sendCommand({ type: "set_settings", id: "ss1", settings: { hideThinkingBlock: true } });
 
 			expect(resp.success).toBe(true);
-			expect(session.settingsManager.applyOverrides).toHaveBeenCalledWith({ hideThinkingBlock: true });
+			expect(session.settingsManager.applyOverrides).toHaveBeenCalledWith({ hideThinkingBlock: true }, "global");
+		});
+
+		it("applies settings overrides with project scope", async () => {
+			const resp = await sendCommand({ type: "set_settings", id: "ss2", settings: { hideThinkingBlock: false }, scope: "project" });
+
+			expect(resp.success).toBe(true);
+			expect(session.settingsManager.applyOverrides).toHaveBeenCalledWith({ hideThinkingBlock: false }, "project");
 		});
 	});
 

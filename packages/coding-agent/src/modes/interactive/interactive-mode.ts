@@ -58,6 +58,7 @@ import {
 } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.js";
+import { resolveProjectIdentity, getSessionDataDir, getProjectDataDir, getCwdDataDir, getGlobalDataDir } from "../../core/storage.js";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -1601,7 +1602,9 @@ export class InteractiveMode {
 		if (shortcuts.size === 0) return;
 
 		// Create a context for shortcut handlers
-		const createContext = (): ExtensionContext => ({
+		const createContext = (extName: string): ExtensionContext => {
+			const projectRoot = resolveProjectIdentity(this.sessionManager.getCwd());
+			return {
 			ui: this.createExtensionUIContext(),
 			hasUI: true,
 			cwd: this.sessionManager.getCwd(),
@@ -1628,24 +1631,23 @@ export class InteractiveMode {
 				})();
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
-			extensionName: "",
-			projectRoot: this.sessionManager.getCwd(),
-			sessionDataDir: "",
-			projectDataDir: "",
-			cwdDataDir: "",
-			globalDataDir: "",
+			extensionName: extName,
+			projectRoot,
+			sessionDataDir: getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
+			projectDataDir: getProjectDataDir(projectRoot, extName),
+			cwdDataDir: getCwdDataDir(this.sessionManager.getCwd(), extName),
+			globalDataDir: getGlobalDataDir(extName),
 			sessionSignal: AbortSignal.abort(),
 			respondUI: () => {},
 			fileSnapshotManager: this.session.fileSnapshotManager,
-		});
+		};
+		};
 
 		// Set up the extension shortcut handler on the default editor
 		this.defaultEditor.onExtensionShortcut = (data: string) => {
 			for (const [shortcutStr, shortcut] of shortcuts) {
-				// Cast to KeyId - extension shortcuts use the same format
 				if (matchesKey(data, shortcutStr as KeyId)) {
-					// Run handler async, don't block input
-					Promise.resolve(shortcut.handler(createContext())).catch((err) => {
+					Promise.resolve(shortcut.handler(createContext(shortcut.extensionName))).catch((err) => {
 						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
 					});
 					return true;

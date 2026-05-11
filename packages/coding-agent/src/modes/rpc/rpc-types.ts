@@ -355,6 +355,17 @@ export type RpcResponse =
 				hasMore: boolean;
 				totalCount: number;
 				nextCursor: string | null;
+				tree: {
+					entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+					leafId: string | null;
+				};
+				customEntries: Array<{ id: string; customType: string; data: unknown; timestamp: number }>;
+				compactionEntries: Array<{
+					id: string;
+					summary: string;
+					tokensBefore: number | undefined;
+					timestamp: number;
+				}>;
 			};
 	  }
 	| {

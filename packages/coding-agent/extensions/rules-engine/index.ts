@@ -370,6 +370,21 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 			return undefined;
 		}
 
+		const alreadyInjected = lastMessages.some(
+			(msg) =>
+				(msg as Record<string, unknown>).role === "custom" &&
+				(msg as Record<string, unknown>).customType === "rules-engine",
+		);
+		if (alreadyInjected) {
+			channel.emit("injected", {
+				type: "injected",
+				ruleNames: unconditional.map((r) => r.name),
+				systemPromptLength: event.systemPrompt.length,
+				deduplicated: true,
+			});
+			return undefined;
+		}
+
 		const sources = [...new Set(unconditional.map((r) => r.source))];
 		const reminderContent = buildSystemReminderSection(unconditional, sources);
 
@@ -462,6 +477,11 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 		cachedMatchHash = "";
 		lastMessages = [];
 		ctx.ui.setStatus("rules-engine", `Rules: ${rules.length} (re-injected after compact)`);
+	});
+
+	pi.on("session_tree", async () => {
+		cachedMatchHash = "";
+		lastMessages = [];
 	});
 
 	pi.on("turn_end", async () => {

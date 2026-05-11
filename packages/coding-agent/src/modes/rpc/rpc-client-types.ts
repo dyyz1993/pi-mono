@@ -181,9 +181,64 @@ export interface RpcClientAPI {
 		hasMore: boolean;
 		totalCount: number;
 		nextCursor: string | null;
+		tree: {
+			entries: Array<{ id: string; parentId: string | null; type: string; label?: string }>;
+			leafId: string | null;
+		};
+		customEntries: Array<{ id: string; customType: string; data: unknown; timestamp: number }>;
+		compactionEntries: Array<{
+			id: string;
+			summary: string;
+			tokensBefore: number | undefined;
+			timestamp: number;
+		}>;
 	}>;
-	getTree(): Promise<TreeEntry[]>;
+	getTree(): Promise<{ entries: unknown[]; leafId: string }>;
 	getTreeWithLeaf(): Promise<TreeWithLeaf>;
+
+	// File snapshots & diffs
+	getModifiedFiles(options?: {
+		fromEntryId?: string;
+		toEntryId?: string;
+	}): Promise<
+		Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>
+	>;
+	getFileDiff(options: {
+		filePath: string;
+		fromEntryId?: string;
+		toEntryId?: string;
+	}): Promise<{
+		path: string;
+		oldContent: string | null;
+		newContent: string | null;
+		unifiedDiff: string;
+	} | null>;
+	getBatchDiffs(options?: {
+		fromEntryId?: string;
+		toEntryId?: string;
+	}): Promise<{
+		files: Array<{
+			path: string;
+			status: "added" | "modified" | "deleted";
+			diff: {
+				path: string;
+				oldContent: string | null;
+				newContent: string | null;
+				unifiedDiff: string;
+			} | null;
+		}>;
+		summary: { totalFiles: number; added: number; modified: number; deleted: number };
+	}>;
+	getFileHistory(options: { filePath: string }): Promise<{
+		history: Array<{
+			entryId: string;
+			turnIndex: number;
+			timestamp: string;
+			status: "added" | "modified" | "deleted";
+			snapshotHash: string;
+			previousHash: string | null;
+		}>;
+	}>;
 
 	// Model
 	setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }>;

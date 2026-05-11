@@ -26,6 +26,9 @@ export interface MemoryHeader {
 }
 
 export function getProjectRoot(cwd: string): string {
+	if (!existsSync(join(cwd, ".git"))) {
+		return cwd;
+	}
 	try {
 		const result = execSync("git rev-parse --git-common-dir", {
 			cwd,

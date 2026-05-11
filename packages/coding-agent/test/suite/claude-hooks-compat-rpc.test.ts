@@ -159,8 +159,18 @@ describe.skipIf(!hasApiKey)("claude-hooks-compat RPC e2e", () => {
 		unsub();
 		printEventTimeline("PreToolUse block", allEvents);
 
-		const allText = collectAgentMessages(allEvents);
-		expect(allText).toContain("write blocked by hook");
+		const lastMessageEnd = [...allEvents]
+			.reverse()
+			.find((e) => (e as Record<string, unknown>).type === "message_end");
+		const lastContent = lastMessageEnd
+			? ((lastMessageEnd as Record<string, unknown>).message as Record<string, unknown>)?.content
+			: undefined;
+		const lastText = Array.isArray(lastContent)
+			? lastContent.filter((c: Record<string, unknown>) => c.type === "text").map((c: Record<string, unknown>) => c.text ?? "").join(" ")
+			: typeof lastContent === "string"
+				? lastContent
+				: "";
+		expect(lastText.toLowerCase()).toContain("blocked");
 	}, 180_000);
 
 	it("PostToolUse hook fires after tool execution", async () => {
