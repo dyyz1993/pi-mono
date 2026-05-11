@@ -41,5 +41,5 @@ jobs:
         run: |
           for dir in packages/tui packages/agent packages/ai packages/coding-agent packages/mom packages/web-ui packages/pods; do
             echo "Publishing $dir..."
-            npm publish "$(pwd)/$dir" --access public --ignore-scripts
+            npm publish "$(pwd)/$dir" --access public --ignore-scripts || echo "⚠️  $dir publish skipped (already exists or error)"
           done
