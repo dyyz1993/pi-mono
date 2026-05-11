@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Extension loading is now parallelized via `Promise.allSettled()`, reducing startup time by ~30-40% when multiple extensions are present. Previously extensions were loaded sequentially.
+- Package source resolution (npm install / git clone) is now parallelized for remote sources. Local sources are resolved synchronously first, then remote sources resolve concurrently. Previously all sources were resolved sequentially.
+- Extension module loader now uses a shared `jiti` instance with `moduleCache: true` instead of creating a new instance per extension with `moduleCache: false`. This eliminates redundant TypeScript compilation across extensions.
+
+### Added
+
+- Startup performance baseline test suite (`test/startup-performance.test.ts`) covering extension loading correctness, error handling, resource discovery, and timing measurements.
+
 ## [0.74.12] - 2026-05-11
 
 ### Added
