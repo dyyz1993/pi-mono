@@ -625,7 +625,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "switch_session": {
 				const result = await runtimeHost.switchSession(command.sessionPath);
 				if (!result.cancelled) {
-					await rebindSession();
+					session = runtimeHost.session;
 				}
 				return success(id, "switch_session", result);
 			}
