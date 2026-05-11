@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.15] - 2026-05-11
 
 ### Changed
 
@@ -8,9 +8,15 @@
 - Package source resolution (npm install / git clone) is now parallelized for remote sources. Local sources are resolved synchronously first, then remote sources resolve concurrently. Previously all sources were resolved sequentially.
 - Extension module loader now uses a shared `jiti` instance with `moduleCache: true` instead of creating a new instance per extension with `moduleCache: false`. This eliminates redundant TypeScript compilation across extensions.
 
+### Fixed
+
+- `ExtensionContext.sessionDataDir`, `projectDataDir`, `cwdDataDir`, and `globalDataDir` are now correctly populated via storage functions instead of being hardcoded to empty strings. Extensions can now reliably persist data per-session, per-project, per-cwd, and globally.
+- Extension shortcuts now receive correct `extensionName` and storage paths in their context, matching the extension that registered the shortcut.
+
 ### Added
 
 - Startup performance baseline test suite (`test/startup-performance.test.ts`) covering extension loading correctness, error handling, resource discovery, and timing measurements.
+- `extensionName` field on `ExtensionShortcut` interface for per-shortcut extension identification.
 
 ## [0.74.12] - 2026-05-11
 
