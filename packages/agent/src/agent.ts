@@ -483,6 +483,15 @@ export class Agent {
 		this._state.pendingToolCalls = new Set<string>();
 		this.activeRun?.resolve();
 		this.activeRun = undefined;
+
+		// Check if follow-up messages were enqueued while runLoop was draining
+		// the queue but before finishRun() cleared activeRun. If so, auto-consume.
+		if (this.followUpQueue.hasItems()) {
+			this.continue().catch((_err: unknown) => {
+				// Silently ignore — the followUp may have been cleared or the agent
+				// may be in a state that doesn't support continue().
+			});
+		}
 	}
 
 	/**
