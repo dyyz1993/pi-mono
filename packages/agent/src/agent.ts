@@ -256,15 +256,6 @@ export class Agent {
 	/** Queue a message to run only after the agent would otherwise stop. */
 	followUp(message: AgentMessage): void {
 		this.followUpQueue.enqueue(message);
-		// If the agent is not currently running, auto-consume the queued message.
-		// This prevents followUp messages from being lost due to a race condition
-		// where the message is enqueued after runLoop has already drained the queue
-		// but before finishRun() clears the active run flag.
-		if (!this.activeRun) {
-			this.continue().catch((err: unknown) => {
-				console.warn("followUp auto-continue failed:", err);
-			});
-		}
 	}
 
 	/** Remove all queued steering messages. */
@@ -492,6 +483,15 @@ export class Agent {
 		this._state.pendingToolCalls = new Set<string>();
 		this.activeRun?.resolve();
 		this.activeRun = undefined;
+
+		// Check if follow-up messages were enqueued while runLoop was draining
+		// the queue but before finishRun() cleared activeRun. If so, auto-consume.
+		if (this.followUpQueue.hasItems()) {
+			this.continue().catch((_err: unknown) => {
+				// Silently ignore — the followUp may have been cleared or the agent
+				// may be in a state that doesn't support continue().
+			});
+		}
 	}
 
 	/**
