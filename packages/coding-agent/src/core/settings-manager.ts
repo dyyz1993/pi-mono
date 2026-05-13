@@ -1118,6 +1118,12 @@ export class SettingsManager {
 		return { ...DEFAULT_TIER_ALIASES, ...(this.settings.tierModels ?? {}) };
 	}
 
+	setTierModels(models: Record<string, string>): void {
+		this.globalSettings.tierModels = { ...models };
+		this.markModified("tierModels");
+		this.save();
+	}
+
 	setMcpServerDisabled(name: string, disabled: boolean, scope: "global" | "project"): void {
 		if (scope === "project") {
 			if (!this.projectSettings.mcp) this.projectSettings.mcp = {};
