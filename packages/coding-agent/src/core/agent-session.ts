@@ -96,7 +96,6 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { resolveModelAlias } from "./model-resolver.js";
-import { getCwdDataDir, getGlobalDataDir, getProjectDataDir, getSessionDataDir, resolveProjectIdentity } from "./storage.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
@@ -104,6 +103,13 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
+import {
+	getCwdDataDir,
+	getGlobalDataDir,
+	getProjectDataDir,
+	getSessionDataDir,
+	resolveProjectIdentity,
+} from "./storage.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions, createTool, type ToolName } from "./tools/index.js";
@@ -2586,7 +2592,8 @@ export class AgentSession {
 		const projectRoot = resolveProjectIdentity(this._cwd);
 		this._extensionRunner.setContextDirFns({
 			getProjectRoot: () => projectRoot,
-			getSessionDataDir: (extName: string) => getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
+			getSessionDataDir: (extName: string) =>
+				getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
 			getProjectDataDir: (extName: string) => getProjectDataDir(projectRoot, extName),
 			getCwdDataDir: (extName: string) => getCwdDataDir(this._cwd, extName),
 			getGlobalDataDir: (extName: string) => getGlobalDataDir(extName),
