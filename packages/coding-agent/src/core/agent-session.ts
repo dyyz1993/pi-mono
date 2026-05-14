@@ -2416,6 +2416,7 @@ export class AgentSession {
 				appendEntry: (customType, data, options) => {
 					const id = this.sessionManager.appendCustomEntry(customType, data, options);
 					this._emit({ type: "custom_entry", customType, data, id, display: options?.display });
+					return id;
 				},
 				foldEntry: (entryId, summary, originalTokens) => {
 					this.sessionManager.appendFold(entryId, summary, originalTokens);

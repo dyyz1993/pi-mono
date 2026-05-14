@@ -1265,7 +1265,7 @@ export interface ExtensionAPI {
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T, options?: { display?: boolean }): void;
+	appendEntry<T = unknown>(customType: string, data?: T, options?: { display?: boolean }): string;
 
 	/** Fold a message entry, replacing its content with a summary in LLM context. */
 	foldEntry(entryId: string, summary: string, originalTokens: number): void;
@@ -1520,7 +1520,7 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp" },
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: { display?: boolean }) => void;
+export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: { display?: boolean }) => string;
 
 export type FoldEntryHandler = (entryId: string, summary: string, originalTokens: number) => void;
 

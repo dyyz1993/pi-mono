@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Added null guard in `FileSnapshotManager.restoreFiles()` to prevent catastrophic file deletion when `targetTreeHash` resolves to null. Previously, rolling back to the first user message (or any scenario where the target snapshot was unknown) would treat "unknown state" as "no files" and delete all files on disk.
+- Changed `ExtensionAPI.appendEntry()` return type from `void` to `string`, returning the entry ID. This enables `FileSnapshotManager.onTurnEnd()` to populate the in-memory `snapshotIndex` and `turnIndexMap`, fixing all file query APIs (`getModifiedFiles`, `getFileDiff`, `getBatchDiffs`, `getFileHistory`) that returned empty results during the current session.
+- `file-snapshot` extension now registers channel handlers (`snapshot.list`, `snapshot.rollback`, `snapshot.unrevert`, `snapshot.get`, `snapshot.restoreByHash`) for RPC-based file restoration without session tree mutation.
+
 ## [0.74.16] - 2026-05-11
 
 ### Fixed

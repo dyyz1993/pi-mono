@@ -487,7 +487,14 @@ export class FileSnapshotManager {
 
 		if (targetTreeHash === currentTreeHash) return empty;
 
-		const targetFiles = targetTreeHash ? this.git.readTree(targetTreeHash) : new Map<string, string>();
+		// Safety guard: if targetTreeHash is null, we cannot determine the target state.
+		// Treating null as "no files" would delete everything on disk — a data-loss bug.
+		// Instead, bail out safely.
+		if (targetTreeHash === null) {
+			return empty;
+		}
+
+		const targetFiles = this.git.readTree(targetTreeHash);
 		const currentFiles = currentTreeHash ? this.git.readTree(currentTreeHash) : new Map<string, string>();
 
 		const toRestore: string[] = [];
