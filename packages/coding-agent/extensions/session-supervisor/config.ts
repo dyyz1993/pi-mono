@@ -18,10 +18,10 @@ const DEFAULT_CONFIG: Static<typeof SupervisorConfigSchema> = {
     taskRules: [],
 };
 
-export function loadConfig(cwd: string): SupervisorConfig {
+export function loadConfig(sessionDataDir: string, projectDataDir: string): SupervisorConfig {
     const candidates = [
-        join(cwd, ".pi", "supervisor.json"),
-        join(cwd, "supervisor.json"),
+        join(sessionDataDir, "supervisor.json"),
+        join(projectDataDir, "supervisor.json"),
     ];
 
     for (const p of candidates) {

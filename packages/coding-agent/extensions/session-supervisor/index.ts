@@ -133,10 +133,10 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     });
 
     pi.on("session_start", async (_event, ctx) => {
-        config = loadConfig(ctx.cwd);
+        config = loadConfig(ctx.sessionDataDir, ctx.projectDataDir);
         enabled = config.enable;
 
-        log(`session_start: cwd=${ctx.cwd}, enabled=${enabled}, smallModel=${config.smallModel}`);
+        log(`session_start: sessionDataDir=${ctx.sessionDataDir}, projectDataDir=${ctx.projectDataDir}, enabled=${enabled}, smallModel=${config.smallModel}`);
 
         if (pi.getFlag("disable-supervisor") === true) {
             enabled = false;
