@@ -371,6 +371,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
+		this._tierModels = this.settingsManager.getTierModels();
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -954,6 +955,7 @@ export class AgentSession {
 	setTierModels(mapping: Record<string, string>): void {
 		this._tierModels = { ...mapping };
 		this.sessionManager.appendTierModelsChange(mapping);
+		this.settingsManager.setTierModels(mapping);
 	}
 
 	/** Current thinking level */

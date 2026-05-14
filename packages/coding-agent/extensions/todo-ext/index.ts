@@ -79,9 +79,13 @@ export default function (pi: ExtensionAPI) {
 	let nextId = 1;
 	let channel: ServerChannel<TodoChannelContract> | null = null;
 
-	const reconstructState = (ctx: ExtensionContext): void => {
+	pi.on("session_start", async (_event, ctx) => {
+		const rawChannel = pi.registerChannel(TODO_CHANNEL_NAME);
+		const typed = createTypedChannel<TodoChannelContract>(rawChannel);
+		channel = typed.server;
+
 		todos = [];
-		nextId = 1;
+		nextId =1;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === "todo") {
@@ -103,17 +107,35 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		updateWidget(undefined, todos);
-	};
 
-	pi.on("session_start", async (_event, ctx) => {
-		const rawChannel = pi.registerChannel(TODO_CHANNEL_NAME);
-		const typed = createTypedChannel<TodoChannelContract>(rawChannel);
-		channel = typed.server;
-		reconstructState(ctx);
 		channel.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 	});
 
-	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
+	pi.on("session_tree", async (_event, ctx) => {
+		todos = [];
+		nextId =1;
+
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "custom" && entry.customType === "todo") {
+				const data = entry.data as { action: string; todos: Todo[]; nextId: number } | undefined;
+				if (data?.todos) {
+					todos = data.todos;
+					nextId = data.nextId;
+				}
+				continue;
+			}
+			if (entry.type !== "message") continue;
+			const msg = entry.message;
+			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
+
+			const details = msg.details as TodoDetails | undefined;
+			if (details) {
+				todos = details.todos;
+				nextId = details.nextId;
+			}
+		}
+		updateWidget(undefined, todos);
+	});
 
 	pi.registerTool({
 		name: "todo",
