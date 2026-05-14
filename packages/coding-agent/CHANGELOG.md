@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.74.23] - 2026-05-15
+
 ### Fixed
 
 - Added null guard in `FileSnapshotManager.restoreFiles()` to prevent catastrophic file deletion when `targetTreeHash` resolves to null. Previously, rolling back to the first user message (or any scenario where the target snapshot was unknown) would treat "unknown state" as "no files" and delete all files on disk.
