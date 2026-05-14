@@ -10,6 +10,7 @@ import { createDiagnosticsMode, type DiagnosticsModeName } from "./hooks/diagnos
 import { createDependencyResolver } from "./utils/dependency-resolver.js";
 import { createWriteThroughHooks } from "./hooks/writethrough.js";
 import { createLspToolRouter } from "./tools/lsp-tool.js";
+import { createServerMetricsCollector } from "./monitoring/server-metrics.js";
 
 export interface LspChannelEvent {
 	event:
@@ -35,7 +36,8 @@ export interface LspChannelEvent {
 }
 
 export default function lspExtension(pi: ExtensionAPI): void {
-	const runtime = createLspRuntimeRegistry();
+	const metrics = createServerMetricsCollector();
+	const runtime = createLspRuntimeRegistry({ metrics });
 	const configResolver = createLspConfigResolver();
 	const toolRouter = createLspToolRouter(runtime, {
 		getResolvedConfig: () => configResolver.resolve(),
@@ -199,9 +201,20 @@ export default function lspExtension(pi: ExtensionAPI): void {
 				"info",
 			);
 		}
+
+		// Startup metrics log
+		const startupSnapshots = metrics.snapshot();
+		for (const snap of startupSnapshots) {
+			const startupMs = snap.startupDurationMs !== undefined ? `${snap.startupDurationMs}ms` : "n/a";
+			const types = snap.fileTypes.length > 0 ? snap.fileTypes.join(",") : "*";
+			console.log(`[lsp-metrics] ${snap.name} [${types}] state=${snap.state} startup=${startupMs} pid=${snap.pid ?? "n/a"}`);
+		}
 	});
 
 	pi.on("session_shutdown", async () => {
+		// Session metrics report
+		console.log(metrics.summary());
+
 		if (idleCleanupTimer !== undefined) {
 			clearTimeout(idleCleanupTimer);
 			idleCleanupTimer = undefined;

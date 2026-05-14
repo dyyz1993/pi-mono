@@ -6,6 +6,7 @@ import {
 	type LspClientRuntimeOptions,
 	type LspDiagnostic,
 } from "./runtime.js";
+import type { ServerMetricsCollector } from "../monitoring/server-metrics.js";
 
 export interface LspRuntimeRegistryServerStatus {
 	name: string;
@@ -40,6 +41,7 @@ export interface LspRuntimeRegistry {
 
 export interface LspRuntimeRegistryOptions extends Omit<LspClientRuntimeOptions, "spawn"> {
 	createRuntime?: () => LspClientRuntime;
+	metrics?: ServerMetricsCollector;
 }
 
 interface RuntimeEntry {
@@ -49,6 +51,7 @@ interface RuntimeEntry {
 
 export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}): LspRuntimeRegistry {
 	const createRuntime = options.createRuntime ?? (() => createLspClientRuntime(options));
+	const metrics = options.metrics;
 	const entries = new Map<string, RuntimeEntry>();
 
 	let lifecycle: LspRuntimeRegistryStatus["state"] = "inactive";
@@ -69,15 +72,25 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 			lifecycleReason = `Starting ${servers.length} LSP server(s).`;
 
 			for (const server of servers) {
+				metrics?.onStarting(server.name, server.fileTypes ?? []);
 				const runtime = createRuntime();
 				entries.set(server.name, { server, runtime });
 				await runtime.start(server.command);
+				const serverStatus = runtime.getStatus();
+				if (serverStatus.state === "ready") {
+					metrics?.onReady(server.name, serverStatus.pid);
+				} else {
+					metrics?.onError(server.name);
+				}
 			}
 
 			syncLifecycle();
 		},
 
 		async stop(): Promise<void> {
+			for (const [name, { runtime }] of entries) {
+				metrics?.onStop(name);
+			}
 			const stopPromises = [...entries.values()].map(({ runtime }) => runtime.stop());
 			await Promise.allSettled(stopPromises);
 			entries.clear();
@@ -98,6 +111,7 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 			if (status.state !== "ready") {
 				throw new Error(`LSP server ${entry.server.name} is not ready: ${status.reason}`);
 			}
+			metrics?.onRequest(entry.server.name);
 			return entry.runtime.request(method, params, options.timeoutMs);
 		},
 
@@ -115,6 +129,7 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 					})
 				: allEntries;
 			for (const entry of targets) {
+				metrics?.onNotify(entry.server.name);
 				entry.runtime.notify(method, params);
 			}
 		},
@@ -136,6 +151,9 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 						);
 					})
 				: allEntries;
+			for (const entry of targets) {
+				metrics?.onRequest(entry.server.name);
+			}
 			const results = await Promise.allSettled(
 				targets.map(async (entry) => {
 					const s = entry.runtime.getStatus();
