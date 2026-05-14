@@ -150,16 +150,22 @@ export default function (pi: ExtensionAPI) {
 					channel?.emit("list", { action: "list", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "list", todos, nextId);
 					updateWidget(ctx, todos);
+					
 					return {
 						content: [
 							{
 								type: "text",
 								text: active.length
-									? active.map((t) => `[${t.done ? "x" : " "}] #${t.id}: ${t.text}`).join("\n")
+									? `📝 共 ${active.length} 个任务`
 									: "No todos",
 							},
 						],
-						details: { action: "list", todos: [...todos], nextId },
+						details: {
+							action: "list",
+							todos: [...todos],
+							nextId,
+							totalActive: active.filter((t) => !t.deleted).length,
+						},
 					};
 				}
 
@@ -187,7 +193,12 @@ export default function (pi: ExtensionAPI) {
 					updateWidget(ctx, todos);
 					if (added.length === 1) {
 						return {
-							content: [{ type: "text", text: `Added todo #${added[0].id}: ${added[0].text}` }],
+							content: [
+								{
+									type: "text",
+									text: `Added todo #${added[0].id}: ${added[0].text}`,
+								},
+							],
 							details: { action: "add", todos: [...todos], nextId },
 						};
 					}
@@ -201,8 +212,6 @@ export default function (pi: ExtensionAPI) {
 
 				case "toggle": {
 					if (params.id === undefined) {
-						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
-						persistEntry(pi, "toggle_error", todos, nextId);
 						return {
 							content: [{ type: "text", text: "Error: id required for toggle" }],
 							details: { action: "toggle", todos: [...todos], nextId, error: "id required" },
@@ -234,8 +243,6 @@ export default function (pi: ExtensionAPI) {
 
 				case "remove": {
 					if (params.id === undefined) {
-						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
-						persistEntry(pi, "remove_error", todos, nextId);
 						return {
 							content: [{ type: "text", text: "Error: id required for remove" }],
 							details: { action: "remove", todos: [...todos], nextId, error: "id required" },
@@ -247,7 +254,12 @@ export default function (pi: ExtensionAPI) {
 						persistEntry(pi, "remove_notfound", todos, nextId);
 						return {
 							content: [{ type: "text", text: `Todo #${params.id} not found` }],
-							details: { action: "remove", todos: [...todos], nextId, error: `#${params.id} not found` },
+							details: {
+								action: "remove",
+								todos: [...todos],
+								nextId,
+								error: `#${params.id} not found`,
+							},
 						};
 					}
 					todo.deleted = true;
@@ -267,8 +279,9 @@ export default function (pi: ExtensionAPI) {
 					channel?.emit("clear", { action: "clear", todos: [], timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "clear", [], 1);
 					updateWidget(ctx, todos);
+					
 					return {
-						content: [{ type: "text", text: `Cleared ${count} todos` }],
+						content: [{ type: "text", text: `🗑️️ Cleared ${count} todos` }],
 						details: { action: "clear", todos: [], nextId: 1 },
 					};
 				}
