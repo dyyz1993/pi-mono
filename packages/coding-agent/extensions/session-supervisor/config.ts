@@ -8,14 +8,14 @@ function log(msg: string) {
     appendFileSync("/tmp/supervisor-debug.log", `[${ts}] [config] ${msg}\n`);
 }
 
-const DEFAULT_CONFIG: Static<typeof SupervisorConfigSchema> = {
-    enable: true,
+const DEFAULT_CONFIG: SupervisorConfig = {
+    enable: false,
     checkOnAgentEnd: true,
     smallModel: "fast",
     maxContinueCount: 5,
     defaultDelayMs: 30_000,
     pauseThresholdMs: 300_000,
-    taskRules: [],
+    guards: [],
 };
 
 export function loadConfig(sessionDataDir: string, projectDataDir: string): SupervisorConfig {
@@ -30,11 +30,11 @@ export function loadConfig(sessionDataDir: string, projectDataDir: string): Supe
             const raw = readFileSync(p, "utf-8");
             log(`Found config at ${p}, raw length=${raw.length}`);
             const parsed = JSON.parse(raw);
-            log(`Parsed taskRules count: ${parsed.taskRules?.length ?? "undefined"}`);
-            const config = Value.Convert(SupervisorConfigSchema, parsed);
-            log(`After Value.Convert taskRules count: ${config.taskRules?.length ?? "undefined"}`);
-            const merged = { ...DEFAULT_CONFIG, ...config };
-            log(`After merge taskRules count: ${merged.taskRules?.length ?? "undefined"}`);
+            log(`Parsed guards count: ${parsed.guards?.length ?? "undefined"}`);
+            const converted = Value.Convert(SupervisorConfigSchema, parsed) as Record<string, unknown>;
+            log(`After Value.Convert guards count: ${Array.isArray(converted.guards) ? converted.guards.length : "undefined"}`);
+            const merged = { ...DEFAULT_CONFIG, ...converted } as SupervisorConfig;
+            log(`After merge guards count: ${merged.guards?.length ?? "undefined"}`);
             return merged;
         } catch (err) {
             log(`Config parse error: ${err instanceof Error ? err.message : String(err)}`);

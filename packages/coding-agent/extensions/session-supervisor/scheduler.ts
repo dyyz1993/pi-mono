@@ -14,7 +14,7 @@ export class Scheduler {
         id: string,
         delayMs: number,
         callback: () => void,
-    ): { scheduled: boolean; scheduledAt: number } {
+    ): { scheduled: boolean; scheduledAt?: number } {
         if (this.continueCount >= this.maxContinueCount) {
             return { scheduled: false };
         }

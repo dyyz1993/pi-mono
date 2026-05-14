@@ -2,7 +2,6 @@ import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import type {
     SupervisorConfig,
     CheckResult,
-    TaskReport,
 } from "./types.js";
 import { CompletionCheckSchema } from "./types.js";
 import { COMPLETION_CHECK_SYSTEM_PROMPT } from "./prompts.js";
@@ -27,7 +26,12 @@ export async function checkWithSmallModel(
         .join("\n\n");
 
     try {
-        const response = await callLLMStructured(
+        const response = await callLLMStructured<{
+            completed: boolean;
+            confidence: number;
+            incompleteTasks: CheckResult["incompleteTasks"];
+            reasoning: string;
+        }>(
             callLLM,
             {
                 systemPrompt: COMPLETION_CHECK_SYSTEM_PROMPT,
@@ -92,7 +96,7 @@ async function callLLMStructured<T>(
             }
 
             const errors = [...Value.Errors(schema, coerced)]
-                .map((e) => `${e.path}: ${e.message}`)
+                .map((e) => `${String(e)}: ${e.message}`)
                 .join("; ");
             messages.push({ role: "assistant", content: raw });
             messages.push({
@@ -109,81 +113,4 @@ async function callLLMStructured<T>(
     }
 
     throw new Error("Failed to get structured response after max retries");
-}
-
-import { appendFileSync } from "node:fs";
-
-function log(msg: string) {
-    const ts = new Date().toISOString();
-    appendFileSync("/tmp/supervisor-debug.log", `[${ts}] [checker] ${msg}\n`);
-}
-
-export async function checkTaskRules(
-    config: SupervisorConfig,
-    callLLM: ExtensionAPI["callLLM"],
-    lastAssistantText: string,
-    signal?: AbortSignal,
-): Promise<TaskReport[]> {
-    const reports: TaskReport[] = [];
-
-    log(`checkTaskRules called with ${config.taskRules?.length ?? 0} rules, lastText length=${lastAssistantText.length}`);
-
-    for (const rule of config.taskRules) {
-        const report: TaskReport = {
-            ruleName: rule.name,
-            checkMethod: rule.checkMethod,
-            status: "unknown",
-        };
-
-        try {
-            switch (rule.checkMethod) {
-                case "keyword": {
-                    const keywords = rule.keywords ?? [];
-                    log(`keyword check: keywords=${JSON.stringify(keywords)}`);
-                    const found = keywords.filter((kw) =>
-                        lastAssistantText.toLowerCase().includes(kw.toLowerCase()),
-                    );
-                    log(`keyword check: found=${JSON.stringify(found)}`);
-                    report.status = found.length > 0 ? "incomplete" : "completed";
-                    report.details =
-                        found.length > 0
-                            ? `Found incomplete keywords: ${found.join(", ")}`
-                            : "No incomplete keywords found";
-                    break;
-                }
-                case "model": {
-                    const result = await callLLM({
-                        systemPrompt: `You are checking if a specific task is complete. Task: ${rule.description ?? rule.name}. Answer only "complete" or "incomplete" followed by a brief reason.`,
-                        messages: [
-                            {
-                                role: "user",
-                                content: `Last assistant message:\n${lastAssistantText.slice(0, 1000)}`,
-                            },
-                        ],
-                        model: config.smallModel,
-                        maxTokens: 256,
-                        signal,
-                    });
-                    const isComplete =
-                        result.toLowerCase().startsWith("complete") &&
-                        !result.toLowerCase().includes("incomplete");
-                    report.status = isComplete ? "completed" : "incomplete";
-                    report.details = result;
-                    break;
-                }
-                case "channel": {
-                    report.status = "unknown";
-                    report.details = "Channel check must be done at extension level";
-                    break;
-                }
-            }
-        } catch (err) {
-            report.status = "error";
-            report.error = err instanceof Error ? err.message : String(err);
-        }
-
-        reports.push(report);
-    }
-
-    return reports;
 }
