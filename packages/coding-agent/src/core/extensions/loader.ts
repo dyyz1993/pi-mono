@@ -14,7 +14,6 @@ import * as _bundledPiAiOauth from "@dyyz1993/pi-ai/oauth";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import * as _bundledPiTui from "@dyyz1993/pi-tui";
 import { createJiti } from "jiti/static";
-import { time } from "../timings.js";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
@@ -29,6 +28,7 @@ import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
 import { createSyntheticSourceInfo } from "../source-info.js";
+import { time } from "../timings.js";
 import type { Channel } from "./channel-types.js";
 import type {
 	Extension,
@@ -312,7 +312,12 @@ function createExtensionAPI(
 			},
 		): void {
 			runtime.assertActive();
-			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, extensionName: extension.name, ...options });
+			extension.shortcuts.set(shortcut, {
+				shortcut,
+				extensionPath: extension.path,
+				extensionName: extension.name,
+				...options,
+			});
 		},
 
 		registerFlag(

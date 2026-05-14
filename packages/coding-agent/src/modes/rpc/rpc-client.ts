@@ -540,6 +540,47 @@ export class RpcClient {
 		return this.getData<{ agentsFiles: string[] }>(response).agentsFiles;
 	}
 
+	async getAgents(): Promise<{
+		agents: Array<{
+			name: string;
+			description?: string;
+			tier?: string;
+			tools?: string[];
+			permissionMode?: string;
+		}>;
+	}> {
+		const response = await this.send({ type: "get_agents" });
+		return this.getData<{
+			agents: Array<{
+				name: string;
+				description?: string;
+				tier?: string;
+				tools?: string[];
+				permissionMode?: string;
+			}>;
+		}>(response);
+	}
+
+	async switchAgent(agentName: string): Promise<{
+		agentName: string;
+		tools: string[];
+		tier?: string;
+		thinkingLevel?: string;
+	}> {
+		const response = await this.send({ type: "switch_agent", agentName });
+		return this.getData<{
+			agentName: string;
+			tools: string[];
+			tier?: string;
+			thinkingLevel?: string;
+		}>(response);
+	}
+
+	async getCurrentAgent(): Promise<{ agentName: string | null }> {
+		const response = await this.send({ type: "get_current_agent" });
+		return this.getData<{ agentName: string | null }>(response);
+	}
+
 	async setCwd(cwd: string): Promise<void> {
 		await this.send({ type: "set_cwd", cwd });
 	}

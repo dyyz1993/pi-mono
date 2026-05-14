@@ -5,13 +5,13 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Model } from "@dyyz1993/pi-ai";
 import type { KeyId } from "@dyyz1993/pi-tui";
+import { randomUUID } from "crypto";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "../diagnostics.js";
 import type { KeybindingsConfig } from "../keybindings.js";
 import type { ModelRegistry } from "../model-registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.js";
-import { randomUUID } from "crypto";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -247,7 +247,7 @@ export class ExtensionRunner {
 	private getExtensionNameFn: () => string = () => "";
 	private _currentExtensionName = "";
 	private getProjectRootFn: () => string = () => this.cwd;
-		private getSessionDataDirFn: () => string = () => "";
+	private getSessionDataDirFn: () => string = () => "";
 	private getProjectDataDirFn: () => string = () => "";
 	private getCwdDataDirFn: () => string = () => "";
 	private getGlobalDataDirFn: () => string = () => "";
@@ -644,10 +644,8 @@ export class ExtensionRunner {
 	}
 
 	private wrapUIForInterception(uiContext: ExtensionUIContext): ExtensionUIContext {
-		const runner = this;
-
 		const wrapAsyncMethod = <TArgs extends unknown[], TResult>(
-			methodName: "confirm" | "select" | "input" | "editor",
+			_methodName: "confirm" | "select" | "input" | "editor",
 			original: (...args: TArgs) => Promise<TResult>,
 			buildEvent: (id: string, args: TArgs) => UIEvent,
 			mapResult: (uiResult: UIEventResult & { action: "responded" }) => TResult | undefined,
@@ -656,12 +654,12 @@ export class ExtensionRunner {
 				const id = randomUUID();
 				const event = buildEvent(id, args);
 
-				const handlerResult = await runner.emitUIEventAsync(event);
+				const handlerResult = await this.emitUIEventAsync(event);
 				if (handlerResult && handlerResult.action === "responded") {
 					return mapResult(handlerResult) as TResult;
 				}
 
-				const asyncPromise = runner.createAsyncUIPromise(id);
+				const asyncPromise = this.createAsyncUIPromise(id);
 				return Promise.race([
 					original(...args),
 					asyncPromise.then((asyncResult): Promise<TResult> | TResult => {
@@ -755,7 +753,7 @@ export class ExtensionRunner {
 				title: message,
 				notifyType: type,
 			};
-			runner.emitUIEventAsync(event).catch(() => {});
+			this.emitUIEventAsync(event).catch(() => {});
 			originalNotify(message, type);
 		};
 

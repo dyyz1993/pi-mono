@@ -166,7 +166,10 @@ describe.skipIf(!hasApiKey)("claude-hooks-compat RPC e2e", () => {
 			? ((lastMessageEnd as Record<string, unknown>).message as Record<string, unknown>)?.content
 			: undefined;
 		const lastText = Array.isArray(lastContent)
-			? lastContent.filter((c: Record<string, unknown>) => c.type === "text").map((c: Record<string, unknown>) => c.text ?? "").join(" ")
+			? lastContent
+					.filter((c: Record<string, unknown>) => c.type === "text")
+					.map((c: Record<string, unknown>) => c.text ?? "")
+					.join(" ")
 			: typeof lastContent === "string"
 				? lastContent
 				: "";

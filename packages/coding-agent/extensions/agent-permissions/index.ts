@@ -120,8 +120,18 @@ export function createPermissionHandler(agentConfig: AgentConfig) {
 	if (!rule) return null;
 
 	const disallowedTools = agentConfig.disallowedTools ?? [];
+	const allowedToolList = agentConfig.tools;
 
 	return (event: { toolName: string; input: Record<string, unknown> }): { block: boolean; reason?: string } | null => {
+		if (allowedToolList && allowedToolList.length > 0) {
+			if (!allowedToolList.includes(event.toolName)) {
+				return {
+					block: true,
+					reason: `[agent:${agentConfig.name}] Tool "${event.toolName}" not in agent's tool whitelist. Allowed: ${allowedToolList.join(", ")}`,
+				};
+			}
+		}
+
 		if (rule.allowedTools !== null && !rule.allowedTools.has(event.toolName) && event.toolName !== "bash") {
 			const allowed = Array.from(rule.allowedTools).join(", ");
 			return {
@@ -180,6 +190,7 @@ export default function agentPermissions(pi: ExtensionAPI, ctx: ExtensionContext
 			description: "",
 			permissionMode: mode as AgentConfig["permissionMode"],
 			disallowedTools: vars["disallowedTools"]?.split(",").filter(Boolean),
+			tools: vars["allowedTools"]?.split(",").filter(Boolean),
 		} as AgentConfig);
 
 		if (!handler) return undefined;

@@ -200,23 +200,14 @@ export interface RpcClientAPI {
 	getModifiedFiles(options?: {
 		fromEntryId?: string;
 		toEntryId?: string;
-	}): Promise<
-		Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>
-	>;
-	getFileDiff(options: {
-		filePath: string;
-		fromEntryId?: string;
-		toEntryId?: string;
-	}): Promise<{
+	}): Promise<Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>>;
+	getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): Promise<{
 		path: string;
 		oldContent: string | null;
 		newContent: string | null;
 		unifiedDiff: string;
 	} | null>;
-	getBatchDiffs(options?: {
-		fromEntryId?: string;
-		toEntryId?: string;
-	}): Promise<{
+	getBatchDiffs(options?: { fromEntryId?: string; toEntryId?: string }): Promise<{
 		files: Array<{
 			path: string;
 			status: "added" | "modified" | "deleted";

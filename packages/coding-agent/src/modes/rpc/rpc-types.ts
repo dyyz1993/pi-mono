@@ -124,6 +124,11 @@ export type RpcCommand =
 	// Agents files
 	| { id?: string; type: "get_agents_files" }
 
+	// Agent switching
+	| { id?: string; type: "get_agents" }
+	| { id?: string; type: "switch_agent"; agentName: string }
+	| { id?: string; type: "get_current_agent" }
+
 	// Remote tools
 	| { id?: string; type: "register_remote_tool"; tool: { name: string; description: string; parameters: object } }
 	| { id?: string; type: "unregister_remote_tool"; name: string }
@@ -585,6 +590,44 @@ export type RpcResponse =
 			command: "get_agents_files";
 			success: true;
 			data: { agentsFiles: Array<{ path: string; content: string }> };
+	  }
+
+	// Agent switching
+	| {
+			id?: string;
+			type: "response";
+			command: "get_agents";
+			success: true;
+			data: {
+				agents: Array<{
+					name: string;
+					description?: string;
+					tier?: string;
+					tools?: string[];
+					permissionMode?: string;
+					source: string;
+					filePath: string;
+				}>;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "switch_agent";
+			success: true;
+			data: {
+				agentName: string;
+				tools: string[];
+				tier?: string;
+				thinkingLevel?: string;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_current_agent";
+			success: true;
+			data: { agentName: string | null };
 	  }
 
 	// Remote tools

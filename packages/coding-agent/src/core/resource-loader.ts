@@ -10,7 +10,12 @@ export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.js";
 
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
 import { createEventBus, type EventBus } from "./event-bus.js";
-import { createExtensionRuntime, invalidateExtensionModuleCache, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.js";
+import {
+	createExtensionRuntime,
+	invalidateExtensionModuleCache,
+	loadExtensionFromFactory,
+	loadExtensions,
+} from "./extensions/loader.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.js";
 import { DefaultPackageManager, type PathMetadata } from "./package-manager.js";
 import type { PromptTemplate } from "./prompt-templates.js";
@@ -18,8 +23,8 @@ import { loadPromptTemplates } from "./prompt-templates.js";
 import { SettingsManager } from "./settings-manager.js";
 import type { Skill } from "./skills.js";
 import { loadSkills } from "./skills.js";
-import { time } from "./timings.js";
 import { createSourceInfo, type SourceInfo } from "./source-info.js";
+import { time } from "./timings.js";
 
 export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;

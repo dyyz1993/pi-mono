@@ -58,9 +58,18 @@ export interface AgentConfig {
 	skills?: string[];
 	hooks?: AgentHooks;
 	variables?: Record<string, string>;
+
+	tier?: AgentTier;
+	thinkingLevel?: string;
+	mode?: AgentMode;
+	hidden?: boolean;
 }
 
 export type AgentSource = "builtin" | "plugin" | "user" | "project" | "flag" | "policy";
+
+export type AgentTier = "fast" | "pro" | "max";
+
+export type AgentMode = "primary" | "subagent" | "all";
 
 export interface AgentDiscoveryResult {
 	agents: AgentConfig[];
@@ -76,11 +85,14 @@ const STRING_FIELDS: ReadonlySet<string> = new Set([
 	"memory",
 	"isolation",
 	"initialPrompt",
+	"tier",
+	"thinkingLevel",
+	"mode",
 ]);
 
 const STRING_ARRAY_FIELDS: ReadonlySet<string> = new Set(["tools", "disallowedTools", "skills"]);
 
-const BOOLEAN_FIELDS: ReadonlySet<string> = new Set(["background"]);
+const BOOLEAN_FIELDS: ReadonlySet<string> = new Set(["background", "hidden"]);
 
 const NUMBER_FIELDS: ReadonlySet<string> = new Set(["maxTurns"]);
 
@@ -210,6 +222,10 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			skills: skills && skills.length > 0 ? skills : undefined,
 			hooks,
 			variables,
+			tier: coerceField("tier", frontmatter.tier) as AgentTier | undefined,
+			thinkingLevel: coerceField("thinkingLevel", frontmatter.thinkingLevel) as string | undefined,
+			mode: coerceField("mode", frontmatter.mode) as AgentMode | undefined,
+			hidden: coerceField("hidden", frontmatter.hidden) as boolean | undefined,
 		});
 	}
 
@@ -246,11 +262,51 @@ export function mergeAgentsByPriority(...groups: AgentConfig[][]): AgentConfig[]
 	return Array.from(agentMap.values());
 }
 
+export function getBuiltinAgents(): AgentConfig[] {
+	return [
+		{
+			name: "build",
+			description: "Full-stack development with read, write, edit and execution capabilities",
+			systemPrompt: "",
+			source: "builtin",
+			filePath: "",
+			mode: "primary",
+		},
+		{
+			name: "explore",
+			description: "Read-only exploration, search and read code",
+			tools: ["read", "grep", "find", "ls", "glob", "bash"],
+			disallowedTools: ["edit", "write"],
+			systemPrompt:
+				"You are a code exploration specialist. You can only read and search code, never modify any files.\n\nYour capabilities:\n- Use grep to search code content\n- Use glob to find files\n- Use read to read files\n- Use bash for read-only commands (cat, ls, head, wc, git log, etc.)\n\nStrictly forbidden:\n- Do not modify any files\n- Do not run commands that change system state\n\nIf the user asks to modify code, refuse and suggest switching to the Build agent.\n\nOutput format:\n### Key Findings\n### File List\n### Code Structure Analysis",
+			source: "builtin",
+			filePath: "",
+			mode: "primary",
+			tier: "fast",
+			color: "blue",
+		},
+		{
+			name: "plan",
+			description: "Planning mode, output analysis and specs only",
+			tools: ["read", "grep", "find", "ls", "glob"],
+			disallowedTools: ["edit", "write", "bash"],
+			systemPrompt:
+				"You are a planning specialist. You only output analysis reports and implementation plans (spec), you cannot edit any code files.\n\nOutput format:\n### Requirements Analysis\nUnderstanding and clarification of requirements\n\n### Technical Solution\nSolution choice and rationale\n\n### Implementation Steps\n1. Specific steps...\n\n### File Change List\n- path/to/file — change description\n\n### Risks and Considerations\nPotential issues and mitigation strategies",
+			source: "builtin",
+			filePath: "",
+			mode: "primary",
+			tier: "max",
+			thinkingLevel: "high",
+			color: "purple",
+		},
+	];
+}
+
 export function discoverAgents(cwd: string, scope: AgentScope, overrideAgents?: AgentConfig[]): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-	const builtinAgents: AgentConfig[] = [];
+	const builtinAgents = getBuiltinAgents();
 	const pluginAgents: AgentConfig[] = [];
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");

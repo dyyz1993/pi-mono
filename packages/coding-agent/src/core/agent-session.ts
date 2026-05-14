@@ -352,6 +352,8 @@ export class AgentSession {
 	private _mcpToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _mcpServerScopes: Map<string, "global" | "project"> = new Map();
 	private _noMcp: boolean;
+	private _currentAgentName: string | null = null;
+	private _currentAgentVariables: Record<string, string> = {};
 
 	private _tierModels: Record<string, string> = {};
 
@@ -520,7 +522,8 @@ export class AgentSession {
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
 					input: args as Record<string, unknown>,
-				});
+					variables: this._currentAgentVariables,
+				} as any);
 			} catch (err) {
 				if (err instanceof Error) {
 					throw err;
@@ -1018,6 +1021,47 @@ export class AgentSession {
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
 		this.agent.state.systemPrompt = this._baseSystemPrompt;
+	}
+
+	async applyAgentConfig(agent: import("./agent-types.js").AgentConfig): Promise<void> {
+		this._currentAgentName = agent.name;
+
+		this._currentAgentVariables = {
+			...(agent.variables ?? {}),
+		};
+		if (agent.permissionMode) {
+			this._currentAgentVariables["permissionMode"] = agent.permissionMode;
+		}
+		if (agent.name) {
+			this._currentAgentVariables["agentName"] = agent.name;
+		}
+		if (agent.disallowedTools && agent.disallowedTools.length > 0) {
+			this._currentAgentVariables["disallowedTools"] = agent.disallowedTools.join(",");
+		}
+		if (agent.tools && agent.tools.length > 0) {
+			this._currentAgentVariables["allowedTools"] = agent.tools.join(",");
+		}
+
+		if (agent.thinkingLevel) {
+			this.setThinkingLevel(agent.thinkingLevel as import("@dyyz1993/pi-ai").ThinkingLevel);
+		}
+
+		if (agent.tools && agent.tools.length > 0) {
+			this.setActiveToolsByName(agent.tools);
+		}
+
+		if (agent.systemPrompt) {
+			const appendParts: string[] = [];
+			if (this._resourceLoader.getAppendSystemPrompt().length > 0) {
+				appendParts.push(...this._resourceLoader.getAppendSystemPrompt());
+			}
+			appendParts.push(agent.systemPrompt);
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		}
+	}
+
+	getCurrentAgent(): string | null {
+		return this._currentAgentName;
 	}
 
 	/** Whether compaction or branch summarization is currently running */

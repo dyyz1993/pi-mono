@@ -58,7 +58,6 @@ import {
 } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.js";
-import { resolveProjectIdentity, getSessionDataDir, getProjectDataDir, getCwdDataDir, getGlobalDataDir } from "../../core/storage.js";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -80,6 +79,13 @@ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../cor
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
+import {
+	getCwdDataDir,
+	getGlobalDataDir,
+	getProjectDataDir,
+	getSessionDataDir,
+	resolveProjectIdentity,
+} from "../../core/storage.js";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
@@ -1605,42 +1611,46 @@ export class InteractiveMode {
 		const createContext = (extName: string): ExtensionContext => {
 			const projectRoot = resolveProjectIdentity(this.sessionManager.getCwd());
 			return {
-			ui: this.createExtensionUIContext(),
-			hasUI: true,
-			cwd: this.sessionManager.getCwd(),
-			sessionManager: this.sessionManager,
-			modelRegistry: this.session.modelRegistry,
-			model: this.session.model,
-			isIdle: () => !this.session.isStreaming,
-			signal: this.session.agent.signal,
-			abort: () => this.session.abort(),
-			hasPendingMessages: () => this.session.pendingMessageCount > 0,
-			shutdown: () => {
-				this.shutdownRequested = true;
-			},
-			getContextUsage: () => this.session.getContextUsage(),
-			compact: (options) => {
-				void (async () => {
-					try {
-						const result = await this.session.compact(options?.customInstructions);
-						options?.onComplete?.(result);
-					} catch (error) {
-						const err = error instanceof Error ? error : new Error(String(error));
-						options?.onError?.(err);
-					}
-				})();
-			},
-			getSystemPrompt: () => this.session.systemPrompt,
-			extensionName: extName,
-			projectRoot,
-			sessionDataDir: getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
-			projectDataDir: getProjectDataDir(projectRoot, extName),
-			cwdDataDir: getCwdDataDir(this.sessionManager.getCwd(), extName),
-			globalDataDir: getGlobalDataDir(extName),
-			sessionSignal: AbortSignal.abort(),
-			respondUI: () => {},
-			fileSnapshotManager: this.session.fileSnapshotManager,
-		};
+				ui: this.createExtensionUIContext(),
+				hasUI: true,
+				cwd: this.sessionManager.getCwd(),
+				sessionManager: this.sessionManager,
+				modelRegistry: this.session.modelRegistry,
+				model: this.session.model,
+				isIdle: () => !this.session.isStreaming,
+				signal: this.session.agent.signal,
+				abort: () => this.session.abort(),
+				hasPendingMessages: () => this.session.pendingMessageCount > 0,
+				shutdown: () => {
+					this.shutdownRequested = true;
+				},
+				getContextUsage: () => this.session.getContextUsage(),
+				compact: (options) => {
+					void (async () => {
+						try {
+							const result = await this.session.compact(options?.customInstructions);
+							options?.onComplete?.(result);
+						} catch (error) {
+							const err = error instanceof Error ? error : new Error(String(error));
+							options?.onError?.(err);
+						}
+					})();
+				},
+				getSystemPrompt: () => this.session.systemPrompt,
+				extensionName: extName,
+				projectRoot,
+				sessionDataDir: getSessionDataDir(
+					this.sessionManager.getSessionDir(),
+					this.sessionManager.getSessionId(),
+					extName,
+				),
+				projectDataDir: getProjectDataDir(projectRoot, extName),
+				cwdDataDir: getCwdDataDir(this.sessionManager.getCwd(), extName),
+				globalDataDir: getGlobalDataDir(extName),
+				sessionSignal: AbortSignal.abort(),
+				respondUI: () => {},
+				fileSnapshotManager: this.session.fileSnapshotManager,
+			};
 		};
 
 		// Set up the extension shortcut handler on the default editor

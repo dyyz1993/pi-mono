@@ -14,6 +14,7 @@
 import * as crypto from "node:crypto";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import { discoverAgents, getBuiltinAgents } from "../../core/agent-types.js";
 import { DEFAULT_TIER_ALIASES } from "../../core/defaults.js";
 import { ChannelManager } from "../../core/extensions/channel-manager.js";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.js";
@@ -1028,6 +1029,43 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_agents_files": {
 				const result = session.resourceLoader.getAgentsFiles();
 				return success(id, "get_agents_files", { agentsFiles: result.agentsFiles });
+			}
+
+			case "get_agents": {
+				const discovery = discoverAgents(runtimeHost.cwd, "both");
+				const builtin = getBuiltinAgents();
+				const agents = [...builtin, ...discovery.agents].map((a) => ({
+					name: a.name,
+					description: a.description,
+					tier: a.tier,
+					tools: a.tools,
+					permissionMode: a.permissionMode,
+					source: a.source,
+					filePath: a.filePath,
+				}));
+				return success(id, "get_agents", { agents });
+			}
+
+			case "switch_agent": {
+				const agentName = (command as { agentName: string }).agentName;
+				const discovery = discoverAgents(runtimeHost.cwd, "both");
+				const builtin = getBuiltinAgents();
+				const agent = [...builtin, ...discovery.agents].find((a) => a.name === agentName);
+				if (!agent) {
+					return error(id, "switch_agent", `Agent "${agentName}" not found`);
+				}
+				await session.applyAgentConfig(agent);
+				return success(id, "switch_agent", {
+					agentName: agent.name,
+					tools: agent.tools ?? [],
+					tier: agent.tier,
+					thinkingLevel: agent.thinkingLevel,
+				});
+			}
+
+			case "get_current_agent": {
+				const currentAgent = session.getCurrentAgent();
+				return success(id, "get_current_agent", { agentName: currentAgent });
 			}
 
 			case "get_modified_files": {
