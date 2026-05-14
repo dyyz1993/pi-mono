@@ -40,6 +40,7 @@ packages/coding-agent/extensions/**/*.d.ts
 packages/coding-agent/extensions/**/*.d.ts.map
 todo.md
 plans/
+.pi/supervisor.json
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
