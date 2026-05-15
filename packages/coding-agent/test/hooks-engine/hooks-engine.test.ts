@@ -1,10 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import {
-	parseHooks,
-	matchesCondition,
-	executeCommand,
-	parseStdout,
-} from "../../extensions/hooks-engine/index.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { executeCommand, matchesCondition, parseHooks, parseStdout } from "../../extensions/hooks-engine/index.js";
 
 describe("hooks-engine", () => {
 	describe("parseStdout", () => {
@@ -240,15 +235,11 @@ describe("hooks-engine", () => {
 	describe("parseHooks", () => {
 		it("should parse valid JSON hooks", () => {
 			const raw = JSON.stringify({
-				on_tool_start: [
-					{ type: "command", command: "test", if: "Bash" },
-				],
+				on_tool_start: [{ type: "command", command: "test", if: "Bash" }],
 			});
 			const result = parseHooks(raw);
 			expect(result).toEqual({
-				on_tool_start: [
-					{ type: "command", command: "test", if: "Bash" },
-				],
+				on_tool_start: [{ type: "command", command: "test", if: "Bash" }],
 			});
 		});
 

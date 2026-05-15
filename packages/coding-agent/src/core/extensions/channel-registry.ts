@@ -14,10 +14,10 @@ import type { BashChannelContract } from "../../../extensions/bash-ext/contract.
 import type { CoordinatorChannelContract } from "../../../extensions/coordinator/types.js";
 import type { LspChannelContract } from "../../../extensions/lsp/lsp/contract.js";
 import type { RulesChannelContract } from "../../../extensions/rules-engine/types.js";
+import type { SupervisorChannelContract } from "../../../extensions/session-supervisor/types.js";
 import type { SubagentExtChannelContract } from "../../../extensions/subagent-ext/contract.js";
 import type { SubagentV2ChannelContract } from "../../../extensions/subagent-v2/contract.js";
 import type { TodoChannelContract } from "../../../extensions/todo-ext/contract.js";
-import type { SupervisorChannelContract } from "../../../extensions/session-supervisor/types.js";
 
 export interface ChannelTypeRegistry {
 	bash: BashChannelContract;

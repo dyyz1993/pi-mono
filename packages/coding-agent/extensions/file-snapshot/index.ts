@@ -4,7 +4,10 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 	const channel = pi.registerChannel("file-snapshot");
 
 	channel.onReceive(async (msg) => {
-		const ctx = msg.context as ExtensionContext;
+		const ctx = msg.context as ExtensionContext | undefined;
+		if (!ctx) {
+			return { error: "Extension context not available in channel message. This operation is not supported via RPC client channel calls." };
+		}
 		const mgr = ctx.fileSnapshotManager;
 		if (!mgr) {
 			return { error: "fileSnapshotManager not available" };
