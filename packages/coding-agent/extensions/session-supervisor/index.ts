@@ -76,8 +76,8 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     const { server: channel } =
         createTypedChannel<SupervisorChannelContract>(rawChannel);
 
-    channel.handle("supervisor.getStatus", async () => getStatus());
-    channel.handle("supervisor.requestPause", async (params) => {
+    channel.handle("getStatus", async () => getStatus());
+    channel.handle("requestPause", async (params) => {
         const delayMs = params.delayMs ?? config.defaultDelayMs;
         const result = schedulerInstance.scheduleContinue(
             "manual-pause",
@@ -94,7 +94,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         return result;
     });
 
-    channel.handle("supervisor.cancelPause", async () => {
+    channel.handle("cancelPause", async () => {
         const cancelled = schedulerInstance.cancelTimer("manual-pause");
         if (cancelled) {
             channel.emit("supervisor.pauseCancelled", { reason: "Cancelled via channel" });
@@ -102,7 +102,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         return { cancelled };
     });
 
-    channel.handle("supervisor.forceContinue", async (params) => {
+    channel.handle("forceContinue", async (params) => {
         schedulerInstance.cancelAll();
         currentState = "continuing";
         emitStatusChanged();
@@ -110,7 +110,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         return { triggered: true };
     });
 
-    channel.handle("supervisor.disable", async () => {
+    channel.handle("disable", async () => {
         enabled = false;
         schedulerInstance.cancelAll();
         currentState = "disabled";
@@ -118,16 +118,16 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         return { disabled: true };
     });
 
-    channel.handle("supervisor.enable", async () => {
+    channel.handle("enable", async () => {
         enabled = true;
         currentState = "idle";
         emitStatusChanged();
         return { enabled: true };
     });
 
-    channel.handle("supervisor.getTaskReport", async () => ({ tasks: lastTaskReports }));
+    channel.handle("getTaskReport", async () => ({ tasks: lastTaskReports }));
 
-    channel.handle("supervisor.checkToolStatus", async (params) => {
+    channel.handle("checkToolStatus", async (params) => {
         const targetChannelName = params.channelName ?? params.toolName;
         try {
             const result = await rawChannel.call(

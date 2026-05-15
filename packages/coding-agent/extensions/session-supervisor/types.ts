@@ -116,35 +116,35 @@ export interface GuardContinueMessage {
 
 export interface SupervisorChannelContract extends ChannelContract {
     methods: {
-        "supervisor.getStatus": {
+        getStatus: {
             params: Record<string, never>;
             return: SupervisorStatus;
         };
-        "supervisor.requestPause": {
+        requestPause: {
             params: { delayMs?: number; reason?: string };
             return: { scheduled: boolean; scheduledAt?: number };
         };
-        "supervisor.cancelPause": {
+        cancelPause: {
             params: Record<string, never>;
             return: { cancelled: boolean };
         };
-        "supervisor.forceContinue": {
+        forceContinue: {
             params: { reason?: string };
             return: { triggered: boolean };
         };
-        "supervisor.disable": {
+        disable: {
             params: Record<string, never>;
             return: { disabled: boolean };
         };
-        "supervisor.enable": {
+        enable: {
             params: Record<string, never>;
             return: { enabled: boolean };
         };
-        "supervisor.getTaskReport": {
+        getTaskReport: {
             params: Record<string, never>;
             return: { tasks: TaskReport[] };
         };
-        "supervisor.checkToolStatus": {
+        checkToolStatus: {
             params: { toolName: string; channelName?: string; method?: string };
             return: { reachable: boolean; status?: string; error?: string };
         };
