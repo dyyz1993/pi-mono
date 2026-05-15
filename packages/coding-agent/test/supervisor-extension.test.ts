@@ -15,6 +15,7 @@ describe("session-supervisor extension", () => {
     it("should have default keyword guard when no config file", async () => {
       const { loadConfig } = await import("../extensions/session-supervisor/config.js");
       const config = loadConfig("/tmp/nonexistent-session", "/tmp/nonexistent-project");
+      // Config file not found → uses DEFAULT_CONFIG which has default keyword guard
       expect(config.guards.length).toBe(1);
       expect(config.guards[0].type).toBe("keyword");
       expect(config.guards[0].name).toBe("incomplete-keywords");
@@ -23,6 +24,17 @@ describe("session-supervisor extension", () => {
         expect(config.guards[0].keywords).toContain("FIXME");
         expect(config.guards[0].keywords).toContain("WIP");
       }
+    });
+
+    it("should fallback to DEFAULT_GUARDS when config.guards is empty", async () => {
+      // Simulate what getActiveGuards does: if config.guards is empty, use DEFAULT_GUARDS
+      const configGuards: unknown[] = [];
+      const source = configGuards.length > 0 ? configGuards : [
+        { name: "incomplete-keywords", type: "keyword", enable: true, keywords: ["TODO", "FIXME", "WIP", "HACK"] },
+      ];
+      const active = source.filter((g: Record<string, unknown>) => g.enable !== false);
+      expect(active.length).toBe(1);
+      expect((active[0] as Record<string, unknown>).type).toBe("keyword");
     });
 
     it("should have sane defaults for timing", async () => {

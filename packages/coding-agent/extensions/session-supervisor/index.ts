@@ -36,6 +36,10 @@ function log(msg: string) {
     appendFileSync(LOG_FILE, line);
 }
 
+const DEFAULT_GUARDS: GuardConfig[] = [
+    { name: "incomplete-keywords", type: "keyword", enable: true, keywords: ["TODO", "FIXME", "WIP", "HACK"] },
+];
+
 export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     let config: SupervisorConfig;
     let enabled = false;
@@ -377,7 +381,9 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     }
 
     function getActiveGuards(): GuardConfig[] {
-        return (config.guards ?? []).filter((g) => g.enable !== false);
+        const guards = config.guards ?? [];
+        const source = guards.length > 0 ? guards : DEFAULT_GUARDS;
+        return source.filter((g) => g.enable !== false);
     }
 
     async function runGuardCheck(
