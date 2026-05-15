@@ -76,6 +76,15 @@ const RULES: Record<string, PermissionRule> = {
 function matchesToolPattern(toolName: string, input: Record<string, unknown>, pattern: string): boolean {
 	const parenIdx = pattern.indexOf("(");
 	if (parenIdx === -1) {
+		if (pattern === "*") return true;
+		if (pattern.startsWith("*") && pattern.endsWith("*")) {
+			const middle = pattern.slice(1, -1);
+			return toolName.includes(middle);
+		}
+		if (pattern.startsWith("*")) {
+			const suffix = pattern.slice(1);
+			return toolName.endsWith(suffix);
+		}
 		if (pattern.endsWith("*")) {
 			const prefix = pattern.slice(0, -1);
 			return toolName.startsWith(prefix);
@@ -92,14 +101,33 @@ function matchesToolPattern(toolName: string, input: Record<string, unknown>, pa
 	const parts = globPattern.split("|");
 	const inputStr = JSON.stringify(input);
 	const command = typeof input.command === "string" ? input.command : "";
+	const filePath = typeof input.filePath === "string" ? input.filePath : "";
+
+	// Try to match against relevant input fields
+	const targets = [command, filePath, inputStr].filter(Boolean);
 
 	for (const part of parts) {
 		const trimmed = part.trim();
 		if (!trimmed) continue;
-		const regex = new RegExp(
-			`^${trimmed.replace(/[.+?^${}()|[\]\\]/g, (ch) => (ch === "*" ? ".*" : `\\${ch}`))}$`,
-		);
-		if (regex.test(command) || regex.test(inputStr)) return true;
+
+		// Check if pattern starts/ends with * to determine anchors
+		const startsWithWildcard = trimmed.startsWith("*");
+		const endsWithWildcard = trimmed.endsWith("*");
+
+		// Escape special regex characters EXCEPT: * and [] brackets
+		let regexStr = trimmed.replace(/[.+?^$()|\\]/g, "\\$&");
+
+		// Convert * to .*
+		regexStr = regexStr.replace(/\*/g, ".*");
+
+		// Add anchors based on wildcards
+		if (!startsWithWildcard) regexStr = "^" + regexStr;
+		if (!endsWithWildcard) regexStr = regexStr + "$";
+
+		const regex = new RegExp(regexStr);
+		for (const target of targets) {
+			if (regex.test(target)) return true;
+		}
 	}
 	return false;
 }

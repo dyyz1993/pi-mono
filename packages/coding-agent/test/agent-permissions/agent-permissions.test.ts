@@ -122,4 +122,53 @@ describe("PermissionMode middleware", () => {
 			expect(handler).toBeNull();
 		});
 	});
+
+	describe("glob pattern matching", () => {
+		it("matches bash commands with glob patterns", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["bash(rm *)"]));
+			expect(handler?.({ toolName: "bash", input: { command: "rm -rf /tmp" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "bash", input: { command: "rm -f file" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "bash", input: { command: "ls" } })?.block).toBeUndefined();
+		});
+
+		it("supports OR patterns with |", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["bash(*rm*|*sudo*)"]));
+			expect(handler?.({ toolName: "bash", input: { command: "rm file.txt" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "bash", input: { command: "sudo apt update" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "bash", input: { command: "echo hello" } })?.block).toBeUndefined();
+		});
+
+		it("supports file path glob patterns", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["edit(*.sql)"]));
+			expect(handler?.({ toolName: "edit", input: { filePath: "/src/test.sql" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "edit", input: { filePath: "/src/test.ts" } })?.block).toBeUndefined();
+		});
+
+		it("supports wildcard suffix for tool namespaces", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["mcp__redis__*"]));
+			expect(handler?.({ toolName: "mcp__postgres__query", input: {} })?.block).toBeUndefined();
+			expect(handler?.({ toolName: "mcp__redis__get", input: {} })?.block).toBe(true);
+		});
+
+		it("handles exact match when no parens", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["bash"]));
+			expect(handler?.({ toolName: "bash", input: { command: "any" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "edit", input: {} })?.block).toBeUndefined();
+		});
+
+		it("handles special regex chars in glob patterns", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["edit(*.[jt]s)"]));
+			expect(handler?.({ toolName: "edit", input: { filePath: "file.ts" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "edit", input: { filePath: "file.js" } })?.block).toBe(true);
+			expect(handler?.({ toolName: "edit", input: { filePath: "file.py" } })?.block).toBeUndefined();
+		});
+
+		it("handles edge cases: empty patterns, null input", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["not-any"]));
+			expect(handler?.({ toolName: "any", input: {} })?.block).toBeUndefined();
+
+			const handler2 = createPermissionHandler(makeConfig("auto", ["bash()"]));
+			expect(handler2?.({ toolName: "bash", input: {} })?.block).toBe(true);
+		});
+	});
 });
