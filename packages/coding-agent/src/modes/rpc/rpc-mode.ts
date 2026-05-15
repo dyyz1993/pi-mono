@@ -655,7 +655,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					summarize: command.summarize ?? false,
 					skipFiles: command.skipFiles,
 				});
-				return success(id, "navigate_tree", { cancelled: navResult.cancelled });
+				return success(id, "navigate_tree", { cancelled: navResult.cancelled, reason: navResult.reason });
 			}
 
 			case "rollback_preview": {

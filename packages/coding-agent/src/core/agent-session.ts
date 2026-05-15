@@ -3031,7 +3031,13 @@ export class AgentSession {
 			label?: string;
 			skipFiles?: boolean;
 		} = {},
-	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
+	): Promise<{
+		editorText?: string;
+		cancelled: boolean;
+		aborted?: boolean;
+		summaryEntry?: BranchSummaryEntry;
+		reason?: string;
+	}> {
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target
@@ -3162,6 +3168,20 @@ export class AgentSession {
 			} else {
 				// Non-user message: leaf = selected node
 				newLeafId = targetId;
+			}
+
+			// Safety guard: reject navigation that would eliminate ALL user messages.
+			// The new leaf path is root → ... → newLeafId (or null for root reset).
+			// If a summary is provided, it will be a child of newLeafId, so the effective
+			// leaf path includes newLeafId's ancestors. Check both cases.
+			const effectiveLeafId = summaryText ? newLeafId : newLeafId;
+			const userMsgCount = this.sessionManager.countUserMessagesOnPath(effectiveLeafId);
+			if (userMsgCount === 0) {
+				return {
+					cancelled: true,
+					editorText: undefined,
+					reason: `Navigation to "${targetId}" would remove all user messages from the active path. This likely means the target is before the first user message. Use file-level rollback (snapshot.rollback) instead.`,
+				};
 			}
 
 			// Switch leaf (with or without summary)

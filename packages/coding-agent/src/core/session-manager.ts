@@ -886,10 +886,15 @@ export class SessionManager {
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
 		this.leafId = null;
+
+		// Phase 1: build byId map and collect parent counts
+		const parentIds = new Set<string>();
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
 			this.byId.set(entry.id, entry);
-			this.leafId = entry.id;
+			if (entry.parentId) {
+				parentIds.add(entry.parentId);
+			}
 			if (entry.type === "label") {
 				if (entry.label) {
 					this.labelsById.set(entry.targetId, entry.label);
@@ -900,6 +905,29 @@ export class SessionManager {
 				}
 			}
 		}
+
+		// Phase 2: resolve leaf by finding the deepest terminal node.
+		// A terminal node is one whose id never appears as someone else's parentId.
+		// Among all terminals, the one with the greatest depth from root is the
+		// main conversation chain — side branches (lsp, etc.) are always shallower.
+		let bestLeafId: string | null = null;
+		let bestDepth = -1;
+		for (const [id, entry] of this.byId) {
+			if (parentIds.has(id)) continue; // not a terminal
+			let depth = 0;
+			let cur: string | null = entry.parentId;
+			const visited = new Set<string>();
+			while (cur !== null && this.byId.has(cur) && !visited.has(cur)) {
+				visited.add(cur);
+				depth++;
+				cur = this.byId.get(cur)!.parentId;
+			}
+			if (depth > bestDepth) {
+				bestDepth = depth;
+				bestLeafId = id;
+			}
+		}
+		this.leafId = bestLeafId;
 	}
 
 	private _rewriteFile(): void {
@@ -1165,6 +1193,22 @@ export class SessionManager {
 
 	getLeafId(): string | null {
 		return this.leafId;
+	}
+
+	/**
+	 * Count user messages on the path from root to a given leaf candidate.
+	 * Used by navigateTree to reject targets that would eliminate all user messages.
+	 */
+	countUserMessagesOnPath(leafId: string | null): number {
+		let count = 0;
+		let current = leafId ? this.byId.get(leafId) : undefined;
+		while (current) {
+			if (current.type === "message" && (current as SessionMessageEntry).message?.role === "user") {
+				count++;
+			}
+			current = current.parentId ? this.byId.get(current.parentId) : undefined;
+		}
+		return count;
 	}
 
 	getLeafEntry(): SessionEntry | undefined {
