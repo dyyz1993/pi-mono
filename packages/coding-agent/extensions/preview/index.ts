@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { extname, isAbsolute, resolve } from "node:path";
+import { createConnection } from "node:net";
 import type { AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
@@ -41,6 +42,34 @@ const EXT_TO_RESOURCE: Record<string, { resourceType: ResourceType; mimeType: st
 };
 
 const URL_PATTERN = /^https?:\/\//i;
+
+function isLocalAddress(host: string): boolean {
+	if (!host) return false;
+	const lower = host.toLowerCase();
+	if (lower === "localhost" || lower === "127.0.0.1" || lower === "::1") return true;
+	if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+	if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+	if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+	return false;
+}
+
+function checkReachable(host: string, port: number, timeoutMs = 2000): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = createConnection({ host, port }, () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.setTimeout(timeoutMs);
+		socket.on("timeout", () => {
+			socket.destroy();
+			resolve(false);
+		});
+		socket.on("error", () => {
+			socket.destroy();
+			resolve(false);
+		});
+	});
+}
 
 function isUrl(source: string): boolean {
 	return URL_PATTERN.test(source);
@@ -100,6 +129,33 @@ export default function (pi: ExtensionAPI) {
 			const { resourceType, mimeType, absolutePath } = detectResource(params.source, cwd);
 
 			if (resourceType === "url") {
+				// 对本地/LAN 地址做 TCP 可达性检测
+				if (params.source.startsWith("http://")) {
+					try {
+						const parsed = new URL(params.source);
+						if (isLocalAddress(parsed.hostname)) {
+							const port = parseInt(parsed.port || "80", 10);
+							const reachable = await checkReachable(parsed.hostname, port);
+							if (!reachable) {
+								const msg = `Preview 失败：${parsed.host} 未在局域网开放，服务可能只监听 127.0.0.1。请将服务绑定到 0.0.0.0 后重试。`;
+								return {
+									content: [{ type: "text", text: msg }],
+									details: {
+										source: params.source,
+										absolutePath: params.source,
+										resourceType: "url",
+										status: "error",
+										title: params.title,
+										error: `${parsed.host} 未在局域网开放，可能只监听 127.0.0.1`,
+									},
+								};
+							}
+						}
+					} catch {
+						// URL parse 失败，继续正常流程
+					}
+				}
+
 				return {
 					content: [{ type: "text", text: `Preview: ${params.source} (url)` }],
 					details: {

@@ -73,12 +73,35 @@ const RULES: Record<string, PermissionRule> = {
 	},
 };
 
-function matchesToolPattern(toolName: string, pattern: string): boolean {
+function matchesToolPattern(toolName: string, input: Record<string, unknown>, pattern: string): boolean {
 	const parenIdx = pattern.indexOf("(");
-	if (parenIdx === -1) return pattern === toolName;
+	if (parenIdx === -1) {
+		if (pattern.endsWith("*")) {
+			const prefix = pattern.slice(0, -1);
+			return toolName.startsWith(prefix);
+		}
+		return pattern === toolName;
+	}
+
 	const baseTool = pattern.substring(0, parenIdx).trim();
 	if (baseTool !== toolName) return false;
-	return true;
+
+	const globPattern = pattern.substring(parenIdx + 1, pattern.lastIndexOf(")")).trim();
+	if (!globPattern || globPattern === "*") return true;
+
+	const parts = globPattern.split("|");
+	const inputStr = JSON.stringify(input);
+	const command = typeof input.command === "string" ? input.command : "";
+
+	for (const part of parts) {
+		const trimmed = part.trim();
+		if (!trimmed) continue;
+		const regex = new RegExp(
+			`^${trimmed.replace(/[.+?^${}()|[\]\\]/g, (ch) => (ch === "*" ? ".*" : `\\${ch}`))}$`,
+		);
+		if (regex.test(command) || regex.test(inputStr)) return true;
+	}
+	return false;
 }
 
 function matchesDisallowedTool(
@@ -87,28 +110,8 @@ function matchesDisallowedTool(
 	patterns: string[],
 ): boolean {
 	for (const pattern of patterns) {
-		const parenIdx = pattern.indexOf("(");
-		if (parenIdx === -1) {
-			if (pattern === toolName) return true;
-			continue;
-		}
-		const baseTool = pattern.substring(0, parenIdx).trim();
-		if (baseTool !== toolName) continue;
-		const globPattern = pattern.substring(parenIdx + 1, pattern.lastIndexOf(")")).trim();
-		if (!globPattern || globPattern === "*") {
+		if (matchesToolPattern(toolName, input, pattern)) {
 			return true;
-		}
-		const parts = globPattern.split("|");
-		const inputStr = JSON.stringify(input);
-		for (const part of parts) {
-			const trimmed = part.trim();
-			if (!trimmed) continue;
-			const regex = new RegExp(
-				`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, (ch) => (ch === "*" ? ".*" : ch === "?" ? "." : `\\${ch}`))}$`,
-			);
-			if (regex.test(inputStr) || (input.command && typeof input.command === "string" && regex.test(input.command))) {
-				return true;
-			}
 		}
 	}
 	return false;
@@ -123,14 +126,15 @@ export function createPermissionHandler(agentConfig: AgentConfig) {
 	const allowedToolList = agentConfig.tools;
 
 	return (event: { toolName: string; input: Record<string, unknown> }): { block: boolean; reason?: string } | null => {
-		if (allowedToolList && allowedToolList.length > 0) {
-			if (!allowedToolList.includes(event.toolName)) {
-				return {
-					block: true,
-					reason: `[agent:${agentConfig.name}] Tool "${event.toolName}" not in agent's tool whitelist. Allowed: ${allowedToolList.join(", ")}`,
-				};
-			}
+	if (allowedToolList && allowedToolList.length > 0) {
+		const isAllowed = allowedToolList.some((pattern) => matchesToolPattern(event.toolName, event.input, pattern));
+		if (!isAllowed) {
+			return {
+				block: true,
+				reason: `[agent:${agentConfig.name}] Tool "${event.toolName}" not in agent's tool whitelist. Allowed: ${allowedToolList.join(", ")}`,
+			};
 		}
+	}
 
 		if (rule.allowedTools !== null && !rule.allowedTools.has(event.toolName) && event.toolName !== "bash") {
 			const allowed = Array.from(rule.allowedTools).join(", ");

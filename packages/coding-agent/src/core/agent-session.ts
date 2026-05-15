@@ -1043,6 +1043,9 @@ export class AgentSession {
 		if (agent.tools && agent.tools.length > 0) {
 			this._currentAgentVariables["allowedTools"] = agent.tools.join(",");
 		}
+		if (agent.hooks && Object.keys(agent.hooks).length > 0) {
+			this._currentAgentVariables["agentHooks"] = JSON.stringify(agent.hooks);
+		}
 
 		if (agent.thinkingLevel) {
 			this.setThinkingLevel(agent.thinkingLevel as import("@dyyz1993/pi-ai").ThinkingLevel);

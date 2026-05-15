@@ -65,6 +65,7 @@ export interface LspConfigResolverOptions {
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
 	warn?: (message: string) => void;
+	debug?: (message: string) => void;
 }
 
 export function createLspConfigResolver(options: LspConfigResolverOptions = {}): LspConfigResolver {
@@ -72,6 +73,7 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 	const homeDir = options.homeDir ?? homedir();
 	const env = options.env ?? process.env;
 	const warn = options.warn ?? ((message: string) => console.warn(message));
+	const debug = options.debug ?? ((message: string) => console.debug(message));
 
 	return {
 		resolve(): ResolvedLspConfig {
@@ -81,7 +83,7 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 			const resolvedMaxOpenFiles = config.maxOpenFiles ?? 30;
 
 			const searchDirs = getSearchDirs(homeDir, env);
-			const resolvedServers = resolveServers(config.servers, searchDirs, cwd, homeDir);
+			const resolvedServers = resolveServers(config.servers, searchDirs, cwd, homeDir, debug);
 			if (resolvedServers.length > 0) {
 				return {
 					serverCommand: resolvedServers[0]?.command,
@@ -388,22 +390,28 @@ function resolveServers(
 	searchDirs: string[],
 	cwd: string,
 	homeDir: string,
+	debug: (message: string) => void,
 ): ResolvedLspServerConfig[] {
 	if (!servers) {
 		return [];
 	}
 
+	debug(`[lsp] Resolving ${servers.length} server(s), searchDirs: ${searchDirs.length}`);
+
 	const resolved: ResolvedLspServerConfig[] = [];
 	for (const server of servers) {
 		if (server.disabled === true || !server.command || server.command.length === 0) {
+			debug(`[lsp] Skipping server "${server.name}": disabled=${server.disabled}, command=${JSON.stringify(server.command)}`);
 			continue;
 		}
 
 		const command = resolveCommand(server.command, searchDirs, cwd, homeDir);
 		if (!command) {
+			debug(`[lsp] FAILED to resolve binary "${server.command[0]}" for server "${server.name}" — searched ${searchDirs.length} dirs`);
 			continue;
 		}
 
+		debug(`[lsp] Resolved server "${server.name}": ${command.join(" ")}`);
 		resolved.push({
 			name: server.name,
 			command,
@@ -411,13 +419,26 @@ function resolveServers(
 		});
 	}
 
+	debug(`[lsp] Resolved ${resolved.length}/${servers.length} server(s)`);
 	return resolved;
 }
 
 function getSearchDirs(homeDir: string, env: NodeJS.ProcessEnv): string[] {
 	const pathDirs = getPathDirs(env);
 	const masonDirs = getMasonDirs(homeDir, env);
-	return dedupePaths([...masonDirs, ...pathDirs]);
+	const toolDirs = getCommonToolDirs(homeDir);
+	return dedupePaths([...masonDirs, ...toolDirs, ...pathDirs]);
+}
+
+function getCommonToolDirs(homeDir: string): string[] {
+	return [
+		join(homeDir, ".cargo", "bin"),           // Rust (rustup/rust-analyzer)
+		join(homeDir, "go", "bin"),                // Go (gopls, etc.)
+		join(homeDir, ".local", "bin"),            // General user binaries
+		join(homeDir, ".gvm", "bin"),              // Go Version Manager
+		"/usr/local/go/bin",                        // System Go
+		"/usr/local/bin",                           // System local binaries
+	];
 }
 
 function getPathDirs(env: NodeJS.ProcessEnv): string[] {

@@ -122,14 +122,15 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.registerTool({
-		name: "session_delegate",
-		label: "Session Delegate",
-		description: [
-			"Delegate a task to a background pi session.",
-			"Returns a sessionId for communication via session_delegate_send.",
-			"The delegated session can message back using its own coordinator channel.",
-		].join(" "),
+  pi.registerTool({
+    name: "session_delegate",
+    label: "Session Delegate",
+    description: [
+      "Delegate a task to a background pi session.",
+      "Returns a sessionId for communication via session_delegate_send.",
+      "The delegated session can message back using its own coordinator channel.",
+      "The delegate session is automatically restarted if inactive when receiving messages.",
+    ].join(" "),
 		parameters: DelegateParams,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			const sid = currentSessionId || ctx.sessionManager.getSessionId();
@@ -153,32 +154,34 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
-		name: "session_delegate_send",
-		label: "Session Delegate Send",
-		description: [
-			"Send a message to a delegated session by sessionId.",
-			"If the target session is stopped, the server will attempt to restart it.",
-			"The message is injected as a followUp into the target session.",
-		].join(" "),
-		parameters: DelegateSendParams,
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			const sid = currentSessionId || ctx.sessionManager.getSessionId();
-			const result = await serverProxy.delegate_send(sid, params.targetSessionId, params.message);
+  pi.registerTool({
+    name: "session_delegate_send",
+    label: "Session Delegate Send",
+    description: [
+      "Send a message to a delegated session by sessionId.",
+      "If the target session is not active, the server will automatically restart it",
+      "(same as clicking on the session in the UI) and deliver the message.",
+      "The message is injected as a followUp into the target session.",
+      "This tool only fails if the session file has been physically deleted from disk.",
+    ].join(" "),
+    parameters: DelegateSendParams,
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      const sid = currentSessionId || ctx.sessionManager.getSessionId();
+      const result = await serverProxy.delegate_send(sid, params.targetSessionId, params.message);
 
-			if (!result.delivered) {
-				return {
-					content: [{ type: "text" as const, text: `Could not deliver message to ${params.targetSessionId}: session not found` }],
-					details: { delivered: false, targetSessionId: params.targetSessionId },
-				};
-			}
+      if (!result.delivered) {
+        return {
+          content: [{ type: "text" as const, text: `Could not deliver message to ${params.targetSessionId}: session not found (the session file may have been deleted from disk)` }],
+          details: { delivered: false, targetSessionId: params.targetSessionId },
+        };
+      }
 
-			return {
-				content: [{ type: "text" as const, text: `Message delivered to ${params.targetSessionId} (status: ${result.targetStatus})` }],
-				details: result,
-			};
-		},
-	});
+      return {
+        content: [{ type: "text" as const, text: `Message delivered to ${params.targetSessionId} (status: ${result.targetStatus})` }],
+        details: result,
+      };
+    },
+  });
 
 	pi.registerTool({
 		name: "session_delegate_status",
