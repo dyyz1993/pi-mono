@@ -17,6 +17,7 @@ import type { RulesChannelContract } from "../../../extensions/rules-engine/type
 import type { SubagentExtChannelContract } from "../../../extensions/subagent-ext/contract.js";
 import type { SubagentV2ChannelContract } from "../../../extensions/subagent-v2/contract.js";
 import type { TodoChannelContract } from "../../../extensions/todo-ext/contract.js";
+import type { SupervisorChannelContract } from "../../../extensions/session-supervisor/types.js";
 
 export interface ChannelTypeRegistry {
 	bash: BashChannelContract;
@@ -26,4 +27,5 @@ export interface ChannelTypeRegistry {
 	subagent: SubagentExtChannelContract & SubagentV2ChannelContract;
 	coordinator: CoordinatorChannelContract;
 	"rules-engine": RulesChannelContract;
+	supervisor: SupervisorChannelContract;
 }
