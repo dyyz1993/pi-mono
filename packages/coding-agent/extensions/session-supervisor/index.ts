@@ -222,8 +222,8 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             config.smallModel = modelFlag;
         }
 
-        // Determine project root for specs file resolution
-        projectRoot = ctx.projectDataDir ?? process.cwd();
+        // projectRoot is the git root (worktree-aware), correct for specs file resolution
+        projectRoot = ctx.projectRoot ?? ctx.cwd;
 
         schedulerInstance = new Scheduler(
             config.maxContinueCount,
@@ -276,7 +276,29 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 log(`guard[${guard.name}] completed=${result.completed}, remaining=${result.remainingItems.length}`);
             }
 
-            // Also run the generic model-based check as fallback (if no custom guards or as additional check)
+            lastTaskReports = reports;
+            channel.emit("supervisor.taskReport", { tasks: reports });
+
+            // Phase 2: If any guard says incomplete → continue immediately
+            const hasIncompleteGuards = guardResults.some((r) => !r.completed && r.remainingItems.length > 0);
+
+            if (hasIncompleteGuards) {
+                log(`Guards detected incomplete tasks`);
+                specsIterationCount++;
+
+                const continueMessage = generateContinueMessage(
+                    activeGuards,
+                    guardResults,
+                    null,
+                );
+
+                lastCheckResult = { completed: false, confidence: 0.9, incompleteTasks: [], guardResults };
+
+                scheduleContinue(continueMessage);
+                return;
+            }
+
+            // Phase 3: All guards passed → run fallback model check
             const modelCheck = await checkWithSmallModel(
                 event.messages as Array<{ role: string; content: unknown }>,
                 config,
@@ -284,14 +306,9 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 ctx.sessionSignal,
             );
 
-            lastTaskReports = reports;
-            channel.emit("supervisor.taskReport", { tasks: reports });
-
-            // Phase 2: Determine if we should continue
-            const hasIncompleteGuards = guardResults.some((r) => !r.completed && r.remainingItems.length > 0);
             const hasModelIncomplete = modelCheck.completed === false || modelCheck.incompleteTasks.length > 0;
 
-            if (!hasIncompleteGuards && !hasModelIncomplete) {
+            if (!hasModelIncomplete) {
                 log(`All guards passed + model check passed → idle`);
                 currentState = "idle";
                 lastCheckResult = { ...modelCheck, guardResults };
@@ -299,10 +316,8 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 return;
             }
 
-            // Phase 3: Generate continue message from first incomplete guard
-            log(`Incomplete tasks detected, scheduling continue...`);
-            specsIterationCount++;
-
+            // Phase 4: Model detected incompleteness → continue with model's assessment
+            log(`Model detected incomplete tasks`);
             const continueMessage = generateContinueMessage(
                 activeGuards,
                 guardResults,
@@ -310,41 +325,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             );
 
             lastCheckResult = { ...modelCheck, guardResults };
-
-            // Phase 4: Schedule continue
-            const delayMs = config.defaultDelayMs;
-
-            if (schedulerInstance.shouldPause(delayMs)) {
-                currentState = "paused";
-                emitStatusChanged();
-                channel.emit("supervisor.pauseRequested", {
-                    delayMs,
-                    reason: continueMessage.slice(0, 200),
-                });
-            }
-
-            pi.background(async (signal) => {
-                await new Promise<void>((resolve) => {
-                    const timer = setTimeout(resolve, delayMs);
-                    signal.addEventListener("abort", () => {
-                        clearTimeout(timer);
-                        resolve();
-                    });
-                });
-
-                if (signal.aborted) return;
-
-                currentState = "continuing";
-                emitStatusChanged();
-                pi.sendMessage(
-                    {
-                        customType: "supervisor_continue",
-                        content: continueMessage,
-                        display: true,
-                    },
-                    { triggerTurn: true },
-                );
-            });
+            scheduleContinue(continueMessage);
         } catch (err) {
             log(`agent_end error: ${err instanceof Error ? err.message : String(err)}`);
             currentState = "idle";
@@ -358,6 +339,42 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     });
 
     // ── Guard Check Functions ──
+
+    function scheduleContinue(continueMessage: string): void {
+        const delayMs = config.defaultDelayMs;
+
+        if (schedulerInstance.shouldPause(delayMs)) {
+            currentState = "paused";
+            emitStatusChanged();
+            channel.emit("supervisor.pauseRequested", {
+                delayMs,
+                reason: continueMessage.slice(0, 200),
+            });
+        }
+
+        pi.background(async (signal) => {
+            await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, delayMs);
+                signal.addEventListener("abort", () => {
+                    clearTimeout(timer);
+                    resolve();
+                });
+            });
+
+            if (signal.aborted) return;
+
+            currentState = "continuing";
+            emitStatusChanged();
+            pi.sendMessage(
+                {
+                    customType: "supervisor_continue",
+                    content: continueMessage,
+                    display: true,
+                },
+                { triggerTurn: true },
+            );
+        });
+    }
 
     function getActiveGuards(): GuardConfig[] {
         return (config.guards ?? []).filter((g) => g.enable !== false);
@@ -599,7 +616,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     function generateContinueMessage(
         guards: GuardConfig[],
         results: GuardCheckResult[],
-        modelCheck: CheckResult,
+        modelCheck: CheckResult | null,
     ): string {
         // Priority: first incomplete guard generates the message
         for (let i = 0; i < guards.length; i++) {
@@ -640,11 +657,15 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         }
 
         // Fallback: generic continue from model check
-        const tasks = modelCheck.incompleteTasks.map((t) => `[${t.severity}] ${t.description}`);
-        return CONTINUE_PROMPT(
-            modelCheck.modelResponse ?? "Model detected incomplete tasks",
-            tasks.length > 0 ? tasks : ["Continue working"],
-        );
+        if (modelCheck) {
+            const tasks = modelCheck.incompleteTasks.map((t) => `[${t.severity}] ${t.description}`);
+            return CONTINUE_PROMPT(
+                modelCheck.modelResponse ?? "Model detected incomplete tasks",
+                tasks.length > 0 ? tasks : ["Continue working"],
+            );
+        }
+
+        return CONTINUE_PROMPT("Incomplete tasks detected", ["Please continue working on remaining items."]);
     }
 
     function generateBlockMessage(
