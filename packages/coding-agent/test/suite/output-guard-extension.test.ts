@@ -1,24 +1,27 @@
 /**
  * Tests for the output-guard extension.
  *
+ * Imports the REAL extension from extensions/output-guard/index.ts
+ * and tests its actual behavior via the harness + faux provider.
+ *
  * Validates:
- * 1. Global truncation fallback for custom/extension tools
- * 2. Tool limit optimization (find, ls)
+ * 1. Global truncation fallback for custom/extension tools (via real extension)
+ * 2. Tool limit optimization - find/ls limit capping (via real extension)
  * 3. Skip logic for self-managed built-in tools
- * 4. Truncation notice format and file saving
+ * 4. Edge cases: empty content, image content, self-managed details
  */
 
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ExtensionAPI } from "../../src/index.js";
-import { createHarness, getAssistantTexts, type Harness } from "./harness.js";
+import outputGuardFactory from "../../extensions/output-guard/index.js";
+import { createHarness, type Harness } from "./harness.js";
 
 // Helper: generate large text content
-function generateLines(count: number, lineContent: string = "line"): string {
+function generateLines(count: number, lineContent = "line"): string {
 	return Array.from({ length: count }, (_, i) => `${lineContent} ${i}`).join("\n");
 }
 
@@ -35,37 +38,22 @@ function getToolResultTexts(harness: Harness): string[] {
 		);
 }
 
-// Helper: collect temp files created by output-guard for cleanup
-const tempFiles: string[] = [];
-
-function cleanupTempFiles(): void {
-	for (const f of tempFiles) {
-		try {
-			if (existsSync(f)) unlinkSync(f);
-		} catch {
-			// ignore
-		}
-	}
-	tempFiles.length = 0;
-}
-
-describe("output-guard extension", () => {
+describe("output-guard extension (real extension import)", () => {
 	const harnesses: Harness[] = [];
 
 	afterEach(() => {
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
-		cleanupTempFiles();
 	});
 
 	// ====================================================================
-	// 1. Global Truncation Fallback
+	// 1. Global Truncation Fallback (using real output-guard extension)
 	// ====================================================================
 
 	describe("global truncation fallback", () => {
-		it("truncates custom tool output exceeding line limit", async () => {
-			const largeContent = generateLines(3000); // exceeds 2000 line default
+		it("truncates custom tool output exceeding 2000 lines", async () => {
+			const largeContent = generateLines(3000);
 
 			const customTool: AgentTool = {
 				name: "my_tool",
@@ -79,35 +67,7 @@ describe("output-guard extension", () => {
 
 			const harness = await createHarness({
 				tools: [customTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName !== "my_tool") return;
-
-							const selfManaged = new Set(["read", "bash", "grep", "find", "ls"]);
-							if (selfManaged.has(event.toolName)) return;
-							if (event.content.some((p) => p.type === "image")) return;
-
-							const textParts = event.content.filter(
-								(p): p is { type: "text"; text: string } => p.type === "text",
-							);
-							if (textParts.length === 0) return;
-
-							const fullText = textParts.map((p) => p.text).join("\n");
-							const lines = fullText.split("\n");
-							const totalLines = lines.length;
-							if (totalLines <= 2000) return;
-
-							// Truncate: keep last 2000 lines
-							const truncated = lines.slice(-2000).join("\n");
-							const notice = `Output truncated: ${totalLines} lines exceeded limit of 2000.`;
-
-							return {
-								content: [{ type: "text" as const, text: truncated + "\n\n" + notice }],
-							};
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -128,19 +88,19 @@ describe("output-guard extension", () => {
 
 			await harness.session.prompt("run my_tool");
 
-			// The extension should have truncated the content
 			const resultTexts = getToolResultTexts(harness);
 			expect(resultTexts.length).toBeGreaterThan(0);
 
 			const resultText = resultTexts[0];
-			// Should contain truncation notice
+			// The real extension should have truncated the content
 			expect(resultText).toContain("truncated");
-			// Should be shorter than original
 			expect(resultText.length).toBeLessThan(largeContent.length);
+			// Should contain actionable file path hint
+			expect(resultText).toContain("Full output saved to:");
 		});
 
-		it("truncates custom tool output exceeding byte limit", async () => {
-			const largeContent = generateBytes(100 * 1024); // 100KB, exceeds 50KB default
+		it("truncates custom tool output exceeding 50KB bytes", async () => {
+			const largeContent = generateBytes(100 * 1024); // 100KB
 
 			const customTool: AgentTool = {
 				name: "big_tool",
@@ -154,36 +114,7 @@ describe("output-guard extension", () => {
 
 			const harness = await createHarness({
 				tools: [customTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						// output-guard logic inline for testing
-						pi.on("tool_result", async (event, _ctx) => {
-							if (event.toolName !== "big_tool") return;
-							const selfManaged = new Set(["read", "bash", "grep", "find", "ls"]);
-							if (selfManaged.has(event.toolName)) return;
-
-							const textParts = event.content.filter(
-								(p): p is { type: "text"; text: string } => p.type === "text",
-							);
-							if (textParts.length === 0) return;
-
-							const fullText = textParts.map((p) => p.text).join("\n");
-							const totalBytes = Buffer.byteLength(fullText, "utf-8");
-							if (totalBytes <= 50 * 1024) return;
-
-							// Truncate: keep last 50KB
-							const truncated = fullText.slice(-50 * 1024);
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: truncated + `\n\nOutput truncated: ${(totalBytes / 1024).toFixed(1)}KB exceeded limit of 50.0KB.`,
-									},
-								],
-							};
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -207,6 +138,7 @@ describe("output-guard extension", () => {
 			const resultTexts = getToolResultTexts(harness);
 			expect(resultTexts.length).toBeGreaterThan(0);
 			expect(resultTexts[0]).toContain("truncated");
+			expect(resultTexts[0]).toContain("KB");
 		});
 
 		it("does NOT truncate output within limits", async () => {
@@ -222,26 +154,9 @@ describe("output-guard extension", () => {
 				}),
 			};
 
-			let wasModified = false;
-
 			const harness = await createHarness({
 				tools: [customTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName === "small_tool") {
-								// The extension should NOT modify this
-								const textParts = event.content.filter(
-									(p): p is { type: "text"; text: string } => p.type === "text",
-								);
-								const fullText = textParts.map((p) => p.text).join("\n");
-								if (fullText !== smallContent) {
-									wasModified = true;
-								}
-							}
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -252,105 +167,76 @@ describe("output-guard extension", () => {
 
 			await harness.session.prompt("run small_tool");
 
-			// The output-guard should NOT have modified the content
-			expect(wasModified).toBe(false);
+			// Content should be unchanged
+			const resultTexts = getToolResultTexts(harness);
+			expect(resultTexts[0]).toBe(smallContent);
 		});
 
-		it("skips tools with self-managed truncation (built-in tools)", async () => {
-			// Simulate a read-like tool that self-manages truncation
-			const readLikeTool: AgentTool = {
-				name: "read",
-				label: "Read",
-				description: "Read file",
-				parameters: Type.Object({ path: Type.String() }),
-				execute: async () => ({
-					content: [{ type: "text", text: generateLines(3000) }],
-					details: {
-						truncation: { truncated: true, truncatedBy: "lines" },
-					},
-				}),
-			};
+		it("saves truncated output to disk with correct structure", async () => {
+			const largeContent = generateLines(3000);
 
-			let resultWasModified = false;
-
-			const harness = await createHarness({
-				tools: [readLikeTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName === "read") {
-								// Built-in tools have self-managed truncation - our guard should skip
-								const details = event.details as Record<string, unknown> | undefined;
-								if (details?.truncation) {
-									resultWasModified = false; // Should not modify
-								}
-							}
-						});
-					},
-				],
-			});
-			harnesses.push(harness);
-
-			harness.setResponses([
-				fauxAssistantMessage([fauxToolCall("read", { path: "/some/file" })], { stopReason: "toolUse" }),
-				fauxAssistantMessage("done"),
-			]);
-
-			await harness.session.prompt("read a file");
-
-			// The built-in tool's output should NOT be modified by the guard
-			expect(resultWasModified).toBe(false);
-		});
-
-		it("skips output containing image content", async () => {
 			const customTool: AgentTool = {
-				name: "image_tool",
-				label: "Image Tool",
-				description: "Returns image + text",
+				name: "disk_tool",
+				label: "Disk Tool",
+				description: "Returns lots of data",
 				parameters: Type.Object({}),
 				execute: async () => ({
-					content: [
-						{ type: "text", text: "Here is the image:" },
-						{ type: "image", data: "base64data...", mimeType: "image/png" },
-					],
+					content: [{ type: "text", text: largeContent }],
 				}),
 			};
-
-			let wasModified = false;
 
 			const harness = await createHarness({
 				tools: [customTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName === "image_tool") {
-								const hasImages = event.content.some((p) => p.type === "image");
-								if (hasImages) {
-									wasModified = false; // Should skip
-								}
-							}
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
 			harness.setResponses([
-				fauxAssistantMessage([fauxToolCall("image_tool", {})], { stopReason: "toolUse" }),
-				fauxAssistantMessage("done"),
+				fauxAssistantMessage([fauxToolCall("disk_tool", {})], { stopReason: "toolUse" }),
+				(context) => {
+					const toolResult = context.messages.find((m) => m.role === "toolResult");
+					const text =
+						toolResult?.role === "toolResult"
+							? toolResult.content
+									.filter((p): p is { type: "text"; text: string } => p.type === "text")
+									.map((p) => p.text)
+									.join("\n")
+							: "";
+					return fauxAssistantMessage(text.slice(0, 500));
+				},
 			]);
 
-			await harness.session.prompt("run image_tool");
-			expect(wasModified).toBe(false);
+			await harness.session.prompt("run disk_tool");
+
+			const resultTexts = getToolResultTexts(harness);
+			const resultText = resultTexts[0];
+
+			// Should contain truncation notice
+			expect(resultText).toContain("truncated");
+
+			// The extension should have saved the full output somewhere.
+			const pathMatch = resultText.match(/Full output saved to: (.+)/);
+			expect(pathMatch).not.toBeNull();
+
+			const savedPath = pathMatch![1].trim();
+
+			// Check file exists BEFORE harness cleanup
+			expect(savedPath).toMatch(/^\//); // Should be absolute path
+			expect(existsSync(savedPath)).toBe(true);
+
+			// Verify saved content is the original (not truncated)
+			const { readFileSync } = await import("node:fs");
+			const savedContent = readFileSync(savedPath, "utf-8");
+			expect(savedContent).toBe(largeContent);
 		});
 	});
 
 	// ====================================================================
-	// 2. Tool Limit Optimization
+	// 2. Tool Limit Optimization (using real output-guard extension)
 	// ====================================================================
 
 	describe("tool limit optimization", () => {
-		it("reduces find tool limit from default to 100", async () => {
+		it("caps find tool limit to 100", async () => {
 			let capturedLimit: number | undefined;
 
 			const findTool: AgentTool = {
@@ -359,25 +245,17 @@ describe("output-guard extension", () => {
 				description: "Find files",
 				parameters: Type.Object({ pattern: Type.String() }),
 				execute: async (_id, params) => {
-					capturedLimit = typeof params === "object" && params !== null ? (params as Record<string, unknown>).limit as number : undefined;
+					capturedLimit =
+						typeof params === "object" && params !== null
+							? ((params as Record<string, unknown>).limit as number)
+							: undefined;
 					return { content: [{ type: "text", text: "found files" }] };
 				},
 			};
 
 			const harness = await createHarness({
 				tools: [findTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_call", async (event) => {
-							if (event.toolName === "find") {
-								const input = event.input as { limit?: number };
-								if (input.limit === undefined || input.limit > 100) {
-									input.limit = 100;
-								}
-							}
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -391,7 +269,7 @@ describe("output-guard extension", () => {
 			expect(capturedLimit).toBe(100);
 		});
 
-		it("reduces ls tool limit from default to 100", async () => {
+		it("caps ls tool limit to 100", async () => {
 			let capturedLimit: number | undefined;
 
 			const lsTool: AgentTool = {
@@ -400,25 +278,17 @@ describe("output-guard extension", () => {
 				description: "List directory",
 				parameters: Type.Object({}),
 				execute: async (_id, params) => {
-					capturedLimit = typeof params === "object" && params !== null ? (params as Record<string, unknown>).limit as number : undefined;
+					capturedLimit =
+						typeof params === "object" && params !== null
+							? ((params as Record<string, unknown>).limit as number)
+							: undefined;
 					return { content: [{ type: "text", text: "listed files" }] };
 				},
 			};
 
 			const harness = await createHarness({
 				tools: [lsTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_call", async (event) => {
-							if (event.toolName === "ls") {
-								const input = event.input as { limit?: number };
-								if (input.limit === undefined || input.limit > 100) {
-									input.limit = 100;
-								}
-							}
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -441,25 +311,17 @@ describe("output-guard extension", () => {
 				description: "Find files",
 				parameters: Type.Object({ pattern: Type.String() }),
 				execute: async (_id, params) => {
-					capturedLimit = typeof params === "object" && params !== null ? (params as Record<string, unknown>).limit as number : undefined;
+					capturedLimit =
+						typeof params === "object" && params !== null
+							? ((params as Record<string, unknown>).limit as number)
+							: undefined;
 					return { content: [{ type: "text", text: "found files" }] };
 				},
 			};
 
 			const harness = await createHarness({
 				tools: [findTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_call", async (event) => {
-							if (event.toolName === "find") {
-								const input = event.input as { limit?: number };
-								if (input.limit === undefined || input.limit > 100) {
-									input.limit = 100;
-								}
-							}
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -477,85 +339,116 @@ describe("output-guard extension", () => {
 	});
 
 	// ====================================================================
-	// 3. Truncation Notice Format
+	// 3. Skip Logic (using real output-guard extension)
 	// ====================================================================
 
-	describe("truncation notice format", () => {
-		it("includes actionable info in truncation notice", async () => {
+	describe("skip logic", () => {
+		it("skips built-in read tool (self-managed truncation)", async () => {
 			const largeContent = generateLines(3000);
 
-			let truncatedNotice = "";
-
-			const customTool: AgentTool = {
-				name: "custom",
-				label: "Custom",
-				description: "Returns large data",
-				parameters: Type.Object({}),
+			// Simulate the real read tool which sets details.truncation
+			const readTool: AgentTool = {
+				name: "read",
+				label: "Read",
+				description: "Read file",
+				parameters: Type.Object({ path: Type.String() }),
 				execute: async () => ({
 					content: [{ type: "text", text: largeContent }],
+					details: {
+						truncation: { truncated: true, truncatedBy: "lines" },
+					},
 				}),
 			};
 
 			const harness = await createHarness({
-				tools: [customTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName !== "custom") return;
-							const selfManaged = new Set(["read", "bash", "grep", "find", "ls"]);
-							if (selfManaged.has(event.toolName)) return;
-
-							const textParts = event.content.filter(
-								(p): p is { type: "text"; text: string } => p.type === "text",
-							);
-							if (textParts.length === 0) return;
-							const fullText = textParts.map((p) => p.text).join("\n");
-							const lines = fullText.split("\n");
-							if (lines.length <= 2000) return;
-
-							const truncated = lines.slice(-2000).join("\n");
-							const totalLines = lines.length;
-							const notice = `Output truncated: ${totalLines} lines exceeded limit of 2000. Use the read tool to view the full output.`;
-
-							truncatedNotice = notice;
-
-							return {
-								content: [{ type: "text" as const, text: truncated + "\n\n" + notice }],
-							};
-						});
-					},
-				],
+				tools: [readTool],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
 			harness.setResponses([
-				fauxAssistantMessage([fauxToolCall("custom", {})], { stopReason: "toolUse" }),
-				(context) => {
-					const toolResult = context.messages.find((m) => m.role === "toolResult");
-					const text =
-						toolResult?.role === "toolResult"
-							? toolResult.content
-									.filter((p): p is { type: "text"; text: string } => p.type === "text")
-									.map((p) => p.text)
-									.join("\n")
-							: "";
-					return fauxAssistantMessage(text.slice(0, 300));
-				},
+				fauxAssistantMessage([fauxToolCall("read", { path: "/some/file" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
 			]);
 
-			await harness.session.prompt("run custom");
+			await harness.session.prompt("read a file");
 
-			expect(truncatedNotice).toContain("3000 lines exceeded limit of 2000");
-			expect(truncatedNotice).toContain("read tool");
+			// The real extension should NOT have modified read tool's output
+			const resultTexts = getToolResultTexts(harness);
+			expect(resultTexts[0]).toBe(largeContent);
+		});
+
+		it("skips output containing image content", async () => {
+			const imageTool: AgentTool = {
+				name: "image_tool",
+				label: "Image Tool",
+				description: "Returns image + text",
+				parameters: Type.Object({}),
+				execute: async () => ({
+					content: [
+						{ type: "text", text: "Here is the image:" },
+						{ type: "image", data: "base64data...", mimeType: "image/png" },
+					],
+				}),
+			};
+
+			const harness = await createHarness({
+				tools: [imageTool],
+				extensionFactories: [outputGuardFactory],
+			});
+			harnesses.push(harness);
+
+			harness.setResponses([
+				fauxAssistantMessage([fauxToolCall("image_tool", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			]);
+
+			await harness.session.prompt("run image_tool");
+
+			// Content should be unchanged (not truncated)
+			const resultTexts = getToolResultTexts(harness);
+			expect(resultTexts[0]).toBe("Here is the image:");
+		});
+
+		it("skips tool with details.truncation field (custom tool opt-in)", async () => {
+			const largeContent = generateLines(3000);
+
+			const selfManagedTool: AgentTool = {
+				name: "custom_managed",
+				label: "Custom Managed",
+				description: "Manages its own truncation",
+				parameters: Type.Object({}),
+				execute: async () => ({
+					content: [{ type: "text", text: largeContent }],
+					details: { truncation: { truncated: true } },
+				}),
+			};
+
+			const harness = await createHarness({
+				tools: [selfManagedTool],
+				extensionFactories: [outputGuardFactory],
+			});
+			harnesses.push(harness);
+
+			harness.setResponses([
+				fauxAssistantMessage([fauxToolCall("custom_managed", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			]);
+
+			await harness.session.prompt("run custom_managed");
+
+			// Should NOT have been truncated
+			const resultTexts = getToolResultTexts(harness);
+			expect(resultTexts[0]).toBe(largeContent);
 		});
 	});
 
 	// ====================================================================
-	// 4. Edge Cases
+	// 4. Edge Cases (using real output-guard extension)
 	// ====================================================================
 
 	describe("edge cases", () => {
-		it("handles tool with no content gracefully", async () => {
+		it("handles tool with empty content without crashing", async () => {
 			const emptyTool: AgentTool = {
 				name: "empty_tool",
 				label: "Empty Tool",
@@ -566,19 +459,9 @@ describe("output-guard extension", () => {
 				}),
 			};
 
-			let handlerCalled = false;
-
 			const harness = await createHarness({
 				tools: [emptyTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName === "empty_tool") {
-								handlerCalled = true;
-							}
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -589,8 +472,7 @@ describe("output-guard extension", () => {
 
 			await harness.session.prompt("run empty_tool");
 
-			expect(handlerCalled).toBe(true);
-			// Should not crash - no modification needed for empty content
+			// Should not crash
 			const resultTexts = getToolResultTexts(harness);
 			expect(resultTexts.length).toBe(0);
 		});
@@ -606,19 +488,9 @@ describe("output-guard extension", () => {
 				}),
 			};
 
-			let handlerCalled = false;
-
 			const harness = await createHarness({
 				tools: [imageTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName === "img_only") {
-								handlerCalled = true;
-							}
-						});
-					},
-				],
+				extensionFactories: [outputGuardFactory],
 			});
 			harnesses.push(harness);
 
@@ -629,51 +501,9 @@ describe("output-guard extension", () => {
 
 			await harness.session.prompt("run img_only");
 
-			expect(handlerCalled).toBe(true);
-		});
-
-		it("handles tool with details containing custom truncation field", async () => {
-			const selfManagedTool: AgentTool = {
-				name: "managed_tool",
-				label: "Self-Managed Tool",
-				description: "Manages its own truncation",
-				parameters: Type.Object({}),
-				execute: async () => ({
-					content: [{ type: "text", text: generateLines(3000) }],
-					details: { truncation: { truncated: true } },
-				}),
-			};
-
-			let wasModified = false;
-
-			const harness = await createHarness({
-				tools: [selfManagedTool],
-				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("tool_result", async (event) => {
-							if (event.toolName === "managed_tool") {
-								const details = event.details as Record<string, unknown> | undefined;
-								if (details?.truncation) {
-									// Should skip - tool self-manages
-									wasModified = false;
-								} else {
-									wasModified = true;
-								}
-							}
-						});
-					},
-				],
-			});
-			harnesses.push(harness);
-
-			harness.setResponses([
-				fauxAssistantMessage([fauxToolCall("managed_tool", {})], { stopReason: "toolUse" }),
-				fauxAssistantMessage("done"),
-			]);
-
-			await harness.session.prompt("run managed_tool");
-
-			expect(wasModified).toBe(false);
+			// Should not crash, no text results
+			const resultTexts = getToolResultTexts(harness);
+			expect(resultTexts.length).toBe(0);
 		});
 	});
 });

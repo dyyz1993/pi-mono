@@ -1,31 +1,45 @@
 /**
  * Output Guard Extension - Global fallback truncation + tool limit optimization.
  *
- * Provides three capabilities:
+ * Aligns pi-momo-fork's truncation strategy with OpenCode's approach:
  *
- * 1. **Global truncation fallback**: Hooks into `tool_result` events. When a tool
- *    (especially extension/plugin/MCP tools) returns output exceeding limits
- *    without self-managing truncation, this extension truncates the output and
- *    saves the full content to a temp file.
+ * OpenCode has a global truncation layer in `Tool.define()` that checks
+ * `metadata.truncated` - if undefined, applies 50KB/2000-line truncation
+ * and saves full output to disk. Plugin/MCP tools are wrapped in
+ * `fromPlugin()` with `Truncate.output()` built in.
  *
- * 2. **Tool limit optimization**: Hooks into `tool_call` events to enforce lower
- *    result limits on find (1000 -> 100) and ls (500 -> 100), matching OpenCode's
- *    defaults. Reduces unnecessary context consumption.
+ * Pi lacks this global layer. This extension fills the gap via `tool_result`
+ * event hooks, providing equivalent protection for:
+ * - Extension/plugin tools (no built-in truncation)
+ * - MCP tools (no built-in truncation)
+ * - Any future tool that forgets to self-manage
  *
- * 3. **PDF text extraction**: Registers a `pdf_read` tool that extracts text content
- *    from PDF files using pdf-parse, since the built-in read tool does not support PDFs.
+ * Three capabilities:
  *
- * Configuration (via .pi/settings.json or global settings):
- *   outputGuard.maxLines: number (default: 2000)
- *   outputGuard.maxBytes: number (default: 51200 = 50KB)
- *   outputGuard.findLimit: number (default: 100)
- *   outputGuard.lsLimit: number (default: 100)
- *   outputGuard.saveToFile: boolean (default: true - save truncated output to disk)
+ * 1. **Global truncation fallback**: Intercepts `tool_result` for tools that
+ *    don't self-manage truncation. Applies 50KB/2000-line limit, saves full
+ *    output to `<sessionDataDir>/tool-output/`, returns truncated preview
+ *    with actionable file path hint.
+ *
+ * 2. **Tool limit optimization**: Intercepts `tool_call` to enforce lower
+ *    result limits on find (1000 -> 100) and ls (500 -> 100), matching
+ *    OpenCode's glob/ls defaults. Reduces unnecessary context consumption.
+ *
+ * 3. **PDF text extraction**: Registers a `pdf_read` tool that extracts text
+ *    from PDF files. OpenCode sends PDFs as raw base64 to the model; Pi's
+ *    read tool doesn't support PDFs at all. This tool uses pdf-parse for
+ *    text extraction, which is more token-efficient than base64 encoding.
+ *
+ * Configuration (via .pi/settings.json `outputGuard` key):
+ *   maxLines: number (default: 2000)
+ *   maxBytes: number (default: 51200 = 50KB)
+ *   findLimit: number (default: 100)
+ *   lsLimit: number (default: 100)
+ *   saveToFile: boolean (default: true)
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream, mkdirSync, existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdirSync, existsSync, writeFileSync as fsWriteFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -39,13 +53,29 @@ import type {
 } from "@dyyz1993/pi-coding-agent";
 
 // ============================================================================
-// Configuration
+// Constants
 // ============================================================================
 
+/** Matches OpenCode's MAX_LINES */
 const DEFAULT_MAX_LINES = 2000;
+/** Matches OpenCode's MAX_BYTES */
 const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
+/** Matches OpenCode's glob limit of 100 */
 const DEFAULT_FIND_LIMIT = 100;
+/** Matches OpenCode's ls limit of 100 */
 const DEFAULT_LS_LIMIT = 100;
+
+/**
+ * Built-in tools that self-manage truncation.
+ * These tools set details.truncation and handle their own size limits,
+ * so the global fallback must skip them (matches OpenCode's
+ * `metadata.truncated !== undefined` check).
+ */
+const SELF_MANAGED_TOOLS = new Set(["read", "bash", "grep", "find", "ls"]);
+
+// ============================================================================
+// Configuration
+// ============================================================================
 
 interface OutputGuardConfig {
 	maxLines: number;
@@ -68,7 +98,7 @@ function loadConfig(ctx: ExtensionContext): OutputGuardConfig {
 }
 
 // ============================================================================
-// Truncation Logic
+// Truncation Logic (mirrors OpenCode's Truncate.output)
 // ============================================================================
 
 interface TruncationInfo {
@@ -76,13 +106,17 @@ interface TruncationInfo {
 	content: string;
 	totalLines: number;
 	totalBytes: number;
+	outputLines: number;
+	outputBytes: number;
 	truncatedBy: "lines" | "bytes" | null;
 	fullOutputPath?: string;
 }
 
 /**
- * Truncate text content from the tail (keep the end - more useful for tool output).
- * Saves full content to a temp file when truncation occurs.
+ * Truncate text content, keeping the tail (last N lines).
+ * Mirrors OpenCode's `Truncate.output()` with direction="tail".
+ * Saves full content to `<sessionDataDir>/tool-output/` when truncated
+ * (matches OpenCode's `<data-dir>/tool-output/` pattern).
  */
 function truncateOutput(
 	content: string,
@@ -100,36 +134,39 @@ function truncateOutput(
 			content,
 			totalLines,
 			totalBytes,
+			outputLines: totalLines,
+			outputBytes: totalBytes,
 			truncatedBy: null,
 		};
 	}
 
-	// Collect lines from the end
-	const outputLines: string[] = [];
-	let outputBytes = 0;
+	// Collect lines from the end (tail direction)
+	const outputLinesArr: string[] = [];
+	let outputBytesCount = 0;
 	let truncatedBy: "lines" | "bytes" = "lines";
 
-	for (let i = lines.length - 1; i >= 0 && outputLines.length < config.maxLines; i--) {
+	for (let i = lines.length - 1; i >= 0 && outputLinesArr.length < config.maxLines; i--) {
 		const line = lines[i];
-		const lineBytes = Buffer.byteLength(line, "utf-8") + (outputLines.length > 0 ? 1 : 0);
+		const lineBytes = Buffer.byteLength(line, "utf-8") + (outputLinesArr.length > 0 ? 1 : 0);
 
-		if (outputBytes + lineBytes > config.maxBytes) {
+		if (outputBytesCount + lineBytes > config.maxBytes) {
 			truncatedBy = "bytes";
 			break;
 		}
 
-		outputLines.unshift(line);
-		outputBytes += lineBytes;
+		outputLinesArr.unshift(line);
+		outputBytesCount += lineBytes;
 	}
 
-	if (outputLines.length >= config.maxLines && outputBytes <= config.maxBytes) {
+	if (outputLinesArr.length >= config.maxLines && outputBytesCount <= config.maxBytes) {
 		truncatedBy = "lines";
 	}
 
-	const truncatedContent = outputLines.join("\n");
+	const truncatedContent = outputLinesArr.join("\n");
+	const finalOutputBytes = Buffer.byteLength(truncatedContent, "utf-8");
 	let fullOutputPath: string | undefined;
 
-	// Save full output to disk
+	// Save full output to disk (matches OpenCode's behavior)
 	if (config.saveToFile) {
 		fullOutputPath = saveFullOutput(content, ctx);
 	}
@@ -139,36 +176,40 @@ function truncateOutput(
 		content: truncatedContent,
 		totalLines,
 		totalBytes,
+		outputLines: outputLinesArr.length,
+		outputBytes: finalOutputBytes,
 		truncatedBy,
 		fullOutputPath,
 	};
 }
 
 /**
- * Save full output content to a temp file.
+ * Save full output to disk.
+ * Uses sessionDataDir/tool-output/ to match OpenCode's <data-dir>/tool-output/.
+ * Falls back to tmpdir if sessionDataDir is unavailable.
  */
 function saveFullOutput(content: string, ctx: ExtensionContext): string | undefined {
 	try {
-		const id = randomBytes(8).toString("hex");
-		const dir = join(tmpdir(), "pi-output-guard");
+		const id = `output-${Date.now()}-${randomBytes(4).toString("hex")}`;
+		// Prefer sessionDataDir if it's an absolute path (production),
+		// otherwise fall back to tmpdir (works reliably in tests too)
+		const rawBaseDir = ctx.sessionDataDir;
+		let baseDir: string;
+		if (rawBaseDir && rawBaseDir.startsWith("/")) {
+			baseDir = rawBaseDir;
+		} else {
+			baseDir = join(tmpdir(), "pi-output-guard");
+		}
+		const dir = join(baseDir, "tool-output");
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });
 		}
-		const filePath = join(dir, `output-${id}.log`);
-		writeFileSync(filePath, content);
+		const filePath = join(dir, `${id}.log`);
+		fsWriteFileSync(filePath, content);
 		return filePath;
 	} catch {
 		return undefined;
 	}
-}
-
-/**
- * Synchronous write for saveFullOutput.
- */
-function writeFileSync(filePath: string, content: string): void {
-	const stream = createWriteStream(filePath);
-	stream.write(content);
-	stream.end();
 }
 
 // ============================================================================
@@ -178,6 +219,15 @@ function writeFileSync(filePath: string, content: string): void {
 export default function outputGuard(pi: ExtensionAPI) {
 	// ------------------------------------------------------------------
 	// 1. Global truncation fallback via tool_result hook
+	//
+	// Mirrors OpenCode's Tool.define() wrapper:
+	//   if (result.metadata.truncated === undefined) {
+	//     result.output = Truncate.output(result.output)
+	//   }
+	//
+	// In pi, the equivalent is: if a tool's details doesn't have a
+	// truncation field AND the tool isn't a known self-managing tool,
+	// apply truncation.
 	// ------------------------------------------------------------------
 	pi.on("tool_result", async (event: ToolResultEvent, ctx: ExtensionContext): Promise<ToolResultEventResult | void> => {
 		const config = loadConfig(ctx);
@@ -186,10 +236,12 @@ export default function outputGuard(pi: ExtensionAPI) {
 		const textParts = event.content.filter((p): p is { type: "text"; text: string } => p.type === "text");
 		if (textParts.length === 0) return;
 
-		// Check if the tool already self-managed truncation via details
+		// Skip tools that self-manage truncation
+		// (matches OpenCode's `metadata.truncated !== undefined` check)
 		if (hasSelfManagedTruncation(event)) return;
 
-		// Check if image content is present - images have their own size management
+		// Skip image content - images have their own size management
+		// (matches OpenCode's `metadata.truncated = false` for images)
 		const hasImages = event.content.some((p) => p.type === "image");
 		if (hasImages) return;
 
@@ -217,6 +269,10 @@ export default function outputGuard(pi: ExtensionAPI) {
 
 	// ------------------------------------------------------------------
 	// 2. Tool limit optimization via tool_call hook
+	//
+	// OpenCode: glob=100, ls=100
+	// Pi default: find=1000, ls=500
+	// This hook reduces Pi's limits to match OpenCode.
 	// ------------------------------------------------------------------
 	pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext): Promise<ToolCallEventResult | void> => {
 		const config = loadConfig(ctx);
@@ -240,12 +296,16 @@ export default function outputGuard(pi: ExtensionAPI) {
 
 	// ------------------------------------------------------------------
 	// 3. PDF text extraction tool
+	//
+	// OpenCode sends PDFs as raw base64 attachments (no text extraction).
+	// Pi's read tool doesn't support PDFs at all (outputs binary garbage).
+	// This tool uses pdf-parse to extract text, which is more token-efficient.
 	// ------------------------------------------------------------------
 	pi.registerTool({
 		name: "pdf_read",
 		description:
 			"Read and extract text content from a PDF file. " +
-			"Returns the text content of the PDF, paginated with page markers. " +
+			"Returns the text content of the PDF with metadata. " +
 			"Use this instead of the read tool for PDF files.",
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to the PDF file" }),
@@ -337,14 +397,15 @@ export default function outputGuard(pi: ExtensionAPI) {
 // ============================================================================
 
 /**
- * Check if a tool already self-manages truncation via its details field.
- * Built-in tools (read, bash, grep, find, ls) set details.truncation,
- * so we skip them and only catch unprotected tools.
+ * Check if a tool already self-manages truncation.
+ *
+ * Mirrors OpenCode's check: `result.metadata.truncated !== undefined`.
+ * In pi, built-in tools set `details.truncation`, and any tool can opt in
+ * by including a `truncation` field in its details.
  */
 function hasSelfManagedTruncation(event: ToolResultEvent): boolean {
 	// Built-in tools that self-manage truncation
-	const selfManagedTools = new Set(["read", "bash", "grep", "find", "ls"]);
-	if (selfManagedTools.has(event.toolName)) return true;
+	if (SELF_MANAGED_TOOLS.has(event.toolName)) return true;
 
 	// Check if details has a truncation field (any tool can opt in)
 	const details = event.details as Record<string, unknown> | undefined;
@@ -354,27 +415,28 @@ function hasSelfManagedTruncation(event: ToolResultEvent): boolean {
 }
 
 /**
- * Build a human-readable truncation notice with actionable instructions.
+ * Build a truncation notice with actionable file path hint.
+ * Matches OpenCode's output format which tells the model where to find
+ * the full output and suggests using read/grep tools.
  */
 function buildTruncationNotice(info: TruncationInfo, config: OutputGuardConfig): string {
 	const parts: string[] = [];
 
 	if (info.truncatedBy === "lines") {
-		parts.push(
-			`Output truncated: ${info.totalLines} lines exceeded limit of ${config.maxLines}.`,
-		);
+		const omitted = info.totalLines - info.outputLines;
+		parts.push(`...${omitted} lines truncated.`);
+		parts.push(`Output exceeded ${config.maxLines} line limit (${info.totalLines} total lines).`);
 	} else if (info.truncatedBy === "bytes") {
-		parts.push(
-			`Output truncated: ${formatBytes(info.totalBytes)} exceeded limit of ${formatBytes(config.maxBytes)}.`,
-		);
+		parts.push(`...output truncated at ${formatBytes(info.outputBytes)}.`);
+		parts.push(`Output exceeded ${formatBytes(config.maxBytes)} byte limit (${formatBytes(info.totalBytes)} total).`);
 	}
 
 	if (info.fullOutputPath) {
 		parts.push(`Full output saved to: ${info.fullOutputPath}`);
-		parts.push(`Use the read tool to view the full output.`);
+		parts.push("Use the read tool to view the full output.");
 	}
 
-	return parts.join(" ");
+	return parts.join("\n");
 }
 
 function formatBytes(bytes: number): string {

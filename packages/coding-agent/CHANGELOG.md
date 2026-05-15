@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `output-guard` extension: global fallback truncation for plugin/extension/MCP tools that don't self-manage output size. Truncates at 50KB/2000 lines (matching OpenCode defaults), saves full output to disk with actionable file path hints.
+- `output-guard` extension: tool limit optimization — caps `find` results from 1000 to 100 and `ls` entries from 500 to 100, reducing unnecessary context consumption.
+- `output-guard` extension: `pdf_read` tool for PDF text extraction (via `pdf-parse`), since the built-in read tool does not support PDFs.
+- Test suite for output-guard extension (12 harness tests with real extension import).
+
 ## [0.74.24] - 2026-05-14
 
 ## [0.74.23] - 2026-05-15
