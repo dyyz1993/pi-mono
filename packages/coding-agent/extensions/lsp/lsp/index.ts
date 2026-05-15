@@ -11,6 +11,7 @@ import { createDependencyResolver } from "./utils/dependency-resolver.js";
 import { createWriteThroughHooks } from "./hooks/writethrough.js";
 import { createLspToolRouter } from "./tools/lsp-tool.js";
 import { createServerMetricsCollector } from "./monitoring/server-metrics.js";
+import { scanProjectFileTypes, filterServersByProject } from "./utils/project-scanner.js";
 
 export interface LspChannelEvent {
 	event:
@@ -143,14 +144,31 @@ export default function lspExtension(pi: ExtensionAPI): void {
 
 		const config = configResolver.resolve();
 
+		// Scan project for file types and filter servers
+		const cwd = process.cwd();
+		const scanResult = scanProjectFileTypes(cwd);
+		const filteredServers = filterServersByProject(config.servers, scanResult);
+		const skippedNames = config.servers
+			.filter((s) => !filteredServers.some((f) => f.name === s.name))
+			.map((s) => s.name);
+		const discoveredExts = [...scanResult.discoveredExtensions].sort();
+
+		if (skippedNames.length > 0) {
+			console.log(
+				`[lsp] Project scan found [${discoveredExts.join(", ")}], starting ${filteredServers.length}/${config.servers.length} servers (skipped: ${skippedNames.join(", ")})`,
+			);
+		}
+
+		const filteredConfig = { ...config, servers: filteredServers };
+
 		lspChannel?.emit("startup_begin", {
 			event: "startup_begin",
 			timestamp: Date.now(),
-			servers: config.servers.map((s) => ({ name: s.name, state: "starting", fileTypes: s.fileTypes })),
-			totalServers: config.servers.length,
+			servers: filteredConfig.servers.map((s) => ({ name: s.name, state: "starting", fileTypes: s.fileTypes })),
+			totalServers: filteredConfig.servers.length,
 		});
 
-		await runtime.start(config);
+		await runtime.start(filteredConfig);
 		const status = runtime.getStatus();
 
 		for (const srv of status.servers) {
