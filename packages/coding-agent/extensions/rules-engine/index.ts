@@ -54,6 +54,8 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 	let hasSentSnapshot = false;
 	let _lastCwd = "";
 	let lastMessages: unknown[] = [];
+	/** Track which rule+file combos have been injected (ruleName -> Set<filePath>) */
+	let injectedRuleFiles: Map<string, Set<string>> = new Map();
 
 	function rebuildMatchHistory(messages: unknown[]): MatchRecord[] {
 		const history: MatchRecord[] = [];
@@ -412,17 +414,39 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 		const matching = getMatchingRules(targetPath);
 		if (matching.length === 0) return undefined;
 
-		const matchedRuleDetails: MatchedRuleDetail[] = matching.map((r) => ({
-			name: r.name,
-			title: r.title,
-			severity: r.frontmatter.severity || ("medium" as RuleSeverity),
-			matchedGlob:
-				(r.frontmatter.globs ?? r.frontmatter.paths)?.find((p) => matchesAnyGlob([p], targetPath)) ||
-				(r.frontmatter.globs ?? r.frontmatter.paths)?.[0] ||
-				"",
-		}));
+		const matchedRuleDetails: MatchedRuleDetail[] = matching.map((r) => {
+			const ruleName = r.name;
+			const injectedFiles = injectedRuleFiles.get(ruleName);
+			const wasAlreadyLoaded = injectedFiles !== undefined && injectedFiles.has(targetPath);
 
-		const contextSection = buildToolReminderSection(matching, targetPath);
+			return {
+				name: ruleName,
+				title: r.title,
+				severity: r.frontmatter.severity || ("medium" as RuleSeverity),
+				matchedGlob:
+					(r.frontmatter.globs ?? r.frontmatter.paths)?.find((p) => matchesAnyGlob([p], targetPath)) ||
+					(r.frontmatter.globs ?? r.frontmatter.paths)?.[0] ||
+					"",
+				alreadyLoaded: wasAlreadyLoaded || undefined,
+			};
+		});
+
+		// Determine which rules are newly injected vs already loaded
+		const newRules = matching.filter((r) => {
+			const injectedFiles = injectedRuleFiles.get(r.name);
+			return !injectedFiles || !injectedFiles.has(targetPath);
+		});
+		const allAlreadyLoaded = newRules.length === 0;
+
+		// Record that these rules have now been injected for this file
+		for (const r of matching) {
+			let injectedFiles = injectedRuleFiles.get(r.name);
+			if (!injectedFiles) {
+				injectedFiles = new Set();
+				injectedRuleFiles.set(r.name, injectedFiles);
+			}
+			injectedFiles.add(targetPath);
+		}
 
 		const hasCritical = matching.some((r) => r.frontmatter.severity === "critical");
 		const hasHigh = matching.some((r) => r.frontmatter.severity === "high");
@@ -435,7 +459,21 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 			toolCallId: event.toolCallId,
 			severity: hasCritical ? "warning" : hasHigh ? "warning" : "info",
 			timestamp: Date.now(),
+			alreadyLoaded: allAlreadyLoaded || undefined,
 		});
+
+		// Only inject content for NEW rules (skip if all already loaded)
+		if (allAlreadyLoaded) {
+			return {
+				details: {
+					...((event.details as Record<string, unknown>) || {}),
+					rulesMatched: matchedRuleDetails,
+					matchedFilePath: targetPath,
+				},
+			};
+		}
+
+		const contextSection = buildToolReminderSection(newRules, targetPath);
 
 		return {
 			content: [...event.content, { type: "text" as const, text: `\n\n${contextSection}` }],
@@ -476,12 +514,14 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 	pi.on("session_compact", async (_event, ctx) => {
 		cachedMatchHash = "";
 		lastMessages = [];
+		injectedRuleFiles = new Map();
 		ctx.ui.setStatus("rules-engine", `Rules: ${rules.length} (re-injected after compact)`);
 	});
 
 	pi.on("session_tree", async () => {
 		cachedMatchHash = "";
 		lastMessages = [];
+		injectedRuleFiles = new Map();
 	});
 
 	pi.on("turn_end", async () => {

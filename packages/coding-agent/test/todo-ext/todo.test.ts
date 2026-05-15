@@ -244,7 +244,7 @@ describe("todo extension", () => {
 				await tool.execute("tc_2", { action: "add", text: "Second task" }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_3", { action: "list" }, undefined, undefined, {} as any);
 
-			expect(result.details.todos).toHaveLength(2);
+				expect(result.details.todos).toHaveLength(2);
 			});
 		});
 
@@ -340,8 +340,8 @@ describe("todo extension", () => {
 				await tool.execute("tc_1", { action: "add", text: "Do it" }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_2", { action: "toggle", id: 1 }, undefined, undefined, {} as any);
 
-			expect(result.content[0].text).toContain("done");
-			expect(result.details.todos[0].done).toBe(true);
+				expect(result.content[0].text).toContain("done");
+				expect(result.details.todos[0].done).toBe(true);
 			});
 
 			it("toggles a todo back to undone", async () => {
@@ -401,7 +401,7 @@ describe("todo extension", () => {
 				await tool.execute("tc_3", { action: "remove", id: 2 }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_4", { action: "list" }, undefined, undefined, {} as any);
 
-			expect(result.details.totalActive).toBe(1);
+				expect(result.details.totalActive).toBe(1);
 			});
 
 			it("list details still contain deleted todos for history", async () => {

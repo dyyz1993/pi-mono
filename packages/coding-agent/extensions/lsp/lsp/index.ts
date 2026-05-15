@@ -193,13 +193,19 @@ export default function lspExtension(pi: ExtensionAPI): void {
 
 		const readyCount = status.servers.filter((s) => s.status.state === "ready").length;
 		const errorCount = status.servers.filter((s) => s.status.state === "error").length;
-		if (status.state === "error") {
-			ctx.ui.notify(`LSP startup failed: ${status.reason}`, "warning");
-		} else if (readyCount > 0) {
+
+		const readyNames = status.servers.filter((s) => s.status.state === "ready").map((s) => s.name);
+		const errorEntries = status.servers.filter((s) => s.status.state === "error");
+		const errorNames = errorEntries.map((s) => `${s.name}(${s.status.reason.slice(0, 80)})`);
+
+		if (status.state === "error" || errorCount > 0) {
 			ctx.ui.notify(
-				`LSP ready: ${readyCount}/${config.servers.length} servers connected${errorCount > 0 ? `, ${errorCount} failed` : ""}`,
-				"info",
+				`LSP: ${readyCount}/${config.servers.length} ready [${readyNames.join(", ")}]` +
+					(errorCount > 0 ? ` | ${errorCount} FAILED: ${errorNames.join(", ")}` : ""),
+				"warning",
 			);
+		} else if (readyCount > 0) {
+			ctx.ui.notify(`LSP ready: ${readyCount}/${config.servers.length} [${readyNames.join(", ")}]`, "info");
 		}
 
 		// Startup metrics log
