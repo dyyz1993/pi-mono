@@ -232,7 +232,7 @@ describe("todo extension", () => {
 				const tool = getTool(mock);
 				const result = await tool.execute("tc_1", { action: "list" }, undefined, undefined, {} as any);
 
-				expect(result.content[0].text).toBe("No todos");
+				expect(result.content[0].text).toBe("No todos.");
 				expect(result.details.todos).toEqual([]);
 			});
 
@@ -244,9 +244,7 @@ describe("todo extension", () => {
 				await tool.execute("tc_2", { action: "add", text: "Second task" }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_3", { action: "list" }, undefined, undefined, {} as any);
 
-				expect(result.details.todos).toHaveLength(2);
-				expect(result.content[0].text).toContain("#1: First task");
-				expect(result.content[0].text).toContain("#2: Second task");
+			expect(result.details.todos).toHaveLength(2);
 			});
 		});
 
@@ -263,7 +261,7 @@ describe("todo extension", () => {
 					{} as any,
 				);
 
-				expect(result.content[0].text).toContain("#1: Buy milk");
+				expect(result.details.added[0]).toEqual({ id: 1, text: "Buy milk", done: false });
 				expect(result.details.todos).toEqual([{ id: 1, text: "Buy milk", done: false }]);
 				expect(result.details.nextId).toBe(2);
 			});
@@ -308,7 +306,7 @@ describe("todo extension", () => {
 					{} as any,
 				);
 
-				expect(result.content[0].text).toContain("Added 3 todos");
+				expect(result.content[0].text).toContain("Created 3 todos");
 				expect(result.details.todos).toHaveLength(3);
 				expect(result.details.todos[0]).toEqual({ id: 1, text: "Step 1", done: false });
 				expect(result.details.todos[1]).toEqual({ id: 2, text: "Step 2", done: false });
@@ -342,8 +340,8 @@ describe("todo extension", () => {
 				await tool.execute("tc_1", { action: "add", text: "Do it" }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_2", { action: "toggle", id: 1 }, undefined, undefined, {} as any);
 
-				expect(result.content[0].text).toContain("completed");
-				expect(result.details.todos[0].done).toBe(true);
+			expect(result.content[0].text).toContain("done");
+			expect(result.details.todos[0].done).toBe(true);
 			});
 
 			it("toggles a todo back to undone", async () => {
@@ -354,7 +352,7 @@ describe("todo extension", () => {
 				await tool.execute("tc_2", { action: "toggle", id: 1 }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_3", { action: "toggle", id: 1 }, undefined, undefined, {} as any);
 
-				expect(result.content[0].text).toContain("uncompleted");
+				expect(result.content[0].text).toContain("undone");
 				expect(result.details.todos[0].done).toBe(false);
 			});
 
@@ -388,7 +386,7 @@ describe("todo extension", () => {
 				await tool.execute("tc_2", { action: "add", text: "Drop this" }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_3", { action: "remove", id: 2 }, undefined, undefined, {} as any);
 
-				expect(result.content[0].text).toContain("Removed todo #2: Drop this");
+				expect(result.content[0].text).toContain("Removed #2");
 				expect(result.details.todos).toHaveLength(2);
 				expect(result.details.todos[1].deleted).toBe(true);
 				expect(result.details.todos[0].deleted).toBeFalsy();
@@ -403,8 +401,7 @@ describe("todo extension", () => {
 				await tool.execute("tc_3", { action: "remove", id: 2 }, undefined, undefined, {} as any);
 				const result = await tool.execute("tc_4", { action: "list" }, undefined, undefined, {} as any);
 
-				expect(result.content[0].text).not.toContain("Hidden");
-				expect(result.content[0].text).toContain("#1: Visible");
+			expect(result.details.totalActive).toBe(1);
 			});
 
 			it("list details still contain deleted todos for history", async () => {

@@ -23,6 +23,10 @@ export interface TodoDetails {
 	todos: Todo[];
 	nextId: number;
 	error?: string;
+	added?: Todo[];
+	modified?: Todo[];
+	deleted?: Todo[];
+	totalActive?: number;
 }
 
 const PRIORITY_LABELS: Record<string, string> = {
@@ -85,7 +89,7 @@ export default function (pi: ExtensionAPI) {
 		channel = typed.server;
 
 		todos = [];
-		nextId =1;
+		nextId = 1;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === "todo") {
@@ -106,14 +110,14 @@ export default function (pi: ExtensionAPI) {
 				nextId = details.nextId;
 			}
 		}
-		updateWidget(undefined, todos);
+		updateWidget(ctx, todos);
 
-		channel.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
+		channel?.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
 		todos = [];
-		nextId =1;
+		nextId = 1;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === "todo") {
@@ -134,37 +138,40 @@ export default function (pi: ExtensionAPI) {
 				nextId = details.nextId;
 			}
 		}
-		updateWidget(undefined, todos);
+		updateWidget(ctx, todos);
+		channel?.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 	});
 
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "Manage a todo list. Actions: list, add (text, priority?), toggle (id), remove (id), clear",
+		description: `Manage a todo list for task tracking and planning.
+- add: Create one or more todos. Separate multiple items with newlines in the text field for batch creation. Optional priority: high/medium/low.
+- list: Show all active todos with their IDs, status, and priority.
+- toggle: Mark a todo as done/undone by ID.
+- remove: Delete a todo by ID.
+- clear: Remove all todos.
+
+IMPORTANT: For creating a plan with multiple steps, use a SINGLE add call with newline-separated text. Example: text="Step 1\\nStep 2\\nStep 3" creates 3 todos at once. Do NOT call add repeatedly for multiple items.`,
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<TodoDetails>> {
+			const activeTodos = (): Todo[] => todos.filter((t) => !t.deleted);
+
 			switch (params.action) {
 				case "list": {
-					const active = todos.filter((t) => !t.deleted);
+					const active = activeTodos();
 					channel?.emit("list", { action: "list", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "list", todos, nextId);
 					updateWidget(ctx, todos);
-					
+
 					return {
-						content: [
-							{
-								type: "text",
-								text: active.length
-									? `📝 共 ${active.length} 个任务`
-									: "No todos",
-							},
-						],
+						content: [{ type: "text", text: active.length === 0 ? "No todos." : `${active.length} todos.` }],
 						details: {
 							action: "list",
 							todos: [...todos],
 							nextId,
-							totalActive: active.filter((t) => !t.deleted).length,
+							totalActive: active.length,
 						},
 					};
 				}
@@ -191,22 +198,14 @@ export default function (pi: ExtensionAPI) {
 					channel?.emit("add", { action: "add", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "add", todos, nextId);
 					updateWidget(ctx, todos);
-					if (added.length === 1) {
-						return {
-							content: [
-								{
-									type: "text",
-									text: `Added todo #${added[0].id}: ${added[0].text}`,
-								},
-							],
-							details: { action: "add", todos: [...todos], nextId },
-						};
-					}
+
+					const summary = added.length === 1
+						? `Created 1 todo: "${added[0].text}"`
+						: `Created ${added.length} todos.`;
+
 					return {
-						content: [
-							{ type: "text", text: `Added ${added.length} todos (#${added[0].id}–#${added.at(-1)!.id})` },
-						],
-						details: { action: "add_batch", todos: [...todos], nextId },
+						content: [{ type: "text", text: `✅ ${summary}` }],
+						details: { action: added.length === 1 ? "add" : "add_batch", todos: [...todos], nextId, added: [...added] },
 					};
 				}
 
@@ -222,7 +221,7 @@ export default function (pi: ExtensionAPI) {
 						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 						persistEntry(pi, "toggle_notfound", todos, nextId);
 						return {
-							content: [{ type: "text", text: `Todo #${params.id} not found` }],
+							content: [{ type: "text", text: `Error: Todo #${params.id} not found.` }],
 							details: {
 								action: "toggle",
 								todos: [...todos],
@@ -236,8 +235,8 @@ export default function (pi: ExtensionAPI) {
 					persistEntry(pi, "toggle", todos, nextId);
 					updateWidget(ctx, todos);
 					return {
-						content: [{ type: "text", text: `Todo #${todo.id} ${todo.done ? "completed" : "uncompleted"}` }],
-						details: { action: "toggle", todos: [...todos], nextId },
+						content: [{ type: "text", text: `✅ Toggled #${todo.id} "${todo.text}" to ${todo.done ? "done" : "undone"}.` }],
+						details: { action: "toggle", todos: [...todos], nextId, modified: [todo] },
 					};
 				}
 
@@ -253,7 +252,7 @@ export default function (pi: ExtensionAPI) {
 						channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 						persistEntry(pi, "remove_notfound", todos, nextId);
 						return {
-							content: [{ type: "text", text: `Todo #${params.id} not found` }],
+							content: [{ type: "text", text: `Error: Todo #${params.id} not found.` }],
 							details: {
 								action: "remove",
 								todos: [...todos],
@@ -267,8 +266,8 @@ export default function (pi: ExtensionAPI) {
 					persistEntry(pi, "remove", todos, nextId);
 					updateWidget(ctx, todos);
 					return {
-						content: [{ type: "text", text: `Removed todo #${todo.id}: ${todo.text}` }],
-						details: { action: "remove", todos: [...todos], nextId },
+						content: [{ type: "text", text: `✅ Removed #${todo.id}: "${todo.text}".` }],
+						details: { action: "remove", todos: [...todos], nextId, deleted: [todo] },
 					};
 				}
 
@@ -279,9 +278,9 @@ export default function (pi: ExtensionAPI) {
 					channel?.emit("clear", { action: "clear", todos: [], timestamp: Date.now() } satisfies TodoChannelEvent);
 					persistEntry(pi, "clear", [], 1);
 					updateWidget(ctx, todos);
-					
+
 					return {
-						content: [{ type: "text", text: `🗑️️ Cleared ${count} todos` }],
+						content: [{ type: "text", text: `✅ Cleared ${count} todos.` }],
 						details: { action: "clear", todos: [], nextId: 1 },
 					};
 				}
@@ -289,7 +288,7 @@ export default function (pi: ExtensionAPI) {
 				default: {
 					channel?.emit("error", { action: "error", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 					return {
-						content: [{ type: "text", text: `Unknown action: ${params.action}` }],
+						content: [{ type: "text", text: `Error: Unknown action "${params.action}".` }],
 						details: {
 							action: "list",
 							todos: [...todos],
@@ -354,7 +353,8 @@ export default function (pi: ExtensionAPI) {
 					return new Text(listText, 0, 0);
 				}
 
-				case "add": {
+				case "add":
+				case "add_batch": {
 					const added = todoList[todoList.length - 1];
 					if (!added) return new Text(theme.fg("success", "✓ Added"), 0, 0);
 					const header = theme.fg("toolTitle", `${todoList.length} todos`);
