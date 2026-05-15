@@ -596,6 +596,18 @@ export class AgentSession {
 	): void {
 		if (!this._extensionRunner || invalidatedEntryIds.length === 0) return;
 
+		// Extract toolCallIds from invalidated tool result entries
+		const invalidatedToolCallIds: string[] = [];
+		for (const id of invalidatedEntryIds) {
+			const entry = this.sessionManager.getEntry(id);
+			if (entry && entry.type === "message" && entry.message.role === "toolResult") {
+				const toolCallId = (entry.message as { toolCallId?: string }).toolCallId;
+				if (toolCallId) {
+					invalidatedToolCallIds.push(toolCallId);
+				}
+			}
+		}
+
 		// Fire-and-forget: don't await to avoid blocking SessionManager's synchronous _appendEntry
 		this._extensionRunner
 			.emit({
@@ -603,6 +615,7 @@ export class AgentSession {
 				invalidatedEntryIds,
 				reason,
 				operationEntryId,
+				invalidatedToolCallIds,
 			})
 			.catch(() => {
 				// Silently swallow errors — this is a notification, not a critical path

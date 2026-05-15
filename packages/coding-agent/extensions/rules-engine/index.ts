@@ -529,60 +529,6 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 		};
 	});
 
-		// Determine which rules are newly injected vs already loaded
-		const newRules = matching.filter((r) => {
-			const injectedFiles = injectedRuleFiles.get(r.name);
-			return !injectedFiles || !injectedFiles.has(targetPath);
-		});
-		const allAlreadyLoaded = newRules.length === 0;
-
-		// Record that these rules have now been injected for this file
-		for (const r of matching) {
-			let injectedFiles = injectedRuleFiles.get(r.name);
-			if (!injectedFiles) {
-				injectedFiles = new Set();
-				injectedRuleFiles.set(r.name, injectedFiles);
-			}
-			injectedFiles.add(targetPath);
-		}
-
-		const hasCritical = matching.some((r) => r.frontmatter.severity === "critical");
-		const hasHigh = matching.some((r) => r.frontmatter.severity === "high");
-
-		channel.emit("matched", {
-			type: "matched",
-			filePath: targetPath,
-			matchedRules: matchedRuleDetails,
-			toolName: event.toolName,
-			toolCallId: event.toolCallId,
-			severity: hasCritical ? "warning" : hasHigh ? "warning" : "info",
-			timestamp: Date.now(),
-			alreadyLoaded: allAlreadyLoaded || undefined,
-		});
-
-		// Only inject content for NEW rules (skip if all already loaded)
-		if (allAlreadyLoaded) {
-			return {
-				details: {
-					...((event.details as Record<string, unknown>) || {}),
-					rulesMatched: matchedRuleDetails,
-					matchedFilePath: targetPath,
-				},
-			};
-		}
-
-		const contextSection = buildToolReminderSection(newRules, targetPath);
-
-		return {
-			content: [...event.content, { type: "text" as const, text: `\n\n${contextSection}` }],
-			details: {
-				...((event.details as Record<string, unknown>) || {}),
-				rulesMatched: matchedRuleDetails,
-				matchedFilePath: targetPath,
-			},
-		};
-	});
-
 	pi.on("context", async (event) => {
 		lastMessages = event.messages;
 		const matchHistory = rebuildMatchHistory(event.messages);
@@ -627,55 +573,22 @@ export default function rulesEnginePlugin(pi: ExtensionAPI) {
 	});
 
 	pi.on("entries_invalidated", async (event) => {
-		const { invalidatedEntryIds, reason } = event;
+		const eventToolCallIds = event.invalidatedToolCallIds;
+		if (eventToolCallIds.length === 0) return;
 
-		// The invalidated entry IDs correspond to session message entries.
-		// In our tracking, we use toolCallId (from tool_result event.toolCallId) as the key.
-		// Session message entries for tool results have their own entry.id, which differs from toolCallId.
-		// We need to match by checking if any of our tracked toolCallIds correspond to invalidated entries.
-		//
-		// Strategy: scan our reverse index. If any toolCallId's forward entries contain
-		// an invalidated entry ID (as the tool result message entry), mark that toolCallId as invalidated.
-		//
-		// However, since entries_invalidated fires with session entry IDs (not toolCallIds),
-		// we use a simpler approach: check if invalidatedEntryIds overlap with toolCallIds in our reverse index.
-		// This works because tool_result entries store toolCallId in their details.
-		//
-		// Practical approach: for each invalidated entry ID, check if it appears as a key
-		// in our injectionByToolCallId map. This catches cases where the tool result entry ID
-		// happens to be the toolCallId. For full correctness, we also check the forward map
-		// to see if any injected file's toolCallId matches an invalidated entry.
-
-		const invalidatedIdSet = new Set(invalidatedEntryIds);
-		let changed = false;
-
-		// Check if any of our tracked toolCallIds are in the invalidated set
-		for (const toolCallId of injectionByToolCallId.keys()) {
-			if (invalidatedIdSet.has(toolCallId)) {
-				invalidatedToolCallIds.add(toolCallId);
-				changed = true;
+		// Mark affected toolCallIds as invalidated so next tool_result
+		// can distinguish "reloaded" from "already_loaded"
+		for (const callId of eventToolCallIds) {
+			if (injectionByToolCallId.has(callId)) {
+				invalidatedToolCallIds.add(callId);
 			}
 		}
 
-		// Also check the forward map: if any file's tracked toolCallId matches an invalidated ID
+		// Also scan forward map to find any tracked toolCallId that was invalidated
 		for (const [_ruleName, fileMap] of injectedRuleFiles) {
 			for (const [_filePath, trackedCallId] of fileMap) {
-				if (invalidatedIdSet.has(trackedCallId)) {
+				if (eventToolCallIds.includes(trackedCallId)) {
 					invalidatedToolCallIds.add(trackedCallId);
-					changed = true;
-				}
-			}
-		}
-
-		if (changed) {
-			// Log for debugging
-			const ruleNames = new Set<string>();
-			for (const id of invalidatedToolCallIds) {
-				const entries = injectionByToolCallId.get(id);
-				if (entries) {
-					for (const e of entries) {
-						ruleNames.add(e.ruleName);
-					}
 				}
 			}
 		}
