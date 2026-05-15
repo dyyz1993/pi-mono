@@ -96,46 +96,49 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		}
 
 		pi.on("session_start", async (_event: any, ctx: any) => {
-		const raw = pi.registerChannel("lsp");
+		try {
+			const raw = pi.registerChannel("lsp");
+			if (raw) {
+				lspChannel = createTypedChannel<LspChannelContract>(raw).server;
 
-		if (raw) {
-			lspChannel = createTypedChannel<LspChannelContract>(raw).server;
+				lspChannel.handle("lsp.setMode", (params) => {
+					const { mode: newMode } = params;
+					const validModes: DiagnosticsModeName[] = ["agent_end", "edit_write", "disabled"];
+					if (!validModes.includes(newMode as DiagnosticsModeName)) return { ok: false };
+					mode.set(newMode as DiagnosticsModeName);
+					const modeData = {
+						event: "mode_changed" as const,
+						timestamp: Date.now(),
+						mode: mode.get(),
+					};
+					lspChannel?.emit("mode_changed", modeData);
+					pi.appendEntry("lsp", modeData);
+					return { ok: true, mode: mode.get() };
+				});
 
-			lspChannel.handle("lsp.setMode", (params) => {
-				const { mode: newMode } = params;
-				const validModes: DiagnosticsModeName[] = ["agent_end", "edit_write", "disabled"];
-				if (!validModes.includes(newMode as DiagnosticsModeName)) return { ok: false };
-				mode.set(newMode as DiagnosticsModeName);
-				const modeData = {
-					event: "mode_changed" as const,
-					timestamp: Date.now(),
-					mode: mode.get(),
-				};
-				lspChannel?.emit("mode_changed", modeData);
-				pi.appendEntry("lsp", modeData);
-				return { ok: true, mode: mode.get() };
-			});
+				lspChannel.handle("getActiveLanguages", () => {
+					return { languages: getActiveLanguages() };
+				});
 
-			lspChannel.handle("getActiveLanguages", () => {
-				return { languages: getActiveLanguages() };
-			});
-
-			lspChannel.handle("getStatus", () => {
-				const s = runtime.getStatus();
-				return {
-					state: s.state,
-					servers: s.servers.map((srv) => ({
-						name: srv.name,
-						fileTypes: srv.fileTypes,
-						state: srv.status.state,
-						reason: srv.status.reason,
-						transport: srv.status.transport,
-						activeCommand: srv.status.activeCommand,
-						configuredCommand: srv.status.configuredCommand,
-					})),
-					mode: mode.get(),
-				};
-			});
+				lspChannel.handle("getStatus", () => {
+					const s = runtime.getStatus();
+					return {
+						state: s.state,
+						servers: s.servers.map((srv) => ({
+							name: srv.name,
+							fileTypes: srv.fileTypes,
+							state: srv.status.state,
+							reason: srv.status.reason,
+							transport: srv.status.transport,
+							activeCommand: srv.status.activeCommand,
+							configuredCommand: srv.status.configuredCommand,
+						})),
+						mode: mode.get(),
+					};
+				});
+			}
+		} catch {
+			// registerChannel is only available in RPC mode; gracefully degrade in TUI/print mode
 		}
 
 		const config = configResolver.resolve();
