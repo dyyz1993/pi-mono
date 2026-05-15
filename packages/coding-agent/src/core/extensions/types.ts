@@ -627,6 +627,22 @@ export interface SessionTreeEvent {
 	preview?: boolean;
 }
 
+/** Fired when entries are invalidated (deleted, folded, or replaced by segment summary).
+ *  Extensions that track per-entry state should listen to this event to clean up stale references.
+ *  This is a notification-only event; handlers cannot modify or cancel the operation. */
+export interface EntriesInvalidatedEvent {
+	type: "entries_invalidated";
+	/** Entry IDs whose content is no longer in LLM context */
+	invalidatedEntryIds: string[];
+	/** What caused the invalidation */
+	reason: "deletion" | "fold" | "segment_summary";
+	/** The ID of the entry that caused the invalidation (the DeletionEntry, FoldEntry, or SegmentSummaryEntry itself) */
+	operationEntryId: string;
+	/** Tool call IDs extracted from invalidated tool result entries.
+	 *  Empty when the invalidated entries are not tool results. */
+	invalidatedToolCallIds: string[];
+}
+
 export type SessionEvent =
 	| SessionStartEvent
 	| SessionBeforeSwitchEvent
@@ -636,7 +652,8 @@ export type SessionEvent =
 	| SessionShutdownEvent
 	| SessionRenameEvent
 	| SessionBeforeTreeEvent
-	| SessionTreeEvent;
+	| SessionTreeEvent
+	| EntriesInvalidatedEvent;
 
 export interface SessionTreePreviewResult {
 	restored: string[];
@@ -1175,6 +1192,7 @@ export interface ExtensionAPI {
 	on(event: "session_rename", handler: ExtensionHandler<SessionRenameEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
+	on(event: "entries_invalidated", handler: ExtensionHandler<EntriesInvalidatedEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
 	on(
 		event: "before_provider_request",

@@ -800,6 +800,15 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 
+	/** Optional callback invoked after an entry is appended. Used by AgentSession to detect
+	 *  entry lifecycle changes (deletion, fold, segment_summary) and emit extension events. */
+	private _onEntryAppended?: (entry: SessionEntry) => void;
+
+	/** Register a callback invoked after every _appendEntry(). Called synchronously. */
+	setOnEntryAppended(callback: (entry: SessionEntry) => void): void {
+		this._onEntryAppended = callback;
+	}
+
 	private constructor(cwd: string, sessionDir: string, sessionFile: string | undefined, persist: boolean) {
 		this.cwd = cwd;
 		this.sessionDir = sessionDir;
@@ -953,6 +962,7 @@ export class SessionManager {
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
 		this._persist(entry);
+		this._onEntryAppended?.(entry);
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.

@@ -98,7 +98,14 @@ import type { ModelRegistry } from "./model-registry.js";
 import { resolveModelAlias } from "./model-resolver.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
+import type {
+	BranchSummaryEntry,
+	CompactionEntry,
+	DeletionEntry,
+	FoldEntry,
+	SegmentSummaryEntry,
+	SessionManager,
+} from "./session-manager.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
@@ -578,6 +585,28 @@ export class AgentSession {
 			steering: [...this._steeringMessages],
 			followUp: [...this._followUpMessages],
 		});
+	}
+
+	/** Emit entries_invalidated event to extensions when entries are removed from LLM context.
+	 *  This is a notification-only event; it does not block or collect results. */
+	private _emitEntriesInvalidated(
+		invalidatedEntryIds: string[],
+		reason: "deletion" | "fold" | "segment_summary",
+		operationEntryId: string,
+	): void {
+		if (!this._extensionRunner || invalidatedEntryIds.length === 0) return;
+
+		// Fire-and-forget: don't await to avoid blocking SessionManager's synchronous _appendEntry
+		this._extensionRunner
+			.emit({
+				type: "entries_invalidated",
+				invalidatedEntryIds,
+				reason,
+				operationEntryId,
+			})
+			.catch(() => {
+				// Silently swallow errors — this is a notification, not a critical path
+			});
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -2639,6 +2668,21 @@ export class AgentSession {
 			this.sessionManager,
 			this._modelRegistry,
 		);
+
+		// Register SessionManager callback to detect entry lifecycle changes
+		// and emit entries_invalidated events to extensions.
+		this.sessionManager.setOnEntryAppended((entry) => {
+			if (entry.type === "deletion") {
+				const e = entry as DeletionEntry;
+				this._emitEntriesInvalidated(e.targetIds, "deletion", e.id);
+			} else if (entry.type === "fold") {
+				const e = entry as FoldEntry;
+				this._emitEntriesInvalidated([e.targetId], "fold", e.id);
+			} else if (entry.type === "segment_summary") {
+				const e = entry as SegmentSummaryEntry;
+				this._emitEntriesInvalidated(e.targetIds, "segment_summary", e.id);
+			}
+		});
 		const projectRoot = resolveProjectIdentity(this._cwd);
 		this._extensionRunner.setContextDirFns({
 			getProjectRoot: () => projectRoot,

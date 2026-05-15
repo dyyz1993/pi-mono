@@ -74,12 +74,21 @@ export interface ScannedDir {
 	ruleNames: string[];
 }
 
+export type RuleMatchStatus = "loaded" | "already_loaded" | "reloaded";
+
 export interface MatchedRuleDetail {
 	name: string;
 	title: string;
 	severity: RuleSeverity;
 	matchedGlob: string;
-	/** True when this rule was already injected for the same file in a previous tool call */
+	/**
+	 * Match status:
+	 * - "loaded": first time injected for this file
+	 * - "already_loaded": previously injected and still in context (skipped)
+	 * - "reloaded": previously injected but was invalidated (context removed), now re-injected
+	 */
+	status?: RuleMatchStatus;
+	/** @deprecated Use status instead. True when this rule was already injected for the same file. */
 	alreadyLoaded?: boolean;
 }
 
@@ -127,7 +136,9 @@ export interface MatchedPayload {
 	toolCallId: string;
 	severity: "info" | "warning";
 	timestamp: number;
-	/** True when all matched rules were already injected in a previous tool call */
+	/** Overall match status when all rules share the same state */
+	status?: RuleMatchStatus;
+	/** @deprecated Use status instead */
 	alreadyLoaded?: boolean;
 }
 
