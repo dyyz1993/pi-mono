@@ -73,6 +73,7 @@ type BashToolDetails = _BashToolDetails & {
 };
 
 const DEFAULT_TIMEOUT_SECONDS = 300;
+const DEFAULT_BACKGROUND_AFTER_SECONDS = 120;
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
@@ -179,83 +180,105 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		channel.handle("kill", ({ toolCallId }) => {
-			if (!toolCallId) return;
+			if (!toolCallId) return { ok: false, reason: "not_found" };
 			const m = managed.get(toolCallId);
-			if (m?.proc.pid) {
-				killProcessTree(m.proc.pid);
-				m.proc.status = "terminated";
-				m.proc.endedAt = Date.now();
-				m.resolved = true;
-				m.killedByUser = true;
-				const durationMs = m.proc.endedAt - m.proc.startedAt;
-				if (m.logStream) m.logStream.end();
+			if (!m) {
+				// Process already exited — emit terminated event so frontend can sync state
 				channel?.emit("terminated", {
 					type: "terminated",
 					toolCallId,
-					pid: m.proc.pid,
+					pid: undefined,
 					processes: Array.from(managed.values()).map((x) => x.proc),
 					timestamp: Date.now(),
 				});
-				m.resolve({
-					content: [
-						{
-							type: "text",
-							text: `${m.proc.output || "(no output)"}\n\n[User cancelled after ${formatDuration(durationMs)}, PID: ${m.proc.pid}${m.proc.logPath ? `. Log: ${m.proc.logPath}` : ""}]`,
-						},
-					],
-					details: {
-						terminated: {
-							reason: "user_cancel",
-							pid: m.proc.pid,
-							command: m.proc.command,
-							startedAt: m.proc.startedAt,
-							endedAt: m.proc.endedAt,
-							durationMs,
-							logPath: m.proc.logPath,
-						},
-					},
-				});
+				return { ok: true, alreadyExited: true };
 			}
+			if (m.proc.pid) {
+				killProcessTree(m.proc.pid);
+			}
+			m.proc.status = "terminated";
+			m.proc.endedAt = Date.now();
+			m.resolved = true;
+			m.killedByUser = true;
+			const durationMs = m.proc.endedAt - m.proc.startedAt;
+			if (m.logStream) m.logStream.end();
+			channel?.emit("terminated", {
+				type: "terminated",
+				toolCallId,
+				pid: m.proc.pid,
+				processes: Array.from(managed.values()).map((x) => x.proc),
+				timestamp: Date.now(),
+			});
+			m.resolve({
+				content: [
+					{
+						type: "text",
+						text: `${m.proc.output || "(no output)"}\n\n[User cancelled after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}${m.proc.logPath ? `. Log: ${m.proc.logPath}` : ""}]`,
+					},
+				],
+				details: {
+					terminated: {
+						reason: "user_cancel",
+						pid: m.proc.pid,
+						command: m.proc.command,
+						startedAt: m.proc.startedAt,
+						endedAt: m.proc.endedAt,
+						durationMs,
+						logPath: m.proc.logPath,
+					},
+				},
+			});
+			return { ok: true };
 		});
 
 		channel.handle("background", ({ toolCallId }) => {
-			if (!toolCallId) return;
+			if (!toolCallId) return { ok: false, reason: "not_found" };
 			const m = managed.get(toolCallId);
-			if (m) {
-				m.proc.status = "background";
-				m.resolved = true;
-				m.backgrounded = true;
-				m.outputSubscribed = false;
-				createLogStream(m);
-				const durationMs = Date.now() - m.proc.startedAt;
-				channel?.emit("background", {
-					type: "background",
+			if (!m) {
+				// Process already exited — emit terminated event so frontend can sync state
+				channel?.emit("terminated", {
+					type: "terminated",
 					toolCallId,
-					pid: m.proc.pid,
-					data: m.proc.output.slice(-2000),
+					pid: undefined,
 					processes: Array.from(managed.values()).map((x) => x.proc),
 					timestamp: Date.now(),
 				});
-						const outputPreview = m.proc.output ? takeLastLines(m.proc.output, BG_PREVIEW_LINES) : "(no output yet)";
-						m.resolve({
-							content: [
-								{
-									type: "text",
-									text: `${outputPreview}\n\n[Moved to background after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Use get_background_process with <bashId>${m.proc.bashId}</bashId> to check progress.]`,
-								},
-							],
-					details: {
-						background: {
-							pid: m.proc.pid,
-							command: m.proc.command,
-							startedAt: m.proc.startedAt,
-							durationMs,
-							logPath: m.proc.logPath,
-							detached: false,
-						},
-					},
-				});
+				return { ok: true, alreadyExited: true };
 			}
+			m.proc.status = "background";
+			m.resolved = true;
+			m.backgrounded = true;
+			m.outputSubscribed = false;
+			createLogStream(m);
+			const durationMs = Date.now() - m.proc.startedAt;
+			channel?.emit("background", {
+				type: "background",
+				toolCallId,
+				pid: m.proc.pid,
+				data: m.proc.output.slice(-2000),
+				processes: Array.from(managed.values()).map((x) => x.proc),
+				timestamp: Date.now(),
+			});
+			const outputPreview = m.proc.output ? takeLastLines(m.proc.output, BG_PREVIEW_LINES) : "(no output yet)";
+			m.resolve({
+				content: [
+					{
+						type: "text",
+						text: `${outputPreview}\n\n[Moved to background after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Use get_background_process with <bashId>${m.proc.bashId}</bashId> to check progress.]`,
+					},
+				],
+				details: {
+					background: {
+						pid: m.proc.pid,
+						command: m.proc.command,
+						startedAt: m.proc.startedAt,
+						durationMs,
+						logPath: m.proc.logPath,
+						detached: false,
+					},
+				},
+			});
+			return { ok: true };
 		});
 
 		channel.handle("subscribe_output", ({ toolCallId }) => {
@@ -318,8 +341,9 @@ export default function (pi: ExtensionAPI) {
 			_ctx?: ExtensionContext,
 		): Promise<AgentToolResult<BashToolDetails>> {
 			return new Promise((resolve, reject) => {
-				const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
-				const effectiveBackgroundAfter = backgroundAfter !== undefined && backgroundAfter < effectiveTimeout ? backgroundAfter : undefined;
+			const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
+			const rawBackgroundAfter = backgroundAfter ?? DEFAULT_BACKGROUND_AFTER_SECONDS;
+			const effectiveBackgroundAfter = rawBackgroundAfter < effectiveTimeout ? rawBackgroundAfter : undefined;
 				const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
 				const bashId = generateBashId();
 
