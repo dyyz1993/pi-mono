@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-ai",
-	"version": "0.74.27",
+	"version": "0.74.28",
 	"description": "Unified LLM API with automatic model discovery and provider configuration",
 	"type": "module",
 	"main": "./dist/index.js",
