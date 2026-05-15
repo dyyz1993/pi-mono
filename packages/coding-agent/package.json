@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-coding-agent",
-	"version": "0.74.26",
+	"version": "0.74.27",
 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"piConfig": {
@@ -39,9 +39,9 @@
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
-		"@dyyz1993/pi-agent-core": "^0.74.23",
-		"@dyyz1993/pi-ai": "^0.74.23",
-		"@dyyz1993/pi-tui": "^0.74.23",
+		"@dyyz1993/pi-agent-core": "^0.74.27",
+		"@dyyz1993/pi-ai": "^0.74.27",
+		"@dyyz1993/pi-tui": "^0.74.27",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@silvia-odwyer/photon-node": "^0.3.4",
 		"chalk": "^5.5.0",
