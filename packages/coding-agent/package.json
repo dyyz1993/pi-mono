@@ -23,6 +23,7 @@
 	},
 	"files": [
 		"dist",
+		"dist/extensions",
 		"docs",
 		"examples",
 		"CHANGELOG.md"
