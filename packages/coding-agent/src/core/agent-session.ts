@@ -1099,10 +1099,7 @@ export class AgentSession {
 
 		if (agent.systemPrompt) {
 			// Rebuild prompt with agent system prompt inserted between base and tools
-			this._baseSystemPrompt = this._rebuildSystemPrompt(
-				this.getActiveToolNames(),
-				agent.systemPrompt,
-			);
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames(), agent.systemPrompt);
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 	}
@@ -2731,11 +2728,20 @@ export class AgentSession {
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
+
+		// Capture the old runner before _buildRuntime replaces it, so we can
+		// invalidate it after the new runner is active. This ensures any
+		// ExtensionContext captured from the old runner will throw on access
+		// instead of silently returning stale data.
+		const oldRunner = this._extensionRunner;
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
+		oldRunner.invalidate(
+			"This extension ctx is stale after reload. Do not use the old ctx after await ctx.reload().",
+		);
 
 		const hasBindings =
 			this._extensionUIContext ||

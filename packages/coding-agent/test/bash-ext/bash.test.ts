@@ -964,7 +964,7 @@ describe("bash channel extension", () => {
 		});
 	});
 
- 	describe("get_background_process with lastLines filter", () => {
+	describe("get_background_process with lastLines filter", () => {
 		it("shows only last N lines of output with line numbers", async () => {
 			const toolDef = getToolDef();
 			const statusTool = getStatusToolDef();
@@ -1149,7 +1149,8 @@ describe("bash channel extension", () => {
 
 			// Verify process is running
 			const startCall = mock.channelSend.mock.calls.find(
-				(c: any[]) => (c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_orphan",
+				(c: any[]) =>
+					(c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_orphan",
 			);
 			expect(startCall).toBeDefined();
 			const pid = (startCall![0] as BashChannelEvent).processes![0].pid;
@@ -1232,7 +1233,8 @@ describe("bash channel extension", () => {
 
 			const startCall = mock.channelSend.mock.calls.find(
 				(c: any[]) =>
-					(c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_grep_lineno",
+					(c[0] as BashChannelEvent).type === "start" &&
+					(c[0] as BashChannelEvent).toolCallId === "tc_grep_lineno",
 			);
 			expect(startCall).toBeDefined();
 			const bashId = (startCall![0] as BashChannelEvent).processes![0].bashId;

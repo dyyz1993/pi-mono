@@ -953,7 +953,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "get_system_prompt": {
-				const systemPrompt = session.resourceLoader.getSystemPrompt() ?? "";
+				// Return the fully-constructed system prompt (or raw if not yet built)
+				const systemPrompt = session.agent.state.systemPrompt || session.systemPrompt || "";
 				const appendSystemPrompt = session.resourceLoader.getAppendSystemPrompt();
 				return success(id, "get_system_prompt", { systemPrompt, appendSystemPrompt });
 			}
