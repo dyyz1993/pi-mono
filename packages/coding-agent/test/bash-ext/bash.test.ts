@@ -539,7 +539,9 @@ describe("bash channel extension", () => {
 			await new Promise((r) => setTimeout(r, 1500));
 
 			expect(result).toBeDefined();
-			expect(mock.pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("exited with code"));
+			expect(mock.pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("exited with code"), {
+				deliverAs: "followUp",
+			});
 			const call = (mock.pi.sendUserMessage as ReturnType<typeof vi.fn>).mock.calls.find(
 				(c: any[]) => typeof c[0] === "string" && c[0].includes("exited with code"),
 			);
