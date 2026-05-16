@@ -8,7 +8,7 @@ function log(msg: string) {
     appendFileSync("/tmp/supervisor-debug.log", `[${ts}] [config] ${msg}\n`);
 }
 
-const DEFAULT_CONFIG: SupervisorConfig = {
+export const DEFAULT_CONFIG: SupervisorConfig = {
     enable: false,
     checkOnAgentEnd: true,
     smallModel: "fast",

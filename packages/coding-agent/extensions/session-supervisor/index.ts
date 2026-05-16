@@ -12,7 +12,7 @@ import type {
     GuardConfig,
     GuardCheckResult,
 } from "./types.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, DEFAULT_CONFIG } from "./config.js";
 import { checkWithSmallModel } from "./checker.js";
 import { Scheduler } from "./scheduler.js";
 import {
@@ -41,7 +41,7 @@ const DEFAULT_GUARDS: GuardConfig[] = [
 ];
 
 export default function sessionSupervisorExtension(pi: ExtensionAPI) {
-    let config: SupervisorConfig;
+    let config: SupervisorConfig = DEFAULT_CONFIG;
     let enabled = false;
     let currentState: SupervisorStatus["state"] = "idle";
     let lastCheckResult: CheckResult | undefined;
