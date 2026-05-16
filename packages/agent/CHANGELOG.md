@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.33] - 2026-05-16
 
 ### Fixed
 - Removed `npm run clean` from `prepublishOnly` to prevent build failures when `@dyyz1993/pi-ai` dist is deleted by parallel workspace publish.

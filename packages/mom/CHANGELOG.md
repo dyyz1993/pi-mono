@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.33] - 2026-05-16
 
 ### Fixed
 - Restored missing source files (`log.ts`, `sandbox.ts`, `slack.ts`, `store.ts`, `main.ts`, `download.ts`, `events.ts`, `fs-watch.ts`, `tools/truncate.ts`) from commit before package removal.
