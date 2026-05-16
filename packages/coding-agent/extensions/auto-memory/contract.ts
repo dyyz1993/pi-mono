@@ -23,6 +23,17 @@ export interface MemoryUserRememberParams {
 	content?: string;
 }
 
+export interface MemoryMarkIrrelevantParams {
+	query: string;
+	selectedFiles: string[];
+}
+
+export interface MemoryIrrelevantMarkedEvent {
+	type: "memory_irrelevant_marked";
+	query: string;
+	selectedFiles: string[];
+}
+
 export interface BookmarkCreatingEvent {
 	type: "bookmark_creating";
 }
@@ -47,10 +58,15 @@ export interface MemoryChannelContract extends ChannelContract {
 			params: MemoryUserRememberParams;
 			return: { ok: boolean };
 		};
+		"memory.markIrrelevant": {
+			params: MemoryMarkIrrelevantParams;
+			return: { ok: boolean };
+		};
 	};
 	events: {
 		bookmark_creating: BookmarkCreatingEvent;
 		memory_updated: MemoryUpdatedEvent;
 		memory_update_failed: MemoryUpdateFailedEvent;
+		memory_irrelevant_marked: MemoryIrrelevantMarkedEvent;
 	};
 }

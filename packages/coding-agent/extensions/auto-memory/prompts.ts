@@ -41,6 +41,7 @@ export const SELECT_MEMORIES_PROMPT = `你是记忆系统的文件选择器 + �
 - 只选择确定有用的
 - 最多 5 个
 - 不确定就不选
+- ⚠️ 注意 history 中 userMarkedIrrelevant=true 的条目：这些文件/查询组合已被用户确认为不相关，不要重复同样的错误选择
 
 ## 任务 2：关键词净化
 
@@ -66,6 +67,15 @@ export const SELECT_MEMORIES_PROMPT = `你是记忆系统的文件选择器 + �
   → 标记为 bad_skip，提供修正建议
 - 如果被跳过的那条 selected 合理
   → 该关键词可以保留
+
+### 用户反馈净化（基于 userMarkedIrrelevant）
+分析 history 中 userMarkedIrrelevant=true 的条目。
+这些是用户明确标记"不相关"的 prefetch 结果：
+- 如果多个不相关条目命中了同一个文件 → 该文件对这类查询无用
+  → 生成 skip 规则（regex 或 contains）排除该查询模式
+- 如果某类查询模式的所有结果都被标记不相关 → 该查询模式不需要记忆
+  → 生成 skip 规则跳过该查询模式
+- 至少需要 2 个不相关标记才能生成规则（避免单次误判）
 
 ## 回复格式（JSON only）
 {

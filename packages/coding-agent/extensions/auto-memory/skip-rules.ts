@@ -16,6 +16,8 @@ export interface HistoryEntry {
 	skip_hits: string[];
 	guard_hits: string[];
 	timestamp: number;
+	userMarkedIrrelevant?: boolean;
+	irrelevantFiles?: string[];
 }
 
 export interface SkipWordStore {

@@ -92,6 +92,8 @@ export function buildPrefetchUserMessage(query: string, manifest: string, rules:
 			query: h.query,
 			selected: h.selected,
 			skipped: h.skipped,
+			userMarkedIrrelevant: h.userMarkedIrrelevant ?? false,
+			irrelevantFiles: h.irrelevantFiles ?? [],
 		})),
 	);
 
@@ -101,7 +103,7 @@ export function buildPrefetchUserMessage(query: string, manifest: string, rules:
 interface PrefetchDebugInfo {
 	selectedFiles: string[];
 	durationMs: number;
-	layer: "skip" | "llm" | "none";
+	layer: "skip" | "llm" | "none" | "auto";
 	skipHits: Array<{ pattern: string; mode: string }>;
 	guardHits: Array<{ pattern: string; mode: string }>;
 	availableFiles: number;
@@ -121,6 +123,8 @@ class MemoryPrefetch {
 	private _debugInfo: PrefetchDebugInfo | null = null;
 	private lastPrefetchTime = 0;
 	private consecutiveSameCount = 0;
+	private cachedFileCount = -1;
+	private dirtyFiles = true;
 
 	get debugInfo(): PrefetchDebugInfo | null {
 		return this._debugInfo;
@@ -132,10 +136,15 @@ class MemoryPrefetch {
 		return false;
 	}
 
+	markDirty(): void {
+		this.dirtyFiles = true;
+	}
+
 	start(query: string, memoryDir: string, callLLM: CallLLMFn): void {
 		const now = Date.now();
 		const elapsed = now - this.lastPrefetchTime;
 
+		// Layer 0: 30s 内复用上次结果
 		if (this.lastPrefetchTime > 0 && elapsed < PREFETCH_MIN_INTERVAL_MS) {
 			this._debugInfo = {
 				selectedFiles: this.lastSelected,
@@ -143,7 +152,7 @@ class MemoryPrefetch {
 				layer: "skip",
 				skipHits: [{ pattern: `min-interval(${Math.round(elapsed / 1000)}s<${PREFETCH_MIN_INTERVAL_MS / 1000}s)`, mode: "builtin" }],
 				guardHits: [],
-				availableFiles: 0,
+				availableFiles: this.cachedFileCount >= 0 ? this.cachedFileCount : 0,
 				query: query.slice(0, 200),
 			};
 			this.settled = true;
@@ -153,14 +162,15 @@ class MemoryPrefetch {
 			return;
 		}
 
-		if (this.consecutiveSameCount >= PREFETCH_REPEAT_THRESHOLD && this.lastSelected.length > 0) {
+		// Layer 1: 文件少且没变化 → 直接全注入，不调 LLM
+		if (!this.dirtyFiles && this.cachedFileCount >= 0 && this.cachedFileCount <= MAX_RELEVANT_MEMORIES && this.result !== null) {
 			this._debugInfo = {
 				selectedFiles: this.lastSelected,
 				durationMs: 0,
-				layer: "skip",
-				skipHits: [{ pattern: `repeat-detect(${this.consecutiveSameCount}x)`, mode: "builtin" }],
+				layer: "auto",
+				skipHits: [{ pattern: `all-cached(${this.cachedFileCount}f)`, mode: "builtin" }],
 				guardHits: [],
-				availableFiles: 0,
+				availableFiles: this.cachedFileCount,
 				query: query.slice(0, 200),
 			};
 			this.settled = true;
@@ -173,6 +183,28 @@ class MemoryPrefetch {
 			return;
 		}
 
+		// Layer 2: 连续相同结果检测
+		if (this.consecutiveSameCount >= PREFETCH_REPEAT_THRESHOLD && this.lastSelected.length > 0) {
+			this._debugInfo = {
+				selectedFiles: this.lastSelected,
+				durationMs: 0,
+				layer: "skip",
+				skipHits: [{ pattern: `repeat-detect(${this.consecutiveSameCount}x)`, mode: "builtin" }],
+				guardHits: [],
+				availableFiles: this.cachedFileCount >= 0 ? this.cachedFileCount : 0,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.resultEntryWritten = false;
+			this.lastPrefetchTime = now;
+			this.promise = this.runReadCached(this.lastSelected, memoryDir);
+			void this.promise.then((r) => {
+				this.result = r;
+			});
+			return;
+		}
+
+		// Layer 3: skip/guard 规则
 		const store = this.ensureStore();
 		const { shouldSkip, skipHits, guardHits } = evaluateRules(query, store.rules);
 		if (shouldSkip) {
@@ -188,7 +220,7 @@ class MemoryPrefetch {
 				layer: "skip",
 				skipHits: matchedSkip,
 				guardHits: matchedGuard,
-				availableFiles: 0,
+				availableFiles: this.cachedFileCount >= 0 ? this.cachedFileCount : 0,
 				query: query.slice(0, 200),
 			};
 			this.settled = true;
@@ -199,6 +231,7 @@ class MemoryPrefetch {
 			return;
 		}
 
+		// Layer 4: 走 LLM（或 auto-inject）
 		this.lastPrefetchTime = now;
 		this.settled = false;
 		this.result = null;
@@ -248,7 +281,10 @@ class MemoryPrefetch {
 			const matchedGuard = matchedRules.filter((r) => r.action !== "skip").map(({ pattern, mode }) => ({ pattern, mode }));
 
 		const memories = await scanMemoryFiles(memoryDir);
+		this.cachedFileCount = memories.length;
+
 		if (memories.length === 0) {
+			this.dirtyFiles = false;
 			this._debugInfo = {
 				selectedFiles: [],
 				durationMs: 0,
@@ -261,8 +297,25 @@ class MemoryPrefetch {
 			return "";
 		}
 
+		// Auto-inject: 文件少 → 全部注入，不调 LLM
+		if (memories.length <= MAX_RELEVANT_MEMORIES) {
+			const allFiles = memories.map((m) => m.filename);
+			this.lastSelected = allFiles;
+			this.dirtyFiles = false;
+			this._debugInfo = {
+				selectedFiles: allFiles,
+				durationMs: 0,
+				layer: "auto",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: memories.length,
+				query: query.slice(0, 200),
+			};
+			return await this.readFiles(allFiles, memoryDir);
+		}
+
 			const manifest = formatManifest(memories);
-			const recentHistory = store.history.slice(-3);
+			const recentHistory = this.buildHistoryForLLM(store.history);
 			const startTime = Date.now();
 
 			const llmResult = await callLLM({
@@ -370,6 +423,25 @@ class MemoryPrefetch {
 		const setB = new Set(b);
 		return a.every((item) => setB.has(item));
 	}
+
+	private buildHistoryForLLM(history: HistoryEntry[]): HistoryEntry[] {
+		const recent = history.slice(-3);
+		const marked = history.filter((h) => h.userMarkedIrrelevant);
+		const seen = new Set(recent.map((h) => h.timestamp));
+		const extra = marked.filter((h) => !seen.has(h.timestamp)).slice(-5);
+		return [...recent, ...extra].sort((a, b) => a.timestamp - b.timestamp);
+	}
+}
+
+interface MemoryFileEntry {
+	filename: string;
+	name: string;
+	description: string;
+}
+
+interface ExtractResult {
+	created: MemoryFileEntry[];
+	updated: MemoryFileEntry[];
 }
 
 class MemoryExtractor {
@@ -392,7 +464,7 @@ class MemoryExtractor {
 		messages: AgentMessage[],
 		memoryDir: string,
 		callLLM: CallLLMFn,
-	): Promise<{ created: string[]; updated: string[] } | null> {
+	): Promise<ExtractResult | null> {
 		if (this.inProgress) {
 			this.pendingMessages = messages;
 			return null;
@@ -415,7 +487,7 @@ class MemoryExtractor {
 		messages: AgentMessage[],
 		memoryDir: string,
 		callLLM: CallLLMFn,
-	): Promise<{ created: string[]; updated: string[] } | null> {
+	): Promise<ExtractResult | null> {
 		this.inProgress = true;
 		try {
 			const recent = serializeMessages(messages, { lastN: 20 });
@@ -457,9 +529,9 @@ class MemoryExtractor {
 	private async applyActions(
 		actions: Array<Record<string, string>>,
 		memoryDir: string,
-	): Promise<{ created: string[]; updated: string[] }> {
-		const created: string[] = [];
-		const updated: string[] = [];
+	): Promise<ExtractResult> {
+		const created: MemoryFileEntry[] = [];
+		const updated: MemoryFileEntry[] = [];
 		for (const action of actions) {
 			const op = action.op;
 
@@ -474,7 +546,7 @@ class MemoryExtractor {
 				const fm = buildFrontmatter({ name, description, type });
 				const body = content.slice(0, MAX_MEMORY_BYTES_PER_FILE);
 				await writeFile(join(memoryDir, filename), `${fm}\n\n${body}`);
-				created.push(filename);
+				created.push({ filename, name, description });
 			} else if (op === "update") {
 				const filename = action.filename;
 				const append = action.append;
@@ -485,7 +557,9 @@ class MemoryExtractor {
 
 				const existing = await readFile(filePath, "utf-8");
 				await writeFile(filePath, existing + append);
-				updated.push(filename);
+				const name = action.name ?? filename;
+				const description = action.description ?? append.slice(0, 80);
+				updated.push({ filename, name, description });
 			}
 		}
 		await updateMemoryIndex(memoryDir);
@@ -779,6 +853,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 				return await pi.callLLM(opts);
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
+				if (/stale/i.test(msg)) throw err;
 				const isRateLimit = /429|rate.?limit|too.?many.?request|quota/i.test(msg);
 				if (!isRateLimit || attempt >= MAX_RETRIES) throw err;
 				console.error(`[callLLM] rate limited (attempt ${attempt + 1}/${MAX_RETRIES}), retrying in ${RETRY_DELAY_MS}ms`);
@@ -871,6 +946,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 				status("extracting memories...");
 				const extractResult = await extractor.maybeExtract(event.messages, memoryDir, callLLMWithRetry);
 				if (extractResult) {
+					prefetch.markDirty();
 					pi.appendEntry("memory_extract", {
 						status: "completed",
 						created: extractResult.created,
@@ -881,6 +957,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 				status("consolidating memories...");
 				const dreamResult = await dream.maybeRun(memoryDir, callLLMWithRetry);
 				if (dreamResult) {
+					prefetch.markDirty();
 					pi.appendEntry("memory_dream", {
 						status: "completed",
 						merges: dreamResult.merges,
@@ -891,8 +968,12 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 
 				status("memory idle");
 			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				if (/stale/i.test(msg)) {
+					return;
+				}
 				status("memory error");
-				notify(`Auto-memory error: ${e instanceof Error ? e.message : String(e)}`, "warning");
+				notify(`Auto-memory error: ${msg}`, "warning");
 			}
 		})();
 	});
@@ -942,6 +1023,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 				callLLMWithRetry,
 			);
 			if (result) {
+				prefetch.markDirty();
 				pi.appendEntry("memory_created", result);
 				const updatedMemories = await scanMemoryFiles(memoryDir);
 				memoryChannel.emit("memory_updated", {
@@ -960,10 +1042,49 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 			}
 		} catch (e) {
 			const errMsg = e instanceof Error ? e.message : String(e);
+			if (/stale/i.test(errMsg)) {
+				return { ok: true };
+			}
 			pi.appendEntry("memory_failed", { reason: errMsg });
 			notify(`Bookmark error: ${errMsg}`, "warning");
 			memoryChannel.emit("memory_update_failed", { type: "memory_update_failed", reason: "Error" });
 		}
+		return { ok: true };
+	});
+
+	memoryChannel.handle("memory.markIrrelevant", async (data) => {
+		const query = (data.query ?? "").slice(0, 200);
+		const selectedFiles = Array.isArray(data.selectedFiles)
+			? (data.selectedFiles as string[]).slice(0, MAX_RELEVANT_MEMORIES)
+			: [];
+
+		if (!query || selectedFiles.length === 0) {
+			return { ok: false };
+		}
+
+		let store = loadSkipWordStore(getGlobalMemoryDir());
+		store = addHistoryEntry(store, {
+			query,
+			selected: selectedFiles,
+			skipped: false,
+			skip_hits: [],
+			guard_hits: [],
+			timestamp: Date.now(),
+			userMarkedIrrelevant: true,
+			irrelevantFiles: selectedFiles,
+		});
+		await saveSkipWordStore(getGlobalMemoryDir(), store);
+
+		pi.appendEntry("memory_irrelevant_marked", {
+			query,
+			selectedFiles,
+		});
+		memoryChannel.emit("memory_irrelevant_marked", {
+			type: "memory_irrelevant_marked",
+			query,
+			selectedFiles,
+		});
+
 		return { ok: true };
 	});
 }
