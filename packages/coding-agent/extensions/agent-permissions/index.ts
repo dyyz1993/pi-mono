@@ -215,14 +215,43 @@ export default function agentPermissions(pi: ExtensionAPI, ctx: ExtensionContext
 	pi.on("tool_call", (event) => {
 		const vars = (event as { variables?: Record<string, string> }).variables;
 		const mode = vars?.["permissionMode"];
+		const agentName = vars?.["agentName"] ?? "unknown";
+		const allowedTools = vars?.["allowedTools"]?.split(",").filter(Boolean);
+		const disallowedTools = vars?.["allowedTools"] !== undefined
+			? vars?.["disallowedTools"]?.split(",").filter(Boolean) ?? []
+			: vars?.["disallowedTools"]?.split(",").filter(Boolean);
+
+		// Always check whitelist/blacklist regardless of permissionMode
+		if (allowedTools && allowedTools.length > 0) {
+			const isAllowed = allowedTools.some((pattern) =>
+				matchesToolPattern(event.toolName, event.input as Record<string, unknown>, pattern),
+			);
+			if (!isAllowed) {
+				return {
+					block: true,
+					reason: `[agent:${agentName}] Tool "${event.toolName}" not in agent's tool whitelist. Allowed: ${allowedTools.join(", ")}`,
+				};
+			}
+		}
+
+		if (disallowedTools && disallowedTools.length > 0) {
+			if (matchesDisallowedTool(event.toolName, event.input as Record<string, unknown>, disallowedTools)) {
+				return {
+					block: true,
+					reason: `[agent:${agentName}] Tool "${event.toolName}" is explicitly disallowed.`,
+				};
+			}
+		}
+
+		// Permission mode-based rules (only for non-auto modes)
 		if (!mode || mode === "auto" || mode === "dontAsk" || mode === "always-allow") return undefined;
 
 		const handler = createPermissionHandler({
-			name: vars["agentName"] ?? "unknown",
+			name: agentName,
 			description: "",
 			permissionMode: mode as AgentConfig["permissionMode"],
-			disallowedTools: vars["disallowedTools"]?.split(",").filter(Boolean),
-			tools: vars["allowedTools"]?.split(",").filter(Boolean),
+			disallowedTools,
+			tools: allowedTools,
 		} as AgentConfig);
 
 		if (!handler) return undefined;

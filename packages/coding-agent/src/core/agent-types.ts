@@ -290,6 +290,7 @@ export function getBuiltinAgents(): AgentConfig[] {
 			description: "Planning mode, output analysis and specs only",
 			tools: ["read", "grep", "find", "ls", "glob"],
 			disallowedTools: ["edit", "write", "bash"],
+			permissionMode: "plan",
 			systemPrompt:
 				"You are a planning specialist. You only output analysis reports and implementation plans (spec), you cannot edit any code files.\n\nOutput format:\n### Requirements Analysis\nUnderstanding and clarification of requirements\n\n### Technical Solution\nSolution choice and rationale\n\n### Implementation Steps\n1. Specific steps...\n\n### File Change List\n- path/to/file — change description\n\n### Risks and Considerations\nPotential issues and mitigation strategies",
 			source: "builtin",
