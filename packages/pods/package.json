@@ -9,7 +9,7 @@
 	"scripts": {
 		"clean": "shx rm -rf dist",
 		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js && shx cp src/models.json dist/ && shx cp -r scripts dist/",
-		"prepublishOnly": "npm run clean && npm run build"
+		"prepublishOnly": "npm run build"
 	},
 	"files": [
 		"dist",
