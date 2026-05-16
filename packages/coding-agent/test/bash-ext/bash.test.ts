@@ -964,8 +964,8 @@ describe("bash channel extension", () => {
 		});
 	});
 
-	describe("get_background_process with lastLines filter", () => {
-		it("shows only last N lines of output", async () => {
+ 	describe("get_background_process with lastLines filter", () => {
+		it("shows only last N lines of output with line numbers", async () => {
 			const toolDef = getToolDef();
 			const statusTool = getStatusToolDef();
 			const ch = mock.getCurrentChannel()!;
@@ -1001,13 +1001,14 @@ describe("bash channel extension", () => {
 				if (text.includes("line 9")) break;
 				await new Promise((r) => setTimeout(r, 500));
 			}
-			expect(text).toContain("line 9");
-			expect(text).toContain("line 10");
-			expect(text).toContain("(8 earlier lines)");
+			// New format: line numbers with L prefix
+			expect(text).toContain("L9: line 9");
+			expect(text).toContain("L10: line 10");
+			expect(text).toContain("Lines: 9-11 of 11 total");
 			const outputSection = text.split("Output so far:\n")[1];
 			expect(outputSection).toBeDefined();
-			expect(outputSection).not.toContain("line 8");
-			expect(outputSection).not.toMatch(/\bline 1\b/);
+			expect(outputSection).not.toContain("L8:");
+			expect(outputSection).not.toMatch(/L1:.*line 1/);
 		});
 	});
 
@@ -1129,6 +1130,127 @@ describe("bash channel extension", () => {
 			if (result.details?.fullOutputPath) {
 				tempFilesToCleanup.push(result.details.fullOutputPath);
 			}
+		});
+	});
+
+	describe("session_start kills running background processes", () => {
+		it("kills managed processes when session_start fires", async () => {
+			const toolDef = getToolDef();
+
+			// Start a long-running process
+			toolDef.execute(
+				"tc_orphan",
+				{ description: "Long sleep for orphan kill test", command: "sleep 999" },
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
+			await new Promise((r) => setTimeout(r, 50));
+
+			// Verify process is running
+			const startCall = mock.channelSend.mock.calls.find(
+				(c: any[]) => (c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_orphan",
+			);
+			expect(startCall).toBeDefined();
+			const pid = (startCall![0] as BashChannelEvent).processes![0].pid;
+			expect(pid).toBeTypeOf("number");
+
+			// Fire session_start — should kill the process
+			fireSessionStart(mock);
+			await new Promise((r) => setTimeout(r, 100));
+
+			// Verify process was killed (no longer exists)
+			// On macOS, sending signal 0 to a killed process should throw
+			let processGone = false;
+			try {
+				process.kill(pid!, 0);
+			} catch {
+				processGone = true;
+			}
+			expect(processGone).toBe(true);
+		});
+	});
+
+	describe("get_background_process line number format", () => {
+		it("shows L-prefix line numbers and Lines range in header", async () => {
+			const toolDef = getToolDef();
+			const statusTool = getStatusToolDef();
+			const ch = mock.getCurrentChannel()!;
+			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+			toolDef.execute(
+				"tc_lineno",
+				{
+					description: "Multi-line for line number format test",
+					command: 'echo "alpha" && echo "beta" && echo "gamma" && sleep 999',
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
+			await new Promise((r) => setTimeout(r, 200));
+
+			const startCall = mock.channelSend.mock.calls.find(
+				(c: any[]) =>
+					(c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_lineno",
+			);
+			expect(startCall).toBeDefined();
+			const bashId = (startCall![0] as BashChannelEvent).processes![0].bashId;
+
+			receiveHandler({ __call: "background", toolCallId: "tc_lineno" });
+			await new Promise((r) => setTimeout(r, 50));
+
+			const result = await statusTool.execute("tc_lineno_query", { bashId });
+			const text = result.content[0].text;
+
+			// Header should contain Lines range
+			expect(text).toMatch(/Lines: \d+-\d+ of \d+ total/);
+
+			// Output should have L-prefix line numbers
+			expect(text).toMatch(/L\d+: alpha/);
+			expect(text).toMatch(/L\d+: beta/);
+			expect(text).toMatch(/L\d+: gamma/);
+		});
+
+		it("grep mode preserves original line numbers", async () => {
+			const toolDef = getToolDef();
+			const statusTool = getStatusToolDef();
+			const ch = mock.getCurrentChannel()!;
+			const receiveHandler = (ch.onReceive as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+			toolDef.execute(
+				"tc_grep_lineno",
+				{
+					description: "Multi-output for grep line number test",
+					command: "echo 'line1 ok' && echo 'line2 ERROR' && echo 'line3 ok' && echo 'line4 ERROR' && sleep 999",
+				},
+				undefined,
+				undefined,
+				{ cwd: "/tmp" } as any,
+			);
+			await new Promise((r) => setTimeout(r, 200));
+
+			const startCall = mock.channelSend.mock.calls.find(
+				(c: any[]) =>
+					(c[0] as BashChannelEvent).type === "start" && (c[0] as BashChannelEvent).toolCallId === "tc_grep_lineno",
+			);
+			expect(startCall).toBeDefined();
+			const bashId = (startCall![0] as BashChannelEvent).processes![0].bashId;
+
+			receiveHandler({ __call: "background", toolCallId: "tc_grep_lineno" });
+			await new Promise((r) => setTimeout(r, 50));
+
+			const result = await statusTool.execute("tc_grep_lineno_query", { bashId, grep: "error" });
+			const text = result.content[0].text;
+
+			// Should show original line numbers (L2 and L4, not L1 and L2)
+			expect(text).toMatch(/L2: line2 ERROR/);
+			expect(text).toMatch(/L4: line4 ERROR/);
+			// Non-matching lines should not appear in the output section
+			const outputSection = text.split("Output so far:\n")[1];
+			expect(outputSection).toBeDefined();
+			expect(outputSection).not.toContain("L1: line1 ok");
+			expect(outputSection).not.toContain("L3: line3 ok");
 		});
 	});
 });

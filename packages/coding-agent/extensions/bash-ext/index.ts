@@ -161,6 +161,19 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async () => {
+		// Kill all managed processes from previous session before clearing references.
+		// Without this, background processes become orphans when the session switches.
+		for (const m of managed.values()) {
+			if (!m.resolved && m.proc.pid) {
+				try {
+					killProcessTree(m.proc.pid);
+				} catch {
+					// Process may have already exited — ignore
+				}
+			}
+			if (m.logStream) m.logStream.end();
+		}
+
 		const rawChannel = pi.registerChannel(BASH_CHANNEL_NAME);
 		channel = createTypedChannel<BashChannelContract>(rawChannel).server;
 		managed.clear();
@@ -852,17 +865,40 @@ export default function (pi: ExtensionAPI) {
 			const { proc, isLive } = result;
 			const durationMs = (proc.endedAt ?? Date.now()) - proc.startedAt;
 
-			let output = proc.output || "(no output yet)";
+			const rawOutput = proc.output || "(no output yet)";
+			const allLines = rawOutput.split("\n");
+			const totalLines = allLines.length;
+
+			let displayLines: string[];
+			let startLine: number;
+			let endLine: number;
 
 			if (grepPattern) {
-				output = grepLines(output, grepPattern);
+				// Grep mode: filter matching lines, keep line numbers
+				const matched = allLines
+					.map((line, i) => ({ line, num: i + 1 }))
+					.filter((e) => e.line.toLowerCase().includes(grepPattern.toLowerCase()));
+				if (matched.length === 0) {
+					displayLines = [`(no lines matching "${grepPattern}")`];
+					startLine = 0;
+					endLine = 0;
+				} else {
+					// Apply lastLines to grep results if specified
+					const sliced = lastLines && lastLines > 0 ? matched.slice(-lastLines) : matched;
+					displayLines = sliced.map((e) => `L${e.num}: ${e.line}`);
+					startLine = sliced[0].num;
+					endLine = sliced[sliced.length - 1].num;
+				}
+			} else {
+				// Normal mode: take last N lines with line numbers
+				const n = lastLines && lastLines > 0 ? lastLines : 50;
+				startLine = Math.max(1, totalLines - n + 1);
+				endLine = totalLines;
+				const selected = allLines.slice(-n);
+				displayLines = selected.map((line, i) => `L${startLine + i}: ${line}`);
 			}
 
-			if (lastLines !== undefined && lastLines > 0) {
-				output = takeLastLines(output, lastLines);
-			} else if (!grepPattern) {
-				output = takeLastLines(output, 50);
-			}
+			const output = displayLines.join("\n");
 
 			const header = [
 				`Process: ${proc.command}`,
@@ -873,6 +909,7 @@ export default function (pi: ExtensionAPI) {
 				proc.exitCode !== undefined ? `Exit code: ${proc.exitCode}` : null,
 				proc.logPath ? `Log: ${proc.logPath}` : null,
 				proc.error ? `Error: ${proc.error}` : null,
+				totalLines > 0 ? `Lines: ${startLine}-${endLine} of ${totalLines} total` : null,
 				grepPattern ? `Filtered by: "${grepPattern}"` : null,
 				"",
 				isLive ? "Output so far:" : "Output:",
