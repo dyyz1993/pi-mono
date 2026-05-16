@@ -1033,8 +1033,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_agents": {
 				const discovery = discoverAgents(runtimeHost.cwd, "both");
-				const builtin = getBuiltinAgents();
-				const agents = [...builtin, ...discovery.agents].map((a) => ({
+				const agents = discovery.agents.map((a) => ({
 					name: a.name,
 					description: a.description,
 					tier: a.tier,
@@ -1049,8 +1048,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "switch_agent": {
 				const agentName = (command as { agentName: string }).agentName;
 				const discovery = discoverAgents(runtimeHost.cwd, "both");
-				const builtin = getBuiltinAgents();
-				const agent = [...builtin, ...discovery.agents].find((a) => a.name === agentName);
+				const agent = discovery.agents.find((a) => a.name === agentName);
 				if (!agent) {
 					return error(id, "switch_agent", `Agent "${agentName}" not found`);
 				}
@@ -1071,8 +1069,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_agent_detail": {
 				const agentName = (command as { agentName: string }).agentName;
 				const discovery = discoverAgents(runtimeHost.cwd, "both");
-				const builtin = getBuiltinAgents();
-				const agent = [...builtin, ...discovery.agents].find((a) => a.name === agentName);
+				const agent = discovery.agents.find((a) => a.name === agentName);
 				if (!agent) {
 					return error(id, "get_agent_detail", `Agent "${agentName}" not found`);
 				}
