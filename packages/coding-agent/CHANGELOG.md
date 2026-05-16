@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.32] - 2026-05-16
 
 ### Added
 - Edge case tests for `_buildIndex()` leaf resolution: multiple side branches, custom-only sessions, production bug simulation, 3-way branch, leaf stability across reloads, compaction entries, broken chain handling.
