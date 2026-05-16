@@ -1098,12 +1098,12 @@ export class AgentSession {
 		}
 
 		if (agent.systemPrompt) {
-			const appendParts: string[] = [];
-			if (this._resourceLoader.getAppendSystemPrompt().length > 0) {
-				appendParts.push(...this._resourceLoader.getAppendSystemPrompt());
-			}
-			appendParts.push(agent.systemPrompt);
-			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+			// Rebuild base prompt with filtered tools, then append agent-specific prompt
+			this._baseSystemPrompt =
+				this._rebuildSystemPrompt(this.getActiveToolNames()) +
+				"\n\n" +
+				agent.systemPrompt;
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 	}
 
