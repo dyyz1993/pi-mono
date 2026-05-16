@@ -2743,6 +2743,14 @@ export class AgentSession {
 			"This extension ctx is stale after reload. Do not use the old ctx after await ctx.reload().",
 		);
 
+		// Flush pending channel registrations on the new runner so that extensions
+		// (e.g. coordinator) can communicate immediately after reload without
+		// requiring an explicit rebindSession() call from the host mode.
+		if (this._registerChannel) {
+			this._extensionRunner.flushPendingChannels(this._registerChannel);
+			this._extensionRunner.updateRegisterChannel(this._registerChannel);
+		}
+
 		const hasBindings =
 			this._extensionUIContext ||
 			this._extensionCommandContextActions ||

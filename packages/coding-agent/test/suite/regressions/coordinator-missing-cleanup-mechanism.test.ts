@@ -70,7 +70,7 @@ function inspectCoordinatorRegistration(): CapturedRegistration {
 	return captured;
 }
 
-describe("coordinator missing cleanup mechanism - definitive bug verification", () => {
+describe("coordinator cleanup mechanism - fix verification", () => {
 	const tempDirs: string[] = [];
 
 	afterEach(() => {
@@ -82,27 +82,14 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 		tempDirs.length = 0;
 	});
 
-	describe("a) no removal tool exists", () => {
-		it("no session_delegate_remove or session_delegate_cleanup tool is registered", () => {
+	describe("a) removal tools now exist", () => {
+		it("session_delegate_remove tool is registered", () => {
 			const captured = inspectCoordinatorRegistration();
-
-			const removalToolNames = [
-				"session_delegate_remove",
-				"session_delegate_cleanup",
-				"session_delegate_forget",
-				"session_delegate_delete",
-				"session_delegate_archive",
-			];
-
-			for (const name of removalToolNames) {
-				expect(
-					captured.tools.has(name),
-					`BUG: No tool "${name}" registered. Available: ${Array.from(captured.tools).join(", ")}`,
-				).toBe(false);
-			}
+			expect(captured.tools.has("session_delegate_remove")).toBe(true);
+			expect(captured.tools.has("session_delegate_clear_stopped")).toBe(true);
 		});
 
-		it("all registered tools are delegation-only, none perform cleanup", () => {
+		it("all registered tools include cleanup tools", () => {
 			const captured = inspectCoordinatorRegistration();
 
 			const expectedTools = [
@@ -111,48 +98,42 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 				"session_delegate_status",
 				"session_delegate_stop",
 				"session_delegate_fork",
+				"session_delegate_remove",
+				"session_delegate_clear_stopped",
 			];
 
 			for (const name of expectedTools) {
-				expect(captured.tools.has(name)).toBe(true);
+				expect(captured.tools.has(name), `Tool "${name}" should be registered`).toBe(true);
 			}
 
 			expect(captured.tools.size).toBe(expectedTools.length);
 		});
 
-		it("session_delegate_stop is the closest to cleanup but only sets status=stopped", () => {
+		it("session_delegate_remove calls store.remove() and also stops the session", () => {
 			const indexSource = fs.readFileSync(path.join(__dirname, "../../../extensions/coordinator/index.ts"), "utf-8");
 
-			const stopToolMatch = indexSource.match(
-				/name:\s*"session_delegate_stop"[\s\S]*?async execute[\s\S]*?\{([\s\S]*?)\n\t\t\}/,
+			const removeToolStart = indexSource.indexOf('name: "session_delegate_remove"');
+			expect(removeToolStart).toBeGreaterThan(-1);
+
+			const handlerSource = fs.readFileSync(
+				path.join(__dirname, "../../../extensions/coordinator/handler.ts"),
+				"utf-8",
 			);
-			expect(stopToolMatch).not.toBeNull();
-
-			const stopBody = stopToolMatch![1];
-
-			expect(stopBody.includes(".remove("), "BUG: session_delegate_stop does not call store.remove()").toBe(false);
-
-			expect(stopBody.includes('status: "stopped"'), "session_delegate_stop only sets status=stopped").toBe(true);
+			const removeHandlerStart = handlerSource.indexOf('channel.handle("session_delegate_remove"');
+			const handlerBlock = handlerSource.slice(removeHandlerStart);
+			expect(handlerBlock).toContain("store.remove(sessionId)");
 		});
 	});
 
-	describe("b) no removal command exists", () => {
+	describe("b) no removal command exists (by design, tools suffice)", () => {
 		it("no /coordinator-cleanup or similar command is registered", () => {
 			const captured = inspectCoordinatorRegistration();
-
 			expect(captured.commands.size).toBe(0);
-
-			const indexSource = fs.readFileSync(path.join(__dirname, "../../../extensions/coordinator/index.ts"), "utf-8");
-
-			expect(
-				indexSource.includes("registerCommand"),
-				"BUG: coordinator extension never calls registerCommand()",
-			).toBe(false);
 		});
 	});
 
-	describe("c) task accumulation simulation", () => {
-		it("after stopping all 10 tasks, all 10 still appear in buildPrompt()", () => {
+	describe("c) task count can now be reduced via remove/clear", () => {
+		it("clearStopped() removes all stopped/completed tasks", () => {
 			const tempDir = path.join(os.tmpdir(), `coord-accum-${Date.now()}`);
 			fs.mkdirSync(tempDir, { recursive: true });
 			tempDirs.push(tempDir);
@@ -175,15 +156,12 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 				store.update(`sess-accum-${i}`, { status: "stopped" });
 			}
 
-			expect(store.list().length).toBe(10);
-
-			const prompt = store.buildPrompt();
-			for (let i = 0; i < 10; i++) {
-				expect(prompt).toContain(`Task ${i}`);
-			}
+			const removed = store.clearStopped();
+			expect(removed).toBe(10);
+			expect(store.list().length).toBe(0);
 		});
 
-		it("there is NO API call sequence that can reduce the task count", () => {
+		it("store.remove() and clearStopped() provide API calls that reduce task count", () => {
 			const tempDir = path.join(os.tmpdir(), `coord-no-reduce-${Date.now()}`);
 			fs.mkdirSync(tempDir, { recursive: true });
 			tempDirs.push(tempDir);
@@ -197,33 +175,28 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 
 			expect(store.list().length).toBe(2);
 
+			store.remove("sess-1");
+			expect(store.list().length).toBe(1);
+
+			store.clearStopped();
+			expect(store.list().length).toBe(0);
+		});
+
+		it("channel.handle(session_delegate_remove) calls store.remove()", () => {
 			const handlerSource = fs.readFileSync(
 				path.join(__dirname, "../../../extensions/coordinator/handler.ts"),
 				"utf-8",
 			);
 
-			const handlerBodies: string[] = [];
-			const handlePattern = /channel\.handle\("([^"]+)",\s*async\s*\([^)]*\)\s*=>\s*\{/g;
-			for (const match of handlerSource.matchAll(handlePattern)) {
-				const startIdx = match.index + match[0].length;
-				let braceCount = 1;
-				let endIdx = startIdx;
-				while (braceCount > 0 && endIdx < handlerSource.length) {
-					if (handlerSource[endIdx] === "{") braceCount++;
-					else if (handlerSource[endIdx] === "}") braceCount--;
-					endIdx++;
-				}
-				handlerBodies.push(handlerSource.slice(startIdx, endIdx));
-			}
-
-			for (const body of handlerBodies) {
-				expect(body.includes(".remove("), "BUG: No channel handler calls store.remove()").toBe(false);
-			}
+			const removeHandlerStart = handlerSource.indexOf('channel.handle("session_delegate_remove"');
+			expect(removeHandlerStart).toBeGreaterThan(-1);
+			const handlerBlock = handlerSource.slice(removeHandlerStart);
+			expect(handlerBlock).toContain("store.remove(sessionId)");
 		});
 	});
 
-	describe("d) ghost session detection missing", () => {
-		it("task referencing nonexistent session still appears in buildPrompt()", () => {
+	describe("d) ghost session cleanup via remove tool", () => {
+		it("task referencing nonexistent session can be removed", () => {
 			const tempDir = path.join(os.tmpdir(), `coord-ghost-${Date.now()}`);
 			fs.mkdirSync(tempDir, { recursive: true });
 			tempDirs.push(tempDir);
@@ -237,35 +210,21 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 				}),
 			);
 
-			const prompt = store.buildPrompt();
-			expect(prompt).toContain("ghost-session-nonexistent-999");
-			expect(prompt).toContain("Ghost task");
+			store.remove("ghost-session-nonexistent-999");
+
+			expect(store.buildPrompt()).toBe("");
+			expect(store.list().length).toBe(0);
 		});
 
-		it("there is no mechanism to detect and clean ghost tasks", () => {
+		it("session_delegate_remove handler exists to clean ghost tasks", () => {
 			const handlerSource = fs.readFileSync(
 				path.join(__dirname, "../../../extensions/coordinator/handler.ts"),
 				"utf-8",
 			);
-
-			const indexSource = fs.readFileSync(path.join(__dirname, "../../../extensions/coordinator/index.ts"), "utf-8");
-
-			const hasSessionValidation =
-				handlerSource.includes("sessionExists") ||
-				handlerSource.includes("validateSession") ||
-				handlerSource.includes("sessionManager.getSession") ||
-				handlerSource.includes("checkSession");
-			expect(hasSessionValidation, "BUG: No session existence validation in handler.ts").toBe(false);
-
-			const hasIndexSessionValidation =
-				indexSource.includes("sessionExists") ||
-				indexSource.includes("validateSession") ||
-				indexSource.includes("ghostSession") ||
-				indexSource.includes("orphanTask");
-			expect(hasIndexSessionValidation, "BUG: No session existence validation in index.ts").toBe(false);
+			expect(handlerSource).toContain('channel.handle("session_delegate_remove"');
 		});
 
-		it("buildPrompt has no guard against invalid session references", () => {
+		it("buildPrompt filters out old stopped tasks", () => {
 			const handlerSource = fs.readFileSync(
 				path.join(__dirname, "../../../extensions/coordinator/handler.ts"),
 				"utf-8",
@@ -282,74 +241,51 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 			}
 			const buildPromptBody = handlerSource.slice(buildPromptBodyStart, idx);
 
-			const hasValidation =
-				buildPromptBody.includes("sessionExists") ||
-				buildPromptBody.includes("validate") ||
-				buildPromptBody.includes("filter") ||
-				buildPromptBody.includes("verify");
-			expect(hasValidation, "BUG: buildPrompt() has no session validation or filtering").toBe(false);
+			expect(buildPromptBody.includes("filter"), "buildPrompt() now filters old stopped tasks").toBe(true);
 		});
 	});
 
-	describe("e) no context-pressure eviction", () => {
-		it("buildPrompt() blindly includes everything with no size limit", () => {
-			const tempDir = path.join(os.tmpdir(), `coord-nolimit-${Date.now()}`);
+	describe("e) buildPrompt() has age-based filtering", () => {
+		it("buildPrompt() filters out old stopped tasks (older than 5 minutes)", () => {
+			const tempDir = path.join(os.tmpdir(), `coord-age-filter-${Date.now()}`);
 			fs.mkdirSync(tempDir, { recursive: true });
 			tempDirs.push(tempDir);
 
 			const store = new TaskStore(tempDir);
+			const oldTime = Date.now() - 10 * 60 * 1000;
 
-			for (let i = 0; i < 50; i++) {
-				store.add(
-					makeTask({
-						sessionId: `sess-bulk-${i}`,
-						title: `Bulk task ${i} with a somewhat long description to increase token count`,
-						task: `This is a detailed task description for task ${i} that would consume context window tokens`.repeat(
-							3,
-						),
-						status: i % 2 === 0 ? "completed" : "stopped",
-						completedAt: i % 2 === 0 ? Date.now() : undefined,
-						result: i % 2 === 0 ? `Result of task ${i}: `.repeat(10) : undefined,
-					}),
-				);
-			}
-
-			const prompt = store.buildPrompt();
-			expect(prompt.length).toBeGreaterThan(1000);
-
-			for (let i = 0; i < 50; i++) {
-				expect(prompt).toContain(`Bulk task ${i}`);
-			}
-		});
-
-		it("no prioritization or eviction logic exists anywhere in the codebase", () => {
-			const handlerSource = fs.readFileSync(
-				path.join(__dirname, "../../../extensions/coordinator/handler.ts"),
-				"utf-8",
+			store.add(
+				makeTask({
+					sessionId: "sess-old-stopped",
+					title: "Old stopped",
+					status: "stopped",
+					completedAt: oldTime,
+				}),
+			);
+			store.add(
+				makeTask({
+					sessionId: "sess-recent-stopped",
+					title: "Recent stopped",
+					status: "stopped",
+					completedAt: Date.now(),
+				}),
+			);
+			store.add(
+				makeTask({
+					sessionId: "sess-idle",
+					title: "Idle task",
+					status: "idle",
+				}),
 			);
 
-			const indexSource = fs.readFileSync(path.join(__dirname, "../../../extensions/coordinator/index.ts"), "utf-8");
-
-			const combined = handlerSource + indexSource;
-
-			const evictionKeywords = [
-				"maxTasks",
-				"evict",
-				"priority",
-				"prune",
-				"trim",
-				"tokenLimit",
-				"budget",
-				"taskBudget",
-			];
-
-			for (const keyword of evictionKeywords) {
-				expect(combined.includes(keyword), `BUG: No "${keyword}" logic found in coordinator source`).toBe(false);
-			}
+			const prompt = store.buildPrompt();
+			expect(prompt).not.toContain("Old stopped");
+			expect(prompt).toContain("Recent stopped");
+			expect(prompt).toContain("Idle task");
 		});
 	});
 
-	describe("f) store.remove() gap analysis - the smoking gun", () => {
+	describe("f) store.remove() is now called by handlers and tools", () => {
 		it("TaskStore.remove() method exists and works correctly when called directly", () => {
 			const tempDir = path.join(os.tmpdir(), `coord-smokinggun-${Date.now()}`);
 			fs.mkdirSync(tempDir, { recursive: true });
@@ -387,7 +323,7 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 			expect(store2.list()[0].sessionId).toBe("sess-b");
 		});
 
-		it("BUG: NO channel.handle() handler calls remove()", () => {
+		it("channel.handle(session_delegate_remove) calls remove()", () => {
 			const handlerSource = fs.readFileSync(
 				path.join(__dirname, "../../../extensions/coordinator/handler.ts"),
 				"utf-8",
@@ -399,68 +335,32 @@ describe("coordinator missing cleanup mechanism - definitive bug verification", 
 				handlerNames.push(match[1]);
 			}
 
-			expect(handlerNames).toContain("session_delegate");
-			expect(handlerNames).toContain("session_delegate_send");
-			expect(handlerNames).toContain("session_delegate_status");
-			expect(handlerNames).toContain("session_delegate_list");
-			expect(handlerNames).toContain("session_delegate_stop");
-			expect(handlerNames).toContain("session_delegate_fork");
+			expect(handlerNames).toContain("session_delegate_remove");
 
-			for (const name of handlerNames) {
-				const handlerStart = handlerSource.indexOf(`channel.handle("${name}"`);
-				const arrowStart = handlerSource.indexOf("=>", handlerStart);
-				const bodyStart = handlerSource.indexOf("{", arrowStart);
-				let braceCount = 1;
-				let endIdx = bodyStart + 1;
-				while (braceCount > 0 && endIdx < handlerSource.length) {
-					if (handlerSource[endIdx] === "{") braceCount++;
-					else if (handlerSource[endIdx] === "}") braceCount--;
-					endIdx++;
-				}
-				const body = handlerSource.slice(bodyStart, endIdx);
-
-				expect(body.includes(".remove("), `BUG: channel.handle("${name}") does not call store.remove()`).toBe(
-					false,
-				);
-			}
+			const removeStart = handlerSource.indexOf('channel.handle("session_delegate_remove"');
+			const handlerBlock = handlerSource.slice(removeStart);
+			expect(handlerBlock).toContain("store.remove(sessionId)");
 		});
 
-		it("BUG: NO pi.registerTool() calls remove() in its execute body", () => {
+		it("pi.registerTool(session_delegate_remove) calls remove() in its execute body", () => {
 			const indexSource = fs.readFileSync(path.join(__dirname, "../../../extensions/coordinator/index.ts"), "utf-8");
 
-			const toolNames: string[] = [];
-			const toolPattern = /pi\.registerTool\(\{[^}]*name:\s*"([^"]+)"/g;
-			for (const match of indexSource.matchAll(toolPattern)) {
-				toolNames.push(match[1]);
+			const toolStart = indexSource.indexOf('name: "session_delegate_remove"');
+			const executeStart = indexSource.indexOf("async execute(", toolStart);
+			const bodyStart = indexSource.indexOf("{", executeStart);
+			let braceCount = 1;
+			let endIdx = bodyStart + 1;
+			while (braceCount > 0 && endIdx < indexSource.length) {
+				if (indexSource[endIdx] === "{") braceCount++;
+				else if (indexSource[endIdx] === "}") braceCount--;
+				endIdx++;
 			}
-
-			for (const name of toolNames) {
-				const toolStart = indexSource.indexOf(`name: "${name}"`);
-				const executeStart = indexSource.indexOf("async execute(", toolStart);
-				const bodyStart = indexSource.indexOf("{", executeStart);
-				let braceCount = 1;
-				let endIdx = bodyStart + 1;
-				while (braceCount > 0 && endIdx < indexSource.length) {
-					if (indexSource[endIdx] === "{") braceCount++;
-					else if (indexSource[endIdx] === "}") braceCount--;
-					endIdx++;
-				}
-				const body = indexSource.slice(bodyStart, endIdx);
-
-				expect(
-					body.includes(".remove("),
-					`BUG: pi.registerTool("${name}") execute() does not call store.remove()`,
-				).toBe(false);
-			}
-		});
-
-		it("BUG: NO pi.registerCommand() exists to expose remove to user", () => {
-			const indexSource = fs.readFileSync(path.join(__dirname, "../../../extensions/coordinator/index.ts"), "utf-8");
+			const body = indexSource.slice(bodyStart, endIdx);
 
 			expect(
-				indexSource.includes("registerCommand"),
-				"BUG: coordinator extension never calls registerCommand()",
-			).toBe(false);
+				body.includes(".remove("),
+				`pi.registerTool("session_delegate_remove") execute() calls store.remove()`,
+			).toBe(true);
 		});
 	});
 });

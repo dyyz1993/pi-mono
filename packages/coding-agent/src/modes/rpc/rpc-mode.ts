@@ -1019,6 +1019,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "reload": {
 				await session.reload();
 				session = runtimeHost.session;
+				// Re-subscribe to session events on the reloaded session.
+				// session.reload() rebuilds the internal extension runner, so the
+				// previous subscription is stale.
+				unsubscribe?.();
+				unsubscribe = session.subscribe((event) => {
+					output(event);
+				});
 				return success(id, "reload");
 			}
 
