@@ -33,7 +33,7 @@ describe("TaskStore.buildPrompt()", () => {
 		const store = new TaskStore(tempDir);
 		const task = makeTask({ title: "Re-activatable task", sessionId: "sess-stopped-1" });
 		store.add(task);
-		store.update("sess-stopped-1", { status: "stopped" });
+		store.update("sess-stopped-1", { status: "stopped", completedAt: Date.now() });
 
 		const prompt = store.buildPrompt();
 
@@ -91,187 +91,452 @@ describe("TaskStore.buildPrompt()", () => {
 		expect(store.buildPrompt()).toBe("");
 	});
 
-	it("BUG: store.remove() is never called by any channel handler or tool", () => {
-		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
-		fs.mkdirSync(tempDir, { recursive: true });
-
+	it("session_delegate_remove handler calls store.remove() to clean up tasks", () => {
 		const handlerSource = fs.readFileSync(
 			path.join(__dirname, "handler.ts"),
 			"utf-8",
 		);
 
-		const indexSource = fs.readFileSync(
-			path.join(__dirname, "index.ts"),
-			"utf-8",
-		);
-
-		expect(
-			handlerSource.includes("remove("),
-			"TaskStore.remove() method exists in handler.ts",
-		).toBe(true);
-
-		const handlerBodies: string[] = [];
-		const handlePattern = /channel\.handle\("([^"]+)",\s*async\s*\([^)]*\)\s*=>\s*\{/g;
-		let match;
-		while ((match = handlePattern.exec(handlerSource)) !== null) {
-			const startIdx = match.index + match[0].length;
-			let braceCount = 1;
-			let endIdx = startIdx;
-			while (braceCount > 0 && endIdx < handlerSource.length) {
-				if (handlerSource[endIdx] === "{") braceCount++;
-				else if (handlerSource[endIdx] === "}") braceCount--;
-				endIdx++;
-			}
-			handlerBodies.push(handlerSource.slice(startIdx, endIdx));
-		}
-
-		for (const body of handlerBodies) {
-			expect(
-				body.includes("remove("),
-				"No channel.handle() body should call remove()",
-			).toBe(false);
-		}
-
-		expect(
-			indexSource.includes(".remove("),
-			"BUG: index.ts never calls store.remove() - no tool/command exposes removal",
-		).toBe(false);
+		const removeHandlerStart = handlerSource.indexOf('channel.handle("session_delegate_remove"');
+		expect(removeHandlerStart).toBeGreaterThan(-1);
+		const handlerBlock = handlerSource.slice(removeHandlerStart);
+		expect(handlerBlock).toContain("store.remove(sessionId)");
 	});
 
-	it("session_delegate_stop only sets status=stopped, does not remove task", () => {
+	it("session_delegate_stop sets status=stopped with completedAt timestamp", () => {
 		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 
 		const store = new TaskStore(tempDir);
 		store.add(makeTask({ sessionId: "sess-stop-test", title: "Accumulated task" }));
-		store.update("sess-stop-test", { status: "stopped" });
+		store.update("sess-stop-test", { status: "stopped", completedAt: Date.now() });
 
 		const task = store.get("sess-stop-test");
 		expect(task).toBeDefined();
 		expect(task?.status).toBe("stopped");
+		expect(task?.completedAt).toBeDefined();
 
 		const prompt = store.buildPrompt();
 		expect(prompt).toContain("Accumulated task");
 		expect(prompt).toContain("STOPPED");
 	});
+});
 
-	it("BUG: no tool or command exposes remove functionality to LLM or user", () => {
-		const indexSource = fs.readFileSync(
-			path.join(__dirname, "index.ts"),
-			"utf-8",
-		);
+describe("TaskStore.clearStopped()", () => {
+	let tempDir: string;
 
-		const registeredTools: string[] = [];
-		const toolPattern = /pi\.registerTool\(\{[^}]*name:\s*"([^"]+)"/g;
-		let match;
-		while ((match = toolPattern.exec(indexSource)) !== null) {
-			registeredTools.push(match[1]);
-		}
-
-		const registeredCommands: string[] = [];
-		const cmdPattern = /pi\.registerCommand\(\s*"([^"]+)"/g;
-		while ((match = cmdPattern.exec(indexSource)) !== null) {
-			registeredCommands.push(match[1]);
-		}
-
-		const removalToolNames = [
-			"session_delegate_remove",
-			"session_delegate_cleanup",
-			"session_delegate_forget",
-			"session_delegate_delete",
-		];
-
-		for (const name of removalToolNames) {
-			expect(
-				registeredTools.includes(name),
-				`BUG: No tool named "${name}" is registered`,
-			).toBe(false);
-		}
-
-		const removalCmdPatterns = [
-			"coordinator-cleanup",
-			"coordinator-remove",
-			"coordinator-forget",
-			"coordinator-clear",
-		];
-
-		for (const name of removalCmdPatterns) {
-			expect(
-				registeredCommands.includes(name),
-				`BUG: No command named "${name}" is registered`,
-			).toBe(false);
+	afterEach(() => {
+		if (tempDir && fs.existsSync(tempDir)) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
-	it("BUG: no automatic cleanup of tasks whose sessions no longer exist", () => {
+	it("removes all stopped and completed tasks", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({ sessionId: "sess-idle", title: "Active task", status: "idle" }));
+		store.add(makeTask({ sessionId: "sess-stopped", title: "Stopped task", status: "stopped" }));
+		store.add(makeTask({ sessionId: "sess-completed", title: "Completed task", status: "completed" }));
+		store.add(makeTask({ sessionId: "sess-streaming", title: "Streaming task", status: "streaming" }));
+
+		const removed = store.clearStopped();
+
+		expect(removed).toBe(2);
+		expect(store.list().length).toBe(2);
+		expect(store.list().map((t) => t.sessionId)).toEqual(
+			expect.arrayContaining(["sess-idle", "sess-streaming"]),
+		);
+	});
+
+	it("returns 0 when no tasks are stopped or completed", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({ sessionId: "sess-idle", status: "idle" }));
+		store.add(makeTask({ sessionId: "sess-streaming", status: "streaming" }));
+
+		expect(store.clearStopped()).toBe(0);
+		expect(store.list().length).toBe(2);
+	});
+
+	it("persists removal to disk", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store1 = new TaskStore(tempDir);
+		store1.add(makeTask({ sessionId: "sess-a", status: "stopped" }));
+		store1.add(makeTask({ sessionId: "sess-b", status: "idle" }));
+		store1.clearStopped();
+
+		const store2 = new TaskStore(tempDir);
+		expect(store2.list().length).toBe(1);
+		expect(store2.list()[0].sessionId).toBe("sess-b");
+	});
+});
+
+describe("TaskStore.add() sessionId guard", () => {
+	let tempDir: string;
+
+	afterEach(() => {
+		if (tempDir && fs.existsSync(tempDir)) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("throws on empty sessionId", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		expect(() => store.add(makeTask({ sessionId: "" }))).toThrow("cannot add task with empty sessionId");
+	});
+
+	it("throws on undefined sessionId when cast", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		expect(() => store.add(makeTask({ sessionId: undefined as unknown as string }))).toThrow("cannot add task with empty sessionId");
+	});
+});
+
+describe("TaskStore.buildPrompt() stale task filtering", () => {
+	let tempDir: string;
+
+	afterEach(() => {
+		if (tempDir && fs.existsSync(tempDir)) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("hides stopped tasks older than 5 minutes", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		const oldTime = Date.now() - 10 * 60 * 1000; // 10 minutes ago
+
+		store.add(makeTask({
+			sessionId: "sess-old-stopped",
+			title: "Old stopped task",
+			status: "stopped",
+			completedAt: oldTime,
+		}));
+
+		const prompt = store.buildPrompt();
+		expect(prompt).toBe("");
+	});
+
+	it("keeps recently stopped tasks", () => {
 		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 
 		const store = new TaskStore(tempDir);
 		store.add(makeTask({
-			sessionId: "ghost-session-999",
-			title: "Ghost task",
-			status: "idle",
+			sessionId: "sess-recent-stopped",
+			title: "Recent stopped task",
+			status: "stopped",
+			completedAt: Date.now() - 1000, // 1 second ago
 		}));
 
 		const prompt = store.buildPrompt();
-		expect(prompt).toContain("ghost-session-999");
-		expect(prompt).toContain("Ghost task");
-
-		expect(store.list().length).toBe(1);
+		expect(prompt).toContain("Recent stopped task");
 	});
 
-	it("BUG: no age-based or context-pressure-based cleanup mechanism", () => {
+	it("keeps old stopped tasks without completedAt (no timestamp to check)", () => {
 		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 
 		const store = new TaskStore(tempDir);
-		const oldTimestamp = Date.now() - 7 * 24 * 60 * 60 * 1000;
-
-		for (let i = 0; i < 20; i++) {
-			store.add(makeTask({
-				sessionId: `sess-old-${i}`,
-				title: `Old task ${i}`,
-				dispatchedAt: oldTimestamp + i * 1000,
-				status: "completed",
-				completedAt: oldTimestamp + i * 1000 + 5000,
-			}));
-		}
-
-		const allTasks = store.list();
-		expect(allTasks.length).toBe(20);
+		store.add(makeTask({
+			sessionId: "sess-no-completedat",
+			title: "No completedAt",
+			status: "stopped",
+		}));
 
 		const prompt = store.buildPrompt();
-		for (let i = 0; i < 20; i++) {
-			expect(prompt).toContain(`Old task ${i}`);
-		}
+		expect(prompt).toContain("No completedAt");
+	});
 
+	it("keeps idle/streaming tasks regardless of age", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		const oldTime = Date.now() - 10 * 60 * 1000;
+
+		store.add(makeTask({
+			sessionId: "sess-old-idle",
+			title: "Old idle task",
+			status: "idle",
+			dispatchedAt: oldTime,
+		}));
+
+		const prompt = store.buildPrompt();
+		expect(prompt).toContain("Old idle task");
+	});
+});
+
+describe("session_delegate_remove and session_delegate_clear_stopped handlers exist", () => {
+	it("session_delegate_remove handler is registered in handler.ts", () => {
 		const handlerSource = fs.readFileSync(
 			path.join(__dirname, "handler.ts"),
 			"utf-8",
 		);
+		expect(handlerSource).toContain('channel.handle("session_delegate_remove"');
+	});
 
-		const hasMaxAgeLogic = handlerSource.includes("maxAge") ||
-			handlerSource.includes("ttl") ||
-			handlerSource.includes("expiry") ||
-			handlerSource.includes("staleThreshold") ||
-			handlerSource.includes("cleanupInterval");
-		expect(
-			hasMaxAgeLogic,
-			"BUG: No age-based cleanup logic (maxAge/ttl/expiry) in handler.ts",
-		).toBe(false);
+	it("session_delegate_clear_stopped handler is registered in handler.ts", () => {
+		const handlerSource = fs.readFileSync(
+			path.join(__dirname, "handler.ts"),
+			"utf-8",
+		);
+		expect(handlerSource).toContain('channel.handle("session_delegate_clear_stopped"');
+	});
 
+	it("session_delegate_remove and session_delegate_clear_stopped tools are registered in index.ts", () => {
 		const indexSource = fs.readFileSync(
 			path.join(__dirname, "index.ts"),
 			"utf-8",
 		);
-		const hasContextEviction = indexSource.includes("contextPressure") ||
-			indexSource.includes("evict") ||
-			indexSource.includes("tokenBudget") ||
-			indexSource.includes("maxContextTasks");
-		expect(
-			hasContextEviction,
-			"BUG: No context-pressure-based eviction logic in index.ts",
-		).toBe(false);
+		expect(indexSource).toContain('name: "session_delegate_remove"');
+		expect(indexSource).toContain('name: "session_delegate_clear_stopped"');
+	});
+
+	it("delegate_remove and delegate_clear_stopped are in ProcessManagerApi", () => {
+		const handlerSource = fs.readFileSync(
+			path.join(__dirname, "handler.ts"),
+			"utf-8",
+		);
+		expect(handlerSource).toContain("delegate_remove(sessionId: string): Promise<boolean>");
+		expect(handlerSource).toContain("delegate_clear_stopped(): Promise<number>");
+	});
+});
+
+// ── Regression tests for bugs found during audit ──
+
+describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)", () => {
+	let tempDir: string;
+
+	afterEach(() => {
+		if (tempDir && fs.existsSync(tempDir)) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("hides completed tasks older than 5 minutes", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({
+			sessionId: "sess-old-completed",
+			title: "Old completed task",
+			status: "completed",
+			completedAt: Date.now() - 10 * 60 * 1000, // 10 minutes ago
+		}));
+
+		expect(store.buildPrompt()).toBe("");
+	});
+
+	it("keeps recently completed tasks (within 5 minutes)", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({
+			sessionId: "sess-recent-completed",
+			title: "Recent completed task",
+			status: "completed",
+			completedAt: Date.now() - 30 * 1000, // 30 seconds ago
+		}));
+
+		const prompt = store.buildPrompt();
+		expect(prompt).toContain("Recent completed task");
+		expect(prompt).toContain("DONE");
+	});
+
+	it("mixed: old completed hidden, recent completed visible, idle always visible", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({
+			sessionId: "sess-old-completed",
+			title: "Old Completed",
+			status: "completed",
+			completedAt: Date.now() - 10 * 60 * 1000,
+		}));
+		store.add(makeTask({
+			sessionId: "sess-recent-completed",
+			title: "Recent Completed",
+			status: "completed",
+			completedAt: Date.now() - 10 * 1000,
+		}));
+		store.add(makeTask({
+			sessionId: "sess-idle",
+			title: "Active Task",
+			status: "idle",
+		}));
+
+		const prompt = store.buildPrompt();
+		expect(prompt).not.toContain("Old Completed");
+		expect(prompt).toContain("Recent Completed");
+		expect(prompt).toContain("Active Task");
+	});
+});
+
+describe("re-activating a stopped task clears completedAt (Bug 5 fix)", () => {
+	let tempDir: string;
+
+	afterEach(() => {
+		if (tempDir && fs.existsSync(tempDir)) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("completedAt is cleared when re-activating from stopped to idle", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({ sessionId: "sess-reactivate", title: "Reactivated task" }));
+		store.update("sess-reactivate", { status: "stopped", completedAt: Date.now() });
+
+		// Verify completedAt is set
+		expect(store.get("sess-reactivate")?.completedAt).toBeDefined();
+
+		// Re-activate (simulating session_delegate_send handler)
+		store.update("sess-reactivate", { status: "idle", completedAt: undefined });
+
+		const task = store.get("sess-reactivate");
+		expect(task?.status).toBe("idle");
+		expect(task?.completedAt).toBeUndefined();
+	});
+
+	it("buildPrompt shows correct elapsed time after re-activation", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		const dispatchedAt = Date.now() - 60 * 1000; // 1 minute ago
+		store.add(makeTask({
+			sessionId: "sess-timecheck",
+			title: "Time check task",
+			dispatchedAt,
+		}));
+		store.update("sess-timecheck", { status: "stopped", completedAt: Date.now() });
+
+		// Before re-activate: shows frozen duration (completedAt - dispatchedAt)
+		let prompt = store.buildPrompt();
+		expect(prompt).toContain("Time check task");
+
+		// Re-activate
+		store.update("sess-timecheck", { status: "idle", completedAt: undefined });
+
+		// After re-activate: shows "elapsed" (live counter)
+		prompt = store.buildPrompt();
+		expect(prompt).toContain("Time check task");
+		expect(prompt).toContain("elapsed");
+		expect(prompt).not.toContain("STOPPED");
+	});
+});
+
+describe("no double store operations in tool handlers (Bug 3/4/6 fix)", () => {
+	it("session_delegate tool handler does NOT call store.add (handler.ts does it)", () => {
+		const indexSource = fs.readFileSync(
+			path.join(__dirname, "index.ts"),
+			"utf-8",
+		);
+
+		// Find the session_delegate tool execute block
+		const delegateToolStart = indexSource.indexOf('name: "session_delegate"');
+		expect(delegateToolStart).toBeGreaterThan(-1);
+
+		// Find the session_delegate_fork tool start to bound the search
+		const forkToolStart = indexSource.indexOf('name: "session_delegate_fork"');
+		expect(forkToolStart).toBeGreaterThan(-1);
+
+		const delegateToolBlock = indexSource.slice(delegateToolStart, forkToolStart);
+		expect(delegateToolBlock).not.toContain("store.add(");
+	});
+
+	it("session_delegate_stop tool handler does NOT call store.update (handler.ts does it)", () => {
+		const indexSource = fs.readFileSync(
+			path.join(__dirname, "index.ts"),
+			"utf-8",
+		);
+
+		const stopToolStart = indexSource.indexOf('name: "session_delegate_stop"');
+		expect(stopToolStart).toBeGreaterThan(-1);
+
+		const nextToolStart = indexSource.indexOf('name: "session_delegate_fork"');
+		const stopToolBlock = indexSource.slice(stopToolStart, nextToolStart);
+		expect(stopToolBlock).not.toContain("store.update(");
+	});
+
+	it("session_delegate_remove tool handler does NOT call store.remove (handler.ts does it)", () => {
+		const indexSource = fs.readFileSync(
+			path.join(__dirname, "index.ts"),
+			"utf-8",
+		);
+
+		const removeToolStart = indexSource.indexOf('name: "session_delegate_remove"');
+		expect(removeToolStart).toBeGreaterThan(-1);
+
+		const nextToolStart = indexSource.indexOf('name: "session_delegate_clear_stopped"');
+		const removeToolBlock = indexSource.slice(removeToolStart, nextToolStart);
+		expect(removeToolBlock).not.toContain("store.remove(");
+	});
+
+	it("session_delegate_clear_stopped tool handler does NOT call store.clearStopped (handler.ts does it)", () => {
+		const indexSource = fs.readFileSync(
+			path.join(__dirname, "index.ts"),
+			"utf-8",
+		);
+
+		const clearToolStart = indexSource.indexOf('name: "session_delegate_clear_stopped"');
+		expect(clearToolStart).toBeGreaterThan(-1);
+
+		const messageReceivedStart = indexSource.indexOf('client.on("message_received"');
+		const clearToolBlock = indexSource.slice(clearToolStart, messageReceivedStart);
+		expect(clearToolBlock).not.toContain("store.clearStopped(");
+	});
+
+	it("session_delegate_fork tool handler does NOT call store.add (handler.ts does it)", () => {
+		const indexSource = fs.readFileSync(
+			path.join(__dirname, "index.ts"),
+			"utf-8",
+		);
+
+		const forkToolStart = indexSource.indexOf('name: "session_delegate_fork"');
+		expect(forkToolStart).toBeGreaterThan(-1);
+
+		const removeToolStart = indexSource.indexOf('name: "session_delegate_remove"');
+		const forkToolBlock = indexSource.slice(forkToolStart, removeToolStart);
+		expect(forkToolBlock).not.toContain("store.add(");
+	});
+});
+
+describe("message_received handler tracks task status (Bug 7 fix)", () => {
+	it("index.ts message_received handler detects completion signals and updates status", () => {
+		const indexSource = fs.readFileSync(
+			path.join(__dirname, "index.ts"),
+			"utf-8",
+		);
+
+		const msgReceivedStart = indexSource.indexOf('client.on("message_received"');
+		expect(msgReceivedStart).toBeGreaterThan(-1);
+
+		const msgReceivedBlock = indexSource.slice(msgReceivedStart);
+		// Should detect [completed], [done], or "task completed" signals
+		expect(msgReceivedBlock).toContain("[completed]");
+		expect(msgReceivedBlock).toContain("isCompletion");
+		expect(msgReceivedBlock).toContain("status: \"completed\"");
+		// Should also update streaming status for regular messages
+		expect(msgReceivedBlock).toContain("status: \"streaming\"");
 	});
 });

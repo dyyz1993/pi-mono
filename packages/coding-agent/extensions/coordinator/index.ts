@@ -9,6 +9,7 @@ import { createCoordinatorHandler, TaskStore, type ProcessManagerApi } from "./h
 const DelegateParams = Type.Object({
   task: Type.String({ description: "Task description to delegate to the background session" }),
   title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
+  projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
 });
 
 const DelegateSendParams = Type.Object({
@@ -28,6 +29,7 @@ const DelegateForkParams = Type.Object({
   sessionId: Type.String({ description: "Source session ID to fork from" }),
   task: Type.String({ description: "Task description for the forked session" }),
   title: Type.Optional(Type.String({ description: "Short title for the forked task" })),
+  projectPath: Type.Optional(Type.String({ description: "Project directory to run the forked session in. Defaults to the current working directory." })),
 });
 
 export default function coordinatorExtension(pi: ExtensionAPI) {
@@ -44,8 +46,8 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
   });
 
   const serverProxy: ProcessManagerApi = {
-    async delegate(task, _projectPath) {
-      return client.call("session_delegate", { task }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
+    async delegate(task, projectPath) {
+      return client.call("session_delegate", { task, projectPath }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
     },
 
     async delegate_send(fromSessionId, toSessionId, message) {
@@ -85,8 +87,8 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       }
     },
 
-    async delegate_fork(sessionId, task, title) {
-      return client.call("session_delegate_fork", { sessionId, task, title }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
+    async delegate_fork(sessionId, task, title, projectPath) {
+      return client.call("session_delegate_fork", { sessionId, task, title, projectPath }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
     },
 
     async delegate_compact_status(sessionId: string) {
@@ -99,6 +101,26 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       } catch (err) {
         console.debug("[coordinator] delegate_compact_status failed:", err instanceof Error ? err.message : err);
         return { isCompacting: false, contextUsage: { tokens: null as number | null, contextWindow: 0, percent: null as number | null } };
+      }
+    },
+
+    async delegate_remove(sessionId: string) {
+      try {
+        const result = await client.call("session_delegate_remove", { sessionId }) as { ok: boolean };
+        return result.ok;
+      } catch (err) {
+        console.debug("[coordinator] delegate_remove failed:", err instanceof Error ? err.message : err);
+        return false;
+      }
+    },
+
+    async delegate_clear_stopped() {
+      try {
+        const result = await client.call("session_delegate_clear_stopped", {}) as { removed: number };
+        return result.removed;
+      } catch (err) {
+        console.debug("[coordinator] delegate_clear_stopped failed:", err instanceof Error ? err.message : err);
+        return 0;
       }
     },
   };
@@ -127,6 +149,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     label: "Session Delegate",
     description: [
       "Delegate a task to a background pi session.",
+      "Optionally specify a projectPath to run the session in a specific project directory.",
       "Returns a sessionId for communication via session_delegate_send.",
       "The delegated session can message back using its own coordinator channel.",
       "The delegate session is automatically restarted if inactive when receiving messages.",
@@ -134,22 +157,19 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     parameters: DelegateParams,
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       const sid = currentSessionId || ctx.sessionManager.getSessionId();
-      const result = await serverProxy.delegate(params.task, ctx.cwd);
+      const projectPath = params.projectPath || ctx.cwd;
+      const result = await serverProxy.delegate(params.task, projectPath);
 
-      if (store) {
-        store.add({
-          sessionId: result.sessionId,
-          title: params.title || params.task.slice(0, 60),
-          task: params.task,
-          projectPath: ctx.cwd,
-          dispatchedAt: Date.now(),
-          status: "idle",
-        });
+      if (!result.sessionId) {
+        return {
+          content: [{ type: "text" as const, text: `Failed to delegate task: no sessionId returned.` }],
+          details: { error: "no sessionId" },
+        };
       }
 
       return {
-        content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}). Use session_delegate_send to communicate.` }],
-        details: { ...result, dispatchedBy: sid },
+        content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Use session_delegate_send to communicate.` }],
+        details: { ...result, dispatchedBy: sid, projectPath },
       };
     },
   });
@@ -212,9 +232,6 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     parameters: DelegateStopParams,
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
       const ok = await serverProxy.delegate_stop(params.sessionId);
-      if (ok && store) {
-        store.update(params.sessionId, { status: "stopped" });
-      }
       return {
         content: [{ type: "text" as const, text: ok ? `Session ${params.sessionId} stopped.` : `Session ${params.sessionId} not found or already stopped.` }],
         details: { ok },
@@ -228,25 +245,52 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     description: [
       "Fork an existing session and delegate a new task to the forked session.",
       "The forked session starts with a copy of the source session's conversation history.",
+      "Optionally specify a projectPath to run the forked session in a specific project directory.",
       "The original session continues running unchanged.",
     ].join(" "),
     parameters: DelegateForkParams,
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       const sid = currentSessionId || ctx.sessionManager.getSessionId();
-      const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title);
-      if (store) {
-        store.add({
-          sessionId: result.sessionId,
-          title: params.title || params.task.slice(0, 60),
-          task: params.task,
-          projectPath: ctx.cwd,
-          dispatchedAt: Date.now(),
-          status: "idle",
-        });
-      }
+      const projectPath = params.projectPath || ctx.cwd;
+      const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title, projectPath);
       return {
-        content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}). Task: ${params.task}` }],
-        details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid },
+        content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Task: ${params.task}` }],
+        details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid, projectPath },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_remove",
+    label: "Session Delegate Remove",
+    description: [
+      "Remove a delegated task from the task list.",
+      "Stops the session if still running, then removes the task entry.",
+      "Use this to clean up completed, stopped, or zombie tasks.",
+    ].join(" "),
+    parameters: DelegateStatusParams,
+    async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+      const ok = await serverProxy.delegate_remove(params.sessionId);
+      return {
+        content: [{ type: "text" as const, text: ok ? `Task ${params.sessionId} removed.` : `Task ${params.sessionId} not found.` }],
+        details: { ok },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_clear_stopped",
+    label: "Session Delegate Clear Stopped",
+    description: [
+      "Remove all stopped and completed tasks from the task list.",
+      "Use this to clean up accumulated zombie tasks.",
+    ].join(" "),
+    parameters: Type.Object({}),
+    async execute(toolCallId, _params, _signal, _onUpdate, _ctx) {
+      const removed = await serverProxy.delegate_clear_stopped();
+      return {
+        content: [{ type: "text" as const, text: `Cleared ${removed} stopped/completed task(s).` }],
+        details: { removed },
       };
     },
   });
@@ -256,9 +300,31 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     // Skip messages from sessions that have been stopped
     const task = store?.get(d.fromSessionId);
     if (task?.status === "stopped") return;
-    pi.sendUserMessage(
-      `[Coordinator] Message from session ${d.fromSessionId}:\n${d.message}`,
-      { deliverAs: "followUp" },
-    );
+
+    // Detect completion signals from delegated sessions
+    if (store && task) {
+      const lowerMsg = d.message.toLowerCase();
+      const isCompletion = lowerMsg.includes("[completed]") || lowerMsg.includes("[done]") || lowerMsg.includes("task completed");
+      if (isCompletion) {
+        store.update(d.fromSessionId, { status: "completed", completedAt: Date.now(), result: d.message });
+      } else if (task.status !== "completed") {
+        store.update(d.fromSessionId, { status: "streaming" });
+      }
+    }
+
+    try {
+      pi.sendUserMessage(
+        `[Coordinator] Message from session ${d.fromSessionId}:\n${d.message}`,
+        { deliverAs: "followUp" },
+      );
+    } catch (err) {
+      // Silently ignore stale-ctx errors: the extension runtime may have been
+      // invalidated by a concurrent session replacement or reload. The new
+      // runtime's handler will take over.
+      if (err instanceof Error && err.message.includes("stale")) {
+        return;
+      }
+      throw err;
+    }
   });
 }

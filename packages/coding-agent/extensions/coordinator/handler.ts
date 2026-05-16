@@ -9,8 +9,10 @@ export interface ProcessManagerApi {
 	delegate_status(sessionId: string): Promise<{ status: SessionStatus }>;
 	delegate_list(): Promise<Array<{ sessionId: string; status: SessionStatus; projectPath: string }>>;
 	delegate_stop(sessionId: string): Promise<boolean>;
-	delegate_fork(sessionId: string, task: string, title?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
+	delegate_fork(sessionId: string, task: string, title?: string, projectPath?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
 	delegate_compact_status(sessionId: string): Promise<{ isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } }>;
+	delegate_remove(sessionId: string): Promise<boolean>;
+	delegate_clear_stopped(): Promise<number>;
 }
 
 export class TaskStore {
@@ -43,6 +45,9 @@ export class TaskStore {
 	}
 
 	add(task: DelegatedTask): void {
+		if (!task.sessionId) {
+			throw new Error("[coordinator] cannot add task with empty sessionId");
+		}
 		this.tasks.set(task.sessionId, task);
 		this.save();
 	}
@@ -67,15 +72,35 @@ export class TaskStore {
 		return Array.from(this.tasks.values());
 	}
 
+	clearStopped(): number {
+		let removed = 0;
+		for (const [id, task] of this.tasks) {
+			if (task.status === "stopped" || task.status === "completed") {
+				this.tasks.delete(id);
+				removed++;
+			}
+		}
+		if (removed > 0) this.save();
+		return removed;
+	}
+
 	buildPrompt(): string {
-		const tasks = this.list();
+		const FINISHED_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+		const now = Date.now();
+		const tasks = this.list().filter((t) => {
+			if ((t.status === "stopped" || t.status === "completed") && t.completedAt && now - t.completedAt > FINISHED_MAX_AGE_MS) {
+				return false;
+			}
+			return true;
+		});
 		if (tasks.length === 0) return "";
 
 		const lines = ["## Delegated Tasks", ""];
 		for (const t of tasks) {
 			const status = t.status === "completed" ? "DONE" : t.status === "stopped" ? "STOPPED" : t.status.toUpperCase();
-			const compactTag = (t as any).isCompacting ? " COMPACTING" : "";
-			const ctxTag = (t as any).contextUsage?.percent != null ? ` ctx:${Math.round((t as any).contextUsage.percent)}%` : "";
+			const compactTag = (t as Record<string, unknown>).isCompacting ? " COMPACTING" : "";
+			const ctxUsage = (t as Record<string, unknown>).contextUsage as { percent: number | null } | undefined;
+			const ctxTag = ctxUsage?.percent != null ? ` ctx:${Math.round(ctxUsage.percent)}%` : "";
 			const elapsed = t.completedAt
 				? `${((t.completedAt - t.dispatchedAt) / 1000).toFixed(1)}s`
 				: `${((Date.now() - t.dispatchedAt) / 1000).toFixed(0)}s elapsed`;
@@ -96,9 +121,19 @@ export function createCoordinatorHandler(
 	getStore: () => TaskStore,
 ): void {
 	channel.handle("session_delegate", async (params: unknown) => {
-		const { task, title } = params as { task: string; title?: string };
-		const projectPath = process.cwd();
-		const result = await pm.delegate(task, projectPath);
+		const { task, title, projectPath: rawProjectPath } = params as { task: string; title?: string; projectPath?: string };
+		const projectPath = rawProjectPath || process.cwd();
+
+		let result: { sessionId: string; status: "started" | "already_running" };
+		try {
+			result = await pm.delegate(task, projectPath);
+		} catch (err) {
+			return { __error: err instanceof Error ? err.message : String(err) };
+		}
+
+		if (!result.sessionId) {
+			return { __error: "[coordinator] delegate failed: no sessionId returned" };
+		}
 
 		getStore().add({
 			sessionId: result.sessionId,
@@ -126,7 +161,7 @@ export function createCoordinatorHandler(
 			const store = getStore();
 			const task = store.get(targetSessionId);
 			if (task && task.status === "stopped") {
-				store.update(targetSessionId, { status: "idle" });
+				store.update(targetSessionId, { status: "idle", completedAt: undefined });
 			}
 		}
 
@@ -160,20 +195,51 @@ export function createCoordinatorHandler(
 		const { sessionId } = params as { sessionId: string };
 		const ok = await pm.delegate_stop(sessionId);
 		if (ok) {
-			getStore().update(sessionId, { status: "stopped" });
+			const store = getStore();
+			store.update(sessionId, { status: "stopped", completedAt: Date.now() });
 			channel.emit("task_stopped", { sessionId });
 		}
 		return { ok };
 	});
 
+	channel.handle("session_delegate_remove", async (params: unknown) => {
+		const { sessionId } = params as { sessionId: string };
+		const store = getStore();
+		const task = store.get(sessionId);
+		if (!task) {
+			return { ok: false };
+		}
+		await pm.delegate_stop(sessionId).catch(() => {});
+		store.remove(sessionId);
+		return { ok: true };
+	});
+
+	channel.handle("session_delegate_clear_stopped", async () => {
+		const store = getStore();
+		const removed = store.clearStopped();
+		return { removed };
+	});
+
 	channel.handle("session_delegate_fork", async (params: unknown) => {
-		const { sessionId, task, title } = params as { sessionId: string; task: string; title?: string };
-		const result = await pm.delegate_fork(sessionId, task, title);
+		const { sessionId, task, title, projectPath: rawProjectPath } = params as { sessionId: string; task: string; title?: string; projectPath?: string };
+		const projectPath = rawProjectPath || process.cwd();
+
+		let result: { sessionId: string; status: "started" | "already_running" };
+		try {
+			result = await pm.delegate_fork(sessionId, task, title, projectPath);
+		} catch (err) {
+			return { __error: err instanceof Error ? err.message : String(err) };
+		}
+
+		if (!result.sessionId) {
+			return { __error: "[coordinator] fork failed: no sessionId returned" };
+		}
+
 		getStore().add({
 			sessionId: result.sessionId,
 			title: title || task.slice(0, 60),
 			task,
-			projectPath: process.cwd(),
+			projectPath,
 			dispatchedAt: Date.now(),
 			status: "idle",
 		});
