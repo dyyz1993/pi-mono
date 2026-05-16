@@ -11,7 +11,7 @@ export interface DiagnosticsMode {
 }
 
 export function createDiagnosticsMode(initial?: DiagnosticsModeName): DiagnosticsMode {
-	let current: DiagnosticsModeName = VALID_MODES.includes(initial!) ? initial! : "agent_end";
+	let current: DiagnosticsModeName = VALID_MODES.includes(initial!) ? initial! : "edit_write";
 	const touchedFiles: string[] = [];
 	const touchedSet = new Set<string>();
 

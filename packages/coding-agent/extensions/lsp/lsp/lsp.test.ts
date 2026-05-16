@@ -326,7 +326,7 @@ describe("lsp extension", () => {
 		it("shows current mode when called without args", async () => {
 			const { handler, notify } = await getLspCommandHandler();
 			await handler("", { ui: { notify } });
-			expect(notify).toHaveBeenCalledWith(expect.stringContaining("agent_end"), "info");
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("edit_write"), "info");
 		});
 
 		it("switches to valid mode", async () => {
@@ -390,9 +390,9 @@ describe("lsp extension", () => {
 });
 
 describe("diagnostics-mode", () => {
-	it("defaults to agent_end", () => {
+	it("defaults to edit_write", () => {
 		const mode = createDiagnosticsMode();
-		expect(mode.get()).toBe("agent_end");
+		expect(mode.get()).toBe("edit_write");
 	});
 
 	it("set changes the mode", () => {
@@ -405,9 +405,9 @@ describe("diagnostics-mode", () => {
 
 	it("ignores invalid mode", () => {
 		const mode = createDiagnosticsMode();
-		mode.set("agent_end");
+		mode.set("edit_write");
 		mode.set("bogus" as DiagnosticsModeName);
-		expect(mode.get()).toBe("agent_end");
+		expect(mode.get()).toBe("edit_write");
 	});
 
 	it("tracks touched files without duplicates", () => {
@@ -432,7 +432,7 @@ describe("diagnostics-mode", () => {
 
 	it("ignores invalid initial mode", () => {
 		const mode = createDiagnosticsMode("bogus" as DiagnosticsModeName);
-		expect(mode.get()).toBe("agent_end");
+		expect(mode.get()).toBe("edit_write");
 	});
 });
 
