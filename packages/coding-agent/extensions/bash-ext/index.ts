@@ -362,6 +362,12 @@ export default function (pi: ExtensionAPI) {
 
 				const { child, cleanup: spawnCleanup, isTimedOut } = spawnResult;
 
+			// Immediately send EOF on stdin so CLI tools that read stdin (e.g. xbrowser readStdin())
+			// don't hang forever waiting for input. Interactive stdin is handled via write_stdin channel.
+			if (child.stdin && !child.stdin.destroyed) {
+				child.stdin.end();
+			}
+
 				const proc: BashProcess = {
 					bashId,
 					toolCallId,
