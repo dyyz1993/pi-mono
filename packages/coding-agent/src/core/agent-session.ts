@@ -1098,8 +1098,11 @@ export class AgentSession {
 		}
 
 		if (agent.systemPrompt) {
-			// Rebuild base prompt with filtered tools, then append agent-specific prompt
-			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames()) + "\n\n" + agent.systemPrompt;
+			// Rebuild prompt with agent system prompt inserted between base and tools
+			this._baseSystemPrompt = this._rebuildSystemPrompt(
+				this.getActiveToolNames(),
+				agent.systemPrompt,
+			);
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 	}
@@ -1186,7 +1189,7 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 
-	private _rebuildSystemPrompt(toolNames: string[]): string {
+	private _rebuildSystemPrompt(toolNames: string[], agentSystemPrompt?: string): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
@@ -1215,6 +1218,7 @@ export class AgentSession {
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
+			agentSystemPrompt,
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,

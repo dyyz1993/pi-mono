@@ -16,6 +16,8 @@ export interface BuildSystemPromptOptions {
 	promptGuidelines?: string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
+	/** Agent-specific system prompt, inserted between base prompt and tool docs. */
+	agentSystemPrompt?: string;
 	/** Working directory. */
 	cwd: string;
 	/** Pre-loaded context files. */
@@ -32,6 +34,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		toolSnippets,
 		promptGuidelines,
 		appendSystemPrompt,
+		agentSystemPrompt,
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
@@ -128,8 +131,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	const agentSection = agentSystemPrompt ? `\n\n${agentSystemPrompt}\n` : "";
 
+	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+${agentSection}
 Available tools:
 ${toolsList}
 
