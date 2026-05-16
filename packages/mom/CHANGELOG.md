@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Restored missing source files (`log.ts`, `sandbox.ts`, `slack.ts`, `store.ts`, `main.ts`, `download.ts`, `events.ts`, `fs-watch.ts`, `tools/truncate.ts`) from commit before package removal.
+- Added `tsconfig.build.json` and `.gitignore` to enable TypeScript compilation.
+- Removed `npm run clean` from `prepublishOnly` to prevent build failures during parallel workspace publish.
+
 ## [0.74.15] - 2026-05-11
 
 ## [0.74.12] - 2026-05-11
