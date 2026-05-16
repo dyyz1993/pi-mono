@@ -10,6 +10,14 @@ const DEFAULT_INITIAL_DELAY_MS = 500;
 const DEFAULT_POLL_INTERVAL_MS = 300;
 const DEFAULT_MAX_WAIT_MS = 2500;
 
+/**
+ * Wait for the LSP server to push fresh diagnostics for a file after a didOpen
+ * notification. The caller should clear stale diagnostics before calling this.
+ *
+ * We always wait at least one poll cycle after the initial delay so the LSP
+ * server has time to re-analyze the file, even if diagnostics from a previous
+ * analysis are still present.
+ */
 export async function waitForPushDiagnostics(
 	runtime: LspRuntimeRegistry,
 	filePath: string,
@@ -22,17 +30,11 @@ export async function waitForPushDiagnostics(
 	await sleep(initialDelayMs);
 
 	const start = Date.now();
-	let previousCount = runtime.getPublishedDiagnostics(filePath).length;
-
-	if (previousCount > 0) return;
 
 	while (Date.now() - start < maxWaitMs) {
-		await sleep(pollIntervalMs);
 		const currentCount = runtime.getPublishedDiagnostics(filePath).length;
 		if (currentCount > 0) return;
-		if (currentCount !== previousCount) {
-			previousCount = currentCount;
-		}
+		await sleep(pollIntervalMs);
 	}
 }
 

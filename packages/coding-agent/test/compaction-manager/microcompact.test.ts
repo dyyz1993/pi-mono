@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ToolResultMessage } from "@dyyz1993/pi-ai";
 import { describe, expect, it } from "vitest";
-import { microcompactMessages } from "../../extensions/compaction-manager/microcompact.js";
+import { microcompactMessages, stripThinkingBlocks } from "../../extensions/compaction-manager/microcompact.js";
 
 function makeToolResult(toolName: string, text: string, ageMs: number): ToolResultMessage {
 	return {
@@ -125,5 +125,146 @@ describe("microcompactMessages", () => {
 		);
 		expect((result!.messages[1] as ToolResultMessage).content).toEqual((messages[1] as ToolResultMessage).content);
 		expect((result!.messages[2] as ToolResultMessage).content).toEqual((messages[2] as ToolResultMessage).content);
+	});
+});
+
+describe("stripThinkingBlocks", () => {
+	it("returns undefined for empty array", () => {
+		expect(stripThinkingBlocks([])).toBeUndefined();
+	});
+
+	it("returns undefined for messages without thinking blocks", () => {
+		const messages: AgentMessage[] = [
+			{ role: "assistant", content: [{ type: "text", text: "hello" }] } as AgentMessage,
+		];
+		expect(stripThinkingBlocks(messages)).toBeUndefined();
+	});
+
+	it("returns undefined for non-assistant messages", () => {
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "hello" } as AgentMessage,
+			{ role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "ok" }], isError: false, timestamp: Date.now() } as AgentMessage,
+		];
+		expect(stripThinkingBlocks(messages)).toBeUndefined();
+	});
+
+	it("returns undefined for assistant messages with non-array content (string content)", () => {
+		const messages: AgentMessage[] = [
+			{ role: "assistant", content: "just a string" } as unknown as AgentMessage,
+		];
+		expect(stripThinkingBlocks(messages)).toBeUndefined();
+	});
+
+	it("strips thinking blocks from a single assistant message, keeps text blocks", () => {
+		const messages: AgentMessage[] = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", text: "let me think..." },
+					{ type: "text", text: "here is the answer" },
+				],
+			} as AgentMessage,
+		];
+
+		const result = stripThinkingBlocks(messages);
+		expect(result).toBeDefined();
+		expect(result!.messages).toHaveLength(1);
+		expect((result!.messages[0] as { content: { type: string; text: string }[] }).content).toEqual([
+			{ type: "text", text: "here is the answer" },
+		]);
+	});
+
+	it("strips thinking blocks from multiple assistant messages", () => {
+		const messages: AgentMessage[] = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", text: "thinking 1" },
+					{ type: "text", text: "answer 1" },
+				],
+			} as AgentMessage,
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", text: "thinking 2" },
+					{ type: "text", text: "answer 2" },
+				],
+			} as AgentMessage,
+		];
+
+		const result = stripThinkingBlocks(messages);
+		expect(result).toBeDefined();
+		expect(result!.messages).toHaveLength(2);
+		for (const msg of result!.messages) {
+			const content = (msg as { content: { type: string }[] }).content;
+			expect(content).toHaveLength(1);
+			expect(content[0].type).toBe("text");
+		}
+	});
+
+	it("only modifies assistant messages, leaves user/toolResult messages untouched", () => {
+		const toolResult: AgentMessage = {
+			role: "toolResult",
+			toolCallId: "c1",
+			toolName: "bash",
+			content: [{ type: "text", text: "output" }],
+			isError: false,
+			timestamp: Date.now(),
+		} as AgentMessage;
+
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "question" } as AgentMessage,
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", text: "hmm" },
+					{ type: "text", text: "response" },
+				],
+			} as AgentMessage,
+			toolResult,
+		];
+
+		const result = stripThinkingBlocks(messages);
+		expect(result).toBeDefined();
+		expect(result!.messages[0]).toEqual(messages[0]);
+		expect(result!.messages[2]).toEqual(toolResult);
+		expect((result!.messages[1] as { content: { type: string }[] }).content).toEqual([
+			{ type: "text", text: "response" },
+		]);
+	});
+
+	it("strips only thinking blocks, keeps toolCall and text blocks", () => {
+		const messages: AgentMessage[] = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", text: "planning..." },
+					{ type: "text", text: "I will do X" },
+					{ type: "tool_call", id: "tc1", name: "bash", arguments: "{}" },
+				],
+			} as unknown as AgentMessage,
+		];
+
+		const result = stripThinkingBlocks(messages);
+		expect(result).toBeDefined();
+		const content = (result!.messages[0] as { content: { type: string }[] }).content;
+		expect(content).toHaveLength(2);
+		expect(content.map((b: { type: string }) => b.type)).toEqual(["text", "tool_call"]);
+	});
+
+	it("handles assistant message with ONLY thinking blocks (content becomes empty array)", () => {
+		const messages: AgentMessage[] = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", text: "only thinking" },
+					{ type: "thinking", text: "more thinking" },
+				],
+			} as AgentMessage,
+		];
+
+		const result = stripThinkingBlocks(messages);
+		expect(result).toBeDefined();
+		expect((result!.messages[0] as { content: unknown[] }).content).toEqual([]);
 	});
 });

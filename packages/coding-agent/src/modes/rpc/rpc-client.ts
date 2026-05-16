@@ -581,6 +581,20 @@ export class RpcClient {
 		return this.getData<{ agentName: string | null }>(response);
 	}
 
+	async getAgentDetail(agentName: string): Promise<{ agent: import("../../core/agent-types.js").AgentConfig }> {
+		const response = await this.send({ type: "get_agent_detail", agentName });
+		return this.getData<{ agent: import("../../core/agent-types.js").AgentConfig }>(response);
+	}
+
+	async getAllTools(): Promise<{
+		tools: Array<{ name: string; description?: string; sourceInfo?: unknown }>;
+	}> {
+		const response = await this.send({ type: "get_all_tools" });
+		return this.getData<{
+			tools: Array<{ name: string; description?: string; sourceInfo?: unknown }>;
+		}>(response);
+	}
+
 	async setCwd(cwd: string): Promise<void> {
 		await this.send({ type: "set_cwd", cwd });
 	}

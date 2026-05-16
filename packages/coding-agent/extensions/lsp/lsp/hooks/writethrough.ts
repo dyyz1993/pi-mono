@@ -91,6 +91,7 @@ export function createWriteThroughHooks(
 		}
 
 		try {
+			runtime.clearPublishedDiagnostics(filePath);
 			const fileContent = await fsReadFile(resolve(cwd, filePath), "utf8");
 			runtime.notify(
 				"textDocument/didOpen",

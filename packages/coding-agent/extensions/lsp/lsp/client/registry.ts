@@ -35,6 +35,7 @@ export interface LspRuntimeRegistry {
 	requestAll(method: string, params: unknown, options?: LspRuntimeRegistryRequestOptions): Promise<unknown[]>;
 	notify(method: string, params: unknown, options?: LspRuntimeRegistryRequestOptions): void;
 	getPublishedDiagnostics(filePath?: string): LspDiagnostic[];
+	clearPublishedDiagnostics(filePath: string): void;
 	getStatus(): LspRuntimeRegistryStatus;
 	getStatusForPath(filePath: string): ReturnType<LspClientRuntime["getStatus"]> | undefined;
 }
@@ -187,6 +188,12 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 				diagnostics.push(...runtime.getPublishedDiagnostics());
 			}
 			return diagnostics;
+		},
+
+		clearPublishedDiagnostics(filePath: string): void {
+			for (const { runtime } of entries.values()) {
+				runtime.clearPublishedDiagnostics(filePath);
+			}
 		},
 
 		getStatus(): LspRuntimeRegistryStatus {

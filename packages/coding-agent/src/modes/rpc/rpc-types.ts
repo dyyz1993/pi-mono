@@ -12,6 +12,7 @@ import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { Settings } from "../../core/settings-manager.js";
 import type { SourceInfo } from "../../core/source-info.js";
+import type { AgentConfig } from "../../core/agent-types.js";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -128,6 +129,8 @@ export type RpcCommand =
 	| { id?: string; type: "get_agents" }
 	| { id?: string; type: "switch_agent"; agentName: string }
 	| { id?: string; type: "get_current_agent" }
+	| { id?: string; type: "get_agent_detail"; agentName: string }
+	| { id?: string; type: "get_all_tools" }
 
 	// Remote tools
 	| { id?: string; type: "register_remote_tool"; tool: { name: string; description: string; parameters: object } }
@@ -628,6 +631,26 @@ export type RpcResponse =
 			command: "get_current_agent";
 			success: true;
 			data: { agentName: string | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_agent_detail";
+			success: true;
+			data: { agent: AgentConfig };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_all_tools";
+			success: true;
+			data: {
+				tools: Array<{
+					name: string;
+					description?: string;
+					sourceInfo?: SourceInfo;
+				}>;
+			};
 	  }
 
 	// Remote tools

@@ -92,6 +92,7 @@ export interface LspClientRuntime {
 	request(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
 	notify(method: string, params: unknown): void;
 	getPublishedDiagnostics(filePath?: string): LspDiagnostic[];
+	clearPublishedDiagnostics(filePath: string): void;
 	getStatus(): LspRuntimeStatus;
 }
 
@@ -219,6 +220,12 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 				allDiagnostics.push(...diagnostics);
 			}
 			return allDiagnostics;
+		},
+
+		clearPublishedDiagnostics(filePath: string): void {
+			const uri = pathToFileURL(resolve(cwd, filePath)).href;
+			diagnosticsByUri.delete(uri);
+			status.diagnosticsCount = countDiagnostics(diagnosticsByUri);
 		},
 
 		getStatus(): LspRuntimeStatus {

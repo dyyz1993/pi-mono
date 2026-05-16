@@ -1068,6 +1068,28 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_current_agent", { agentName: currentAgent });
 			}
 
+			case "get_agent_detail": {
+				const agentName = (command as { agentName: string }).agentName;
+				const discovery = discoverAgents(runtimeHost.cwd, "both");
+				const builtin = getBuiltinAgents();
+				const agent = [...builtin, ...discovery.agents].find((a) => a.name === agentName);
+				if (!agent) {
+					return error(id, "get_agent_detail", `Agent "${agentName}" not found`);
+				}
+				return success(id, "get_agent_detail", { agent });
+			}
+
+			case "get_all_tools": {
+				const allTools = session.getAllTools();
+				return success(id, "get_all_tools", {
+					tools: allTools.map((t) => ({
+						name: t.name,
+						description: t.description,
+						sourceInfo: t.sourceInfo,
+					})),
+				});
+			}
+
 			case "get_modified_files": {
 				const fileSnapshotManager = (session as any).fileSnapshotManager;
 				if (!fileSnapshotManager) {
