@@ -73,20 +73,21 @@ type BashToolDetails = _BashToolDetails & {
 };
 
 const DEFAULT_TIMEOUT_SECONDS = 300;
-const DEFAULT_BACKGROUND_AFTER_SECONDS = 120;
+const MAX_TIMEOUT_SECONDS = 14400; // 4 hours — foreground commands shouldn't run longer
+const DEFAULT_BACKGROUND_AFTER_SECONDS = 600;
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
 	description: Type.String({ description: "Clear, concise description of what this command does in 5-10 words" }),
 	timeout: Type.Optional(
 		Type.Number({
-			description: `Hard timeout in seconds. Process is killed if still running after this duration. Defaults to ${DEFAULT_TIMEOUT_SECONDS}s (5 minutes). Acts as a safety net to prevent zombie processes.`,
+			description: `Hard timeout in seconds (max ${MAX_TIMEOUT_SECONDS}s = 4h). Process is killed if still running after this duration. Defaults to ${DEFAULT_TIMEOUT_SECONDS}s (5 minutes). Acts as a safety net to prevent zombie processes.`,
 		}),
 	),
 	backgroundAfter: Type.Optional(
 		Type.Number({
 			description:
-				"Soft limit in seconds. If the command runs longer than this, it is automatically moved to background instead of blocking the agent. The process continues running; the agent receives a background notification and can proceed with other work. Must be less than timeout if both are set. Use for long-running tasks like builds or installs where you want the agent to stay productive.",
+				`Soft limit in seconds. If the command runs longer than this, it is automatically moved to background instead of blocking the agent. Default: ${DEFAULT_BACKGROUND_AFTER_SECONDS}s (10 min). Must be less than timeout if set. Use for long-running tasks where the agent should stay productive.`,
 		}),
 	),
 	cwd: Type.Optional(
@@ -317,8 +318,8 @@ export default function (pi: ExtensionAPI) {
 			`Execute a bash command. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file.`,
 			"",
 			"Timeout and background behavior:",
-			`- timeout: Hard limit in seconds. Process is killed after this duration. Default: ${DEFAULT_TIMEOUT_SECONDS}s (5 min). This is a safety net — always present.`,
-			"- backgroundAfter: Soft limit in seconds. If the command runs longer, it is automatically moved to background. The process keeps running, the agent receives a notification and can continue other work.",
+			`- timeout: Hard limit in seconds. Process is killed after this duration. Default: ${DEFAULT_TIMEOUT_SECONDS}s (5 min). Max: ${MAX_TIMEOUT_SECONDS}s (4h). This is a safety net — always present.`,
+			"- backgroundAfter: Soft limit in seconds. If the command runs longer, it is automatically moved to background. Default: ${DEFAULT_BACKGROUND_AFTER_SECONDS}s (10 min). The process keeps running, the agent receives a notification and can continue other work.",
 			"- If backgroundAfter < timeout: command goes to background first, then gets killed if it reaches timeout.",
 			"- If backgroundAfter >= timeout (or not set): command runs until timeout, then gets killed.",
 			"",
@@ -341,7 +342,7 @@ export default function (pi: ExtensionAPI) {
 			_ctx?: ExtensionContext,
 		): Promise<AgentToolResult<BashToolDetails>> {
 			return new Promise((resolve, reject) => {
-			const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
+			const effectiveTimeout = Math.min(timeout ?? DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
 			const rawBackgroundAfter = backgroundAfter ?? DEFAULT_BACKGROUND_AFTER_SECONDS;
 			const effectiveBackgroundAfter = rawBackgroundAfter < effectiveTimeout ? rawBackgroundAfter : undefined;
 				const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
