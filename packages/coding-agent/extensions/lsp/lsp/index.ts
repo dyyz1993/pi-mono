@@ -71,15 +71,21 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			})),
 		}));
 
-		pi.sendMessage(
-			{
-				customType: "lsp_diagnostics",
-				content: `[LSP] Post-edit diagnostics found issues in ${results.length} file(s): ${summary}.\nPlease review and fix the issues listed below.`,
-				display: true,
-				details: { files: fileSummaries },
-			},
-			{ triggerTurn: true },
-		);
+		try {
+			pi.sendMessage(
+				{
+					customType: "lsp_diagnostics",
+					content: `[LSP] Post-edit diagnostics found issues in ${results.length} file(s): ${summary}.\nPlease review and fix the issues listed below.`,
+					display: true,
+					details: { files: fileSummaries },
+				},
+				{ triggerTurn: true },
+			);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes("stale")) return;
+			throw err;
+		}
 	});
 
 	let idleCleanupTimer: ReturnType<typeof setTimeout> | undefined;

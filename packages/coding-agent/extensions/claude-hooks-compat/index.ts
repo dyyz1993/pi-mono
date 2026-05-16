@@ -123,13 +123,18 @@ export default function (pi: ExtensionAPI) {
 				if (isAsync && hookEventName === "PreToolUse") {
 					const runner = getCallLLM(pi);
 					runHandler(handler, stdinData, ctx, runner).then((output) => {
-						const result = interpretHookOutput(output);
-						if (handler.asyncRewake && output.exitCode === 2 && result.reason) {
-							pi.sendMessage({
-								customType: "hook_async_block",
-								content: result.reason,
-								display: true,
-							});
+						try {
+							const result = interpretHookOutput(output);
+							if (handler.asyncRewake && output.exitCode === 2 && result.reason) {
+								pi.sendMessage({
+									customType: "hook_async_block",
+									content: result.reason,
+									display: true,
+								});
+							}
+						} catch (e) {
+							const msg = e instanceof Error ? e.message : String(e);
+							if (!/stale/i.test(msg)) console.debug("[hooks-compat] async handler failed:", msg);
 						}
 					});
 					continue;

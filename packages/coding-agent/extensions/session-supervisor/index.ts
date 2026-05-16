@@ -369,14 +369,20 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
 
             currentState = "continuing";
             emitStatusChanged();
-            pi.sendMessage(
-                {
-                    customType: "supervisor_continue",
-                    content: continueMessage,
-                    display: true,
-                },
-                { triggerTurn: true },
-            );
+            try {
+                pi.sendMessage(
+                    {
+                        customType: "supervisor_continue",
+                        content: continueMessage,
+                        display: true,
+                    },
+                    { triggerTurn: true },
+                );
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (/stale|abort/i.test(msg)) return;
+                throw err;
+            }
         });
     }
 

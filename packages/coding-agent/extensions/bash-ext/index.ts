@@ -174,14 +174,18 @@ export default function(pi: ExtensionAPI) {
       if (m.logStream) m.logStream.end();
     }
 
-    const rawChannel = pi.registerChannel(BASH_CHANNEL_NAME);
-    channel = createTypedChannel<BashChannelContract>(rawChannel).server;
+    try {
+      const rawChannel = pi.registerChannel(BASH_CHANNEL_NAME);
+      channel = createTypedChannel<BashChannelContract>(rawChannel).server;
+    } catch {
+      // registerChannel only available in RPC mode — skip in interactive mode
+    }
     managed.clear();
     history.length = 0;
     deletedIds.clear();
-    channel.emit("list", { type: "list", processes: [], timestamp: Date.now() });
+    channel?.emit("list", { type: "list", processes: [], timestamp: Date.now() });
 
-    channel.handle("list", () => {
+    channel?.handle("list", () => {
       const activeBg = Array.from(managed.values())
         .filter((m) => m.backgrounded)
         .map((m) => m.proc);
@@ -193,7 +197,7 @@ export default function(pi: ExtensionAPI) {
       };
     });
 
-    channel.handle("kill", ({ toolCallId }) => {
+    channel?.handle("kill", ({ toolCallId }) => {
       if (!toolCallId) return { ok: false, reason: "not_found" };
       const m = managed.get(toolCallId);
       if (!m) {
@@ -245,7 +249,7 @@ export default function(pi: ExtensionAPI) {
       return { ok: true };
     });
 
-    channel.handle("background", ({ toolCallId }) => {
+    channel?.handle("background", ({ toolCallId }) => {
       if (!toolCallId) return { ok: false, reason: "not_found" };
       const m = managed.get(toolCallId);
       if (!m) {
@@ -295,19 +299,19 @@ export default function(pi: ExtensionAPI) {
       return { ok: true };
     });
 
-    channel.handle("subscribe_output", ({ toolCallId }) => {
+    channel?.handle("subscribe_output", ({ toolCallId }) => {
       if (!toolCallId) return;
       const m = managed.get(toolCallId);
       if (m?.backgrounded) m.outputSubscribed = true;
     });
 
-    channel.handle("unsubscribe_output", ({ toolCallId }) => {
+    channel?.handle("unsubscribe_output", ({ toolCallId }) => {
       if (!toolCallId) return;
       const m = managed.get(toolCallId);
       if (m) m.outputSubscribed = false;
     });
 
-    channel.handle("remove", ({ toolCallId }) => {
+    channel?.handle("remove", ({ toolCallId }) => {
       if (!toolCallId) return;
       deletedIds.add(toolCallId);
       managed.delete(toolCallId);
@@ -315,7 +319,7 @@ export default function(pi: ExtensionAPI) {
       if (idx >= 0) history.splice(idx, 1);
     });
 
-    channel.handle("write_stdin", ({ toolCallId, data }) => {
+    channel?.handle("write_stdin", ({ toolCallId, data }) => {
       if (!toolCallId || !data) return;
       const m = managed.get(toolCallId);
       if (m?.stdin && !m.stdin.destroyed) {
@@ -542,7 +546,9 @@ export default function(pi: ExtensionAPI) {
                   { deliverAs: "followUp" },
                 );
               } catch (err) {
-                console.debug("[bash-ext] background exit notification failed:", err instanceof Error ? err.message : err);
+                const msg = err instanceof Error ? err.message : String(err);
+                if (msg.includes("stale")) return;
+                console.debug("[bash-ext] background exit notification failed:", msg);
               }
               return;
             }
@@ -704,8 +710,10 @@ export default function(pi: ExtensionAPI) {
                   `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) crashed: ${err.message}${proc.logPath ? `. Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
                   { deliverAs: "followUp" },
                 );
-              } catch (err) {
-                console.debug("[bash-ext] background crash notification failed:", err instanceof Error ? err.message : err);
+              } catch (innerErr) {
+                const msg = innerErr instanceof Error ? innerErr.message : String(innerErr);
+                if (msg.includes("stale")) return;
+                console.debug("[bash-ext] background crash notification failed:", msg);
               }
               return;
             }

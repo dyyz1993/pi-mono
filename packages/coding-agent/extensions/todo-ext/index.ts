@@ -84,9 +84,13 @@ export default function (pi: ExtensionAPI) {
 	let channel: ServerChannel<TodoChannelContract> | null = null;
 
 	pi.on("session_start", async (_event, ctx) => {
-		const rawChannel = pi.registerChannel(TODO_CHANNEL_NAME);
-		const typed = createTypedChannel<TodoChannelContract>(rawChannel);
-		channel = typed.server;
+		try {
+			const rawChannel = pi.registerChannel(TODO_CHANNEL_NAME);
+			const typed = createTypedChannel<TodoChannelContract>(rawChannel);
+			channel = typed.server;
+		} catch {
+			// registerChannel only available in RPC mode — skip in interactive mode
+		}
 
 		todos = [];
 		nextId = 1;

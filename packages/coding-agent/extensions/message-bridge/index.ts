@@ -139,6 +139,7 @@ export default function messageBridgeExtension(pi: any) {
 
 	pi.on("ui", async (event: any, ctx: any) => {
 		if (event.method === "notify") {
+			if (event.message == null) return undefined;
 			pushAndWait(event.message, sessionId).catch((err) => console.debug("[message-bridge] notify push failed:", err instanceof Error ? err.message : err));
 			return undefined;
 		}
@@ -148,7 +149,7 @@ export default function messageBridgeExtension(pi: any) {
 			pushAndWait(question, sessionId)
 				.then((answer) => {
 					const confirmed = parseConfirmAnswer(answer);
-					ctx.respondUI(event.id, { action: "responded", confirmed });
+					try { ctx.respondUI(event.id, { action: "responded", confirmed }); } catch (e) { if (!/stale/i.test(e instanceof Error ? e.message : "")) throw e; }
 				})
 				.catch((err) => console.debug("[message-bridge] confirm push failed:", err instanceof Error ? err.message : err));
 			return undefined;
@@ -160,13 +161,15 @@ export default function messageBridgeExtension(pi: any) {
 			const question = buildSelectQuestion(event.title, options, multiple);
 			pushAndWait(question, sessionId)
 				.then((answer) => {
-					if (multiple) {
-						const values = parseMultiSelectAnswer(answer, options);
-						ctx.respondUI(event.id, { action: "responded", value: values });
-					} else {
-						const value = parseSelectAnswer(answer);
-						ctx.respondUI(event.id, { action: "responded", value });
-					}
+					try {
+						if (multiple) {
+							const values = parseMultiSelectAnswer(answer, options);
+							ctx.respondUI(event.id, { action: "responded", value: values });
+						} else {
+							const value = parseSelectAnswer(answer);
+							ctx.respondUI(event.id, { action: "responded", value });
+						}
+					} catch (e) { if (!/stale/i.test(e instanceof Error ? e.message : "")) throw e; }
 				})
 				.catch((err) => console.debug("[message-bridge] select push failed:", err instanceof Error ? err.message : err));
 			return undefined;
@@ -178,7 +181,7 @@ export default function messageBridgeExtension(pi: any) {
 				: event.title;
 			pushAndWait(question, sessionId)
 				.then((answer) => {
-					ctx.respondUI(event.id, { action: "responded", value: answer });
+					try { ctx.respondUI(event.id, { action: "responded", value: answer }); } catch (e) { if (!/stale/i.test(e instanceof Error ? e.message : "")) throw e; }
 				})
 				.catch((err) => console.debug("[message-bridge] input push failed:", err instanceof Error ? err.message : err));
 			return undefined;
@@ -190,7 +193,7 @@ export default function messageBridgeExtension(pi: any) {
 				: event.title;
 			pushAndWait(question, sessionId)
 				.then((answer) => {
-					ctx.respondUI(event.id, { action: "responded", value: answer });
+					try { ctx.respondUI(event.id, { action: "responded", value: answer }); } catch (e) { if (!/stale/i.test(e instanceof Error ? e.message : "")) throw e; }
 				})
 				.catch((err) => console.debug("[message-bridge] editor push failed:", err instanceof Error ? err.message : err));
 			return undefined;
@@ -214,7 +217,7 @@ export default function messageBridgeExtension(pi: any) {
 			.then((id) => pullAnswer(id))
 			.then((answer) => {
 				if (answer?.trim()) {
-					pi.sendUserMessage(answer.trim());
+					try { pi.sendUserMessage(answer.trim()); } catch (e) { if (!/stale/i.test(e instanceof Error ? e.message : "")) throw e; }
 				}
 			})
 			.catch((err) => console.debug("[message-bridge] agent_end push failed:", err instanceof Error ? err.message : err));

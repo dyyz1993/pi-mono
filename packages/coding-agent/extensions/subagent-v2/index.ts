@@ -279,29 +279,37 @@ export default function (pi: ExtensionAPI) {
 						cleanupTempFiles(tmpPromptPath, tmpPromptDir, "subagent-v2");
 						backgroundTasks.delete(taskId);
 
-						const finalText = getFinalOutput(currentResult.messages) || "(no output)";
-						pi.appendEntry("subagent", {
-							toolCallId,
-							sessionId,
-							sessionPath,
-							description: params.agent,
-							instruction: params.task,
-							startedAt,
-							completedAt: Date.now(),
-							exitCode: currentResult.exitCode,
-							finalText,
-						});
-
-						const isCrash = currentResult.exitCode !== 0;
-						const summary = finalText.slice(0, 200);
-						const msg = isCrash
-							? `子任务中断：${params.agent} — ${currentResult.errorMessage || summary}`
-							: `子任务完成：${params.agent} — ${summary}`;
 						try {
-							pi.sendUserMessage(msg, { deliverAs: "followUp" });
+							const finalText = getFinalOutput(currentResult.messages) || "(no output)";
+							pi.appendEntry("subagent", {
+								toolCallId,
+								sessionId,
+								sessionPath,
+								description: params.agent,
+								instruction: params.task,
+								startedAt,
+								completedAt: Date.now(),
+								exitCode: currentResult.exitCode,
+								finalText,
+							});
+
+							const isCrash = currentResult.exitCode !== 0;
+							const summary = finalText.slice(0, 200);
+							const msg = isCrash
+								? `子任务中断：${params.agent} — ${currentResult.errorMessage || summary}`
+								: `子任务完成：${params.agent} — ${summary}`;
+							try {
+								pi.sendUserMessage(msg, { deliverAs: "followUp" });
+							} catch (err) {
+								const eMsg = err instanceof Error ? err.message : String(err);
+								if (/stale/i.test(eMsg)) return;
+								console.debug("[subagent-v2] followUp delivery failed:", eMsg);
+								pi.sendUserMessage(msg);
+							}
 						} catch (err) {
-							console.debug("[subagent-v2] followUp delivery failed:", err instanceof Error ? err.message : err);
-							pi.sendUserMessage(msg);
+							const eMsg = err instanceof Error ? err.message : String(err);
+							if (/stale/i.test(eMsg)) return;
+							throw err;
 						}
 					}
 				};
@@ -499,29 +507,37 @@ export default function (pi: ExtensionAPI) {
 						await client.stop();
 						backgroundTasks.delete(taskId);
 
-						const finalText = getFinalOutput(currentResult.messages) || "(no output)";
-						pi.appendEntry("subagent", {
-							toolCallId,
-							sessionId,
-							sessionPath: sPath,
-							description: "(resumed)",
-							instruction: params.instruction ?? "(resume)",
-							startedAt,
-							completedAt: Date.now(),
-							exitCode: currentResult.exitCode,
-							finalText,
-						});
-
-						const isCrash = currentResult.exitCode !== 0;
-						const summary = finalText.slice(0, 200);
-						const msg = isCrash
-							? `子任务中断：(resumed) — ${currentResult.errorMessage || summary}`
-							: `子任务完成：(resumed) — ${summary}`;
 						try {
-							pi.sendUserMessage(msg, { deliverAs: "followUp" });
+							const finalText = getFinalOutput(currentResult.messages) || "(no output)";
+							pi.appendEntry("subagent", {
+								toolCallId,
+								sessionId,
+								sessionPath: sPath,
+								description: "(resumed)",
+								instruction: params.instruction ?? "(resume)",
+								startedAt,
+								completedAt: Date.now(),
+								exitCode: currentResult.exitCode,
+								finalText,
+							});
+
+							const isCrash = currentResult.exitCode !== 0;
+							const summary = finalText.slice(0, 200);
+							const msg = isCrash
+								? `子任务中断：(resumed) — ${currentResult.errorMessage || summary}`
+								: `子任务完成：(resumed) — ${summary}`;
+							try {
+								pi.sendUserMessage(msg, { deliverAs: "followUp" });
+							} catch (err) {
+								const eMsg = err instanceof Error ? err.message : String(err);
+								if (/stale/i.test(eMsg)) return;
+								console.debug("[subagent-v2] resumed followUp delivery failed:", eMsg);
+								pi.sendUserMessage(msg);
+							}
 						} catch (err) {
-							console.debug("[subagent-v2] resumed followUp delivery failed:", err instanceof Error ? err.message : err);
-							pi.sendUserMessage(msg);
+							const eMsg = err instanceof Error ? err.message : String(err);
+							if (/stale/i.test(eMsg)) return;
+							throw err;
 						}
 					}
 				};
