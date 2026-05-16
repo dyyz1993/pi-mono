@@ -128,7 +128,7 @@ describe("rollback cases 11-20", () => {
 		}
 	});
 
-	it("Case 11: rollback ALL to root empties all messages and deletes all files", async () => {
+	it("Case 11: rollback ALL to root is rejected (safety guard prevents message loss)", async () => {
 		const harness = await createHarness({
 			extensionFactories: [createSnapshotAndRestoreExtension()],
 		});
@@ -142,7 +142,6 @@ describe("rollback cases 11-20", () => {
 		]);
 		await harness.session.prompt("turn 1");
 		expect(fileExists(harness.tempDir, "fileA.ts")).toBe(true);
-		const afterTurn1 = harness.sessionManager.getLeafId()!;
 
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("write", { path: "fileB.ts", content: "B-v1" }), {
@@ -156,14 +155,21 @@ describe("rollback cases 11-20", () => {
 		const userMsgsBefore = harness.session.messages.filter((m) => m.role === "user");
 		expect(userMsgsBefore.length).toBe(2);
 
+		// Navigate to the root entry — this would eliminate all user messages,
+		// so the safety guard should reject it.
 		const entries = harness.sessionManager.getEntries();
 		const firstEntry = entries.find((e) => e.parentId === null);
 		expect(firstEntry).toBeDefined();
 
-		await harness.session.navigateTree(firstEntry!.id, { summarize: false });
+		const result = await harness.session.navigateTree(firstEntry!.id, { summarize: false });
 
+		// Navigation should be cancelled (safety guard)
+		expect(result.cancelled).toBe(true);
+		expect(result.reason).toBeDefined();
+
+		// Messages should still be present (not destroyed)
 		const userMsgsAfter = harness.session.messages.filter((m) => m.role === "user");
-		expect(userMsgsAfter.length).toBe(0);
+		expect(userMsgsAfter.length).toBe(2);
 	});
 
 	it("Case 12: no-op when navigating to current leaf", async () => {

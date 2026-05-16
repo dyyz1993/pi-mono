@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Edge case tests for `_buildIndex()` leaf resolution: multiple side branches, custom-only sessions, production bug simulation, 3-way branch, leaf stability across reloads, compaction entries, broken chain handling.
+- `countUserMessagesOnPath()` tests: compaction entries, non-existent entry, root navigation.
+
+### Fixed
+- Case 11 test now expects `navigateTree` to reject rollback-to-root (safety guard prevents message loss).
+- Corrected "leaf stays stable" test: side branch must be shallower than main chain for correct deepest-terminal resolution.
+- Corrected "custom-only session" test expectation: `_persist()` defers writes until an assistant message exists, so reload yields `null` leafId by design.
+
 ## [0.74.31] - 2026-05-15
 
 ## [0.74.27] - 2026-05-15
