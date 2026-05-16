@@ -1,21 +1,13 @@
-import { describe, expect, it } from "vitest";
-import type {
-	AssistantMessage,
-	Message,
-	TextContent,
-	ThinkingContent,
-	ToolCall,
-} from "@dyyz1993/pi-ai";
+import type { AssistantMessage, Message, TextContent, ThinkingContent, ToolCall } from "@dyyz1993/pi-ai";
 import type { SessionEntry, SessionMessageEntry } from "@dyyz1993/pi-coding-agent";
+import { describe, expect, it } from "vitest";
 import {
-	findFoldableEntries,
-	extractFoldSummary,
 	estimateMessageTokens,
+	extractFoldSummary,
+	findFoldableEntries,
 } from "../../extensions/compaction-manager/context-fold.js";
 
-function makeAssistantMessage(
-	overrides: Partial<AssistantMessage> = {},
-): AssistantMessage {
+function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [],
@@ -36,10 +28,7 @@ function makeAssistantMessage(
 	};
 }
 
-function makeMessageEntry(
-	id: string,
-	message: AssistantMessage,
-): SessionMessageEntry {
+function makeMessageEntry(id: string, message: AssistantMessage): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
@@ -85,12 +74,7 @@ describe("findFoldableEntries", () => {
 		const result = findFoldableEntries(entries, new Set(), maxAgeMs, 2);
 		expect(result).toEqual([]);
 
-		const singleResult = findFoldableEntries(
-			[makeMessageEntry("1", makeAssistantMessage())],
-			new Set(),
-			maxAgeMs,
-			2,
-		);
+		const singleResult = findFoldableEntries([makeMessageEntry("1", makeAssistantMessage())], new Set(), maxAgeMs, 2);
 		expect(singleResult).toEqual([]);
 	});
 

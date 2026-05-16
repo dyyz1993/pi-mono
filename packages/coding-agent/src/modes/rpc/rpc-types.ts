@@ -8,11 +8,11 @@
 import type { AgentMessage, ThinkingLevel } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Model } from "@dyyz1993/pi-ai";
 import type { SessionStats } from "../../core/agent-session.js";
+import type { AgentConfig } from "../../core/agent-types.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { Settings } from "../../core/settings-manager.js";
 import type { SourceInfo } from "../../core/source-info.js";
-import type { AgentConfig } from "../../core/agent-types.js";
 
 // ============================================================================
 // RPC Commands (stdin)

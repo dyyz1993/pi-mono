@@ -359,7 +359,7 @@ export class AgentSession {
 	private _mcpToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _mcpServerScopes: Map<string, "global" | "project"> = new Map();
 	private _noMcp: boolean;
-	private _currentAgentName: string | null = null;
+	private _currentAgentName: string = "build";
 	private _currentAgentVariables: Record<string, string> = {};
 
 	private _tierModels: Record<string, string> = {};
@@ -1099,15 +1099,12 @@ export class AgentSession {
 
 		if (agent.systemPrompt) {
 			// Rebuild base prompt with filtered tools, then append agent-specific prompt
-			this._baseSystemPrompt =
-				this._rebuildSystemPrompt(this.getActiveToolNames()) +
-				"\n\n" +
-				agent.systemPrompt;
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames()) + "\n\n" + agent.systemPrompt;
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 	}
 
-	getCurrentAgent(): string | null {
+	getCurrentAgent(): string {
 		return this._currentAgentName;
 	}
 

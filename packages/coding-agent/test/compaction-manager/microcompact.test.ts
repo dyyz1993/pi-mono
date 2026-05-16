@@ -143,15 +143,20 @@ describe("stripThinkingBlocks", () => {
 	it("returns undefined for non-assistant messages", () => {
 		const messages: AgentMessage[] = [
 			{ role: "user", content: "hello" } as AgentMessage,
-			{ role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "ok" }], isError: false, timestamp: Date.now() } as AgentMessage,
+			{
+				role: "toolResult",
+				toolCallId: "c1",
+				toolName: "bash",
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				timestamp: Date.now(),
+			} as AgentMessage,
 		];
 		expect(stripThinkingBlocks(messages)).toBeUndefined();
 	});
 
 	it("returns undefined for assistant messages with non-array content (string content)", () => {
-		const messages: AgentMessage[] = [
-			{ role: "assistant", content: "just a string" } as unknown as AgentMessage,
-		];
+		const messages: AgentMessage[] = [{ role: "assistant", content: "just a string" } as unknown as AgentMessage];
 		expect(stripThinkingBlocks(messages)).toBeUndefined();
 	});
 
