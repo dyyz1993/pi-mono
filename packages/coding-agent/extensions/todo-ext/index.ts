@@ -79,6 +79,39 @@ function updateWidget(ctx: ExtensionContext | undefined, todos: Todo[]): void {
 }
 
 export default function (pi: ExtensionAPI) {
+	// ── Sub-agent mode: inject parent's todos as read-only, no todo tool ──
+	if (process.env.PI_SUBAGENT === "true") {
+		let parentTodos: TodoItem[] = [];
+		try {
+			const raw = process.env.PI_PARENT_TODOS;
+			if (raw) parentTodos = JSON.parse(raw) as TodoItem[];
+		} catch {
+			// ignore parse errors
+		}
+		const active = parentTodos.filter((t) => !t.deleted && !t.done);
+		if (active.length > 0) {
+			const lines = active.map((t) => {
+				const pri = t.priority === "high" ? " [!]" : t.priority === "low" ? " [?]" : "";
+				return `  #${t.id}${pri}: ${t.text}`;
+			});
+			const header = `[Parent session's tasks — read-only]\nThese are the parent session's active tasks for reference. Do not modify them.\n${lines.join("\n")}`;
+			pi.on("context", (_event, _ctx) => {
+				return {
+					messages: [
+						...(_event as any).messages,
+						{
+							role: "user" as const,
+							content: [{ type: "text" as const, text: header }],
+							timestamp: Date.now(),
+						},
+					],
+				};
+			});
+		}
+		return; // Skip all tool/command/channel registration
+	}
+
+	// ── Normal mode ──
 	let todos: Todo[] = [];
 	let nextId = 1;
 	let channel: ServerChannel<TodoChannelContract> | null = null;
@@ -401,6 +434,28 @@ IMPORTANT: For creating a plan with multiple steps, use a SINGLE add call with n
 				}
 			}
 		},
+	});
+
+	// Inject active todo list into context so the LLM is aware of ongoing tasks
+	pi.on("context", (_event, _ctx) => {
+		const active = todos.filter((t) => !t.deleted && !t.done);
+		if (active.length === 0) return;
+
+		const lines = active.map((t) => {
+			const pri = t.priority === "high" ? " [!]" : t.priority === "low" ? " [?]" : "";
+			return `  #${t.id}${pri}: ${t.text}`;
+		});
+		const text = `[Todo list — ${active.length} active task(s)]\n${lines.join("\n")}`;
+		return {
+			messages: [
+				...(_event as any).messages,
+				{
+					role: "user" as const,
+					content: [{ type: "text" as const, text }],
+					timestamp: Date.now(),
+				},
+			],
+		};
 	});
 
 	pi.registerCommand("todos", {
