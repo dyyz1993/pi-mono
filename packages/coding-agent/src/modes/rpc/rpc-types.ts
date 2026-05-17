@@ -129,6 +129,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_agents" }
 	| { id?: string; type: "switch_agent"; agentName: string }
 	| { id?: string; type: "get_current_agent" }
+	| { id?: string; type: "get_latest_agent_change" }
 	| { id?: string; type: "get_agent_detail"; agentName: string }
 	| { id?: string; type: "get_all_tools" }
 
@@ -631,6 +632,24 @@ export type RpcResponse =
 			command: "get_current_agent";
 			success: true;
 			data: { agentName: string | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_latest_agent_change";
+			success: true;
+			data: {
+				agentName: string;
+				agentConfig?: {
+					description?: string;
+					tools?: string[];
+					permissionMode?: string;
+					tier?: string;
+					thinkingLevel?: string;
+					model?: string;
+				};
+				timestamp: string;
+			} | null;
 	  }
 	| {
 			id?: string;

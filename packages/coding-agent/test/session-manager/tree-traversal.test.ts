@@ -461,7 +461,7 @@ describe("createBranchedSession", () => {
 		expect(entries.map((e) => e.id)).toEqual([id1, id2, id4, id5]);
 	});
 
-	it("does not duplicate entries when forking from first user message", () => {
+	it("does not duplicate entries when forking from first user message", async () => {
 		const tempDir = join(tmpdir(), `session-fork-dedup-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -472,6 +472,9 @@ describe("createBranchedSession", () => {
 			session.appendMessage(assistantMsg("first answer"));
 			session.appendMessage(userMsg("second question"));
 			session.appendMessage(assistantMsg("second answer"));
+
+			// Ensure all pending writes complete before branching
+			await session.waitForFlush();
 
 			// Fork from the very first user message (no assistant in the branched path)
 			const newFile = session.createBranchedSession(id1);
@@ -488,6 +491,7 @@ describe("createBranchedSession", () => {
 			session.appendMessage(assistantMsg("new answer"));
 
 			// File should now exist with exactly one header and no duplicate IDs
+			await session.waitForFlush();
 			expect(existsSync(newFile!)).toBe(true);
 			const content = readFileSync(newFile!, "utf-8");
 			const lines = content.trim().split("\n").filter(Boolean);
@@ -505,7 +509,7 @@ describe("createBranchedSession", () => {
 		}
 	});
 
-	it("writes file immediately when forking from a point with assistant messages", () => {
+	it("writes file immediately when forking from a point with assistant messages", async () => {
 		const tempDir = join(tmpdir(), `session-fork-with-assistant-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -516,11 +520,15 @@ describe("createBranchedSession", () => {
 			session.appendMessage(userMsg("second question"));
 			session.appendMessage(assistantMsg("second answer"));
 
+			// Ensure all pending writes complete before branching
+			await session.waitForFlush();
+
 			// Fork including the assistant message
 			const newFile = session.createBranchedSession(id2);
 			expect(newFile).toBeDefined();
 
 			// Path includes an assistant, so file should be written immediately
+			await session.waitForFlush();
 			expect(existsSync(newFile!)).toBe(true);
 			const content = readFileSync(newFile!, "utf-8");
 			const lines = content.trim().split("\n").filter(Boolean);

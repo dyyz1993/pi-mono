@@ -138,7 +138,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("truncates and rewrites empty file with valid header", () => {
+	it("truncates and rewrites empty file with valid header", async () => {
 		const emptyFile = join(tempDir, "empty.jsonl");
 		writeFileSync(emptyFile, "");
 
@@ -150,6 +150,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		expect(sm.getHeader()?.type).toBe("session");
 
 		// File should now contain a valid header
+		await sm.waitForFlush();
 		const content = readFileSync(emptyFile, "utf-8");
 		const lines = content.trim().split("\n").filter(Boolean);
 		expect(lines.length).toBe(1);
@@ -158,7 +159,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		expect(header.id).toBe(sm.getSessionId());
 	});
 
-	it("truncates and rewrites file without valid header", () => {
+	it("truncates and rewrites file without valid header", async () => {
 		const noHeaderFile = join(tempDir, "no-header.jsonl");
 		// File with messages but no session header (corrupted state)
 		writeFileSync(
@@ -174,6 +175,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		expect(sm.getHeader()?.type).toBe("session");
 
 		// File should now contain only a valid header (old content truncated)
+		await sm.waitForFlush();
 		const content = readFileSync(noHeaderFile, "utf-8");
 		const lines = content.trim().split("\n").filter(Boolean);
 		expect(lines.length).toBe(1);
@@ -192,12 +194,13 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		expect(sm.getSessionFile()).toBe(explicitPath);
 	});
 
-	it("subsequent loads of recovered file work correctly", () => {
+	it("subsequent loads of recovered file work correctly", async () => {
 		const corruptedFile = join(tempDir, "corrupted.jsonl");
 		writeFileSync(corruptedFile, "garbage content\n");
 
 		// First open recovers the file
 		const sm1 = SessionManager.open(corruptedFile, tempDir);
+		await sm1.waitForFlush();
 		const sessionId = sm1.getSessionId();
 
 		// Second open should load the recovered file successfully

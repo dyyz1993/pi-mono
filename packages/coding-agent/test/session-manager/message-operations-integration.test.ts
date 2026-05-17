@@ -221,12 +221,13 @@ describe("SessionManager jsonl persistence", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("deletion entry persists to jsonl and reloads correctly", () => {
+	it("deletion entry persists to jsonl and reloads correctly", async () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		const _id1 = session.appendMessage(userMsg("hello"));
 		const id2 = session.appendMessage(assistantMsg("hi"));
 		session.appendDeletion([id2]);
 
+		await session.waitForFlush();
 		const sessionFile = session.getSessionFile()!;
 		const rawContent = readFileSync(sessionFile, "utf-8");
 		const lines = rawContent.trim().split("\n");
@@ -242,12 +243,13 @@ describe("SessionManager jsonl persistence", () => {
 		expect(delEntry.targetIds).toEqual([id2]);
 	});
 
-	it("segment_summary entry persists to jsonl and reloads correctly", () => {
+	it("segment_summary entry persists to jsonl and reloads correctly", async () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		const _id1 = session.appendMessage(userMsg("hello"));
 		const id2 = session.appendMessage(assistantMsg("hi"));
 		session.appendSegmentSummary([id2], "Summary of hi");
 
+		await session.waitForFlush();
 		const sessionFile = session.getSessionFile()!;
 		const rawContent = readFileSync(sessionFile, "utf-8");
 		const lines = rawContent.trim().split("\n");
@@ -265,7 +267,7 @@ describe("SessionManager jsonl persistence", () => {
 		expect(segEntry.summary).toBe("Summary of hi");
 	});
 
-	it("full reload: session with deletion produces same context", () => {
+	it("full reload: session with deletion produces same context", async () => {
 		const session1 = SessionManager.create(tempDir, tempDir);
 		const _id1 = session1.appendMessage(userMsg("hello"));
 		const id2 = session1.appendMessage(assistantMsg("hi"));
@@ -273,6 +275,7 @@ describe("SessionManager jsonl persistence", () => {
 		session1.appendDeletion([id2]);
 
 		const ctxOriginal = session1.buildSessionContext();
+		await session1.waitForFlush();
 		const sessionFile = session1.getSessionFile()!;
 
 		const session2 = SessionManager.open(sessionFile, tempDir);
@@ -282,7 +285,7 @@ describe("SessionManager jsonl persistence", () => {
 		expect(ctxReloaded.messages[1].role).toBe("user");
 	});
 
-	it("full reload: session with segment_summary produces same context", () => {
+	it("full reload: session with segment_summary produces same context", async () => {
 		const session1 = SessionManager.create(tempDir, tempDir);
 		session1.appendMessage(userMsg("hello"));
 		const id2 = session1.appendMessage(assistantMsg("hi"));
@@ -292,6 +295,7 @@ describe("SessionManager jsonl persistence", () => {
 		session1.appendMessage(userMsg("next"));
 
 		const ctxOriginal = session1.buildSessionContext();
+		await session1.waitForFlush();
 		const sessionFile = session1.getSessionFile()!;
 
 		const session2 = SessionManager.open(sessionFile, tempDir);
@@ -300,7 +304,7 @@ describe("SessionManager jsonl persistence", () => {
 		expect(ctxReloaded.messages[1].role).toBe("segmentSummary");
 	});
 
-	it("full reload: session with deletion + segment_summary + compaction", () => {
+	it("full reload: session with deletion + segment_summary + compaction", async () => {
 		const session1 = SessionManager.create(tempDir, tempDir);
 		session1.appendMessage(userMsg("q1"));
 		const id2 = session1.appendMessage(assistantMsg("a1"));
@@ -313,6 +317,7 @@ describe("SessionManager jsonl persistence", () => {
 		session1.appendMessage(userMsg("q4"));
 
 		const ctxOriginal = session1.buildSessionContext();
+		await session1.waitForFlush();
 		const sessionFile = session1.getSessionFile()!;
 
 		const session2 = SessionManager.open(sessionFile, tempDir);
@@ -333,11 +338,12 @@ describe("_buildIndex compatibility", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("_buildIndex handles deletion entries without crashing", () => {
+	it("_buildIndex handles deletion entries without crashing", async () => {
 		const session1 = SessionManager.create(tempDir, tempDir);
 		session1.appendMessage(userMsg("hello"));
 		session1.appendDeletion(["some-id"]);
 		session1.appendMessage(assistantMsg("response"));
+		await session1.waitForFlush();
 		const sessionFile = session1.getSessionFile()!;
 
 		const session2 = SessionManager.open(sessionFile, tempDir);
@@ -347,11 +353,12 @@ describe("_buildIndex compatibility", () => {
 		expect(session2.getLeafId()).toBeDefined();
 	});
 
-	it("_buildIndex handles segment_summary entries without crashing", () => {
+	it("_buildIndex handles segment_summary entries without crashing", async () => {
 		const session1 = SessionManager.create(tempDir, tempDir);
 		session1.appendMessage(userMsg("hello"));
 		session1.appendSegmentSummary(["some-id"], "summary text");
 		session1.appendMessage(assistantMsg("response"));
+		await session1.waitForFlush();
 		const sessionFile = session1.getSessionFile()!;
 
 		const session2 = SessionManager.open(sessionFile, tempDir);
@@ -389,7 +396,7 @@ describe("_buildIndex compatibility", () => {
 		expect(session.getLeafId()).toBe("s1");
 	});
 
-	it("_buildIndex handles mixed v3 session with all entry types", () => {
+	it("_buildIndex handles mixed v3 session with all entry types", async () => {
 		const session1 = SessionManager.create(tempDir, tempDir);
 		session1.appendMessage(userMsg("msg1"));
 		session1.appendThinkingLevelChange("high");
@@ -398,6 +405,7 @@ describe("_buildIndex compatibility", () => {
 		session1.appendDeletion(["some-id"]);
 		session1.appendSegmentSummary(["some-other-id"], "summary");
 		session1.appendMessage(userMsg("msg3"));
+		await session1.waitForFlush();
 		const sessionFile = session1.getSessionFile()!;
 
 		const session2 = SessionManager.open(sessionFile, tempDir);

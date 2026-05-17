@@ -1,19 +1,8 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@dyyz1993/pi-ai";
 import { randomUUID } from "crypto";
-import {
-	appendFileSync,
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	readSync,
-	statSync,
-	writeFileSync,
-} from "fs";
-import { readdir, readFile, stat } from "fs/promises";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from "fs";
+import { appendFile, readdir, readFile, stat, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
@@ -68,6 +57,19 @@ export interface ModelChangeEntry extends SessionEntryBase {
 export interface TierModelsChangeEntry extends SessionEntryBase {
 	type: "tier_models_change";
 	tierModels: Record<string, string>;
+}
+
+export interface AgentChangeEntry extends SessionEntryBase {
+	type: "agent_change";
+	agentName: string;
+	agentConfig?: {
+		description?: string;
+		tools?: string[];
+		permissionMode?: string;
+		tier?: string;
+		thinkingLevel?: string;
+		model?: string;
+	};
 }
 
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
@@ -159,6 +161,7 @@ export type SessionEntry =
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
 	| TierModelsChangeEntry
+	| AgentChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| FoldEntry
@@ -800,6 +803,11 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 
+	/** Write buffer for async flush — avoids appendFileSync blocking the event loop */
+	private writeBuffer: string[] = [];
+	private flushTimer: ReturnType<typeof setImmediate> | undefined;
+	private flushPromise: Promise<void> = Promise.resolve();
+
 	/** Optional callback invoked after an entry is appended. Used by AgentSession to detect
 	 *  entry lifecycle changes (deletion, fold, segment_summary) and emit extension events. */
 	private _onEntryAppended?: (entry: SessionEntry) => void;
@@ -933,7 +941,14 @@ export class SessionManager {
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-		writeFileSync(this.sessionFile, content);
+		// Cancel any pending buffered writes before rewriting
+		if (this.flushTimer) {
+			clearImmediate(this.flushTimer);
+			this.flushTimer = undefined;
+		}
+		this.writeBuffer = [];
+		this.flushPromise = this.flushPromise.then(() => writeFile(this.sessionFile!, content)).catch(() => {});
+		this.flushed = true;
 	}
 
 	isPersisted(): boolean {
@@ -968,21 +983,77 @@ export class SessionManager {
 
 		if (!this.flushed) {
 			for (const e of this.fileEntries) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(e)}\n`);
+				this.writeBuffer.push(JSON.stringify(e));
 			}
 			this.flushed = true;
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			this.writeBuffer.push(JSON.stringify(entry));
 		}
+		this._scheduleFlush();
+	}
+
+	/** Schedule an async flush on the next event loop iteration */
+	private _scheduleFlush(): void {
+		if (this.flushTimer) return;
+		this.flushTimer = setImmediate(() => {
+			this.flushTimer = undefined;
+			this._doFlush();
+		});
+	}
+
+	/** Write buffered entries to disk asynchronously */
+	private _doFlush(): void {
+		if (this.writeBuffer.length === 0 || !this.sessionFile) return;
+		const data = this.writeBuffer.map((l) => `${l}\n`).join("");
+		this.writeBuffer = [];
+		this.flushPromise = this.flushPromise
+			.then(() => appendFile(this.sessionFile!, data))
+			.catch(() => {
+				// Silent fail — data is already in memory (fileEntries)
+			});
 	}
 
 	/** Force-flush all pending file entries to disk. */
 	flush(): void {
 		if (!this.persist || !this.sessionFile || this.flushed) return;
 		for (const e of this.fileEntries) {
-			appendFileSync(this.sessionFile, `${JSON.stringify(e)}\n`);
+			this.writeBuffer.push(JSON.stringify(e));
 		}
 		this.flushed = true;
+		this._scheduleFlush();
+	}
+
+	/** Synchronous drain of writeBuffer to disk. Call before process.exit().
+	 *  Prevents data loss when the process terminates before setImmediate/appendFile complete. */
+	sync(): void {
+		if (this.flushTimer) {
+			clearImmediate(this.flushTimer);
+			this.flushTimer = undefined;
+		}
+		if (this.writeBuffer.length > 0 && this.sessionFile) {
+			const data = this.writeBuffer.map((l) => `${l}\n`).join("");
+			this.writeBuffer = [];
+			const { appendFileSync } = require("fs") as typeof import("fs");
+			try {
+				appendFileSync(this.sessionFile, data);
+			} catch {
+				// Best-effort — data is still in memory (fileEntries)
+			}
+		}
+	}
+
+	/** Wait for all in-flight async writes to complete. For tests only. */
+	async waitForFlush(): Promise<void> {
+		// First drain any pending setImmediate → _doFlush
+		if (this.flushTimer) {
+			clearImmediate(this.flushTimer);
+			this.flushTimer = undefined;
+			this._doFlush();
+		}
+		// Then wait for the promise chain to settle
+		if (this.flushPromise !== Promise.resolve()) {
+			await this.flushPromise;
+		}
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
@@ -1046,6 +1117,20 @@ export class SessionManager {
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			tierModels,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append an agent change as child of current leaf, then advance leaf. Returns entry id. */
+	appendAgentChange(agentName: string, agentConfig?: Record<string, unknown>): string {
+		const entry: AgentChangeEntry = {
+			type: "agent_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			agentName,
+			agentConfig,
 		};
 		this._appendEntry(entry);
 		return entry.id;
@@ -1576,21 +1661,21 @@ export class SessionManager {
 		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 		const newSessionFile = join(dir, `${fileTimestamp}_${newSessionId}.jsonl`);
 
-		// Write new header pointing to source as parent, with updated cwd
 		const newHeader: SessionHeader = {
 			type: "session",
-			version: CURRENT_SESSION_VERSION,
+			version: 3,
 			id: newSessionId,
 			timestamp,
 			cwd: targetCwd,
 			parentSession: sourcePath,
 		};
-		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
+		const { writeFileSync: writeSync, appendFileSync: appendSync } = require("fs") as typeof import("fs");
+		appendSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
 
 		// Copy all non-header entries from source
 		for (const entry of sourceEntries) {
 			if (entry.type !== "session") {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+				appendSync(newSessionFile, `${JSON.stringify(entry)}\n`);
 			}
 		}
 

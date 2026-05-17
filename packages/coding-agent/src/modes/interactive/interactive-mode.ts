@@ -1580,6 +1580,8 @@ export class InteractiveMode {
 		this.showError(`${prefix}: ${message}`);
 		stopThemeWatcher();
 		this.stop();
+		// Synchronous flush of session write buffer before exit
+		this.sessionManager.sync();
 		process.exit(1);
 	}
 
@@ -3255,6 +3257,8 @@ export class InteractiveMode {
 
 		this.stop();
 		await this.runtimeHost.dispose();
+		// Synchronous flush of session write buffer before exit
+		this.sessionManager.sync();
 		process.exit(0);
 	}
 
@@ -3262,6 +3266,8 @@ export class InteractiveMode {
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
 		killTrackedDetachedChildren();
+		// Synchronous flush of session write buffer before exit
+		this.sessionManager.sync();
 		// The terminal is gone. Do not run normal shutdown because TUI and
 		// extension cleanup can write restore sequences and re-trigger EIO.
 		process.exit(129);

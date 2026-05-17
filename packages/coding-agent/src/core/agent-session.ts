@@ -1102,6 +1102,16 @@ export class AgentSession {
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames(), agent.systemPrompt);
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
+
+		// Persist agent change to session
+		this.sessionManager.appendAgentChange(agent.name, {
+			description: agent.description,
+			tools: agent.tools,
+			permissionMode: agent.permissionMode,
+			tier: agent.tier,
+			thinkingLevel: agent.thinkingLevel,
+			model: agent.model,
+		});
 	}
 
 	getCurrentAgent(): string {

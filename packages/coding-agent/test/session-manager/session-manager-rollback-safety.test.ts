@@ -50,7 +50,7 @@ describe("SessionManager rollback safety", () => {
 	// ========================================================================
 
 	describe("_buildIndex() leaf resolution", () => {
-		it("picks the deepest terminal as leaf when side branch is appended last", () => {
+		it("picks the deepest terminal as leaf when side branch is appended last", async () => {
 			// Create a persisted session so entries are written to file
 			const sessionFile = join(sessionDir, "test.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
@@ -79,6 +79,7 @@ describe("SessionManager rollback safety", () => {
 			// Main leaf is at depth 5 (root→user0→asst0→user1→asst1)
 
 			// Reload from file
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 
 			// After reload: deepest terminal should win (asst1, depth 5)
@@ -87,7 +88,7 @@ describe("SessionManager rollback safety", () => {
 			expect(countUserMessagesOnBranch(sm2)).toBe(2);
 		});
 
-		it("still picks last entry when only one chain exists", () => {
+		it("still picks last entry when only one chain exists", async () => {
 			const sessionFile = join(sessionDir, "single.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
 
@@ -100,11 +101,12 @@ describe("SessionManager rollback safety", () => {
 
 			expect(sm.getLeafId()).toBe(u1);
 
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 			expect(sm2.getLeafId()).toBe(u1);
 		});
 
-		it("picks the deeper branch when two branches diverge", () => {
+		it("picks the deeper branch when two branches diverge", async () => {
 			const sessionFile = join(sessionDir, "branch.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
 
@@ -129,12 +131,13 @@ describe("SessionManager rollback safety", () => {
 			// user1 is at depth 3 (root→user0→asst0→user1)
 			// Both are terminals; altUser2 is deeper
 
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 			expect(sm2.getLeafId()).toBe(altUser2);
 			expect(countUserMessagesOnBranch(sm2)).toBe(3);
 		});
 
-		it("recovers main conversation after rollback + side-branch append + reload", () => {
+		it("recovers main conversation after rollback + side-branch append + reload", async () => {
 			const sessionFile = join(sessionDir, "recovery.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
 
@@ -157,6 +160,7 @@ describe("SessionManager rollback safety", () => {
 			sm.appendCustomEntry("lsp", { action: "diagnostics" });
 
 			// Reload
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 			expect(sm2.getLeafId()).toBe(mainLeaf);
 			expect(countUserMessagesOnBranch(sm2)).toBe(5);
@@ -241,7 +245,7 @@ describe("SessionManager rollback safety", () => {
 	// ========================================================================
 
 	describe("_buildIndex() edge cases", () => {
-		it("handles multiple side branches at different depths", () => {
+		it("handles multiple side branches at different depths", async () => {
 			const sessionFile = join(sessionDir, "multi-branch.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
 
@@ -262,12 +266,13 @@ describe("SessionManager rollback safety", () => {
 			sm.appendCustomEntry("mcp", { action: "diag2" });
 
 			// Main chain leaf (asst2) should still win on reload
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 			expect(sm2.getLeafId()).toBe(asst2);
 			expect(countUserMessagesOnBranch(sm2)).toBe(3);
 		});
 
-		it("handles session with only custom entries (no messages)", () => {
+		it("handles session with only custom entries (no messages)", async () => {
 			const sessionFile = join(sessionDir, "custom-only.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
 
@@ -281,12 +286,13 @@ describe("SessionManager rollback safety", () => {
 			// Note: _persist() defers writing until an assistant message exists,
 			// so custom-only sessions are not persisted to disk. After reload
 			// the file is empty → leafId is null. This is by design.
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 			expect(sm2.getLeafId()).toBeNull();
 			expect(countUserMessagesOnBranch(sm2)).toBe(0);
 		});
 
-		it("recovers when side branch is written AFTER main chain in same session", () => {
+		it("recovers when side branch is written AFTER main chain in same session", async () => {
 			// This simulates the exact production bug:
 			// 1. Conversation runs (800+ entries)
 			// 2. navigateTree moves leaf to early position
@@ -312,12 +318,13 @@ describe("SessionManager rollback safety", () => {
 
 			// Verify: lspEntry is at depth 2, mainLeaf at depth 5
 			// On reload, mainLeaf should win
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 			expect(sm2.getLeafId()).toBe(mainLeaf);
 			expect(countUserMessagesOnBranch(sm2)).toBe(2);
 		});
 
-		it("handles 3-way branch correctly", () => {
+		it("handles 3-way branch correctly", async () => {
 			const sessionFile = join(sessionDir, "3way.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
 
@@ -342,12 +349,13 @@ describe("SessionManager rollback safety", () => {
 			const cUser1 = sm.appendMessage({ role: "user", content: "C1" });
 
 			// Branch B (bAsst2) is deepest → should be leaf
+			await sm.waitForFlush();
 			const sm2 = SessionManager.open(sessionFile, sessionDir, tempDir);
 			expect(sm2.getLeafId()).toBe(bAsst2);
 			expect(countUserMessagesOnBranch(sm2)).toBe(3); // user0 + bUser1 + bUser2
 		});
 
-		it("leaf stays stable across multiple reloads", () => {
+		it("leaf stays stable across multiple reloads", async () => {
 			const sessionFile = join(sessionDir, "stable.jsonl");
 			const sm = SessionManager.open(sessionFile, sessionDir, tempDir);
 
@@ -364,6 +372,7 @@ describe("SessionManager rollback safety", () => {
 			// asst1 is deeper (5) than customEntry (2)
 			const expectedLeaf = asst1;
 
+			await sm.waitForFlush();
 			// Reload 3 times — leaf should be consistent
 			for (let i = 0; i < 3; i++) {
 				const reloaded = SessionManager.open(sessionFile, sessionDir, tempDir);

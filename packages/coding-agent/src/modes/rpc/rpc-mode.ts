@@ -1074,6 +1074,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_current_agent", { agentName: currentAgent });
 			}
 
+			case "get_latest_agent_change": {
+				const entries = session.sessionManager.getEntries();
+				const agentChanges = entries.filter((e) => e.type === "agent_change");
+				if (agentChanges.length > 0) {
+					const latest = agentChanges[agentChanges.length - 1] as any;
+					return success(id, "get_latest_agent_change", {
+						agentName: latest.agentName,
+						agentConfig: latest.agentConfig,
+						timestamp: latest.timestamp,
+					});
+				}
+				return success(id, "get_latest_agent_change", null);
+			}
+
 			case "get_agent_detail": {
 				const agentName = (command as { agentName: string }).agentName;
 				const discovery = discoverAgents(runtimeHost.cwd, "both");
@@ -1192,6 +1206,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 		unsubscribe?.();
 		await runtimeHost.dispose();
+		// Synchronous flush of session write buffer before exit
+		// to prevent data loss from in-flight setImmediate/appendFile
+		session.sessionManager.sync();
 		detachInput();
 		process.stdin.pause();
 		process.exit(exitCode);
