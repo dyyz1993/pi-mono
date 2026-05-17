@@ -78,6 +78,9 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
 
     channel.handle("getStatus", async () => getStatus());
     channel.handle("requestPause", async (params) => {
+        if (!schedulerInstance) {
+            return { error: "Supervisor not initialized yet (waiting for session_start)" };
+        }
         const delayMs = params.delayMs ?? config.defaultDelayMs;
         const result = schedulerInstance.scheduleContinue(
             "manual-pause",
@@ -95,6 +98,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     });
 
     channel.handle("cancelPause", async () => {
+        if (!schedulerInstance) return { cancelled: false, error: "Not initialized" };
         const cancelled = schedulerInstance.cancelTimer("manual-pause");
         if (cancelled) {
             channel.emit("supervisor.pauseCancelled", { reason: "Cancelled via channel" });
@@ -103,6 +107,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     });
 
     channel.handle("forceContinue", async (params) => {
+        if (!schedulerInstance) return { triggered: false, error: "Not initialized" };
         schedulerInstance.cancelAll();
         currentState = "continuing";
         emitStatusChanged();
@@ -112,7 +117,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
 
     channel.handle("disable", async () => {
         enabled = false;
-        schedulerInstance.cancelAll();
+        schedulerInstance?.cancelAll();
         currentState = "disabled";
         emitStatusChanged();
         return { disabled: true };
