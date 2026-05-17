@@ -32,6 +32,10 @@ let compactMetrics = { foldCount: 0, memoryCompactCount: 0, forceCompactCount: 0
 export default function (pi: ExtensionAPI) {
 	const config = loadConfig();
 
+	pi.on("session_start", () => {
+		compactMetrics = { foldCount: 0, memoryCompactCount: 0, forceCompactCount: 0, rateLimitHits: 0, serverErrors: 0 };
+	});
+
 	if (config.microcompact.enabled) {
 		pi.on("context", (event, _ctx) => {
 			const microResult = microcompactMessages(event.messages, config.microcompact.clearableTools, config.microcompact.maxAgeMs);
@@ -154,6 +158,10 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		pi.on("agent_start", () => {
+			warnedThisTurn = false;
+		});
+
+		pi.on("session_start", () => {
 			warnedThisTurn = false;
 		});
 

@@ -666,7 +666,9 @@ export default function (pi: ExtensionAPI) {
 				};
 
 				backgroundTasks.set(taskId, { taskId, client, sessionId, sessionPath, startedAt });
-				startBg();
+				startBg().catch((err) => {
+					console.debug("[subagent-v2] background task failed:", err instanceof Error ? err.message : err);
+				});
 
 				return {
 					content: [{ type: "text", text: `Started background task: ${taskId}` }],
@@ -895,7 +897,9 @@ export default function (pi: ExtensionAPI) {
 				};
 
 				backgroundTasks.set(taskId, { taskId, client, sessionId, sessionPath: sPath, startedAt });
-				startBg();
+				startBg().catch((err) => {
+					console.debug("[subagent-v2] background task failed:", err instanceof Error ? err.message : err);
+				});
 
 				return {
 					content: [{ type: "text", text: `Started background resume task: ${taskId}` }],
