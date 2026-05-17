@@ -107,6 +107,7 @@ interface PrefetchDebugInfo {
 	skipHits: Array<{ pattern: string; mode: string }>;
 	guardHits: Array<{ pattern: string; mode: string }>;
 	availableFiles: number;
+	excludedFiles?: number;
 	query: string;
 }
 
@@ -283,7 +284,17 @@ class MemoryPrefetch {
 		const memories = await scanMemoryFiles(memoryDir);
 		this.cachedFileCount = memories.length;
 
-		if (memories.length === 0) {
+		// 用 excludeKeywords 过滤：排除包含这些关键词的记忆条目
+		let filteredMemories = memories;
+		if (store.excludeKeywords.length > 0) {
+			const keywords = store.excludeKeywords.map((k) => k.toLowerCase());
+			filteredMemories = memories.filter((m) => {
+				const content = (m.filename + " " + (m.description ?? "")).toLowerCase();
+				return !keywords.some((kw) => content.includes(kw));
+			});
+		}
+
+		if (filteredMemories.length === 0) {
 			this.dirtyFiles = false;
 			this._debugInfo = {
 				selectedFiles: [],
@@ -291,15 +302,16 @@ class MemoryPrefetch {
 				layer: "none",
 				skipHits: matchedSkip,
 				guardHits: matchedGuard,
-				availableFiles: 0,
+				availableFiles: memories.length,
+				excludedFiles: memories.length - filteredMemories.length,
 				query: query.slice(0, 200),
 			};
 			return "";
 		}
 
 		// Auto-inject: 文件少 → 全部注入，不调 LLM
-		if (memories.length <= MAX_RELEVANT_MEMORIES) {
-			const allFiles = memories.map((m) => m.filename);
+		if (filteredMemories.length <= MAX_RELEVANT_MEMORIES) {
+			const allFiles = filteredMemories.map((m) => m.filename);
 			this.lastSelected = allFiles;
 			this.dirtyFiles = false;
 			this._debugInfo = {
@@ -308,13 +320,14 @@ class MemoryPrefetch {
 				layer: "auto",
 				skipHits: matchedSkip,
 				guardHits: matchedGuard,
-				availableFiles: memories.length,
+				availableFiles: filteredMemories.length,
+				excludedFiles: memories.length - filteredMemories.length,
 				query: query.slice(0, 200),
 			};
 			return await this.readFiles(allFiles, memoryDir);
 		}
 
-			const manifest = formatManifest(memories);
+			const manifest = formatManifest(filteredMemories);
 			const recentHistory = this.buildHistoryForLLM(store.history);
 			const startTime = Date.now();
 

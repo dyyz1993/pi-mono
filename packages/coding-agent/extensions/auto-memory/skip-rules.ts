@@ -24,6 +24,7 @@ export interface SkipWordStore {
 	version: number;
 	rules: SkipRule[];
 	history: HistoryEntry[];
+	excludeKeywords: string[];
 	lastPurifyTimestamp: number;
 }
 
@@ -190,6 +191,7 @@ export function getDefaultStore(): SkipWordStore {
 		version: 1,
 		rules: getDefaultRules(),
 		history: [],
+		excludeKeywords: [],
 		lastPurifyTimestamp: 0,
 	};
 }
@@ -204,6 +206,10 @@ export function loadSkipWordStore(dir: string): SkipWordStore {
 		const parsed = JSON.parse(raw) as SkipWordStore;
 		if (parsed.history.length > MAX_HISTORY) {
 			parsed.history = parsed.history.slice(-MAX_HISTORY);
+		}
+		// 向后兼容：如果没有 excludeKeywords 字段，使用空数组
+		if (!parsed.excludeKeywords) {
+			parsed.excludeKeywords = [];
 		}
 		return parsed;
 	} catch (err) {
@@ -291,9 +297,26 @@ export function applyPurification(store: SkipWordStore, result: PurificationResu
 		}
 	}
 
+	// 从历史中提取用户标记的文件关键词
+	const irrelevantEntries = store.history.filter((h) => h.userMarkedIrrelevant && h.irrelevantFiles);
+	const excludeKeywords = new Set<string>(store.excludeKeywords);
+	for (const entry of irrelevantEntries) {
+		for (const file of entry.irrelevantFiles ?? []) {
+			const name = file.replace(/\.md$/, "").replace(/\.json$/, "");
+			const parts = name.split(/[\s_-]+/);
+			for (const part of parts) {
+				const clean = part.trim().toLowerCase();
+				if (clean.length >= 3 && clean.length <= 20) {
+					excludeKeywords.add(clean);
+				}
+			}
+		}
+	}
+
 	return {
 		...store,
 		rules,
+		excludeKeywords: Array.from(excludeKeywords),
 		lastPurifyTimestamp: Date.now(),
 	};
 }

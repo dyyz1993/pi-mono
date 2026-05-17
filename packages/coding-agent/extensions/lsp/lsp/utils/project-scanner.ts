@@ -5,7 +5,49 @@ import type { ResolvedLspServerConfig } from "../config/resolver.js";
 
 export interface ProjectScanResult {
 	discoveredExtensions: Set<string>;
+	fileCount?: number;
 }
+
+// Common source code file extensions to scan for
+// This prevents scanning unnecessary files like .bak, .log, .bin, etc.
+const COMMON_SOURCE_EXTENSIONS = new Set([
+	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+	".vue", ".svelte", ".jsx",
+	".py", ".pyi",
+	".rs",
+	".go",
+	".java", ".kt", ".kts",
+	".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx",
+	".cs", ".vb",
+	".php",
+	".rb",
+	".swift", ".m", ".mm",
+	".dart",
+	".lua",
+	".sh", ".bash", ".zsh",
+	".sql",
+	".graphql", ".gql",
+	".yaml", ".yml",
+	".toml",
+	".json",
+	".md",
+	".xml", ".html", ".htm", ".css", ".scss", ".less", ".sass",
+	".txt",
+]);
+
+// Directories to exclude from scanning (in addition to .git, node_modules)
+const EXCLUDED_DIRS = [
+	"node_modules", ".git", "target", "dist", "build", ".pi",
+	".next", ".nuxt", ".output", ".vercel",
+	"venv", "env", ".venv", "envs", ".envs", "__pycache__",
+	".vscode", ".idea",
+	"coverage", ".nyc_output",
+	".cache", "tmp", "temp",
+	".DS_Store", "Thumbs.db",
+];
+
+// Maximum files to scan before stopping
+const MAX_FILES_TO_SCAN = 5000;
 
 /**
  * Scan the project for file types present on disk.
@@ -14,38 +56,76 @@ export interface ProjectScanResult {
  */
 export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 	const extensions = new Set<string>();
+	let fileCount = 0;
 
 	// Strategy 1: git ls-files (fast, respects gitignore)
 	const gitFiles = tryGitLsFiles(cwd);
 	if (gitFiles.length > 0) {
 		for (const file of gitFiles) {
+			fileCount++;
+			if (fileCount > MAX_FILES_TO_SCAN) {
+				console.warn(`[lsp] Stopped scan after ${MAX_FILES_TO_SCAN} files (too many files)`);
+				break;
+			}
+
 			const ext = extname(file).toLowerCase();
-			if (ext) {
+			// Only collect common source code extensions
+			if (ext && COMMON_SOURCE_EXTENSIONS.has(ext)) {
 				extensions.add(ext);
 			}
 		}
-		return { discoveredExtensions: extensions };
+		console.log(`[lsp] Project scan found ${extensions.size} file types from ${fileCount} files (git mode)`);
+		return { discoveredExtensions: extensions, fileCount };
 	}
 
-	// Strategy 2: shallow find (maxdepth 3, skip node_modules etc.)
+	// Strategy 2: shallow find (maxdepth 3, skip many common dirs)
 	try {
-		const output = execSync(
-			'find . -maxdepth 3 -type f -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/target/*" -not -path "*/dist/*" -not -path "*/.pi/*" 2>/dev/null | head -2000',
-			{ cwd, timeout: 3000, encoding: "utf8" },
-		);
-		for (const line of output.split("\n")) {
+		const excludeArgs = EXCLUDED_DIRS.map((dir) => `-not -path "*/${dir}/*"`).join(" ");
+		const command = `find . -maxdepth 3 -type f ${excludeArgs} 2>/dev/null | head -${MAX_FILES_TO_SCAN}`;
+		const output = execSync(command, {
+			cwd,
+			timeout: 3000,
+			encoding: "utf8",
+		});
+
+		const lines = output.split("\n").filter(Boolean);
+		fileCount = 0;
+
+		for (const line of lines) {
 			const trimmed = line.trim();
 			if (!trimmed) continue;
+
+			fileCount++;
+
+			// Check memory usage periodically
+			if (fileCount % 1000 === 0) {
+				const memUsage = process.memoryUsage();
+				const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+				const heapTotalMB = Math.round(memUsage.heapTotal / 1024 / 1024);
+
+				// If we're using >3GB of heap, stop scanning
+				if (heapUsedMB > 3000) {
+					console.warn(`[lsp] Stopping scan due to high memory usage (${heapUsedMB}MB heap used)`);
+					break;
+				}
+			}
+
 			const ext = extname(trimmed).toLowerCase();
-			if (ext) {
+			// Only collect common source code extensions
+			if (ext && COMMON_SOURCE_EXTENSIONS.has(ext)) {
 				extensions.add(ext);
 			}
 		}
-	} catch {
+
+		console.log(`[lsp] Project scan found ${extensions.size} file types from ${fileCount} files (find mode)`);
+	} catch (error) {
+		if (error instanceof Error) {
+			console.warn(`[lsp] Project scan failed: ${error.message}`);
+		}
 		// If scan fails, return empty — will fall back to starting all servers
 	}
 
-	return { discoveredExtensions: extensions };
+	return { discoveredExtensions: extensions, fileCount };
 }
 
 function tryGitLsFiles(cwd: string): string[] {
@@ -76,10 +156,17 @@ export function filterServersByProject(
 	servers: ResolvedLspServerConfig[],
 	scanResult: ProjectScanResult,
 ): ResolvedLspServerConfig[] {
-	const { discoveredExtensions } = scanResult;
+	const { discoveredExtensions, fileCount } = scanResult;
 
 	// Safe fallback: if scan found nothing, start everything
 	if (discoveredExtensions.size === 0) {
+		console.log(`[lsp] No file types discovered, starting all ${servers.length} servers`);
+		return servers;
+	}
+
+	// If we scanned very few files (<10), might be an empty project - start all servers
+	if (fileCount !== undefined && fileCount < 10) {
+		console.log(`[lsp] Only ${fileCount} files scanned, starting all ${servers.length} servers`);
 		return servers;
 	}
 
@@ -97,6 +184,8 @@ export function filterServersByProject(
 			filtered.push(server);
 		}
 	}
+
+	console.log(`[lsp] Filtered to ${filtered.length}/${servers.length} servers based on project files`);
 
 	return filtered;
 }
