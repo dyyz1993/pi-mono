@@ -12,31 +12,60 @@ interface FileStamp {
 }
 
 const fileRecords = new Map<string, Map<string, FileStamp>>();
+const fileConfigs = new Map<string, FileTimeGuardConfig>();
+
+function shouldIgnorePath(p: string, cfg: FileTimeGuardConfig): boolean {
+	for (const pattern of cfg.ignorePatterns) {
+		if (minimatch(p, pattern)) {
+			return true;
+		}
+	}
+	return false;
+}
 
 export default function (pi: ExtensionAPI) {
-	const config: FileTimeGuardConfig = { ...DEFAULT_CONFIG };
+	pi.registerFlag("file-time-check-mode", {
+		description: "文件时间戳检查模式 (block/warn/ignore)",
+		type: "string",
+		default: "block",
+	});
+
+	pi.registerFlag("disable-file-time-check", {
+		description: "禁用文件时间戳检查",
+		type: "boolean",
+		default: false,
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (!config.enabled) return;
+		const disabled = pi.getFlag("disable-file-time-check");
+		const mode = pi.getFlag("file-time-check-mode");
+
+		if (disabled === true) return;
 
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (!sessionId) return;
 
 		fileRecords.set(sessionId, new Map());
+		fileConfigs.set(sessionId, {
+			...DEFAULT_CONFIG,
+			...(mode === "block" || mode === "warn" || mode === "ignore" ? { checkMode: mode } : {}),
+		});
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (sessionId) {
 			fileRecords.delete(sessionId);
+			fileConfigs.delete(sessionId);
 		}
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (!config.enabled) return;
-
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (!sessionId) return;
+
+		const config = fileConfigs.get(sessionId);
+		if (!config) return;
 
 		const records = fileRecords.get(sessionId);
 		if (!records) return;
@@ -45,7 +74,7 @@ export default function (pi: ExtensionAPI) {
 			const relativePath = (event.input as { path: string }).path;
 			const absolutePath = resolve(ctx.cwd, relativePath);
 
-			if (shouldIgnorePath(absolutePath)) return;
+			if (shouldIgnorePath(absolutePath, config)) return;
 
 			try {
 				const stats = await stat(absolutePath);
@@ -65,7 +94,7 @@ export default function (pi: ExtensionAPI) {
 			const relativePath = (event.input as { path: string }).path;
 			const absolutePath = resolve(ctx.cwd, relativePath);
 
-			if (shouldIgnorePath(absolutePath)) return;
+			if (shouldIgnorePath(absolutePath, config)) return;
 
 			const record = records.get(absolutePath);
 
@@ -115,15 +144,6 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	function shouldIgnorePath(path: string): boolean {
-		for (const pattern of config.ignorePatterns) {
-			if (minimatch(path, pattern)) {
-				return true;
-			}
-		}
-		return false;
-	}
-
 	pi.registerCommand("file-time-status", {
 		description: "查看文件时间戳检查状态",
 		handler: async (_args, ctx) => {
@@ -134,38 +154,28 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const records = fileRecords.get(sessionId);
-			if (!records) {
+			const config = fileConfigs.get(sessionId);
+			if (!records || !config) {
 				ctx.ui.notify("会话无文件记录", "info");
 				return;
 			}
 
 			const count = records.size;
+			const disabled = pi.getFlag("disable-file-time-check");
 			const lines = [
-				`文件时间戳检查: ${config.enabled ? "启用" : "禁用"}`,
+				`文件时间戳检查: ${disabled === true ? "禁用" : "启用"}`,
 				`检查模式: ${config.checkMode}`,
 				`已追踪文件: ${count}`,
 			];
 
 			if (count > 0 && count <= 10) {
 				lines.push("\n已追踪文件:");
-				for (const [path] of Array.from(records.entries())) {
-					lines.push(`  ${path}`);
+				for (const [p] of Array.from(records.entries())) {
+					lines.push(`  ${p}`);
 				}
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
-	});
-
-	pi.registerFlag("file-time-check-mode", {
-		description: "文件时间戳检查模式 (block/warn/ignore)",
-		type: "string",
-		default: "block",
-	});
-
-	pi.registerFlag("disable-file-time-check", {
-		description: "禁用文件时间戳检查",
-		type: "boolean",
-		default: false,
 	});
 }
