@@ -1086,7 +1086,23 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 			userMarkedIrrelevant: true,
 			irrelevantFiles: selectedFiles,
 		});
+
+		// 立即提取排除关键词并写入 store
+		const excludeKeywords = new Set<string>(store.excludeKeywords);
+		for (const file of selectedFiles) {
+			const name = file.replace(/\.md$/, "").replace(/\.json$/, "");
+			const parts = name.split(/[\s_-]+/);
+			for (const part of parts) {
+				const clean = part.trim().toLowerCase();
+				if (clean.length >= 3 && clean.length <= 20) {
+					excludeKeywords.add(clean);
+				}
+			}
+		}
+		store.excludeKeywords = Array.from(excludeKeywords);
+
 		await saveSkipWordStore(getGlobalMemoryDir(), store);
+		prefetch.markDirty();
 
 		pi.appendEntry("memory_irrelevant_marked", {
 			query,
