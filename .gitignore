@@ -38,6 +38,20 @@ packages/coding-agent/extensions/**/*.js
 packages/coding-agent/extensions/**/*.js.map
 packages/coding-agent/extensions/**/*.d.ts
 packages/coding-agent/extensions/**/*.d.ts.map
+
+# TypeScript compilation artifacts in source dirs
+packages/ai/src/**/*.js
+packages/ai/src/**/*.js.map
+packages/ai/src/**/*.d.ts
+packages/ai/src/**/*.d.ts.map
+packages/coding-agent/src/**/*.js
+packages/coding-agent/src/**/*.js.map
+packages/coding-agent/src/**/*.d.ts
+packages/coding-agent/src/**/*.d.ts.map
+packages/tui/src/**/*.js
+packages/tui/src/**/*.js.map
+packages/tui/src/**/*.d.ts
+packages/tui/src/**/*.d.ts.map
 todo.md
 plans/
 .pi/supervisor.json
