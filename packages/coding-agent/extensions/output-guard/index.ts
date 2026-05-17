@@ -40,8 +40,9 @@
 
 import { randomBytes } from "node:crypto";
 import { mkdirSync, existsSync, writeFileSync as fsWriteFileSync } from "node:fs";
+import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as nodePathResolve } from "node:path";
 import { Type } from "typebox";
 import type {
 	ExtensionAPI,
@@ -85,15 +86,16 @@ interface OutputGuardConfig {
 	saveToFile: boolean;
 }
 
-function loadConfig(ctx: ExtensionContext): OutputGuardConfig {
-	const settings = (ctx as unknown as { settings?: Record<string, unknown> }).settings;
-	const guard = settings?.outputGuard as Partial<OutputGuardConfig> | undefined;
+function loadConfig(_ctx: ExtensionContext): OutputGuardConfig {
+	// Note: ExtensionContext does not expose settings. User configuration
+	// via .pi/settings.json is not currently supported. Use defaults only.
+	// TODO: When ExtensionAPI exposes a settings accessor, wire it here.
 	return {
-		maxLines: guard?.maxLines ?? DEFAULT_MAX_LINES,
-		maxBytes: guard?.maxBytes ?? DEFAULT_MAX_BYTES,
-		findLimit: guard?.findLimit ?? DEFAULT_FIND_LIMIT,
-		lsLimit: guard?.lsLimit ?? DEFAULT_LS_LIMIT,
-		saveToFile: guard?.saveToFile ?? true,
+		maxLines: DEFAULT_MAX_LINES,
+		maxBytes: DEFAULT_MAX_BYTES,
+		findLimit: DEFAULT_FIND_LIMIT,
+		lsLimit: DEFAULT_LS_LIMIT,
+		saveToFile: true,
 	};
 }
 
@@ -340,13 +342,11 @@ export default function outputGuard(pi: ExtensionAPI) {
 			args: { path: string; maxPages?: number },
 			ctx: ExtensionContext,
 		) => {
-			const fs = await import("node:fs/promises");
-			const nodePath = await import("node:path");
-			const absolutePath = nodePath.resolve(ctx.cwd, args.path);
+			const absolutePath = nodePathResolve(ctx.cwd, args.path);
 
 			// Check file exists
 			try {
-				const stat = await fs.stat(absolutePath);
+				const stat = await fsStat(absolutePath);
 				if (!stat.isFile()) {
 					return { content: [{ type: "text" as const, text: `Error: ${args.path} is not a file` }], isError: true };
 				}
@@ -356,7 +356,7 @@ export default function outputGuard(pi: ExtensionAPI) {
 
 			// Read PDF
 			try {
-				const buffer = await fs.readFile(absolutePath);
+				const buffer = await fsReadFile(absolutePath);
 
 				console.debug(`[output-guard] pdf_read: ${args.path} (${buffer.length} bytes, pages: ${args.maxPages ?? "all"})`);
 
