@@ -193,7 +193,7 @@ export async function createTestExtensionsResult(
 		const factory = typeof input === "function" ? input : input.factory;
 		const extensionPath =
 			typeof input === "function" ? `<inline:${index + 1}>` : (input.path ?? `<inline:${index + 1}>`);
-		extensions.push(await loadExtensionFromFactory(factory, cwd, eventBus, runtime, extensionPath));
+		extensions.push(await loadExtensionFromFactory(factory, cwd, eventBus, { current: runtime }, extensionPath));
 	}
 
 	return {

@@ -549,6 +549,51 @@ export class ExtensionRunner {
 		}
 	}
 
+	/**
+	 * Retarget this runner to a new runner's state so that existing ctx objects
+	 * (created by createContext) and pi closures (delegating through the runtime
+	 * slot) continue working against the new session after replacement.
+	 *
+	 * This is the non-throwing alternative to invalidate(): instead of marking
+	 * the runner as stale (which throws on every subsequent access), we update
+	 * all mutable fields to point at the new runner's live state.
+	 */
+	retarget(source: ExtensionRunner): void {
+		this.extensions = source.extensions;
+		this.runtime = source.runtime;
+		this.cwd = source.cwd;
+		this.sessionManager = source.sessionManager;
+		this.modelRegistry = source.modelRegistry;
+		this.uiContextOriginal = source.uiContextOriginal;
+		this.uiContext = source.uiContext;
+		this.getModel = source.getModel;
+		this.isIdleFn = source.isIdleFn;
+		this.getSignalFn = source.getSignalFn;
+		this.abortFn = source.abortFn;
+		this.hasPendingMessagesFn = source.hasPendingMessagesFn;
+		this.shutdownHandler = source.shutdownHandler;
+		this.getContextUsageFn = source.getContextUsageFn;
+		this.compactFn = source.compactFn;
+		this.getSystemPromptFn = source.getSystemPromptFn;
+		this.getSessionSignalFn = source.getSessionSignalFn;
+		this.waitForIdleFn = source.waitForIdleFn;
+		this.newSessionHandler = source.newSessionHandler;
+		this.forkHandler = source.forkHandler;
+		this.navigateTreeHandler = source.navigateTreeHandler;
+		this.switchSessionHandler = source.switchSessionHandler;
+		this.reloadHandler = source.reloadHandler;
+		this.getExtensionNameFn = source.getExtensionNameFn;
+		this.getProjectRootFn = source.getProjectRootFn;
+		this.getSessionDataDirFn = source.getSessionDataDirFn;
+		this.getProjectDataDirFn = source.getProjectDataDirFn;
+		this.getCwdDataDirFn = source.getCwdDataDirFn;
+		this.getGlobalDataDirFn = source.getGlobalDataDirFn;
+		this.respondUIFn = source.respondUIFn;
+		this._fileSnapshotManager = source._fileSnapshotManager;
+		// Clear stale state if any — this runner is alive again
+		this.staleMessage = undefined;
+	}
+
 	private assertActive(): void {
 		if (this.staleMessage) {
 			throw new Error(this.staleMessage);

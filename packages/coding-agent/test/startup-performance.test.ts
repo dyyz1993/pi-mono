@@ -172,9 +172,9 @@ describe("startup performance baseline", () => {
 			const eventBus = createEventBus();
 			const runtime = createExtensionRuntime();
 
-			await loadExtensionFromFactory(factory1, cwd, eventBus, runtime, "<test:1>");
-			await loadExtensionFromFactory(factory2, cwd, eventBus, runtime, "<test:2>");
-			await loadExtensionFromFactory(factory3, cwd, eventBus, runtime, "<test:3>");
+			await loadExtensionFromFactory(factory1, cwd, eventBus, { current: runtime }, "<test:1>");
+			await loadExtensionFromFactory(factory2, cwd, eventBus, { current: runtime }, "<test:2>");
+			await loadExtensionFromFactory(factory3, cwd, eventBus, { current: runtime }, "<test:3>");
 
 			expect(orderTracker).toEqual(["factory1", "factory2", "factory3"]);
 		});

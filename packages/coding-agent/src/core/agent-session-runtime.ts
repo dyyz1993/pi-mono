@@ -7,7 +7,7 @@ import {
 	createAgentSessionFromServices,
 } from "./agent-session-services.js";
 import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } from "./extensions/index.js";
-import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import { type ExtensionRunner, emitSessionShutdownEvent } from "./extensions/runner.js";
 import type { CreateAgentSessionResult } from "./sdk.js";
 import { assertSessionCwdExists } from "./session-cwd.js";
 import { SessionManager } from "./session-manager.js";
@@ -71,6 +71,7 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
 export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
+	private previousRunner: ExtensionRunner | undefined;
 
 	constructor(
 		private _session: AgentSession,
@@ -151,13 +152,18 @@ export class AgentSessionRuntime {
 	}
 
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+		// Save the old runner for retargeting after the new session is created.
+		this.previousRunner = this.session.extensionRunner;
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,
 			targetSessionFile,
 		});
 		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		// Do NOT call session.dispose() here — it would invalidate the old
+		// runner, causing stale errors for any captured pi/ctx from async ops.
+		// Instead, cleanup non-extension resources only.
+		this.session.cleanupResources();
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -168,6 +174,13 @@ export class AgentSessionRuntime {
 	}
 
 	private async finishSessionReplacement(withSession?: (ctx: ReplacedSessionContext) => Promise<void>): Promise<void> {
+		// Retarget the previous runner to the new runner's state so that
+		// any captured pi/ctx from the old session transparently delegate
+		// to the new session's runtime without throwing stale errors.
+		if (this.previousRunner) {
+			this.previousRunner.retarget(this.session.extensionRunner);
+			this.previousRunner = undefined;
+		}
 		if (this.rebindSession) {
 			await this.rebindSession(this.session);
 		}

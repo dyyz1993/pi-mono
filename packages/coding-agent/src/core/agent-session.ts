@@ -930,6 +930,15 @@ export class AgentSession {
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
+		this.cleanupResources();
+	}
+
+	/**
+	 * Cleanup non-extension resources (MCP, agent listeners, event listeners).
+	 * Used during session replacement where the old runner is retargeted
+	 * instead of invalidated.
+	 */
+	cleanupResources(): void {
 		this._mcpManager?.dispose().catch(() => {});
 		this._disconnectFromAgent();
 		this._eventListeners = [];
@@ -1670,11 +1679,20 @@ export class AgentSession {
 
 	/**
 	 * Abort current operation and wait for agent to become idle.
+	 * If the agent does not settle within the timeout, returns anyway
+	 * to avoid blocking the caller (e.g. RPC abort command).
 	 */
 	async abort(): Promise<void> {
 		this.abortRetry();
 		this.agent.abort();
-		await this.agent.waitForIdle();
+
+		// Wait for idle with a timeout so we don't block forever
+		// when a tool execution or stream doesn't respect the abort signal.
+		const ABORT_IDLE_TIMEOUT_MS = 2_000;
+		await Promise.race([
+			this.agent.waitForIdle(),
+			new Promise<void>((resolve) => setTimeout(resolve, ABORT_IDLE_TIMEOUT_MS)),
+		]);
 	}
 
 	// =========================================================================
@@ -2739,19 +2757,19 @@ export class AgentSession {
 		resetApiProviders();
 		await this._resourceLoader.reload();
 
-		// Capture the old runner before _buildRuntime replaces it, so we can
-		// invalidate it after the new runner is active. This ensures any
-		// ExtensionContext captured from the old runner will throw on access
-		// instead of silently returning stale data.
+		// Capture the old runner before _buildRuntime replaces it.
 		const oldRunner = this._extensionRunner;
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
-		oldRunner.invalidate(
-			"This extension ctx is stale after reload. Do not use the old ctx after await ctx.reload().",
-		);
+
+		// Instead of invalidating the old runner (which would throw stale errors
+		// for any captured pi/ctx from the old session), retarget it to the new
+		// runner's state. This way, old async operations (timeouts, background
+		// tasks, channel handlers) transparently delegate to the new runtime.
+		oldRunner.retarget(this._extensionRunner);
 
 		// Flush pending channel registrations on the new runner so that extensions
 		// (e.g. coordinator) can communicate immediately after reload without

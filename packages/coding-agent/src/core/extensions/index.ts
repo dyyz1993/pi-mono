@@ -10,6 +10,7 @@ export { ChannelManager } from "./channel-manager.js";
 export type { ChannelTypeRegistry } from "./channel-registry.js";
 export type { Channel, ChannelDataMessage, ChannelEntry, ChannelOutputFn } from "./channel-types.js";
 export { ClientChannel } from "./client-channel.js";
+export type { RuntimeSlot } from "./loader.js";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,

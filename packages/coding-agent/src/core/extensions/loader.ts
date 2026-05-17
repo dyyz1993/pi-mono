@@ -267,36 +267,43 @@ export function createExtensionRuntime(): ExtensionRuntime {
 }
 
 /**
+ * Mutable slot that indirections runtime access.
+ * When session is replaced, the slot's current is updated to the new runtime,
+ * so all existing pi closures automatically delegate to the new session.
+ * Only true shutdown (process exit) permanently invalidates the slot.
+ */
+export interface RuntimeSlot {
+	current: ExtensionRuntime;
+}
+
+/**
  * Create the ExtensionAPI for an extension.
  * Registration methods write to the extension object.
- * Action methods delegate to the shared runtime.
+ * Action methods delegate through the runtime slot, so they remain valid
+ * across session replacements (fork, newSession, switchSession, reload).
  */
-function createExtensionAPI(
-	extension: Extension,
-	runtime: ExtensionRuntime,
-	cwd: string,
-	eventBus: EventBus,
-): ExtensionAPI {
+function createExtensionAPI(extension: Extension, slot: RuntimeSlot, cwd: string, eventBus: EventBus): ExtensionAPI {
+	const getRuntime = () => slot.current;
 	const api = {
 		// Registration methods - write to extension
 		on(event: string, handler: HandlerFn): void {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
 		},
 
 		registerTool(tool: ToolDefinition): void {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			extension.tools.set(tool.name, {
 				definition: tool,
 				sourceInfo: extension.sourceInfo,
 			});
-			runtime.refreshTools();
+			getRuntime().refreshTools();
 		},
 
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			extension.commands.set(name, {
 				name,
 				sourceInfo: extension.sourceInfo,
@@ -311,7 +318,7 @@ function createExtensionAPI(
 				handler: (ctx: import("./types.js").ExtensionContext) => Promise<void> | void;
 			},
 		): void {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			extension.shortcuts.set(shortcut, {
 				shortcut,
 				extensionPath: extension.path,
@@ -324,134 +331,134 @@ function createExtensionAPI(
 			name: string,
 			options: { description?: string; type: "boolean" | "string"; default?: boolean | string },
 		): void {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			extension.flags.set(name, { name, extensionPath: extension.path, ...options });
-			if (options.default !== undefined && !runtime.flagValues.has(name)) {
-				runtime.flagValues.set(name, options.default);
+			if (options.default !== undefined && !getRuntime().flagValues.has(name)) {
+				getRuntime().flagValues.set(name, options.default);
 			}
 		},
 
 		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
 		// Flag access - checks extension registered it, reads from runtime
 		getFlag(name: string): boolean | string | undefined {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			if (!extension.flags.has(name)) return undefined;
-			return runtime.flagValues.get(name);
+			return getRuntime().flagValues.get(name);
 		},
 
-		// Action methods - delegate to shared runtime
+		// Action methods - delegate through slot to current runtime
 		sendMessage(message, options): void {
-			runtime.assertActive();
-			runtime.sendMessage(message, options);
+			getRuntime().assertActive();
+			getRuntime().sendMessage(message, options);
 		},
 
 		sendUserMessage(content, options): void {
-			runtime.assertActive();
-			runtime.sendUserMessage(content, options);
+			getRuntime().assertActive();
+			getRuntime().sendUserMessage(content, options);
 		},
 
 		appendEntry(customType: string, data?: unknown): string {
-			runtime.assertActive();
-			return runtime.appendEntry(customType, data);
+			getRuntime().assertActive();
+			return getRuntime().appendEntry(customType, data);
 		},
 
 		setSessionName(name: string): void {
-			runtime.assertActive();
-			runtime.setSessionName(name);
+			getRuntime().assertActive();
+			getRuntime().setSessionName(name);
 		},
 
 		getSessionName(): string | undefined {
-			runtime.assertActive();
-			return runtime.getSessionName();
+			getRuntime().assertActive();
+			return getRuntime().getSessionName();
 		},
 
 		setLabel(entryId: string, label: string | undefined): void {
-			runtime.assertActive();
-			runtime.setLabel(entryId, label);
+			getRuntime().assertActive();
+			getRuntime().setLabel(entryId, label);
 		},
 
 		exec(command: string, args: string[], options?: ExecOptions) {
-			runtime.assertActive();
+			getRuntime().assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);
 		},
 
 		getActiveTools(): string[] {
-			runtime.assertActive();
-			return runtime.getActiveTools();
+			getRuntime().assertActive();
+			return getRuntime().getActiveTools();
 		},
 
 		getAllTools() {
-			runtime.assertActive();
-			return runtime.getAllTools();
+			getRuntime().assertActive();
+			return getRuntime().getAllTools();
 		},
 
 		setActiveTools(toolNames: string[]): void {
-			runtime.assertActive();
-			runtime.setActiveTools(toolNames);
+			getRuntime().assertActive();
+			getRuntime().setActiveTools(toolNames);
 		},
 
 		getCommands() {
-			runtime.assertActive();
-			return runtime.getCommands();
+			getRuntime().assertActive();
+			return getRuntime().getCommands();
 		},
 
 		setModel(model) {
-			runtime.assertActive();
-			return runtime.setModel(model);
+			getRuntime().assertActive();
+			return getRuntime().setModel(model);
 		},
 
 		getThinkingLevel() {
-			runtime.assertActive();
-			return runtime.getThinkingLevel();
+			getRuntime().assertActive();
+			return getRuntime().getThinkingLevel();
 		},
 
 		setThinkingLevel(level) {
-			runtime.assertActive();
-			runtime.setThinkingLevel(level);
+			getRuntime().assertActive();
+			return getRuntime().setThinkingLevel(level);
 		},
 
 		registerProvider(name: string, config: ProviderConfig) {
-			runtime.assertActive();
-			runtime.registerProvider(name, config, extension.path);
+			getRuntime().assertActive();
+			getRuntime().registerProvider(name, config, extension.path);
 		},
 
 		unregisterProvider(name: string) {
-			runtime.assertActive();
-			runtime.unregisterProvider(name, extension.path);
+			getRuntime().assertActive();
+			getRuntime().unregisterProvider(name, extension.path);
 		},
 
 		registerChannel(name: string) {
-			runtime.assertActive();
-			return runtime.registerChannel(name);
+			getRuntime().assertActive();
+			return getRuntime().registerChannel(name);
 		},
 
 		callLLM(options) {
-			runtime.assertActive();
-			return runtime.callLLM(options);
+			getRuntime().assertActive();
+			return getRuntime().callLLM(options);
 		},
 
 		callLLMStructured(options) {
-			runtime.assertActive();
-			return runtime.callLLMStructured(options);
+			getRuntime().assertActive();
+			return getRuntime().callLLMStructured(options);
 		},
 
 		forkAgent(prompt, options) {
-			runtime.assertActive();
-			return runtime.forkAgent(prompt, options);
+			getRuntime().assertActive();
+			return getRuntime().forkAgent(prompt, options);
 		},
 
 		background(fn) {
-			runtime.assertActive();
-			return runtime.background(fn);
+			getRuntime().assertActive();
+			return getRuntime().background(fn);
 		},
 
 		foldEntry(entryId, summary, originalTokens) {
-			runtime.assertActive();
-			runtime.foldEntry(entryId, summary, originalTokens);
+			getRuntime().assertActive();
+			getRuntime().foldEntry(entryId, summary, originalTokens);
 		},
 
 		setName(name: string) {
@@ -516,7 +523,7 @@ async function loadExtension(
 	extensionPath: string,
 	cwd: string,
 	eventBus: EventBus,
-	runtime: ExtensionRuntime,
+	slot: RuntimeSlot,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	const extName = path.basename(extensionPath, path.extname(extensionPath));
@@ -529,7 +536,7 @@ async function loadExtension(
 		}
 
 		const extension = createExtension(extensionPath, resolvedPath);
-		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
+		const api = createExtensionAPI(extension, slot, cwd, eventBus);
 		await factory(api);
 		time(`      factory(${extName})`);
 
@@ -547,11 +554,11 @@ export async function loadExtensionFromFactory(
 	factory: ExtensionFactory,
 	cwd: string,
 	eventBus: EventBus,
-	runtime: ExtensionRuntime,
+	slot: RuntimeSlot,
 	extensionPath = "<inline>",
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, extensionPath);
-	const api = createExtensionAPI(extension, runtime, cwd, eventBus);
+	const api = createExtensionAPI(extension, slot, cwd, eventBus);
 	await factory(api);
 	return extension;
 }
@@ -564,10 +571,11 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const runtime = createExtensionRuntime();
+	const slot: RuntimeSlot = { current: runtime };
 
 	if (paths.length <= 1) {
 		for (const extPath of paths) {
-			const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
+			const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, slot);
 			if (error) {
 				errors.push({ path: extPath, error });
 				continue;
@@ -578,7 +586,7 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 		}
 	} else {
 		const results = await Promise.allSettled(
-			paths.map((extPath) => loadExtension(extPath, cwd, resolvedEventBus, runtime)),
+			paths.map((extPath) => loadExtension(extPath, cwd, resolvedEventBus, slot)),
 		);
 		for (let i = 0; i < results.length; i++) {
 			const result = results[i];
