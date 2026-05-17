@@ -602,6 +602,28 @@ export class FileSnapshotManager {
 		}
 		return entries;
 	}
+
+	/**
+	 * Get all tree hashes that are currently referenced by snapshots
+	 */
+	getActiveTreeHashes(): Set<string> {
+		const activeHashes = new Set<string>();
+
+		// Add session start hash
+		if (this.sessionStartTreeHash) {
+			activeHashes.add(this.sessionStartTreeHash);
+		}
+
+		// Add all snapshot tree hashes
+		for (const snap of this.snapshotIndex.values()) {
+			activeHashes.add(snap.snapshotTreeHash);
+			if (snap.baselineTreeHash) {
+				activeHashes.add(snap.baselineTreeHash);
+			}
+		}
+
+		return activeHashes;
+	}
 }
 
 function isOnPathTo(byId: Map<string, SessionEntry>, startId: string, targetId: string): boolean {
