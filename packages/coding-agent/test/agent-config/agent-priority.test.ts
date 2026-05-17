@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type AgentConfig, loadAgentsFromDir, mergeAgentsByPriority } from "../../extensions/subagent/agents.js";
+import { type AgentConfig, loadAgentsFromDir, mergeAgentsByPriority } from "../../src/core/agent-types.js";
 
 describe("Agent priority 6-level override", () => {
 	let userDir: string;

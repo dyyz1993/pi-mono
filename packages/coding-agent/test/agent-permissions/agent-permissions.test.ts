@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createPermissionHandler } from "../../extensions/agent-permissions/index.js";
-import type { AgentConfig } from "../../extensions/subagent/agents.js";
+import type { AgentConfig } from "../../src/core/agent-types.js";
 
 describe("PermissionMode middleware", () => {
 	function makeConfig(mode: AgentConfig["permissionMode"], disallowed?: string[]): AgentConfig {
