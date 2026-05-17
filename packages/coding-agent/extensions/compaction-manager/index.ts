@@ -27,6 +27,8 @@ function loadConfig(): CompactionManagerConfig {
 	return DEFAULT_CONFIG;
 }
 
+let compactMetrics = { foldCount: 0, memoryCompactCount: 0, forceCompactCount: 0, rateLimitHits: 0, serverErrors: 0 };
+
 export default function (pi: ExtensionAPI) {
 	const config = loadConfig();
 
@@ -70,11 +72,17 @@ export default function (pi: ExtensionAPI) {
 				pi.foldEntry(entry.id, summary, tokens);
 			}
 
+			compactMetrics.foldCount++;
 			ctx.ui.notify(`Context fold: folded ${foldable.length} old message(s)`, "info");
+			pi.appendEntry("compaction_fold", {
+				count: foldable.length,
+				totalFolds: compactMetrics.foldCount,
+				timestamp: Date.now(),
+			});
 		});
 	}
 
-	if (config.sessionMemory.enabled) {
+		if (config.sessionMemory.enabled) {
 		pi.on("session_before_compact", async (event, ctx) => {
 			const { preparation, signal } = event;
 
@@ -84,10 +92,16 @@ export default function (pi: ExtensionAPI) {
 			const result = buildMemorySummary(memoryFiles, preparation, config.sessionMemory.minContentLength);
 			if (!result) return;
 
+			compactMetrics.memoryCompactCount++;
 			ctx.ui.notify(
 				`Session Memory Compact: using ${memoryFiles.size} memory files instead of LLM summary`,
 				"info",
 			);
+			pi.appendEntry("compaction_session_memory", {
+				memoryFiles: memoryFiles.size,
+				totalMemory: compactMetrics.memoryCompactCount,
+				timestamp: Date.now(),
+			});
 
 			return { compaction: result };
 		});
@@ -98,9 +112,20 @@ export default function (pi: ExtensionAPI) {
 
 		pi.on("after_provider_response", (event, ctx) => {
 			if (event.status === 429) {
+				compactMetrics.rateLimitHits++;
 				ctx.ui.notify("Rate limited — API is throttling requests", "warning");
+				pi.appendEntry("compaction_rate_limit", {
+					total: compactMetrics.rateLimitHits,
+					timestamp: Date.now(),
+				});
 			} else if (event.status >= 500) {
+				compactMetrics.serverErrors++;
 				ctx.ui.notify(`API server error (${event.status}) — will retry automatically`, "warning");
+				pi.appendEntry("compaction_server_error", {
+					status: event.status,
+					total: compactMetrics.serverErrors,
+					timestamp: Date.now(),
+				});
 			}
 		});
 
@@ -139,10 +164,21 @@ export default function (pi: ExtensionAPI) {
 				ctx.compact({
 					customInstructions: instructions,
 					onComplete: (result) => {
+						compactMetrics.forceCompactCount++;
 						ctx.ui.notify(`Compaction done: ${result.tokensBefore.toLocaleString()} tokens compressed`, "info");
+						pi.appendEntry("compaction_force", {
+							tokensBefore: result.tokensBefore,
+							total: compactMetrics.forceCompactCount,
+							timestamp: Date.now(),
+						});
 					},
 					onError: (error) => {
 						ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
+						pi.appendEntry("compaction_failed", {
+							error: error.message,
+							total: compactMetrics.forceCompactCount,
+							timestamp: Date.now(),
+						});
 					},
 				});
 			},

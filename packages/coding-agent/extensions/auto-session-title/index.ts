@@ -77,7 +77,9 @@ export default function autoSessionTitle(pi: ExtensionAPI) {
 
 		const cleaned = cleanLLMTitle(title);
 		if (cleaned) {
+			console.debug(`[auto-session-title] generated: "${cleaned}"`);
 			pi.setSessionName(cleaned);
+			pi.appendEntry("auto_session_title", { title: cleaned, timestamp: Date.now() });
 		}
 	});
 }

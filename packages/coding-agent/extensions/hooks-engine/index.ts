@@ -193,6 +193,9 @@ export default function hooksEngine(pi: ExtensionAPI): void {
 
 			if (promptResults.length > 0) {
 				console.log("[hook] Prompts to inject:", promptResults);
+				for (const prompt of promptResults) {
+					pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+				}
 			}
 
 			return undefined;

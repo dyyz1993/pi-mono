@@ -1,5 +1,14 @@
 import type { ExtensionAPI, ExtensionContext, SessionTreeEvent, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 
+const DEFAULT_GC_CONFIG = {
+	// Auto GC on session shutdown
+	autoGCOnShutdown: true,
+	// Enforce disk limit (default 100MB)
+	maxStoreSizeBytes: 100 * 1024 * 1024,
+	// Prune objects older than 30 days
+	pruneAgeMs: 30 * 24 * 60 * 60 * 1000,
+};
+
 export default function fileSnapshot(pi: ExtensionAPI) {
 	const channel = pi.registerChannel("file-snapshot");
 
@@ -97,6 +106,29 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 					restored: [...result.restored, ...result.deleted],
 				};
 			}
+			case "snapshot.gc": {
+				const activeHashes = mgr.getActiveTreeHashes();
+				const result = await (mgr as any).git.gc(activeHashes);
+				return result;
+			}
+			case "snapshot.prune": {
+				const { maxAgeMs } = msg.params as { maxAgeMs?: number };
+				const activeHashes = mgr.getActiveTreeHashes();
+				const age = maxAgeMs ?? DEFAULT_GC_CONFIG.pruneAgeMs;
+				const result = await (mgr as any).git.pruneOldObjects(age, activeHashes);
+				return result;
+			}
+			case "snapshot.stats": {
+				const stats = (mgr as any).git.getStats();
+				return stats;
+			}
+			case "snapshot.enforceLimit": {
+				const { maxBytes } = msg.params as { maxBytes?: number };
+				const activeHashes = mgr.getActiveTreeHashes();
+				const limit = maxBytes ?? DEFAULT_GC_CONFIG.maxStoreSizeBytes;
+				const result = await (mgr as any).git.enforceLimit(limit, activeHashes);
+				return result;
+			}
 			default:
 				return { error: `Unknown method: ${msg.method}` };
 		}
@@ -130,5 +162,32 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 				return pi.appendEntry(type, data) ?? undefined;
 			},
 		});
+	});
+
+	// Auto GC on session shutdown
+	pi.on("session_shutdown", async (_event: unknown, ctx: ExtensionContext) => {
+		if (!DEFAULT_GC_CONFIG.autoGCOnShutdown) return;
+
+		const mgr = ctx.fileSnapshotManager;
+		if (!mgr) return;
+
+		try {
+			const activeHashes = mgr.getActiveTreeHashes();
+			const git = (mgr as any).git;
+
+			// Run GC to clean up unreferenced objects
+			const gcResult = await git.gc(activeHashes);
+			if (gcResult.deletedObjects > 0) {
+				console.log(`[file-snapshot] GC: deleted ${gcResult.deletedObjects} objects, freed ${gcResult.freedBytes} bytes`);
+			}
+
+			// Enforce disk limit
+			const limitResult = await git.enforceLimit(DEFAULT_GC_CONFIG.maxStoreSizeBytes, activeHashes);
+			if (limitResult.deletedObjects > 0) {
+				console.log(`[file-snapshot] Limit: deleted ${limitResult.deletedObjects} objects, freed ${limitResult.freedBytes} bytes`);
+			}
+		} catch (error) {
+			console.error("[file-snapshot] GC failed:", error);
+		}
 	});
 }

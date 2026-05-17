@@ -73,10 +73,9 @@ describe("Coordinator: full AgentSession integration", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("session_delegate", { task: "build the project", title: "Build" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("session_delegate", { task: "build the project", title: "Build" })], {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Task delegated successfully."),
 		]);
 
@@ -104,10 +103,7 @@ describe("Coordinator: full AgentSession integration", () => {
 
 		// Step 1: First prompt - LLM delegates a task
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("session_delegate", { task: "run tests" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("session_delegate", { task: "run tests" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("Delegated."),
 		]);
 
@@ -147,12 +143,7 @@ describe("Coordinator: full AgentSession integration", () => {
 		// Verify message count grows linearly (2 user + 2 assistant = 4)
 		// No accumulated context messages
 		expect(harness.session.messages).toHaveLength(4);
-		expect(harness.session.messages.map((m) => m.role)).toEqual([
-			"user",
-			"assistant",
-			"user",
-			"assistant",
-		]);
+		expect(harness.session.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
 	});
 
 	it("session_delegate_stop and session_delegate_remove tools work in full flow", async () => {
@@ -167,7 +158,9 @@ describe("Coordinator: full AgentSession integration", () => {
 			execute: async (_id, params) => {
 				stoppedSessions.push((params as { sessionId: string }).sessionId);
 				return {
-					content: [{ type: "text" as const, text: `Session ${(params as { sessionId: string }).sessionId} stopped.` }],
+					content: [
+						{ type: "text" as const, text: `Session ${(params as { sessionId: string }).sessionId} stopped.` },
+					],
 					details: { ok: true },
 				};
 			},
@@ -181,7 +174,9 @@ describe("Coordinator: full AgentSession integration", () => {
 			execute: async (_id, params) => {
 				removedSessions.push((params as { sessionId: string }).sessionId);
 				return {
-					content: [{ type: "text" as const, text: `Task ${(params as { sessionId: string }).sessionId} removed.` }],
+					content: [
+						{ type: "text" as const, text: `Task ${(params as { sessionId: string }).sessionId} removed.` },
+					],
 					details: { ok: true },
 				};
 			},
@@ -193,18 +188,15 @@ describe("Coordinator: full AgentSession integration", () => {
 
 		// Full lifecycle: delegate → stop → remove
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("session_delegate", { task: "lifecycle test" })],
-				{ stopReason: "toolUse" },
-			),
-			fauxAssistantMessage(
-				[fauxToolCall("session_delegate_stop", { sessionId: "sid-lifecycle" })],
-				{ stopReason: "toolUse" },
-			),
-			fauxAssistantMessage(
-				[fauxToolCall("session_delegate_remove", { sessionId: "sid-lifecycle" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("session_delegate", { task: "lifecycle test" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage([fauxToolCall("session_delegate_stop", { sessionId: "sid-lifecycle" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage([fauxToolCall("session_delegate_remove", { sessionId: "sid-lifecycle" })], {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Lifecycle complete."),
 		]);
 
@@ -233,10 +225,9 @@ describe("Coordinator: full AgentSession integration", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("session_delegate", { task: "lint", projectPath: "/other/project" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("session_delegate", { task: "lint", projectPath: "/other/project" })], {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Done."),
 		]);
 

@@ -217,6 +217,9 @@ function saveFullOutput(content: string, ctx: ExtensionContext): string | undefi
 // ============================================================================
 
 export default function outputGuard(pi: ExtensionAPI) {
+	pi.setName("output-guard");
+	let truncatedCount = 0;
+	let limitAdjustedCount = 0;
 	// ------------------------------------------------------------------
 	// 1. Global truncation fallback via tool_result hook
 	//
@@ -255,12 +258,28 @@ export default function outputGuard(pi: ExtensionAPI) {
 
 		// Truncate
 		const result = truncateOutput(fullText, config, ctx);
+		truncatedCount++;
 
 		let finalContent = result.content;
 		if (result.truncated) {
 			const notice = buildTruncationNotice(result, config);
 			finalContent = finalContent + "\n\n" + notice;
 		}
+
+		console.debug(
+			`[output-guard] truncated tool "${event.toolName}": ${result.totalLines} lines / ${result.totalBytes} bytes → ${result.outputLines} lines / ${result.outputBytes} bytes (truncatedBy: ${result.truncatedBy ?? "none"}, path: ${result.fullOutputPath ?? "N/A"})`,
+		);
+		pi.appendEntry("output_guard_truncate", {
+			toolName: event.toolName,
+			totalLines: result.totalLines,
+			totalBytes: result.totalBytes,
+			outputLines: result.outputLines,
+			outputBytes: result.outputBytes,
+			truncated: result.truncated,
+			truncatedBy: result.truncatedBy,
+			fullOutputPath: result.fullOutputPath,
+			truncatedCount,
+		});
 
 		return {
 			content: [{ type: "text" as const, text: finalContent }],
@@ -281,7 +300,9 @@ export default function outputGuard(pi: ExtensionAPI) {
 		if (event.toolName === "find") {
 			const input = event.input as { limit?: number };
 			if (input.limit === undefined || input.limit > config.findLimit) {
+				console.debug(`[output-guard] capped find limit: ${input.limit ?? "unlimited"} → ${config.findLimit}`);
 				input.limit = config.findLimit;
+				limitAdjustedCount++;
 			}
 		}
 
@@ -289,7 +310,9 @@ export default function outputGuard(pi: ExtensionAPI) {
 		if (event.toolName === "ls") {
 			const input = event.input as { limit?: number };
 			if (input.limit === undefined || input.limit > config.lsLimit) {
+				console.debug(`[output-guard] capped ls limit: ${input.limit ?? "unlimited"} → ${config.lsLimit}`);
 				input.limit = config.lsLimit;
+				limitAdjustedCount++;
 			}
 		}
 	});
@@ -335,11 +358,18 @@ export default function outputGuard(pi: ExtensionAPI) {
 			try {
 				const buffer = await fs.readFile(absolutePath);
 
+				console.debug(`[output-guard] pdf_read: ${args.path} (${buffer.length} bytes, pages: ${args.maxPages ?? "all"})`);
+
 				// Dynamic import of pdf-parse (optional dependency)
 				let pdfParse: typeof import("pdf-parse") | undefined;
 				try {
 					pdfParse = (await import("pdf-parse")).default;
 				} catch {
+					console.debug("[output-guard] pdf_read failed: pdf-parse not installed");
+					pi.appendEntry("output_guard_pdf_error", {
+						path: args.path,
+						error: "pdf-parse not installed",
+					});
 					return {
 						content: [
 							{
@@ -353,6 +383,15 @@ export default function outputGuard(pi: ExtensionAPI) {
 
 				const data = await pdfParse(buffer);
 				let text = data.text;
+
+				console.debug(`[output-guard] pdf_read success: ${args.path} (${data.numpages} pages, ${text.length} chars extracted)`);
+				pi.appendEntry("output_guard_pdf_read", {
+					path: args.path,
+					pages: data.numpages,
+					chars: text.length,
+					title: data.info?.Title ?? null,
+					author: data.info?.Author ?? null,
+				});
 
 				// Add metadata header
 				const header = [

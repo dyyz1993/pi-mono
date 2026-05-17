@@ -101,6 +101,8 @@ const PreviewParams = Type.Object({
 	title: Type.Optional(Type.String({ description: "Optional display title for the card" })),
 });
 
+let previewId = 0;
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "preview",
@@ -118,8 +120,11 @@ export default function (pi: ExtensionAPI) {
 			ctx?: ExtensionContext,
 		): Promise<AgentToolResult<PreviewDetails>> {
 			const cwd = ctx?.cwd ?? process.cwd();
+			previewId++;
 
 			if (!params.source?.trim()) {
+				console.debug(`[preview] #${previewId} error: source is required`);
+				pi.appendEntry("preview", { id: previewId, status: "error", error: "source required" });
 				return {
 					content: [{ type: "text", text: "Error: source is required" }],
 					details: { source: "", resourceType: "text", status: "error", error: "source required" },
@@ -138,6 +143,8 @@ export default function (pi: ExtensionAPI) {
 							const reachable = await checkReachable(parsed.hostname, port);
 							if (!reachable) {
 								const msg = `Preview 失败：${parsed.host} 未在局域网开放，服务可能只监听 127.0.0.1。请将服务绑定到 0.0.0.0 后重试。`;
+								console.debug(`[preview] #${previewId} error: local address "${parsed.host}:${parsed.port || 80}" not reachable`);
+								pi.appendEntry("preview", { id: previewId, source: params.source, status: "error", error: "local address not reachable", host: parsed.host, port: parseInt(parsed.port || "80", 10) });
 								return {
 									content: [{ type: "text", text: msg }],
 									details: {
@@ -156,6 +163,8 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 
+				console.debug(`[preview] #${previewId} url: ${params.source}`);
+				pi.appendEntry("preview", { id: previewId, source: params.source, type: "url", status: "ok", title: params.title });
 				return {
 					content: [{ type: "text", text: `Preview: ${params.source} (url)` }],
 					details: {
@@ -169,6 +178,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (!absolutePath || !existsSync(absolutePath)) {
+				console.debug(`[preview] #${previewId} not_found: ${params.source}`);
+				pi.appendEntry("preview", { id: previewId, source: params.source, type: resourceType, status: "not_found" });
 				return {
 					content: [{ type: "text", text: `Preview: ${params.source} not found` }],
 					details: {
@@ -184,6 +195,8 @@ export default function (pi: ExtensionAPI) {
 
 			const stat = statSync(absolutePath);
 			if (stat.isDirectory()) {
+				console.debug(`[preview] #${previewId} error: ${params.source} is a directory`);
+				pi.appendEntry("preview", { id: previewId, source: params.source, type: resourceType, status: "error", error: "is a directory" });
 				return {
 					content: [{ type: "text", text: `Preview: ${params.source} is a directory` }],
 					details: {
@@ -204,6 +217,16 @@ export default function (pi: ExtensionAPI) {
 						? `${(stat.size / 1024).toFixed(1)}KB`
 						: `${stat.size}B`;
 
+			console.debug(`[preview] #${previewId} ok: ${params.source} (${resourceType}, ${sizeStr})`);
+			pi.appendEntry("preview", {
+				id: previewId,
+				source: params.source,
+				type: resourceType,
+				mimeType,
+				size: stat.size,
+				status: "ok",
+				title: params.title,
+			});
 			return {
 				content: [
 					{

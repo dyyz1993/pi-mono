@@ -161,12 +161,22 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       const result = await serverProxy.delegate(params.task, projectPath);
 
       if (!result.sessionId) {
+        console.debug("[coordinator] delegate failed: no sessionId returned");
+        pi.appendEntry("coordinator_delegate_failed", { task: params.task, projectPath });
         return {
           content: [{ type: "text" as const, text: `Failed to delegate task: no sessionId returned.` }],
           details: { error: "no sessionId" },
         };
       }
 
+      pi.appendEntry("coordinator_delegate", {
+        sessionId: result.sessionId,
+        status: result.status,
+        task: params.task,
+        title: params.title,
+        projectPath,
+        dispatchedBy: sid,
+      });
       return {
         content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Use session_delegate_send to communicate.` }],
         details: { ...result, dispatchedBy: sid, projectPath },
@@ -190,12 +200,14 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       const result = await serverProxy.delegate_send(sid, params.targetSessionId, params.message);
 
       if (!result.delivered) {
+        pi.appendEntry("coordinator_send_failed", { fromSessionId: sid, toSessionId: params.targetSessionId });
         return {
           content: [{ type: "text" as const, text: `Could not deliver message to ${params.targetSessionId}: session not found (the session file may have been deleted from disk)` }],
           details: { delivered: false, targetSessionId: params.targetSessionId },
         };
       }
 
+      pi.appendEntry("coordinator_send", { fromSessionId: sid, toSessionId: params.targetSessionId, status: result.targetStatus });
       return {
         content: [{ type: "text" as const, text: `Message delivered to ${params.targetSessionId} (status: ${result.targetStatus})` }],
         details: result,
@@ -253,9 +265,33 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       const sid = currentSessionId || ctx.sessionManager.getSessionId();
       const projectPath = params.projectPath || ctx.cwd;
       const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title, projectPath);
+      pi.appendEntry("coordinator_fork", {
+        sessionId: result.sessionId,
+        forkedFrom: params.sessionId,
+        status: result.status,
+        task: params.task,
+        title: params.title,
+        projectPath,
+        dispatchedBy: sid,
+      });
       return {
         content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Task: ${params.task}` }],
         details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid, projectPath },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_stop",
+    label: "Session Delegate Stop",
+    description: "Stop a delegated task session.",
+    parameters: DelegateStopParams,
+    async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+      const ok = await serverProxy.delegate_stop(params.sessionId);
+      pi.appendEntry("coordinator_stop", { sessionId: params.sessionId, ok });
+      return {
+        content: [{ type: "text" as const, text: ok ? `Session ${params.sessionId} stopped.` : `Session ${params.sessionId} not found or already stopped.` }],
+        details: { ok },
       };
     },
   });
@@ -271,6 +307,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     parameters: DelegateStatusParams,
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
       const ok = await serverProxy.delegate_remove(params.sessionId);
+      pi.appendEntry("coordinator_remove", { sessionId: params.sessionId, ok });
       return {
         content: [{ type: "text" as const, text: ok ? `Task ${params.sessionId} removed.` : `Task ${params.sessionId} not found.` }],
         details: { ok },
@@ -288,6 +325,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(toolCallId, _params, _signal, _onUpdate, _ctx) {
       const removed = await serverProxy.delegate_clear_stopped();
+      pi.appendEntry("coordinator_clear_stopped", { removed });
       return {
         content: [{ type: "text" as const, text: `Cleared ${removed} stopped/completed task(s).` }],
         details: { removed },
@@ -307,6 +345,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       const isCompletion = lowerMsg.includes("[completed]") || lowerMsg.includes("[done]") || lowerMsg.includes("task completed");
       if (isCompletion) {
         store.update(d.fromSessionId, { status: "completed", completedAt: Date.now(), result: d.message });
+        pi.appendEntry("coordinator_task_completed", { sessionId: d.fromSessionId, task: task.title, result: d.message.slice(0, 200) });
       } else if (task.status !== "completed") {
         store.update(d.fromSessionId, { status: "streaming" });
       }
