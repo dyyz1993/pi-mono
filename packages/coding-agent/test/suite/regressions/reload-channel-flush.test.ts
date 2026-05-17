@@ -92,7 +92,7 @@ describe("reload flushes channels", () => {
 			resolvedChannels.set(name, tracker);
 			return {
 				name,
-				send: (data: unknown) => {
+				send: (_data: unknown) => {
 					tracker.sendCalled++;
 				},
 				onReceive: () => () => {},
