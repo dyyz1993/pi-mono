@@ -210,3 +210,26 @@ Generate a structured bookmark document. Respond with JSON only:
   "summary": "A well-structured markdown summary (2-5 paragraphs). Extract key insights, decisions, code patterns, or solutions. Preserve important details.",
   "tags": ["tag1", "tag2", "tag3"]
 }`;
+
+export const PURIFICATION_PROMPT = (
+	markedFiles: Array<{ filename: string; content: string }>,
+	existingKeywords: string[],
+): string => `You analyze memory files that the user marked as "irrelevant for search".
+Your job: extract concise keywords/topics so these files can be excluded from future search results.
+
+## Files marked as irrelevant:
+${markedFiles.map((f) => `### ${f.filename}\n${f.content.slice(0, 500)}`).join("\n\n")}
+
+${existingKeywords.length > 0 ? `## Already excluded keywords:\n${existingKeywords.join(", ")}` : ""}
+
+## Rules
+- Extract 1-5 keywords per file that capture the core topic
+- Keywords should be 2-20 characters, lowercase
+- Prefer specific terms over generic ones (e.g. "eslint" not "lint", "docker" not "container")
+- Do NOT duplicate existing keywords
+- If all files share a common theme, extract that too
+
+Respond with JSON only:
+{
+  "keywords": ["keyword1", "keyword2", ...]
+}`;

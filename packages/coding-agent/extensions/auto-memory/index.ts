@@ -36,6 +36,7 @@ import {
 	DREAM_PROMPT,
 	EXTRACTION_PROMPT,
 	MEMORY_SYSTEM_PROMPT,
+	PURIFICATION_PROMPT,
 	SELECT_MEMORIES_PROMPT,
 } from "./prompts.js";
 import {
@@ -837,6 +838,61 @@ async function countSessionsSince(memoryDir: string, _sinceMs: number): Promise<
 	}
 }
 
+async function maybePurify(memoryDir: string, callLLM: CallLLMFn): Promise<string[] | null> {
+	const store = loadSkipWordStore(getGlobalMemoryDir());
+	const unprocessed = store.history.filter((h) => h.userMarkedIrrelevant && h.irrelevantFiles?.length);
+
+	// 需要至少 2 条未处理的标记才触发
+	if (unprocessed.length < 2) return null;
+
+	// 收集标记的文件内容（去重）
+	const fileSet = new Set<string>();
+	for (const entry of unprocessed) {
+		for (const f of entry.irrelevantFiles ?? []) {
+			fileSet.add(f);
+		}
+	}
+
+	const markedFiles: Array<{ filename: string; content: string }> = [];
+	for (const filename of fileSet) {
+		const filePath = join(memoryDir, filename);
+		if (!existsSync(filePath)) continue;
+		try {
+			const content = await readFile(filePath, "utf-8");
+			markedFiles.push({ filename, content });
+		} catch {
+			markedFiles.push({ filename, content: "" });
+		}
+	}
+
+	if (markedFiles.length === 0) return null;
+
+	const llmResult = await callLLM({
+		systemPrompt: PURIFICATION_PROMPT(markedFiles, store.excludeKeywords),
+		messages: [{ role: "user", content: "Extract exclusion keywords from the marked files." }],
+	});
+
+	let parsed: { keywords?: string[] };
+	try {
+		parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
+	} catch (err) {
+		console.debug("[auto-memory] purification LLM parse failed:", err instanceof Error ? err.message : err);
+		return null;
+	}
+
+	const newKeywords = (parsed.keywords ?? []).filter(
+		(k) => typeof k === "string" && k.length >= 2 && k.length <= 30 && !store.excludeKeywords.includes(k),
+	);
+
+	if (newKeywords.length === 0) return null;
+
+	// 合并到 store
+	store.excludeKeywords = [...store.excludeKeywords, ...newKeywords];
+	await saveSkipWordStore(getGlobalMemoryDir(), store);
+
+	return newKeywords;
+}
+
 export {
 	MemoryPrefetch,
 	MemoryExtractor,
@@ -979,6 +1035,12 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 					});
 				}
 
+				status("purifying exclusions...");
+				const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
+				if (purifyResult) {
+					prefetch.markDirty();
+				}
+
 				status("memory idle");
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
@@ -1086,23 +1148,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 			userMarkedIrrelevant: true,
 			irrelevantFiles: selectedFiles,
 		});
-
-		// 立即提取排除关键词并写入 store
-		const excludeKeywords = new Set<string>(store.excludeKeywords);
-		for (const file of selectedFiles) {
-			const name = file.replace(/\.md$/, "").replace(/\.json$/, "");
-			const parts = name.split(/[\s_-]+/);
-			for (const part of parts) {
-				const clean = part.trim().toLowerCase();
-				if (clean.length >= 3 && clean.length <= 20) {
-					excludeKeywords.add(clean);
-				}
-			}
-		}
-		store.excludeKeywords = Array.from(excludeKeywords);
-
 		await saveSkipWordStore(getGlobalMemoryDir(), store);
-		prefetch.markDirty();
 
 		pi.appendEntry("memory_irrelevant_marked", {
 			query,

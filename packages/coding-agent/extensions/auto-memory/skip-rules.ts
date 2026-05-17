@@ -297,26 +297,9 @@ export function applyPurification(store: SkipWordStore, result: PurificationResu
 		}
 	}
 
-	// 从历史中提取用户标记的文件关键词
-	const irrelevantEntries = store.history.filter((h) => h.userMarkedIrrelevant && h.irrelevantFiles);
-	const excludeKeywords = new Set<string>(store.excludeKeywords);
-	for (const entry of irrelevantEntries) {
-		for (const file of entry.irrelevantFiles ?? []) {
-			const name = file.replace(/\.md$/, "").replace(/\.json$/, "");
-			const parts = name.split(/[\s_-]+/);
-			for (const part of parts) {
-				const clean = part.trim().toLowerCase();
-				if (clean.length >= 3 && clean.length <= 20) {
-					excludeKeywords.add(clean);
-				}
-			}
-		}
-	}
-
 	return {
 		...store,
 		rules,
-		excludeKeywords: Array.from(excludeKeywords),
 		lastPurifyTimestamp: Date.now(),
 	};
 }
