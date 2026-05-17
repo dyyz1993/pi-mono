@@ -172,8 +172,10 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 		if (!mgr) return;
 
 		try {
-			const activeHashes = mgr.getActiveTreeHashes();
-			const git = (mgr as any).git;
+			const activeHashes = typeof mgr.getActiveTreeHashes === "function"
+				? mgr.getActiveTreeHashes()
+				: [];
+			const git = (mgr as Record<string, unknown>).git;
 
 			// Run GC to clean up unreferenced objects
 			const gcResult = await git.gc(activeHashes);
