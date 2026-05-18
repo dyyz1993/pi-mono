@@ -342,6 +342,21 @@ export function interpretHookOutput(output: HookOutput): {
 		return { shouldBlock: true, reason: output.stderr || "Blocked by hook" };
 	}
 
+	// Exit code 3 = ask user confirmation (treated as block in headless/RPC mode)
+	if (output.exitCode === 3) {
+		let reason = output.stderr || "";
+		if (!reason && output.stdout.trim().startsWith("{")) {
+			try {
+				const parsed = JSON.parse(output.stdout.trim());
+				reason = parsed.reason || parsed.question || "";
+			} catch {
+				reason = output.stdout.trim();
+			}
+		}
+		if (!reason) reason = output.stdout.trim() || "Confirmation required by hook";
+		return { shouldBlock: true, reason };
+	}
+
 	if (output.parsed) {
 		const p = output.parsed;
 
