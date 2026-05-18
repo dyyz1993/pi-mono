@@ -1,6 +1,6 @@
 {
 	"name": "@dyyz1993/pi-agent-core",
-	"version": "0.74.41",
+	"version": "0.74.50",
 	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
 	"type": "module",
 	"main": "./dist/index.js",
