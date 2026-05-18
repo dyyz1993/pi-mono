@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.40] - 2026-05-18
 
 ### Added
 - `file-review` extension: new extension with typed channel contract for file review workflows.
