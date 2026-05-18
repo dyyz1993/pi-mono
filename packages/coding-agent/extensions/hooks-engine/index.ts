@@ -45,11 +45,11 @@ export function parseHooks(raw: string | undefined): AgentHooks | null {
 
 export function matchesCondition(condition: string | undefined, event: Record<string, unknown>): boolean {
 	if (!condition) return true;
-	const toolName = (event.toolName as string) ?? "";
+	const toolName = ((event.toolName as string) ?? "").toLowerCase();
 
 	// Fast path: simple alphanumeric with optional pipe separators and whitespace
 	if (/^[a-zA-Z0-9_| ]+$/.test(condition)) {
-		const parts = condition.split("|").map((s) => s.trim());
+		const parts = condition.split("|").map((s) => s.trim().toLowerCase());
 		return parts.includes(toolName);
 	}
 
@@ -83,9 +83,9 @@ export async function executeCommand(
 			PI_HOOK_PERMISSION_MODE: vars?.permissionMode ?? "",
 			PI_HOOK_ALLOWED_TOOLS: vars?.allowedTools ?? "",
 			PI_HOOK_DISALLOWED_TOOLS: vars?.disallowedTools ?? "",
-			// Session context (if available)
-			PI_HOOK_SESSION_ID: (event as any).sessionId ?? "",
-			PI_HOOK_CWD: (event as any).cwd ?? "",
+			// Session context (passed via variables by the runner)
+			PI_HOOK_SESSION_ID: vars?.sessionId ?? "",
+			PI_HOOK_CWD: vars?.cwd ?? "",
 		};
 
 		// Structured JSON input for stdin (for scripts that prefer stdin over env vars)
@@ -93,8 +93,8 @@ export async function executeCommand(
 			toolName,
 			toolCallId,
 			input,
-			sessionId: (event as any).sessionId ?? "",
-			cwd: (event as any).cwd ?? "",
+			sessionId: vars?.sessionId ?? "",
+			cwd: vars?.cwd ?? "",
 			variables: vars ?? {},
 		});
 
@@ -154,12 +154,13 @@ async function executeHttp(
 	event: Record<string, unknown>,
 	options?: { headers?: Record<string, string>; timeout?: number },
 ): Promise<{ ok: boolean; status: number; body: string }> {
+	const vars = event.variables as Record<string, string> | undefined;
 	const payload = {
 		toolName: (event.toolName as string) ?? "",
 		toolCallId: (event.toolCallId as string) ?? "",
 		input: event.input ?? {},
-		sessionId: (event as any).sessionId ?? "",
-		cwd: (event as any).cwd ?? "",
+		sessionId: vars?.sessionId ?? "",
+		cwd: vars?.cwd ?? "",
 	};
 
 	const headers: Record<string, string> = {
@@ -205,14 +206,14 @@ async function processHook(
 	hookKey: string,
 	promptResults: string[],
 ): Promise<{ block: true; reason: string } | undefined> {
-	if (!matchesCondition(hook.if, event)) return undefined;
-
-	// once dedup
+	// once dedup: skip if this hook already fired
 	if (hook.once) {
 		const onceKey = `${hookKey}:${"command" in hook ? hook.command : "url" in hook ? hook.url : hook.prompt}:${hook.if ?? ""}`;
 		if (onceSet.has(onceKey)) return undefined;
 		onceSet.add(onceKey);
 	}
+
+	if (!matchesCondition(hook.if, event)) return undefined;
 
 	if (hook.type === "command") {
 		const timeout = hook.timeout;
@@ -236,16 +237,16 @@ async function processHook(
 
 		if (exitCode === 3) {
 			const parsed = parseStdout(stdout);
-			const question = parsed?.question || stdout.trim() || "Confirm this operation?";
+			const question = parsed?.question || parsed?.reason || stdout.trim() || "Confirm this operation?";
 
 			if (ctx?.ui?.confirm) {
 				const confirmed = await ctx.ui.confirm("Hook Confirmation", question);
 				if (!confirmed) {
-					return { block: true, reason: "[hook] User denied the operation" };
+					return { block: true, reason: `[hook] User denied: ${question}` };
 				}
 				return undefined;
 			} else {
-				return { block: true, reason: "[hook] Ask confirmation not supported in this context" };
+				return { block: true, reason: `[hook] Confirmation required (no UI available): ${question}` };
 			}
 		}
 
@@ -296,8 +297,9 @@ export default function hooksEngine(pi: ExtensionAPI): void {
 			const eventHooks = hooks[hookKey] ?? hooks["*"] ?? [];
 			if (eventHooks.length === 0) return undefined;
 
-			const promptResults: string[] = [];
 			const toolName = (event.toolName as string) ?? "";
+
+			const promptResults: string[] = [];
 
 			for (const entry of eventHooks) {
 				// Handle HookGroup format

@@ -25,17 +25,38 @@ export interface AgentHookCommand {
 	command: string;
 	if?: string;
 	async?: boolean;
+	once?: boolean;
+	timeout?: number;
 }
 
 export interface AgentHookPrompt {
 	type: "prompt";
 	prompt: string;
 	if?: string;
+	once?: boolean;
 }
 
-export type AgentHook = AgentHookCommand | AgentHookPrompt;
+export interface AgentHookHttp {
+	type: "http";
+	url: string;
+	headers?: Record<string, string>;
+	allowedEnvVars?: string[];
+	if?: string;
+	once?: boolean;
+	timeout?: number;
+}
 
-export type AgentHooks = Partial<Record<string, AgentHook[]>>;
+export type AgentHook = AgentHookCommand | AgentHookPrompt | AgentHookHttp;
+
+export interface AgentHookGroup {
+	matcher?: string;
+	hooks: AgentHook[];
+}
+
+/** A single entry under an event key — either a flat hook or a group with matcher */
+export type AgentHookEntry = AgentHook | AgentHookGroup;
+
+export type AgentHooks = Partial<Record<string, AgentHookEntry[]>>;
 
 export interface AgentConfig {
 	name: string;
