@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- `session.abort()` now resolves within 2 seconds even when a tool execution is blocking, preventing RPC abort commands from timing out.
+
 ## [0.74.39] - 2026-05-16
 
 ## [0.74.35] - 2026-05-16

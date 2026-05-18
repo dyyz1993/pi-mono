@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeAll, afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { RpcClient } from "../../src/modes/rpc/rpc-client.js";
 
 const TEMP_DIR = "/tmp/ask-tools-test";
@@ -103,78 +103,65 @@ describe("Ask Tools RPC E2E", () => {
 		rmSync(TEMP_DIR, { recursive: true, force: true });
 	});
 
-	it(
-		"ask-confirm: responds confirmed=true",
-		async () => {
-			const events = await runAskToolTest({
-				prompt: "Call the ask-confirm tool with title 'Proceed?' and question 'Do you want to continue?'. Only call the tool, nothing else.",
-				respondToUI: (event, client) => {
-					expect(event.method).toBe("confirm");
-					client.respondUI(event.id, { confirmed: true });
-				},
-			});
+	it("ask-confirm: responds confirmed=true", async () => {
+		const events = await runAskToolTest({
+			prompt:
+				"Call the ask-confirm tool with title 'Proceed?' and question 'Do you want to continue?'. Only call the tool, nothing else.",
+			respondToUI: (event, client) => {
+				expect(event.method).toBe("confirm");
+				client.respondUI(event.id, { confirmed: true });
+			},
+		});
 
-			const toolResult = findToolResult(events);
-			expect(toolResult).toBeDefined();
-			const text = extractText(events);
-			expect(text).toContain("yes");
-		},
-		90_000,
-	);
+		const toolResult = findToolResult(events);
+		expect(toolResult).toBeDefined();
+		const text = extractText(events);
+		expect(text).toContain("yes");
+	}, 90_000);
 
-	it(
-		"ask-select: responds with single value",
-		async () => {
-			const events = await runAskToolTest({
-				prompt: "Call the ask-select tool with title 'Pick a color' and options ['red', 'green', 'blue']. Only call the tool, nothing else.",
-				respondToUI: (event, client) => {
-					expect(event.method).toBe("select");
-					client.respondUI(event.id, { value: "green" });
-				},
-			});
+	it("ask-select: responds with single value", async () => {
+		const events = await runAskToolTest({
+			prompt:
+				"Call the ask-select tool with title 'Pick a color' and options ['red', 'green', 'blue']. Only call the tool, nothing else.",
+			respondToUI: (event, client) => {
+				expect(event.method).toBe("select");
+				client.respondUI(event.id, { value: "green" });
+			},
+		});
 
-			const toolResult = findToolResult(events);
-			expect(toolResult).toBeDefined();
-			const text = extractText(events);
-			expect(text).toContain("green");
-		},
-		90_000,
-	);
+		const toolResult = findToolResult(events);
+		expect(toolResult).toBeDefined();
+		const text = extractText(events);
+		expect(text).toContain("green");
+	}, 90_000);
 
-	it(
-		"ask-input: responds with text value",
-		async () => {
-			const events = await runAskToolTest({
-				prompt: "Call the ask-input tool with title 'Your name'. Only call the tool, nothing else.",
-				respondToUI: (event, client) => {
-					expect(event.method).toBe("input");
-					client.respondUI(event.id, { value: "Alice" });
-				},
-			});
+	it("ask-input: responds with text value", async () => {
+		const events = await runAskToolTest({
+			prompt: "Call the ask-input tool with title 'Your name'. Only call the tool, nothing else.",
+			respondToUI: (event, client) => {
+				expect(event.method).toBe("input");
+				client.respondUI(event.id, { value: "Alice" });
+			},
+		});
 
-			const toolResult = findToolResult(events);
-			expect(toolResult).toBeDefined();
-			const text = extractText(events);
-			expect(text).toContain("Alice");
-		},
-		90_000,
-	);
+		const toolResult = findToolResult(events);
+		expect(toolResult).toBeDefined();
+		const text = extractText(events);
+		expect(text).toContain("Alice");
+	}, 90_000);
 
-	it(
-		"ask-notify: fire-and-forget notification",
-		async () => {
-			const events = await runAskToolTest({
-				prompt: "Call the ask-notify tool with message 'Hello World' and type 'info'. Only call the tool, nothing else.",
-				respondToUI: (event, client) => {
-					expect(event.method).toBe("notify");
-					// notify is fire-and-forget but still needs response in RPC mode
-					client.respondUI(event.id, { value: "" });
-				},
-			});
+	it("ask-notify: fire-and-forget notification", async () => {
+		const events = await runAskToolTest({
+			prompt:
+				"Call the ask-notify tool with message 'Hello World' and type 'info'. Only call the tool, nothing else.",
+			respondToUI: (event, client) => {
+				expect(event.method).toBe("notify");
+				// notify is fire-and-forget but still needs response in RPC mode
+				client.respondUI(event.id, { value: "" });
+			},
+		});
 
-			const toolResult = findToolResult(events);
-			expect(toolResult).toBeDefined();
-		},
-		90_000,
-	);
+		const toolResult = findToolResult(events);
+		expect(toolResult).toBeDefined();
+	}, 90_000);
 });

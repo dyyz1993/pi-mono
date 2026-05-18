@@ -801,14 +801,15 @@ describe("Coordinator E2E: Context injection verification", () => {
 		mkdirSync(taskStoreDir, { recursive: true });
 
 		const store = new TaskStore(taskStoreDir);
+		const now = Date.now();
 		store.add({
 			sessionId: "sess_done_001",
 			title: "Feature Build",
 			task: "build feature",
 			projectPath: "/project",
-			dispatchedAt: 1000,
+			dispatchedAt: now - 1000,
 			status: "completed",
-			completedAt: 2000,
+			completedAt: now,
 			result: "Feature shipped",
 		});
 
@@ -1002,13 +1003,14 @@ describe("Coordinator E2E: TaskStore persistence edge cases", () => {
 		const taskStoreDir = harness.tempDir;
 		mkdirSync(taskStoreDir, { recursive: true });
 
+		const now = Date.now();
 		const store = new TaskStore(taskStoreDir);
 		store.add({
 			sessionId: "sess_update_001",
 			title: "Initial",
 			task: "initial task",
 			projectPath: "/project",
-			dispatchedAt: 1000,
+			dispatchedAt: now - 2000,
 			status: "idle",
 		});
 
@@ -1017,7 +1019,7 @@ describe("Coordinator E2E: TaskStore persistence edge cases", () => {
 
 		store.update("sess_update_001", {
 			status: "completed",
-			completedAt: 2000,
+			completedAt: now,
 			result: "All done",
 		});
 		expect(store.get("sess_update_001")!.status).toBe("completed");
@@ -1039,6 +1041,7 @@ describe("Coordinator E2E: TaskStore persistence edge cases", () => {
 		const taskStoreDir = harness.tempDir;
 		mkdirSync(taskStoreDir, { recursive: true });
 
+		const now = Date.now();
 		const store = new TaskStore(taskStoreDir);
 		const longResult = "x".repeat(300);
 		store.add({
@@ -1046,9 +1049,9 @@ describe("Coordinator E2E: TaskStore persistence edge cases", () => {
 			title: "Long Result",
 			task: "long result task",
 			projectPath: "/project",
-			dispatchedAt: 1000,
+			dispatchedAt: now - 1000,
 			status: "completed",
-			completedAt: 2000,
+			completedAt: now,
 			result: longResult,
 		});
 

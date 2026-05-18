@@ -9,10 +9,11 @@
  *   - editor() → undefined
  *   - notify() → no-op
  */
-import { afterEach, describe, expect, it } from "vitest";
+
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
-import { createHarness, type Harness } from "./harness.js";
+import { afterEach, describe, expect, it } from "vitest";
 import askToolsExtension from "../../extensions/ask-tools/index.js";
+import { createHarness, type Harness } from "./harness.js";
 
 let harness: Harness;
 
@@ -48,10 +49,9 @@ describe("ask-tools extension", () => {
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("ask-confirm", { title: "Proceed?", question: "Continue?" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("ask-confirm", { title: "Proceed?", question: "Continue?" })], {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Done."),
 		]);
 
@@ -111,10 +111,7 @@ describe("ask-tools extension", () => {
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("ask-input", { title: "Your name" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("ask-input", { title: "Your name" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("Done."),
 		]);
 
@@ -132,10 +129,7 @@ describe("ask-tools extension", () => {
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("ask-editor", { title: "Edit text" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("ask-editor", { title: "Edit text" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("Done."),
 		]);
 
@@ -153,10 +147,9 @@ describe("ask-tools extension", () => {
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("ask-notify", { message: "Hello!", type: "info" })],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("ask-notify", { message: "Hello!", type: "info" })], {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Done."),
 		]);
 

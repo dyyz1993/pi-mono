@@ -316,6 +316,120 @@ describe("session_delegate_remove and session_delegate_clear_stopped handlers ex
 	});
 });
 
+// ── TDD tests for zombie task bugs ──
+
+describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () => {
+	let tempDir: string;
+
+	afterEach(() => {
+		if (tempDir && fs.existsSync(tempDir)) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("auto-evicts stopped tasks older than 5 minutes from the store on save()", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({
+			sessionId: "sess-zombie-stop",
+			title: "Zombie stopped task",
+			status: "stopped",
+			completedAt: Date.now() - 10 * 60 * 1000, // 10 minutes ago
+		}));
+
+		// After eviction, the task should be gone from the store entirely
+		expect(store.get("sess-zombie-stop")).toBeUndefined();
+		expect(store.list()).toHaveLength(0);
+	});
+
+	it("auto-evicts completed tasks older than 5 minutes from the store on save()", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({
+			sessionId: "sess-zombie-done",
+			title: "Zombie completed task",
+			status: "completed",
+			completedAt: Date.now() - 10 * 60 * 1000,
+		}));
+
+		expect(store.get("sess-zombie-done")).toBeUndefined();
+		expect(store.list()).toHaveLength(0);
+	});
+
+	it("keeps recently stopped tasks (within 5 minutes)", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({
+			sessionId: "sess-recent-stop",
+			title: "Recent stopped",
+			status: "stopped",
+			completedAt: Date.now() - 30 * 1000,
+		}));
+
+		expect(store.get("sess-recent-stop")).toBeDefined();
+		expect(store.list()).toHaveLength(1);
+	});
+
+	it("evicts stale tasks and keeps fresh ones in the same batch", () => {
+		tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+
+		const store = new TaskStore(tempDir);
+		store.add(makeTask({
+			sessionId: "sess-old-stopped",
+			status: "stopped",
+			completedAt: Date.now() - 10 * 60 * 1000,
+		}));
+		store.add(makeTask({
+			sessionId: "sess-recent-stopped",
+			status: "stopped",
+			completedAt: Date.now() - 10 * 1000,
+		}));
+		store.add(makeTask({
+			sessionId: "sess-active-idle",
+			status: "idle",
+		}));
+
+		expect(store.list()).toHaveLength(2);
+		expect(store.list().map((t) => t.sessionId)).toEqual(
+			expect.arrayContaining(["sess-recent-stopped", "sess-active-idle"]),
+		);
+	});
+});
+
+describe("Bug: delegate_list never removes ghost tasks whose sessions are gone", () => {
+	it("handler session_delegate_list removes tasks whose remote status is 'stopped' and have completedAt older than 5 min", async () => {
+		const handlerSource = fs.readFileSync(path.join(__dirname, "handler.ts"), "utf-8");
+		const listHandlerStart = handlerSource.indexOf('channel.handle("session_delegate_list"');
+		expect(listHandlerStart).toBeGreaterThan(-1);
+
+		const listHandlerEnd = handlerSource.indexOf("});", listHandlerStart);
+		const listHandlerBlock = handlerSource.slice(listHandlerStart, listHandlerEnd);
+
+		// The list handler should remove (not just update) tasks whose remote session is gone
+		expect(listHandlerBlock).toContain("store.remove(");
+	});
+});
+
+describe("Bug: session_delegate_stop registered twice in index.ts", () => {
+	it("session_delegate_stop appears exactly once in tool registrations", () => {
+		const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
+
+		const firstIdx = indexSource.indexOf('name: "session_delegate_stop"');
+		expect(firstIdx).toBeGreaterThan(-1);
+
+		const secondIdx = indexSource.indexOf('name: "session_delegate_stop"', firstIdx + 1);
+		// Should NOT find a second registration
+		expect(secondIdx).toBe(-1);
+	});
+});
+
 // ── Regression tests for bugs found during audit ──
 
 describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)", () => {

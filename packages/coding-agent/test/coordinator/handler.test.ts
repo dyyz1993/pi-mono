@@ -491,20 +491,21 @@ describe("TaskStore", () => {
 	});
 
 	it("should update tasks", () => {
+		const now = Date.now();
 		store.add({
 			sessionId: "sess_001",
 			title: "Test",
 			task: "work",
 			projectPath: "/project",
-			dispatchedAt: 1000,
+			dispatchedAt: now,
 			status: "idle",
 		});
 
-		store.update("sess_001", { status: "completed", completedAt: 2000, result: "done" });
+		store.update("sess_001", { status: "completed", completedAt: now + 1000, result: "done" });
 
 		const task = store.get("sess_001");
 		expect(task!.status).toBe("completed");
-		expect(task!.completedAt).toBe(2000);
+		expect(task!.completedAt).toBe(now + 1000);
 		expect(task!.result).toBe("done");
 	});
 
@@ -548,14 +549,15 @@ describe("TaskStore", () => {
 		});
 
 		it("should show result preview for completed tasks", () => {
+			const now = Date.now();
 			store.add({
 				sessionId: "sess_001",
 				title: "Test",
 				task: "work",
 				projectPath: "/project",
-				dispatchedAt: 1000,
+				dispatchedAt: now - 1000,
 				status: "completed",
-				completedAt: 2000,
+				completedAt: now,
 				result: "All tests passed successfully",
 			});
 
@@ -565,15 +567,16 @@ describe("TaskStore", () => {
 		});
 
 		it("should truncate long results", () => {
+			const now = Date.now();
 			const longResult = "x".repeat(300);
 			store.add({
 				sessionId: "sess_001",
 				title: "Test",
 				task: "work",
 				projectPath: "/project",
-				dispatchedAt: 1000,
+				dispatchedAt: now - 1000,
 				status: "completed",
-				completedAt: 2000,
+				completedAt: now,
 				result: longResult,
 			});
 
