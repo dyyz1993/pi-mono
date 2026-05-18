@@ -878,4 +878,182 @@ describe("todo extension", () => {
 			expect(result.text).toContain("0 todos");
 		});
 	});
+
+	describe("session restoration — defensive guards", () => {
+		it("does not crash when toolResult details exists but todos is undefined", async () => {
+			const mock = createMockPi();
+			todoExtensionDefault(mock.pi);
+
+			// Simulate a session branch where a toolResult message has details but no todos field
+			fireSessionStart(mock, {
+				sessionManager: {
+					getBranch: () => [
+						{
+							type: "message",
+							message: {
+								role: "toolResult",
+								toolName: "todo",
+								details: { action: "add" }, // details exists, but no `todos` field
+							},
+						},
+					],
+				},
+			});
+
+			const tool = getTool(mock);
+
+			// After restoration, todos should still be [] (not undefined)
+			const result = await tool.execute(
+				"tc_1",
+				{ action: "add", text: "After restore" },
+				undefined,
+				undefined,
+				{} as any,
+			);
+			expect(result.content[0].text).toContain("Created 1 todo");
+			expect(result.details.todos).toHaveLength(1);
+		});
+
+		it("does not crash when toolResult details is null", async () => {
+			const mock = createMockPi();
+			todoExtensionDefault(mock.pi);
+
+			fireSessionStart(mock, {
+				sessionManager: {
+					getBranch: () => [
+						{
+							type: "message",
+							message: {
+								role: "toolResult",
+								toolName: "todo",
+								details: null,
+							},
+						},
+					],
+				},
+			});
+
+			const tool = getTool(mock);
+			const result = await tool.execute("tc_1", { action: "add", text: "Works" }, undefined, undefined, {} as any);
+			expect(result.details.todos).toHaveLength(1);
+		});
+
+		it("does not crash when toolResult details has empty todos array", async () => {
+			const mock = createMockPi();
+			todoExtensionDefault(mock.pi);
+
+			fireSessionStart(mock, {
+				sessionManager: {
+					getBranch: () => [
+						{
+							type: "message",
+							message: {
+								role: "toolResult",
+								toolName: "todo",
+								details: { action: "clear", todos: [], nextId: 1 },
+							},
+						},
+					],
+				},
+			});
+
+			const tool = getTool(mock);
+			const result = await tool.execute("tc_1", { action: "add", text: "Fresh" }, undefined, undefined, {} as any);
+			expect(result.details.todos).toHaveLength(1);
+			expect(result.details.todos[0].id).toBe(1);
+		});
+
+		it("restores valid todos from history correctly", async () => {
+			const mock = createMockPi();
+			todoExtensionDefault(mock.pi);
+
+			fireSessionStart(mock, {
+				sessionManager: {
+					getBranch: () => [
+						{
+							type: "message",
+							message: {
+								role: "toolResult",
+								toolName: "todo",
+								details: {
+									action: "add",
+									todos: [{ id: 1, text: "Restored task", done: false }],
+									nextId: 2,
+								},
+							},
+						},
+					],
+				},
+			});
+
+			const tool = getTool(mock);
+			const list = await tool.execute("tc_1", { action: "list" }, undefined, undefined, {} as any);
+			expect(list.details.todos).toHaveLength(1);
+			expect(list.details.todos[0].text).toBe("Restored task");
+		});
+
+		it("session_tree event also guards against undefined todos in details", async () => {
+			const mock = createMockPi();
+			todoExtensionDefault(mock.pi);
+
+			// First, fire session_start with empty branch
+			fireSessionStart(mock);
+
+			// Then fire session_tree with a branch that has malformed details
+			const treeHandlers = mock.handlers.session_tree ?? [];
+			for (const h of treeHandlers) {
+				h(
+					{},
+					{
+						sessionManager: {
+							getBranch: () => [
+								{
+									type: "message",
+									message: {
+										role: "toolResult",
+										toolName: "todo",
+										details: { action: "add" }, // no todos field
+									},
+								},
+							],
+						},
+						hasUI: false,
+						ui: {
+							notify: vi.fn(),
+							setWidget: vi.fn(),
+							theme: {
+								fg: (_c: string, t: string) => t,
+								bold: (t: string) => t,
+								dim: (t: string) => t,
+								accent: (t: string) => t,
+								error: (t: string) => t,
+								strikethrough: (t: string) => t,
+							},
+						},
+						cwd: tmpdir(),
+						isIdle: () => true,
+						signal: undefined,
+						abort: () => {},
+						hasPendingMessages: () => false,
+						shutdown: () => {},
+						getContextUsage: () => undefined,
+						compact: () => {},
+						getSystemPrompt: () => "",
+						model: undefined,
+					},
+				);
+			}
+
+			const tool = getTool(mock);
+			// After tree navigation with bad data, tool should still work
+			const result = await tool.execute(
+				"tc_1",
+				{ action: "add", text: "Post-tree" },
+				undefined,
+				undefined,
+				{} as any,
+			);
+			expect(result.details.todos).toHaveLength(1);
+		});
+	});
 });

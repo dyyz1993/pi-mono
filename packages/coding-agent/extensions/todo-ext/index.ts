@@ -13,7 +13,7 @@ import { StringEnum } from "@dyyz1993/pi-ai";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext, ServerChannel } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ServerChannel, ContextEvent } from "@dyyz1993/pi-coding-agent";
 import { TODO_CHANNEL_NAME, type TodoChannelContract, type TodoItem, type TodoChannelEvent } from "./contract.js";
 
 export type Todo = TodoItem;
@@ -95,10 +95,10 @@ export default function (pi: ExtensionAPI) {
 				return `  #${t.id}${pri}: ${t.text}`;
 			});
 			const header = `[Parent session's tasks — read-only]\nThese are the parent session's active tasks for reference. Do not modify them.\n${lines.join("\n")}`;
-			pi.on("context", (_event, _ctx) => {
-				return {
-					messages: [
-						...(_event as any).messages,
+		pi.on("context", (event: ContextEvent, _ctx) => {
+			return {
+				messages: [
+					...event.messages,
 						{
 							role: "user" as const,
 							content: [{ type: "text" as const, text: header }],
@@ -142,7 +142,7 @@ export default function (pi: ExtensionAPI) {
 			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
 
 			const details = msg.details as TodoDetails | undefined;
-			if (details) {
+			if (details?.todos) {
 				todos = details.todos;
 				nextId = details.nextId;
 			}
@@ -170,7 +170,7 @@ export default function (pi: ExtensionAPI) {
 			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
 
 			const details = msg.details as TodoDetails | undefined;
-			if (details) {
+			if (details?.todos) {
 				todos = details.todos;
 				nextId = details.nextId;
 			}
@@ -437,7 +437,7 @@ IMPORTANT: For creating a plan with multiple steps, use a SINGLE add call with n
 	});
 
 	// Inject active todo list into context so the LLM is aware of ongoing tasks
-	pi.on("context", (_event, _ctx) => {
+	pi.on("context", (event: ContextEvent, _ctx) => {
 		const active = todos.filter((t) => !t.deleted && !t.done);
 		if (active.length === 0) return;
 
@@ -448,7 +448,7 @@ IMPORTANT: For creating a plan with multiple steps, use a SINGLE add call with n
 		const text = `[Todo list — ${active.length} active task(s)]\n${lines.join("\n")}`;
 		return {
 			messages: [
-				...(_event as any).messages,
+				...event.messages,
 				{
 					role: "user" as const,
 					content: [{ type: "text" as const, text }],
