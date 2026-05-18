@@ -249,10 +249,10 @@ describe("lsp extension", () => {
 
 describe("lsp internals", () => {
 	describe("diagnostics-mode", () => {
-	it("defaults to edit_write", () => {
-		const mode = createDiagnosticsMode();
-		expect(mode.get()).toBe("edit_write");
-	});
+		it("defaults to edit_write", () => {
+			const mode = createDiagnosticsMode();
+			expect(mode.get()).toBe("edit_write");
+		});
 
 		it("switches between valid modes", () => {
 			const mode = createDiagnosticsMode();
@@ -264,11 +264,11 @@ describe("lsp internals", () => {
 			expect(mode.get()).toBe("agent_end");
 		});
 
-	it("ignores invalid mode", () => {
-		const mode = createDiagnosticsMode();
-		mode.set("invalid" as DiagnosticsModeName);
-		expect(mode.get()).toBe("edit_write");
-	});
+		it("ignores invalid mode", () => {
+			const mode = createDiagnosticsMode();
+			mode.set("invalid" as DiagnosticsModeName);
+			expect(mode.get()).toBe("edit_write");
+		});
 
 		it("tracks touched files", () => {
 			const mode = createDiagnosticsMode();

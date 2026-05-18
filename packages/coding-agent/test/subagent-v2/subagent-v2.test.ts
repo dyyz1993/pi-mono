@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import subagentV2Extension, { extractParentTodos } from "../../extensions/subagent-v2/index.js";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
 
@@ -194,10 +194,22 @@ describe("subagent-v2 extension", () => {
 			const mock = createMockPi();
 			subagentV2Extension(mock.pi);
 			const tool = mock.registeredTools.get("subagent") as {
-				execute: (id: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => Promise<unknown>;
+				execute: (
+					id: string,
+					params: unknown,
+					signal: unknown,
+					onUpdate: unknown,
+					ctx: unknown,
+				) => Promise<unknown>;
 			};
 
-			const result = (await tool.execute("tc_1", { agent: "nonexistent", task: "do stuff" }, undefined, undefined, testCtx())) as {
+			const result = (await tool.execute(
+				"tc_1",
+				{ agent: "nonexistent", task: "do stuff" },
+				undefined,
+				undefined,
+				testCtx(),
+			)) as {
 				content: Array<{ type: string; text: string }>;
 			};
 
@@ -209,10 +221,22 @@ describe("subagent-v2 extension", () => {
 			const mock = createMockPi();
 			subagentV2Extension(mock.pi);
 			const tool = mock.registeredTools.get("subagent") as {
-				execute: (id: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => Promise<unknown>;
+				execute: (
+					id: string,
+					params: unknown,
+					signal: unknown,
+					onUpdate: unknown,
+					ctx: unknown,
+				) => Promise<unknown>;
 			};
 
-			const result = (await tool.execute("tc_1", { agent: "nonexistent", task: "do stuff" }, undefined, undefined, testCtx())) as {
+			const result = (await tool.execute(
+				"tc_1",
+				{ agent: "nonexistent", task: "do stuff" },
+				undefined,
+				undefined,
+				testCtx(),
+			)) as {
 				content: Array<{ type: string; text: string }>;
 			};
 
@@ -226,7 +250,13 @@ describe("subagent-v2 extension", () => {
 			const mock = createMockPi();
 			subagentV2Extension(mock.pi);
 			const tool = mock.registeredTools.get("subagent") as {
-				execute: (id: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => Promise<unknown>;
+				execute: (
+					id: string,
+					params: unknown,
+					signal: unknown,
+					onUpdate: unknown,
+					ctx: unknown,
+				) => Promise<unknown>;
 			};
 
 			const result = (await tool.execute(
@@ -367,11 +397,7 @@ describe("subagent-v2 extension", () => {
 				toolTitle: (t: string) => t,
 			};
 
-			const result = tool.renderCall(
-				{ agent: "code", task: "do stuff", background: true },
-				theme,
-				{},
-			);
+			const result = tool.renderCall({ agent: "code", task: "do stuff", background: true }, theme, {});
 			expect(result.text).toContain("[bg]");
 		});
 	});

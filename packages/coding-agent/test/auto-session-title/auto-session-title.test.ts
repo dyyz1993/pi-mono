@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import autoSessionTitleExtension from "../../extensions/auto-session-title/index.js";
 import type { ExtensionAPI, SessionEntry, TurnEndEvent } from "../../src/core/extensions/index.js";
 
@@ -66,7 +66,7 @@ async function fireTurnEnd(
 	turnIndex: number,
 	ctxOverrides?: Record<string, unknown>,
 ) {
-	const entries: SessionEntry[] = ctxOverrides?.entries as SessionEntry[] ?? [
+	const entries: SessionEntry[] = (ctxOverrides?.entries as SessionEntry[]) ?? [
 		{
 			type: "message",
 			message: {
@@ -77,10 +77,7 @@ async function fireTurnEnd(
 	];
 
 	for (const h of mock.handlers.turn_end ?? []) {
-		await h(
-			{ turnIndex } as TurnEndEvent,
-			{ ...testCtx(entries), ...ctxOverrides },
-		);
+		await h({ turnIndex } as TurnEndEvent, { ...testCtx(entries), ...ctxOverrides });
 	}
 }
 

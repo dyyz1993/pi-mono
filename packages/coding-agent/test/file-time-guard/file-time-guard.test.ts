@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fileTimeGuardExtension from "../../extensions/file-time-guard/index.js";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
 
@@ -90,7 +90,9 @@ async function fireEvent(
 	mock: ReturnType<typeof createMockPi>,
 	event: string,
 	data: unknown,
-	ctxOverrides?: Partial<Omit<ReturnType<typeof testCtx>, "sessionManager">> & { sessionManager?: Record<string, unknown> },
+	ctxOverrides?: Partial<Omit<ReturnType<typeof testCtx>, "sessionManager">> & {
+		sessionManager?: Record<string, unknown>;
+	},
 ): Promise<unknown> {
 	const baseCtx = testCtx(mock.currentSessionId);
 	const mergedCtx = ctxOverrides ? { ...baseCtx, ...ctxOverrides } : baseCtx;
@@ -114,14 +116,20 @@ describe("file-time-guard extension", () => {
 		it("registers flags", () => {
 			const mock = createMockPi();
 			fileTimeGuardExtension(mock.pi);
-			expect(mock.pi.registerFlag).toHaveBeenCalledWith("file-time-check-mode", expect.objectContaining({
-				type: "string",
-				default: "block",
-			}));
-			expect(mock.pi.registerFlag).toHaveBeenCalledWith("disable-file-time-check", expect.objectContaining({
-				type: "boolean",
-				default: false,
-			}));
+			expect(mock.pi.registerFlag).toHaveBeenCalledWith(
+				"file-time-check-mode",
+				expect.objectContaining({
+					type: "string",
+					default: "block",
+				}),
+			);
+			expect(mock.pi.registerFlag).toHaveBeenCalledWith(
+				"disable-file-time-check",
+				expect.objectContaining({
+					type: "boolean",
+					default: false,
+				}),
+			);
 		});
 
 		it("registers file-time-status command", () => {
@@ -172,10 +180,15 @@ describe("file-time-guard extension", () => {
 			await fireEvent(mock, "session_start", {});
 
 			const ctx = testCtx(mock.currentSessionId);
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "write",
-				input: { path: "src/new-file.ts" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "write",
+					input: { path: "src/new-file.ts" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toEqual({ block: true, reason: "文件未读取过" });
 		});
@@ -186,10 +199,15 @@ describe("file-time-guard extension", () => {
 			await fireEvent(mock, "session_start", {});
 
 			const ctx = testCtx(mock.currentSessionId);
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "edit",
-				input: { path: "src/edit-file.ts" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "edit",
+					input: { path: "src/edit-file.ts" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toEqual({ block: true, reason: "文件未读取过" });
 		});
@@ -214,10 +232,15 @@ describe("file-time-guard extension", () => {
 			});
 
 			const ctx = testCtx(mock.currentSessionId);
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "write",
-				input: { path: "src/index.ts" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "write",
+					input: { path: "src/index.ts" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toEqual({ block: true, reason: "文件已被外部修改" });
 		});
@@ -241,16 +264,18 @@ describe("file-time-guard extension", () => {
 			});
 
 			const ctx = testCtx(mock.currentSessionId);
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "write",
-				input: { path: "src/index.ts" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "write",
+					input: { path: "src/index.ts" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toBeUndefined();
-			expect(ctx.ui.notify).toHaveBeenCalledWith(
-				expect.stringContaining("外部修改"),
-				"warning",
-			);
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("外部修改"), "warning");
 		});
 
 		it("allows write when file unchanged", async () => {
@@ -264,10 +289,15 @@ describe("file-time-guard extension", () => {
 			});
 
 			const ctx = testCtx(mock.currentSessionId);
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "write",
-				input: { path: "src/unchanged.ts" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "write",
+					input: { path: "src/unchanged.ts" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toBeUndefined();
 		});
@@ -281,10 +311,15 @@ describe("file-time-guard extension", () => {
 			await fireEvent(mock, "session_start", {});
 
 			const ctx = testCtx(mock.currentSessionId);
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "write",
-				input: { path: "src/skip-check.ts" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "write",
+					input: { path: "src/skip-check.ts" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toBeUndefined();
 		});
@@ -305,10 +340,15 @@ describe("file-time-guard extension", () => {
 			await fireEvent(mock, "session_shutdown", {});
 
 			const ctx = testCtx(mock.currentSessionId);
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "write",
-				input: { path: "src/index.ts" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "write",
+					input: { path: "src/index.ts" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toBeUndefined();
 		});
@@ -327,10 +367,15 @@ describe("file-time-guard extension", () => {
 				input: { path: "node_modules/package/index.js" },
 			});
 
-			const result = await fireEvent(mock, "tool_call", {
-				toolName: "write",
-				input: { path: "node_modules/package/index.js" },
-			}, { ui: ctx.ui });
+			const result = await fireEvent(
+				mock,
+				"tool_call",
+				{
+					toolName: "write",
+					input: { path: "node_modules/package/index.js" },
+				},
+				{ ui: ctx.ui },
+			);
 
 			expect(result).toBeUndefined();
 		});
