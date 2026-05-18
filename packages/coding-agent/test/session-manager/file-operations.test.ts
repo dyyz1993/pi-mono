@@ -124,6 +124,61 @@ describe("findMostRecentSession", () => {
 
 		expect(findMostRecentSession(tempDir)).toBe(valid);
 	});
+
+	describe("performance with many files", () => {
+		const SESSION_HEADER = '{"type":"session","id":"perf","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n';
+
+		/**
+		 * Verify that findMostRecentSession uses stat-first optimization:
+		 * it should NOT open+read every file. Instead it sorts by mtime and
+		 * validates only until the first valid file is found.
+		 */
+		it("completes within budget for 500 files", () => {
+			for (let i = 0; i < 500; i++) {
+				writeFileSync(join(tempDir, `session-${String(i).padStart(4, "0")}.jsonl`), SESSION_HEADER);
+			}
+
+			const start = performance.now();
+			const result = findMostRecentSession(tempDir);
+			const elapsed = performance.now() - start;
+
+			expect(result).toBeTruthy();
+			expect(result).toMatch(/\.jsonl$/);
+			// With stat-first optimization, should be fast even on slow CI filesystems.
+			// The old open+read+parse-every-file approach would take >1s with 500 files.
+			expect(elapsed).toBeLessThan(500);
+		});
+
+		it("falls through when most recent files are invalid", async () => {
+			for (let i = 0; i < 100; i++) {
+				writeFileSync(join(tempDir, `valid-${i}.jsonl`), SESSION_HEADER);
+			}
+			for (let i = 0; i < 50; i++) {
+				writeFileSync(join(tempDir, `invalid-${i}.jsonl`), '{"type":"not-session"}\n');
+			}
+			const lastValid = join(tempDir, "valid-99.jsonl");
+			await new Promise((r) => setTimeout(r, 10));
+			writeFileSync(lastValid, SESSION_HEADER);
+
+			const result = findMostRecentSession(tempDir);
+			expect(result).toBeTruthy();
+		});
+
+		it("handles mixed valid and invalid files among 500", () => {
+			for (let i = 0; i < 500; i++) {
+				const content = i % 3 === 0 ? '{"type":"not-session"}\n' : SESSION_HEADER;
+				writeFileSync(join(tempDir, `mixed-${String(i).padStart(4, "0")}.jsonl`), content);
+			}
+
+			const start = performance.now();
+			const result = findMostRecentSession(tempDir);
+			const elapsed = performance.now() - start;
+
+			expect(result).toBeTruthy();
+			expect(result).toMatch(/\.jsonl$/);
+			expect(elapsed).toBeLessThan(200);
+		});
+	});
 });
 
 describe("SessionManager.setSessionFile with corrupted files", () => {

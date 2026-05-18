@@ -26,7 +26,7 @@ import {
 	makeUsage,
 	renderSingleResult,
 	writePromptToTempFile,
-} from "../subagent-shared/index.js";
+} from "./subagent-shared/index.js";
 
 // ── subagent-v2 logic ──
 

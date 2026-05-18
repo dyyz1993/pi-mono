@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import subagentExtensionDefault, { extractTextFromEvent, parseJsonLine } from "../../extensions/subagent-ext/index.js";
-import { getFinalOutput } from "../../extensions/subagent-shared/utils.js";
+import { getFinalOutput } from "../../extensions/subagent-v2/subagent-shared/utils.js";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
 
 const spawnCalls: string[][] = [];

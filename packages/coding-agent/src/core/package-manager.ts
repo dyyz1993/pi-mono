@@ -528,17 +528,23 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	const packageJsonPath = join(dir, "package.json");
 	if (existsSync(packageJsonPath)) {
 		const manifest = readPiManifestFile(packageJsonPath);
-		if (manifest?.extensions?.length) {
-			const entries: string[] = [];
-			for (const extPath of manifest.extensions) {
-				const resolvedExtPath = resolve(dir, extPath);
-				if (existsSync(resolvedExtPath)) {
-					entries.push(resolvedExtPath);
+		if (manifest) {
+			// Has a "pi" field — treat as explicit declaration.
+			// If extensions are declared, resolve those paths.
+			// If no extensions declared, skip entirely (e.g. shared libraries).
+			if (manifest.extensions?.length) {
+				const entries: string[] = [];
+				for (const extPath of manifest.extensions) {
+					const resolvedExtPath = resolve(dir, extPath);
+					if (existsSync(resolvedExtPath)) {
+						entries.push(resolvedExtPath);
+					}
+				}
+				if (entries.length > 0) {
+					return entries;
 				}
 			}
-			if (entries.length > 0) {
-				return entries;
-			}
+			return null;
 		}
 	}
 

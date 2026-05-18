@@ -604,14 +604,26 @@ function isValidSessionFile(filePath: string): boolean {
 /** Exported for testing */
 export function findMostRecentSession(sessionDir: string): string | null {
 	try {
-		const files = readdirSync(sessionDir)
+		const candidates = readdirSync(sessionDir)
 			.filter((f) => f.endsWith(".jsonl"))
-			.map((f) => join(sessionDir, f))
-			.filter(isValidSessionFile)
-			.map((path) => ({ path, mtime: statSync(path).mtime }))
-			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+			.map((f) => {
+				const fullPath = join(sessionDir, f);
+				try {
+					return { path: fullPath, mtime: statSync(fullPath).mtime.getTime() };
+				} catch {
+					return null;
+				}
+			})
+			.filter((e): e is { path: string; mtime: number } => e !== null)
+			.sort((a, b) => b.mtime - a.mtime);
 
-		return files[0]?.path || null;
+		// Only validate the most recent candidate instead of all files
+		for (const candidate of candidates) {
+			if (isValidSessionFile(candidate.path)) {
+				return candidate.path;
+			}
+		}
+		return null;
 	} catch {
 		return null;
 	}

@@ -15,7 +15,7 @@ import {
 	cleanupTempFiles,
 	getFinalOutput,
 	writePromptToTempFile,
-} from "../subagent-shared/index.js";
+} from "../subagent-v2/subagent-shared/index.js";
 
 function getSubagentDir(): string {
 	return path.join(getAgentDir(), "memory", "subagent");
