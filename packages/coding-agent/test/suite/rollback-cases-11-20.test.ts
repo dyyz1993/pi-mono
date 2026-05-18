@@ -155,21 +155,23 @@ describe("rollback cases 11-20", () => {
 		const userMsgsBefore = harness.session.messages.filter((m) => m.role === "user");
 		expect(userMsgsBefore.length).toBe(2);
 
-		// Navigate to the root entry — this would eliminate all user messages,
-		// so the safety guard should reject it.
+		// Navigate to the root entry — this moves leaf before the first user message.
 		const entries = harness.sessionManager.getEntries();
 		const firstEntry = entries.find((e) => e.parentId === null);
 		expect(firstEntry).toBeDefined();
 
 		const result = await harness.session.navigateTree(firstEntry!.id, { summarize: false });
 
-		// Navigation should be cancelled (safety guard)
-		expect(result.cancelled).toBe(true);
-		expect(result.reason).toBeDefined();
+		// Navigation succeeds — safety guard removed (tree is preserved on disk).
+		expect(result.cancelled).toBe(false);
 
-		// Messages should still be present (not destroyed)
+		// Leaf moves to null (before first entry), messages are empty in context
 		const userMsgsAfter = harness.session.messages.filter((m) => m.role === "user");
-		expect(userMsgsAfter.length).toBe(2);
+		expect(userMsgsAfter.length).toBe(0);
+
+		// But tree entries are still on disk (data not destroyed)
+		const allEntries = harness.sessionManager.getEntries();
+		expect(allEntries.length).toBeGreaterThan(0);
 	});
 
 	it("Case 12: no-op when navigating to current leaf", async () => {

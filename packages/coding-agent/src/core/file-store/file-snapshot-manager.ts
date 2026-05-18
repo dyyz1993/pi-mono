@@ -33,6 +33,12 @@ export interface RestoreResult {
 	dirty: string[];
 }
 
+export interface LiveChange {
+	path: string;
+	status: "added" | "modified" | "deleted";
+	diff: FileDiffInfo | null;
+}
+
 const FILE_SIZE_LIMIT = 1024 * 1024;
 
 function findCanonicalGitRoot(cwd: string): string | null {
@@ -463,6 +469,7 @@ export class FileSnapshotManager {
 		const empty: RestoreResult = { restored: [], deleted: [], skipped: [], dirty: [] };
 
 		let targetTreeHash: string | null;
+		let targetIsEmpty = false; // true when target is intentionally "no files"
 		if (options.snapshotHash) {
 			targetTreeHash = options.snapshotHash;
 		} else if (options.targetEntryId) {
@@ -474,7 +481,11 @@ export class FileSnapshotManager {
 				targetTreeHash = pathSnap?.snapshotTreeHash ?? null;
 			}
 		} else {
+			// Rolling back to session start (no targetEntryId).
+			// If sessionStartTreeHash is null, it means the working dir was empty at session start.
+			// This is a valid target state ("no files"), not a missing snapshot.
 			targetTreeHash = this.sessionStartTreeHash ?? null;
+			targetIsEmpty = targetTreeHash === null;
 		}
 
 		let currentTreeHash: string | null;
@@ -487,14 +498,14 @@ export class FileSnapshotManager {
 
 		if (targetTreeHash === currentTreeHash) return empty;
 
-		// Safety guard: if targetTreeHash is null, we cannot determine the target state.
-		// Treating null as "no files" would delete everything on disk — a data-loss bug.
-		// Instead, bail out safely.
-		if (targetTreeHash === null) {
+		// Safety guard: if targetTreeHash is null and target is not intentionally empty,
+		// we cannot determine the target state. Treating null as "no files" would delete
+		// everything on disk — a data-loss bug.
+		if (targetTreeHash === null && !targetIsEmpty) {
 			return empty;
 		}
 
-		const targetFiles = this.git.readTree(targetTreeHash);
+		const targetFiles = targetTreeHash ? this.git.readTree(targetTreeHash) : new Map<string, string>();
 		const currentFiles = currentTreeHash ? this.git.readTree(currentTreeHash) : new Map<string, string>();
 
 		const toRestore: string[] = [];
@@ -623,6 +634,81 @@ export class FileSnapshotManager {
 		}
 
 		return activeHashes;
+	}
+
+	/**
+	 * Get live file changes since last committed snapshot.
+	 * Scans working dir on-demand, captures changes from ALL sources
+	 * (write, edit, bash, external edits).
+	 */
+	getLiveChanges(cwd: string): LiveChange[] {
+		const currentFiles = readFilteredWorkingDir(this.git, cwd);
+		const { entries: newEntries, treeHash: currentTreeHash } = this.git.writeTree(currentFiles);
+
+		const baselineHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
+		if (!baselineHash && currentTreeHash === null) return [];
+
+		const oldEntries = baselineHash ? this.parseTreeEntriesFromHash(baselineHash) : new Map<string, TreeEntry>();
+		const stepDiff = this.git.computeDiff(oldEntries, newEntries);
+
+		if (stepDiff.added.length === 0 && stepDiff.modified.length === 0 && stepDiff.deleted.length === 0) {
+			return [];
+		}
+
+		const changes: LiveChange[] = [];
+
+		for (const path of stepDiff.added) {
+			const newContent = currentFiles.get(path) ?? null;
+			changes.push({
+				path,
+				status: "added",
+				diff: {
+					path,
+					oldContent: null,
+					newContent,
+					oldHash: null,
+					newHash: newContent !== null ? this.git.hashContent(newContent) : null,
+					unifiedDiff: generateUnifiedDiff(null, newContent, path),
+				},
+			});
+		}
+
+		for (const path of stepDiff.modified) {
+			const oldFiles = baselineHash ? this.git.readTree(baselineHash) : new Map<string, string>();
+			const oldContent = oldFiles.get(path) ?? null;
+			const newContent = currentFiles.get(path) ?? null;
+			changes.push({
+				path,
+				status: "modified",
+				diff: {
+					path,
+					oldContent,
+					newContent,
+					oldHash: oldContent !== null ? this.git.hashContent(oldContent) : null,
+					newHash: newContent !== null ? this.git.hashContent(newContent) : null,
+					unifiedDiff: generateUnifiedDiff(oldContent, newContent, path),
+				},
+			});
+		}
+
+		for (const path of stepDiff.deleted) {
+			const oldFiles = baselineHash ? this.git.readTree(baselineHash) : new Map<string, string>();
+			const oldContent = oldFiles.get(path) ?? null;
+			changes.push({
+				path,
+				status: "deleted",
+				diff: {
+					path,
+					oldContent,
+					newContent: null,
+					oldHash: oldContent !== null ? this.git.hashContent(oldContent) : null,
+					newHash: null,
+					unifiedDiff: generateUnifiedDiff(oldContent, null, path),
+				},
+			});
+		}
+
+		return changes.sort((a, b) => a.path.localeCompare(b.path));
 	}
 }
 

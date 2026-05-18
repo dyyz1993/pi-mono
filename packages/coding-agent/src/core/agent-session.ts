@@ -3213,21 +3213,9 @@ export class AgentSession {
 				newLeafId = targetId;
 			}
 
-			// Safety guard: reject navigation that would eliminate ALL user messages
-			// ONLY when file rollback is involved (skipFiles !== true).
-			// When skipFiles=true (message-only rollback), going back to empty is valid —
-			// the user wants to undo their mistaken message.
-			if (options.skipFiles !== true) {
-				const effectiveLeafId = summaryText ? newLeafId : newLeafId;
-				const userMsgCount = this.sessionManager.countUserMessagesOnPath(effectiveLeafId);
-				if (userMsgCount === 0) {
-					return {
-						cancelled: true,
-						editorText: undefined,
-						reason: `Navigation to "${targetId}" would remove all user messages and restore files to their pre-session state. Use message-only rollback (skipFiles: true) to undo without file changes.`,
-					};
-				}
-			}
+			// Safety guard removed: the tree is always preserved on disk, so navigateTree
+			// never destroys data. Users can always navigateTree back to any node.
+			// The previous guard blocked legitimate rollback-to-root operations.
 
 			// Switch leaf (with or without summary)
 			// Summary is attached at the navigation target position (newLeafId), not the old branch

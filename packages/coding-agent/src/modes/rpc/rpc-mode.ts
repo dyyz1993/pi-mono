@@ -705,11 +705,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_full_messages": {
 				const allEntries = session.sessionManager.getEntries();
 				const messageEntries = allEntries.filter((e) => e.type === "message");
-				const persistedMessages = messageEntries.map((e) => (e as { message: AgentMessage }).message);
-				const persistedSet = new Set(persistedMessages);
+				const persistedMessages: (AgentMessage & { entryId: string })[] = messageEntries.map((e) => ({
+					...(e as { message: AgentMessage }).message,
+					entryId: e.id,
+				}));
+				const persistedSet = new Set(messageEntries.map((e) => (e as { message: AgentMessage }).message));
 
 				const memoryMessages = session.messages;
-				const unPersisted: AgentMessage[] = [];
+				const unPersisted: (AgentMessage & { entryId?: string })[] = [];
 				for (let i = memoryMessages.length - 1; i >= 0; i--) {
 					const msg = memoryMessages[i];
 					if (persistedSet.has(msg)) break;
@@ -717,7 +720,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					unPersisted.unshift(msg);
 				}
 
-				const allMessages = [...persistedMessages, ...unPersisted];
+				const allMessages: (AgentMessage & { entryId?: string })[] = [...persistedMessages, ...unPersisted];
 				const totalCount = allMessages.length;
 
 				const leafId = session.sessionManager.getLeafId();

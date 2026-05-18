@@ -153,8 +153,14 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 		const mgr = ctx.fileSnapshotManager;
 		if (!mgr) return;
 
-		await mgr.restoreFiles(ctx.cwd, {
-			targetEntryId: event.newLeafId ?? undefined,
+		// When newLeafId is null (rolled back to root), targetEntryId should be undefined
+		// so restoreFiles falls back to sessionStartTreeHash.
+		// If sessionStartTreeHash is null (empty dir at session start), we need to
+		// delete all files manually since the null guard in restoreFiles may block this.
+		const targetEntryId = event.newLeafId ?? undefined;
+
+		const result = await mgr.restoreFiles(ctx.cwd, {
+			targetEntryId,
 			preview: event.preview,
 			currentLeafId: event.oldLeafId,
 			entries: ctx.sessionManager.getEntries() as import("@dyyz1993/pi-coding-agent").SessionEntry[],
@@ -162,6 +168,32 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 				return pi.appendEntry(type, data) ?? undefined;
 			},
 		});
+
+		// If restoreFiles returned empty but target is null (rollback to root with empty start),
+		// we need to handle this case by reading current files and deleting them.
+		if (!event.preview && targetEntryId === undefined && result.deleted.length === 0 && result.restored.length === 0) {
+			// Check if sessionStartTreeHash is null (empty dir at start)
+			const sessionStartHash = (mgr as any).sessionStartTreeHash as string | null;
+			const lastCommittedHash = (mgr as any).lastCommittedTreeHash as string | null;
+			const compareTo = lastCommittedHash ?? sessionStartHash;
+
+			if (sessionStartHash === null && compareTo !== null) {
+				// Session started with empty dir, now has files. Delete all tracked files.
+				const { readdirSync, rmSync } = await import("node:fs");
+				const { join: joinPath } = await import("node:path");
+				const git = (mgr as any).git;
+				if (git && typeof git.readTree === "function") {
+					const currentFiles = git.readTree(compareTo);
+					for (const filePath of currentFiles.keys()) {
+						try {
+							rmSync(joinPath(ctx.cwd, filePath));
+						} catch {
+							// File may already be deleted
+						}
+					}
+				}
+			}
+		}
 	});
 
 	// Auto GC on session shutdown
