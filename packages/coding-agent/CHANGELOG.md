@@ -2,8 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+- `file-review` extension: new extension with typed channel contract for file review workflows.
+- `file-snapshot` extension: typed channel contract for file snapshot operations.
+- New test suites for `auto-session-title`, `file-time-guard`, `subagent-v2`, `file-review`, and `lsp/project-scanner`.
+- Regression test for abort-during-tool-execution.
+- Zombie task eviction tests for coordinator `TaskStore` (auto-remove stopped/completed tasks older than 5 minutes).
+
 ### Fixed
 - `session.abort()` now resolves within 2 seconds even when a tool execution is blocking, preventing RPC abort commands from timing out.
+- **message-bridge**: replaced 7 `any` types with proper `ExtensionAPI`/`UIEvent`/`AgentEndEvent` imports.
+- **hooks-engine**: read `sessionId`/`cwd` from `event.variables` instead of unsafe `as any` casts.
+- **todo-ext**: use `ContextEvent.messages` instead of `as any` cast.
+- **coordinator**: typed channel auto-inference for handler params and `client.call()` returns (removed `params: unknown` and `.as` casts).
+- **auto-memory**: `create_bookmark` tool now calls `bookmarkCreator.create()` instead of being a dead stub.
+- **lsp**: flattened nested `extensions/lsp/lsp/` directory structure to `extensions/lsp/`.
+- Coordinator e2e tests: replaced hardcoded timestamps with `Date.now()` for reliable time-based assertions.
+- TaskStore `dispatchedAt`/`completedAt` now use relative timestamps in tests.
+
+### Changed
+- **subagent-v2**: replaced 309 inlined lines with single import from `subagent-shared`.
 
 ## [0.74.39] - 2026-05-16
 
