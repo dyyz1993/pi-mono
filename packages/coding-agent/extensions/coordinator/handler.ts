@@ -39,7 +39,19 @@ export class TaskStore {
 		}
 	}
 
+	private static readonly EVICT_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
 	private save(): void {
+		const now = Date.now();
+		for (const [id, task] of this.tasks) {
+			if (
+				(task.status === "stopped" || task.status === "completed") &&
+				task.completedAt &&
+				now - task.completedAt > TaskStore.EVICT_MAX_AGE_MS
+			) {
+				this.tasks.delete(id);
+			}
+		}
 		const arr = Array.from(this.tasks.values());
 		fs.writeFileSync(this.filePath, JSON.stringify(arr, null, 2), "utf-8");
 	}
@@ -98,8 +110,8 @@ export class TaskStore {
 		const lines = ["## Delegated Tasks", ""];
 		for (const t of tasks) {
 			const status = t.status === "completed" ? "DONE" : t.status === "stopped" ? "STOPPED" : t.status.toUpperCase();
-			const compactTag = (t as Record<string, unknown>).isCompacting ? " COMPACTING" : "";
-			const ctxUsage = (t as Record<string, unknown>).contextUsage as { percent: number | null } | undefined;
+		const compactTag = t.isCompacting ? " COMPACTING" : "";
+		const ctxUsage = t.contextUsage;
 			const ctxTag = ctxUsage?.percent != null ? ` ctx:${Math.round(ctxUsage.percent)}%` : "";
 			const elapsed = t.completedAt
 				? `${((t.completedAt - t.dispatchedAt) / 1000).toFixed(1)}s`
@@ -120,8 +132,8 @@ export function createCoordinatorHandler(
 	getSessionId: () => string,
 	getStore: () => TaskStore,
 ): void {
-	channel.handle("session_delegate", async (params: unknown) => {
-		const { task, title, projectPath: rawProjectPath } = params as { task: string; title?: string; projectPath?: string };
+	channel.handle("session_delegate", async (params) => {
+		const { task, title, projectPath: rawProjectPath } = params;
 		const projectPath = rawProjectPath || process.cwd();
 
 		let result: { sessionId: string; status: "started" | "already_running" };
@@ -153,8 +165,8 @@ export function createCoordinatorHandler(
 		return result;
 	});
 
-	channel.handle("session_delegate_send", async (params: unknown) => {
-		const { targetSessionId, message } = params as { targetSessionId: string; message: string };
+	channel.handle("session_delegate_send", async (params) => {
+		const { targetSessionId, message } = params;
 		const result = await pm.delegate_send(getSessionId(), targetSessionId, message);
 
 		if (result.delivered) {
@@ -168,8 +180,8 @@ export function createCoordinatorHandler(
 		return result;
 	});
 
-	channel.handle("session_delegate_status", async (params: unknown) => {
-		const { sessionId } = params as { sessionId: string };
+	channel.handle("session_delegate_status", async (params) => {
+		const { sessionId } = params;
 		const store = getStore();
 		const task = store.get(sessionId);
 		if (!task) {
@@ -186,13 +198,17 @@ export function createCoordinatorHandler(
 		const store = getStore();
 		for (const t of store.list()) {
 			const remote = await pm.delegate_status(t.sessionId);
-			store.update(t.sessionId, { status: remote.status });
+			if (remote.status === "stopped") {
+				store.remove(t.sessionId);
+			} else {
+				store.update(t.sessionId, { status: remote.status });
+			}
 		}
 		return { tasks: store.list() };
 	});
 
-	channel.handle("session_delegate_stop", async (params: unknown) => {
-		const { sessionId } = params as { sessionId: string };
+	channel.handle("session_delegate_stop", async (params) => {
+		const { sessionId } = params;
 		const ok = await pm.delegate_stop(sessionId);
 		if (ok) {
 			const store = getStore();
@@ -202,8 +218,8 @@ export function createCoordinatorHandler(
 		return { ok };
 	});
 
-	channel.handle("session_delegate_remove", async (params: unknown) => {
-		const { sessionId } = params as { sessionId: string };
+	channel.handle("session_delegate_remove", async (params) => {
+		const { sessionId } = params;
 		const store = getStore();
 		const task = store.get(sessionId);
 		if (!task) {
@@ -220,8 +236,8 @@ export function createCoordinatorHandler(
 		return { removed };
 	});
 
-	channel.handle("session_delegate_fork", async (params: unknown) => {
-		const { sessionId, task, title, projectPath: rawProjectPath } = params as { sessionId: string; task: string; title?: string; projectPath?: string };
+	channel.handle("session_delegate_fork", async (params) => {
+		const { sessionId, task, title, projectPath: rawProjectPath } = params;
 		const projectPath = rawProjectPath || process.cwd();
 
 		let result: { sessionId: string; status: "started" | "already_running" };

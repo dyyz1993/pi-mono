@@ -156,17 +156,11 @@ export function filterServersByProject(
 	servers: ResolvedLspServerConfig[],
 	scanResult: ProjectScanResult,
 ): ResolvedLspServerConfig[] {
-	const { discoveredExtensions, fileCount } = scanResult;
+	const { discoveredExtensions } = scanResult;
 
-	// Safe fallback: if scan found nothing, start everything
+	// Safe fallback: if scan found no source file types at all, start everything
 	if (discoveredExtensions.size === 0) {
 		console.log(`[lsp] No file types discovered, starting all ${servers.length} servers`);
-		return servers;
-	}
-
-	// If we scanned very few files (<10), might be an empty project - start all servers
-	if (fileCount !== undefined && fileCount < 10) {
-		console.log(`[lsp] Only ${fileCount} files scanned, starting all ${servers.length} servers`);
 		return servers;
 	}
 

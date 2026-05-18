@@ -47,19 +47,19 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
   const serverProxy: ProcessManagerApi = {
     async delegate(task, projectPath) {
-      return client.call("session_delegate", { task, projectPath }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
+      return client.call("session_delegate", { task, projectPath });
     },
 
     async delegate_send(fromSessionId, toSessionId, message) {
       return client.call("session_delegate_send", {
         targetSessionId: toSessionId,
         message,
-      }) as Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }>;
+      });
     },
 
     async delegate_status(sessionId) {
       try {
-        const result = await client.call("session_delegate_status", { sessionId }) as { task: { status: string } | null };
+        const result = await client.call("session_delegate_status", { sessionId });
         return result.task ? { status: result.task.status as SessionStatus } : { status: "stopped" as const };
       } catch (err) {
         console.debug("[coordinator] delegate_status failed:", err instanceof Error ? err.message : err);
@@ -69,7 +69,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_list() {
       try {
-        const result = await client.call("session_delegate_list", {}) as { tasks: Array<{ sessionId: string; status: SessionStatus; projectPath: string }> };
+        const result = await client.call("session_delegate_list", {});
         return result.tasks;
       } catch (err) {
         console.debug("[coordinator] delegate_list failed:", err instanceof Error ? err.message : err);
@@ -79,7 +79,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_stop(sessionId) {
       try {
-        const result = await client.call("session_delegate_stop", { sessionId }) as { ok: boolean };
+        const result = await client.call("session_delegate_stop", { sessionId });
         return result.ok;
       } catch (err) {
         console.debug("[coordinator] delegate_stop failed:", err instanceof Error ? err.message : err);
@@ -88,15 +88,15 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     },
 
     async delegate_fork(sessionId, task, title, projectPath) {
-      return client.call("session_delegate_fork", { sessionId, task, title, projectPath }) as Promise<{ sessionId: string; status: "started" | "already_running" }>;
+      return client.call("session_delegate_fork", { sessionId, task, title, projectPath });
     },
 
     async delegate_compact_status(sessionId: string) {
       try {
-        const result = await client.call("session_delegate_status", { sessionId }) as { isCompacting?: boolean; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } };
+        const result = await client.call("session_delegate_status", { sessionId });
         return {
-          isCompacting: result.isCompacting ?? false,
-          contextUsage: result.contextUsage ?? { tokens: null as number | null, contextWindow: 0, percent: null as number | null },
+          isCompacting: result.task?.isCompacting ?? false,
+          contextUsage: result.task?.contextUsage ?? { tokens: null as number | null, contextWindow: 0, percent: null as number | null },
         };
       } catch (err) {
         console.debug("[coordinator] delegate_compact_status failed:", err instanceof Error ? err.message : err);
@@ -106,7 +106,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_remove(sessionId: string) {
       try {
-        const result = await client.call("session_delegate_remove", { sessionId }) as { ok: boolean };
+        const result = await client.call("session_delegate_remove", { sessionId });
         return result.ok;
       } catch (err) {
         console.debug("[coordinator] delegate_remove failed:", err instanceof Error ? err.message : err);
@@ -116,7 +116,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_clear_stopped() {
       try {
-        const result = await client.call("session_delegate_clear_stopped", {}) as { removed: number };
+        const result = await client.call("session_delegate_clear_stopped", {});
         return result.removed;
       } catch (err) {
         console.debug("[coordinator] delegate_clear_stopped failed:", err instanceof Error ? err.message : err);
@@ -334,8 +334,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     },
   });
 
-  client.on("message_received", (data: unknown) => {
-    const d = data as { fromSessionId: string; message: string };
+  client.on("message_received", (d) => {
     // Skip messages from sessions that have been stopped
     const task = store?.get(d.fromSessionId);
     if (task?.status === "stopped") return;

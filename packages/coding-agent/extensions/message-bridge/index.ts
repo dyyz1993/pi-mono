@@ -27,6 +27,8 @@
  *   MESSAGE_BRIDGE_SESSION_ID   - 可选 session 过滤
  */
 
+import type { ExtensionAPI, ExtensionContext, UIEvent, UIEventResult, AgentEndEvent, AgentMessage } from "@dyyz1993/pi-coding-agent";
+
 const BRIDGE_URL = process.env.MESSAGE_BRIDGE_URL || "https://message-bridge.docker.19930810.xyz:8443";
 
 interface PushResponse {
@@ -134,10 +136,10 @@ function extractMessageText(message: unknown): string {
 		.join("\n");
 }
 
-export default function messageBridgeExtension(pi: any) {
+export default function messageBridgeExtension(pi: ExtensionAPI) {
 	const sessionId = process.env.MESSAGE_BRIDGE_SESSION_ID || undefined;
 
-	pi.on("ui", async (event: any, ctx: any) => {
+	pi.on("ui", async (event: UIEvent, ctx: ExtensionContext) => {
 		if (event.method === "notify") {
 			if (event.message == null) return undefined;
 			pushAndWait(event.message, sessionId).catch((err) => console.debug("[message-bridge] notify push failed:", err instanceof Error ? err.message : err));
@@ -202,12 +204,12 @@ export default function messageBridgeExtension(pi: any) {
 		return undefined;
 	});
 
-	pi.on("agent_end", async (event: any) => {
+	pi.on("agent_end", async (event: AgentEndEvent) => {
 		if (!event?.messages) return;
 
 		const assistantTexts = event.messages
-			.filter((m: any) => m.role === "assistant")
-			.map((m: any) => extractMessageText(m))
+			.filter((m: AgentMessage) => m.role === "assistant")
+			.map((m: AgentMessage) => extractMessageText(m))
 			.filter((t: string) => t.trim());
 		if (assistantTexts.length === 0) return;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSmartFileTracker } from "../../extensions/lsp/lsp/client/smart-file-tracker.js";
+import { createSmartFileTracker } from "../../extensions/lsp/client/smart-file-tracker.js";
 
 describe("smart-file-tracker", () => {
 	describe("file type priority", () => {

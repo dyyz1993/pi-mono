@@ -13,6 +13,8 @@ export interface DelegatedTask {
   status: SessionStatus;
   completedAt?: number;
   result?: string;
+  isCompacting?: boolean;
+  contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
 export interface DelegateCreateResult {

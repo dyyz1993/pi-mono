@@ -1,14 +1,14 @@
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
-import { createFileTracker } from "../../extensions/lsp/lsp/client/file-tracker.js";
-import { createDiagnosticsMode, type DiagnosticsModeName } from "../../extensions/lsp/lsp/hooks/diagnostics-mode.js";
-import lspExtensionDefault, { type LspChannelEvent } from "../../extensions/lsp/lsp/index.js";
+import { createFileTracker } from "../../extensions/lsp/client/file-tracker.js";
+import { createDiagnosticsMode, type DiagnosticsModeName } from "../../extensions/lsp/hooks/diagnostics-mode.js";
+import lspExtensionDefault, { type LspChannelEvent } from "../../extensions/lsp/index.js";
 import {
 	extractPullDiagnostics,
 	languageIdFromPath,
 	normalizePosition,
 	normalizeRange,
-} from "../../extensions/lsp/lsp/utils/lsp-helpers.js";
+} from "../../extensions/lsp/utils/lsp-helpers.js";
 import type { ExtensionAPI } from "../../src/core/extensions/index.js";
 
 function createMockPi() {
@@ -249,10 +249,10 @@ describe("lsp extension", () => {
 
 describe("lsp internals", () => {
 	describe("diagnostics-mode", () => {
-		it("defaults to agent_end", () => {
-			const mode = createDiagnosticsMode();
-			expect(mode.get()).toBe("agent_end");
-		});
+	it("defaults to edit_write", () => {
+		const mode = createDiagnosticsMode();
+		expect(mode.get()).toBe("edit_write");
+	});
 
 		it("switches between valid modes", () => {
 			const mode = createDiagnosticsMode();
@@ -264,11 +264,11 @@ describe("lsp internals", () => {
 			expect(mode.get()).toBe("agent_end");
 		});
 
-		it("ignores invalid mode", () => {
-			const mode = createDiagnosticsMode();
-			mode.set("invalid" as DiagnosticsModeName);
-			expect(mode.get()).toBe("agent_end");
-		});
+	it("ignores invalid mode", () => {
+		const mode = createDiagnosticsMode();
+		mode.set("invalid" as DiagnosticsModeName);
+		expect(mode.get()).toBe("edit_write");
+	});
 
 		it("tracks touched files", () => {
 			const mode = createDiagnosticsMode();

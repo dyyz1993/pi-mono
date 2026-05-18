@@ -358,8 +358,8 @@ describe("coordinator cleanup mechanism - fix verification", () => {
 			const body = indexSource.slice(bodyStart, endIdx);
 
 			expect(
-				body.includes(".remove("),
-				`pi.registerTool("session_delegate_remove") execute() calls store.remove()`,
+				body.includes("delegate_remove"),
+				`pi.registerTool("session_delegate_remove") execute() calls serverProxy.delegate_remove()`,
 			).toBe(true);
 		});
 	});

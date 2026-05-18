@@ -582,30 +582,6 @@ class MemoryExtractor {
 }
 
 class BookmarkCreator {
-	registerTool(pi: ExtensionAPI): void {
-		pi.registerTool({
-			name: "create_bookmark",
-			label: "create_bookmark",
-			description:
-				"Create a bookmark memory file from analyzed content. Use this tool to save a structured bookmark with title, description, summary and tags.",
-			parameters: Type.Object({
-				title: Type.String({ description: "Bookmark title, concise and descriptive" }),
-				description: Type.String({ description: "One-line description of the bookmark" }),
-				summary: Type.String({ description: "Detailed summary of the bookmarked content" }),
-				tags: Type.Array(Type.String(), { description: "Relevant tags for categorization" }),
-			}),
-			execute: async (
-				_toolCallId: string,
-				_params: { title: string; description: string; summary: string; tags: string[] },
-				_signal?: AbortSignal,
-				_onUpdate?: unknown,
-				_ctx?: ExtensionContext,
-			): Promise<AgentToolResult<void>> => {
-				return { content: [{ type: "text", text: "Not used in JSON mode" }], details: undefined };
-			},
-		});
-	}
-
 	async create(
 		messageContent: string,
 		sessionId: string,
@@ -931,7 +907,52 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	bookmarkCreator.registerTool(pi);
+	pi.registerTool({
+		name: "create_bookmark",
+		label: "create_bookmark",
+		description:
+			"Create a bookmark memory file from analyzed content. Use this tool to save a structured bookmark with title, description, summary and tags.",
+		parameters: Type.Object({
+			title: Type.String({ description: "Bookmark title, concise and descriptive" }),
+			description: Type.String({ description: "One-line description of the bookmark" }),
+			summary: Type.String({ description: "Detailed summary of the bookmarked content" }),
+			tags: Type.Array(Type.String(), { description: "Relevant tags for categorization" }),
+		}),
+		execute: async (
+			_toolCallId: string,
+			params: { title: string; description: string; summary: string; tags: string[] },
+			_signal?: AbortSignal,
+			_onUpdate?: unknown,
+			_ctx?: ExtensionContext,
+		): Promise<AgentToolResult<{ filename: string; filePath: string } | null>> => {
+			const content = `## ${params.title}\n\n${params.summary}`;
+			const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
+			const result = await bookmarkCreator.create(
+				content,
+				sessionId,
+				[],
+				memoryDir,
+				callLLMWithRetry,
+			);
+			if (result) {
+				prefetch.markDirty();
+				pi.appendEntry("memory_created", result);
+				const updatedMemories = await scanMemoryFiles(memoryDir);
+				memoryChannel?.emit("memory_updated", {
+					type: "memory_updated",
+					files: updatedMemories.map((m) => ({
+						filename: m.filename,
+						filePath: m.filePath,
+						description: m.description ?? null,
+						type: m.type ?? null,
+						mtimeMs: m.mtimeMs,
+					})),
+				});
+				return { content: [{ type: "text", text: `Bookmark created: ${result.filename}` }], details: result };
+			}
+			return { content: [{ type: "text", text: "Failed to create bookmark" }], details: null };
+		},
+	});
 
 	const rawMemoryChannel = pi.registerChannel("memory");
 	const memoryChannel = createTypedChannel<MemoryChannelContract>(rawMemoryChannel).server;
