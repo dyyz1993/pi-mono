@@ -583,11 +583,10 @@ LLM 调用工具:
      -e ./packages/coding-agent/extensions/subagent-v2/index.ts
    ```
 
-3. **Repo 内 4 个未全局部署的扩展**（按需启用）：
+3. **Repo 内 3 个未全局部署的扩展**（按需启用）：
    - `agent-permissions` — Agent 权限管理
    - `claude-hooks-compat` — Claude Hooks 兼容层
    - `file-time-guard` — 文件时间守卫
-   - `subagent-ext` — spawn 变体子 Agent（与 subagent-v2 互补）
 
 ---
 

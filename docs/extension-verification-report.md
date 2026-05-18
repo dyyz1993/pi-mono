@@ -1,7 +1,7 @@
 # 扩展功能验证报告
 
 > 验证日期：2026-05-18（重写版，修正前版多处失实）
-> 验证范围：packages/coding-agent/extensions/ 下全部 22 个目录（21 个可加载扩展 + 1 个共享库）
+> 验证范围：packages/coding-agent/extensions/ 下全部 21 个目录（20 个可加载扩展 + 1 个共享库）
 > 项目版本：0.74.49
 
 ## 验证方法
@@ -36,7 +36,6 @@
 | preview | 301 | 1 | 0 | 0 | 0 | ✅ |
 | rules-engine | 622 | 4 | 1 (rules-engine) | 9 | 1 (rules) | ✅ |
 | session-supervisor | 764 | 1 | 1 (supervisor) | 3 | 0 | 🟡 |
-| subagent-ext | 347 | 1 | 1 (subagent) | 0 | 0 | ✅ |
 | subagent-shared | 4 (barrel) | — | — | — | — | ✅ (库) |
 | subagent-v2 | 1005 | 2 | 1 (subagent) | 0 | 0 | 🟡 |
 | todo-ext | 478 | 1 | 1 (todo) | 3 | 1 (todos) | ✅ |
@@ -391,23 +390,7 @@
 
 ---
 
-### 19. subagent-ext ✅
-
-**功能**：子智能体（JSON mode，spawn pi 进程，Channel 事件转发）
-
-| 功能点 | 验证结果 |
-|--------|---------|
-| 工具：subagent | ✅ 参数完整 |
-| Channel：subagent | ✅ 2 个 emit，使用 `createTypedChannel` |
-| 进程管理 | ✅ runSubagent() spawn pi 进程 |
-| 超时 | ✅ 300s 默认 |
-| 依赖 | 从 subagent-shared 正确导入 |
-
-**问题**：无严重问题
-
----
-
-### 20. subagent-shared ✅ (库模块)
+### 19. subagent-shared ✅ (库模块)
 
 **功能**：共享类型和工具函数
 
@@ -424,7 +407,7 @@
 
 ---
 
-### 21. subagent-v2 🟡
+### 20. subagent-v2 🟡
 
 **功能**：子智能体（RPC mode，使用 RpcClient）
 
@@ -449,7 +432,7 @@
 
 ---
 
-### 22. todo-ext ✅
+### 21. todo-ext ✅
 
 **功能**：LLM 管理的 Todo 列表
 
@@ -505,11 +488,9 @@
 
 | 工具名 | 注册扩展 | 冲突情况 |
 |--------|---------|---------|
-| subagent | subagent-ext + subagent-v2 | **2 个扩展注册同名工具**。同一时间只能加载一个 |
+无工具名冲突。所有工具名唯一。
 
-其余工具名全部唯一。**无实际冲突**：全局只链接了 subagent-v2，subagent-ext 不会同时加载。
-
-> 注：原报告声称 `subagent`（旧版）也注册了同名工具，但 `extensions/subagent/` 目录已被删除（commit `b5671f99`），不存在三重复。
+> 注：原报告声称 `subagent` 存在多扩展注册同名工具的冲突，但 `extensions/subagent/` 目录已被删除（commit `b5671f99`），`extensions/subagent-ext/` 也已删除，仅 subagent-v2 注册 `subagent` 工具。
 
 ---
 
@@ -524,7 +505,6 @@
 | lsp | lsp | createTypedChannel | 3 | 8 |
 | memory | auto-memory | createTypedChannel | 3 | 4 |
 | rules-engine | rules-engine | createTypedChannel | 1 | 4 |
-| subagent | subagent-ext | createTypedChannel | 0 | 2 |
 | subagent | subagent-v2 | createTypedChannel | 0 | 2 |
 | supervisor | session-supervisor | createTypedChannel | 8 | 4 |
 | todo | todo-ext | createTypedChannel | 0 | 7 |
@@ -578,7 +558,6 @@
 | preview | 1 | 26 | |
 | rules-engine | 10 | 161 | |
 | session-supervisor | 2 | 10 | |
-| subagent-ext | 3 | 29 | unit + integration + rpc-e2e |
 | subagent-v2 | 1 | 10 | extract-parent-todos |
 | todo-ext | 2 | 52 | unit + subagent mode |
 | core extensions | 4 | 43 | channel/server-channel/wrapper |
@@ -600,11 +579,11 @@
 ### 总体状态：✅ 可用，有 1 个严重 + 8 个中等问题需关注
 
 **正面**：
-- 22 个扩展目录全部通过 TypeScript 编译
+- 21 个扩展目录全部通过 TypeScript 编译
 - 所有事件名、API 调用均与 ExtensionAPI 接口匹配
 - 所有本地模块引用均存在
 - **所有 Channel 均使用 `createTypedChannel` 类型安全 API**，无旧式 `onReceive`
-- 1,733 个测试用例覆盖 21/22 个扩展（仅 file-time-guard 无测试）
+- 1,733 个测试用例覆盖 20/21 个扩展（仅 file-time-guard 无测试）
 
 **需改进**：
 - **1 个严重问题**：message-bridge 完全缺乏类型安全（零类型导入 + 7 处 any）
@@ -615,7 +594,7 @@
 
 | 前版声明 | 实际情况 |
 |---------|---------|
-| 24 个扩展目录 | 实际 22 个（`extensions/subagent/` 已被删除） |
+| 24 个扩展目录 | 实际 21 个（`extensions/subagent/` 和 `extensions/subagent-ext/` 均已删除） |
 | file-review/file-snapshot 使用旧式 `onReceive` | **错误**。两者均使用 `createTypedChannel` |
 | file-snapshot 多处 `as any` | **错误**。使用 `as Record<string, unknown>`，无 `as any` |
 | 测试总数 948/950 | **严重偏低**。实际 1,733 个测试用例 |
