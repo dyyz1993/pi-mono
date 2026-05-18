@@ -8,19 +8,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const bashExtensionPath = resolve(join(__dirname, "..", "extensions", "bash-ext", "index.ts"));
 
-const hasApiKey =
-	!!process.env.ANTHROPIC_API_KEY ||
-	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
-	!!process.env.OPENAI_API_KEY ||
-	existsSync(join(homedir(), ".pi/agent/models.json"));
+const hasApiKey = existsSync(join(homedir(), ".pi/agent/models.json"));
 
-const PROVIDER = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "anthropic" : "glm";
-const MODEL =
-	process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "claude-sonnet-4-5" : "DeepSeek-V3.2";
+const PROVIDER = "zhipuai-2";
+const MODEL = "glm-4.7";
 
 async function main() {
 	if (!hasApiKey) {
-		console.error("No API key found. Set ANTHROPIC_API_KEY or configure ~/.pi/agent/models.json");
+		console.error("No API key found. Configure ~/.pi/agent/models.json");
 		process.exit(1);
 	}
 

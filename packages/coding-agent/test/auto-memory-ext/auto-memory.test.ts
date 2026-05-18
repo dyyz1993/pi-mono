@@ -145,6 +145,13 @@ describe("auto-memory integration", () => {
 				join(memoryDir, "user_role.md"),
 				"---\nname: Role\ndescription: User role\ntype: user\n---\n\nSenior dev.",
 			);
+			// Add extra files to exceed MAX_RELEVANT_MEMORIES (5) so LLM path is taken
+			for (let i = 0; i < 5; i++) {
+				writeFileSync(
+					join(memoryDir, `extra${i}.md`),
+					`---\nname: Extra${i}\ndescription: Extra file\ntype: project\n---\n\nExtra content ${i}.`,
+				);
+			}
 
 			const callLLM: CallLLMFn = async (opts) => {
 				expect(opts.systemPrompt).toContain("关键词净化器");
@@ -471,6 +478,10 @@ describe("auto-memory integration", () => {
 			const memoryDir = getMemoryDir(tempDir);
 			mkdirSync(memoryDir, { recursive: true });
 			writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
+			// Add extra files to exceed MAX_RELEVANT_MEMORIES (5) so LLM path is taken
+			for (let i = 0; i < 5; i++) {
+				writeFileSync(join(memoryDir, `extra${i}.md`), `---\nname: E${i}\ntype: project\n---\nContent ${i}.`);
+			}
 
 			const prefetch = new MemoryPrefetch();
 			prefetch.start("query", memoryDir, async () => "not json at all");
@@ -483,6 +494,10 @@ describe("auto-memory integration", () => {
 			const memoryDir = getMemoryDir(tempDir);
 			mkdirSync(memoryDir, { recursive: true });
 			writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
+			// Add extra files to exceed MAX_RELEVANT_MEMORIES (5) so LLM path is taken
+			for (let i = 0; i < 5; i++) {
+				writeFileSync(join(memoryDir, `extra${i}.md`), `---\nname: E${i}\ntype: project\n---\nContent ${i}.`);
+			}
 
 			const prefetch = new MemoryPrefetch();
 			prefetch.start("query", memoryDir, async () => {
@@ -513,6 +528,10 @@ describe("auto-memory integration", () => {
 			const memoryDir = getMemoryDir(tempDir);
 			mkdirSync(memoryDir, { recursive: true });
 			writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
+			// Add extra files to exceed MAX_RELEVANT_MEMORIES (5) so LLM path is taken
+			for (let i = 0; i < 5; i++) {
+				writeFileSync(join(memoryDir, `extra${i}.md`), `---\nname: E${i}\ntype: project\n---\nContent ${i}.`);
+			}
 
 			const prefetch = new MemoryPrefetch();
 			prefetch.start("query", memoryDir, async () => JSON.stringify({ selected: [] }));
@@ -578,6 +597,10 @@ describe("auto-memory integration", () => {
 			const memoryDir = getMemoryDir(tempDir);
 			mkdirSync(memoryDir, { recursive: true });
 			writeFileSync(join(memoryDir, "test.md"), "---\nname: Test\ntype: project\n---\nContent.");
+			// Add extra files to exceed MAX_RELEVANT_MEMORIES (5) so LLM path is taken
+			for (let i = 0; i < 5; i++) {
+				writeFileSync(join(memoryDir, `extra${i}.md`), `---\nname: E${i}\ntype: project\n---\nContent ${i}.`);
+			}
 
 			let callCount = 0;
 			const callLLM: CallLLMFn = async () => {
@@ -621,6 +644,10 @@ describe("auto-memory integration", () => {
 			const memoryDir = getMemoryDir(tempDir);
 			mkdirSync(memoryDir, { recursive: true });
 			writeFileSync(join(memoryDir, "test.md"), "---\nname: Test\ntype: project\n---\nContent.");
+			// Add extra files to exceed MAX_RELEVANT_MEMORIES (5) so LLM path is taken
+			for (let i = 0; i < 5; i++) {
+				writeFileSync(join(memoryDir, `extra${i}.md`), `---\nname: E${i}\ntype: project\n---\nContent ${i}.`);
+			}
 
 			let callCount = 0;
 			const callLLM: CallLLMFn = async () => {
@@ -1792,10 +1819,17 @@ describe("auto-memory integration", () => {
 			expect(result).toBe(tempDir);
 		});
 
-		it("returns resolved path for git repo", () => {
-			const result = getProjectRoot(process.cwd());
-			expect(result).not.toBe(process.cwd());
-			expect(result.endsWith("pi-momo-fork") || result.includes("pi-momo-fork")).toBe(true);
+		it("returns resolved path for git repo", async () => {
+			const { execSync } = await import("node:child_process");
+			const gitDir = join(tmpdir(), `am-gitroot-${Date.now()}`);
+			mkdirSync(gitDir, { recursive: true });
+			try {
+				execSync(`git init "${gitDir}"`, { stdio: "pipe" });
+				const result = getProjectRoot(gitDir);
+				expect(result.endsWith("am-gitroot") || result.includes("am-gitroot")).toBe(true);
+			} finally {
+				rmSync(gitDir, { recursive: true, force: true });
+			}
 		});
 
 		it("worktrees of same repo share the same project root", async () => {

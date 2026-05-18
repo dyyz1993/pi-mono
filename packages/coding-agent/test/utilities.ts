@@ -23,7 +23,7 @@ import { createCodingTools } from "../src/index.js";
  * API key for authenticated tests. Tests using this should be wrapped in
  * describe.skipIf(!API_KEY)
  */
-export const API_KEY = process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+export const API_KEY: string | undefined = undefined;
 
 // ============================================================================
 // OAuth API key resolution from ~/.pi/agent/auth.json
@@ -235,7 +235,7 @@ export function createTestSession(options: TestSessionOptions = {}): TestSession
 	const tempDir = join(tmpdir(), `pi-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 
-	const model = getModel("anthropic", "claude-sonnet-4-5")!;
+	const model = getModel("zhipuai-2", "glm-4.7")!;
 	const agent = new Agent({
 		getApiKey: () => API_KEY,
 		initialState: {

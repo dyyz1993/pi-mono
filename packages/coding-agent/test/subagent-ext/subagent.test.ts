@@ -254,7 +254,7 @@ describe("subagent", () => {
 				},
 				undefined,
 				undefined,
-				{ cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any,
+				{ cwd: "/tmp", model: { provider: "zhipuai-2", id: "glm-5" } } as any,
 			);
 
 			expect(spawnCalls.length).toBe(1);
@@ -277,13 +277,13 @@ describe("subagent", () => {
 				},
 				undefined,
 				undefined,
-				{ cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any,
+				{ cwd: "/tmp", model: { provider: "zhipuai-2", id: "glm-5" } } as any,
 			);
 
 			expect(spawnCalls.length).toBe(1);
 			const modelIdx = spawnCalls[0].indexOf("--model");
 			expect(modelIdx).toBeGreaterThan(-1);
-			expect(spawnCalls[0][modelIdx + 1]).toBe("zhipuai/glm-5");
+			expect(spawnCalls[0][modelIdx + 1]).toBe("zhipuai-2/glm-5");
 		});
 
 		it("omits --model when both params.model and ctx.model are absent", async () => {
@@ -322,7 +322,7 @@ describe("subagent", () => {
 				},
 				undefined,
 				undefined,
-				{ cwd: "/tmp", model: { provider: "zhipuai", id: "glm-5" } } as any,
+				{ cwd: "/tmp", model: { provider: "zhipuai-2", id: "glm-5" } } as any,
 			);
 
 			expect(spawnCalls.length).toBe(1);

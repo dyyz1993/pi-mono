@@ -3,7 +3,7 @@
  */
 
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@dyyz1993/pi-agent-core";
 import { getModel } from "@dyyz1993/pi-ai";
@@ -24,9 +24,9 @@ import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 import { createCodingTools } from "../src/index.js";
 import { createTestResourceLoader } from "./utilities.js";
 
-const API_KEY = process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+const hasApiKey = existsSync(join(homedir(), ".pi/agent/models.json"));
 
-describe.skipIf(!API_KEY)("Compaction extensions", () => {
+describe.skipIf(!hasApiKey)("Compaction extensions", () => {
 	let session: AgentSession;
 	let tempDir: string;
 	let capturedEvents: SessionEvent[];
@@ -86,9 +86,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 	}
 
 	function createSession(extensions: Extension[]) {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getModel("zhipuai-2", "glm-4.7")!;
 		const agent = new Agent({
-			getApiKey: () => API_KEY,
+			getApiKey: () => undefined,
 			initialState: {
 				model,
 				systemPrompt: "You are a helpful assistant. Be concise.",

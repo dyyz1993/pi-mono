@@ -6,11 +6,7 @@ import { describe, expect, it } from "vitest";
 import { runSubagent } from "../../extensions/subagent-ext/index.js";
 
 const hasModelConfig = existsSync(join(homedir(), ".pi/agent/models.json"));
-const hasApiKey =
-	!!process.env.ANTHROPIC_API_KEY ||
-	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY ||
-	existsSync(join(homedir(), ".pi/agent/models.json"));
+const hasApiKey = existsSync(join(homedir(), ".pi/agent/models.json"));
 
 function createTestContext() {
 	const sessionId = randomUUID().slice(0, 8);
@@ -61,7 +57,7 @@ describe.skipIf(!hasApiKey)("SubAgent E2E --model fallback", () => {
 			expect(result.finalText).toMatch(/30/);
 
 			const { modelChange } = readSessionModel(sessionPath);
-			expect(modelChange.provider).toBe("zhipuai");
+			expect(modelChange.provider).toBe("zhipuai-2");
 			expect(modelChange.modelId).toBe("glm-4.7");
 		} finally {
 			try {
@@ -91,7 +87,7 @@ describe.skipIf(!hasApiKey)("SubAgent E2E --model fallback", () => {
 			expect(result.finalText).toMatch(/5/);
 
 			const { modelChange } = readSessionModel(sessionPath);
-			expect(modelChange.provider).toBe("zhipuai");
+			expect(modelChange.provider).toBe("zhipuai-2");
 			expect(modelChange.modelId).toBe("glm-4.7");
 		} finally {
 			try {

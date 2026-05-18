@@ -9,61 +9,10 @@ import { RpcClient } from "../../src/modes/rpc/rpc-client.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const extensionPath = join(__dirname, "..", "..", "extensions", "file-snapshot", "index.ts");
 
-const hasApiKey =
-	!!process.env.ANTHROPIC_API_KEY ||
-	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
-	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY ||
-	!!process.env.ZAI_API_KEY ||
-	!!readApiKeyFromPiConfig();
+const hasApiKey = existsSync(join(homedir(), ".pi/agent/models.json"));
 
-const hasReliableProvider =
-	!!process.env.ANTHROPIC_API_KEY ||
-	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
-	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY;
-
-function readApiKeyFromPiConfig(): string | undefined {
-	try {
-		const configPath = join(homedir(), ".pi", "agent", "models.json");
-		const config = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-		const providers = config.providers as Record<string, Record<string, string>> | undefined;
-		if (providers) {
-			for (const p of Object.values(providers)) {
-				if (p.apiKey) return p.apiKey;
-			}
-		}
-	} catch {}
-	return undefined;
-}
-
-function getProviderAndModel(): { provider: string; model: string } {
-	if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN) {
-		return { provider: "anthropic", model: "claude-sonnet-4-5" };
-	}
-	if (process.env.OPENAI_API_KEY) {
-		return { provider: "openai", model: "gpt-4o-mini" };
-	}
-	if (process.env.OPENROUTER_API_KEY) {
-		return { provider: "openrouter", model: "anthropic/claude-sonnet-4-5" };
-	}
-	if (hasZhipuaiInPiConfig()) {
-		return { provider: "zhipuai", model: "glm-4.7" };
-	}
-	return { provider: "", model: "" };
-}
-
-function hasZhipuaiInPiConfig(): boolean {
-	try {
-		const configPath = join(homedir(), ".pi", "agent", "models.json");
-		const config = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-		const providers = config.providers as Record<string, Record<string, string>> | undefined;
-		return !!providers?.zhipuai?.apiKey;
-	} catch {}
-	return false;
-}
-
-const { provider, model } = getProviderAndModel();
+const provider = "zhipuai-2";
+const model = "glm-4.7";
 
 function extractCustomEntries(events: AgentEvent[]): Array<{ type: string; customType: string; data?: unknown }> {
 	return events.filter((e: AgentEvent) => (e as any).type === "custom_entry") as Array<{
@@ -73,7 +22,7 @@ function extractCustomEntries(events: AgentEvent[]): Array<{ type: string; custo
 	}>;
 }
 
-describe.skipIf(!hasReliableProvider)("file-snapshot RPC e2e", () => {
+describe.skipIf(!hasApiKey)("file-snapshot RPC e2e", () => {
 	let client: RpcClient;
 	let projectDir: string;
 

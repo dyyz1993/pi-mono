@@ -296,13 +296,20 @@ describe("auto-memory utils", () => {
 
 	describe("getProjectPath handles relative git-common-dir", () => {
 		it("resolves relative .git path correctly", () => {
+			// Create a temp dir with .git so existsSync check passes
+			const fakeCwd = join(tmpdir(), `am-relgit-${Date.now()}`);
+			mkdirSync(fakeCwd, { recursive: true });
+			mkdirSync(join(fakeCwd, ".git"), { recursive: true });
+
 			const origExecSync = vi.spyOn(require("node:child_process"), "execSync");
 			origExecSync.mockReturnValue(".git\n");
 
-			const result = getProjectRoot(process.cwd());
-			expect(result).not.toBe(process.cwd());
+			const result = getProjectRoot(fakeCwd);
+			// resolve(fakeCwd, ".git", "..") = fakeCwd, realpathSync resolves it
+			expect(result).toBe(fakeCwd);
 
 			origExecSync.mockRestore();
+			rmSync(fakeCwd, { recursive: true, force: true });
 		});
 	});
 

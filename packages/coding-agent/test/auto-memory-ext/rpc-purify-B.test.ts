@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const extensionPath = resolve(join(__dirname, "..", "..", "extensions", "auto-memory", "index.ts"));
 
 const hasApiKey = existsSync(join(homedir(), ".pi/agent/models.json"));
-const PROVIDER = "zhipuai";
+const PROVIDER = "zhipuai-2";
 const MODEL = "glm-4.7";
 
 function waitForMemoryIdle(client: RpcClient, timeout = 60_000): Promise<void> {

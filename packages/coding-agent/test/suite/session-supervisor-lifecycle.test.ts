@@ -12,15 +12,10 @@ const supervisorPath = join(__dirname, "..", "..", "extensions", "session-superv
 const todoPath = join(__dirname, "..", "..", "extensions", "todo-ext", "index.ts");
 const bashPath = join(__dirname, "..", "..", "extensions", "bash-ext", "index.ts");
 
-const hasApiKey =
-	!!process.env.ANTHROPIC_API_KEY ||
-	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
-	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY ||
-	existsSync(join(homedir(), ".pi/agent/models.json"));
+const hasApiKey = existsSync(join(homedir(), ".pi/agent/models.json"));
 
-const PROVIDER = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "anthropic" : "zhipuai";
-const MODEL = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN ? "claude-sonnet-4-5" : "glm-4.7";
+const PROVIDER = "zhipuai-2";
+const MODEL = "glm-4.7";
 
 const EVENT_COLORS: Record<string, string> = {
 	ready: "\ud83d\udfe2",

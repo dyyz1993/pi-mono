@@ -11,13 +11,8 @@ const bashExtPath = resolve(__dirname, "..", "..", "extensions", "bash-ext", "in
 const todoExtPath = resolve(__dirname, "..", "..", "extensions", "todo-ext", "index.ts");
 
 const hasModelConfig = existsSync(join(homedir(), ".pi/agent/models.json"));
-const hasApiKey =
-	!!process.env.ANTHROPIC_API_KEY ||
-	!!process.env.ANTHROPIC_OAUTH_TOKEN ||
-	!!process.env.OPENAI_API_KEY ||
-	!!process.env.OPENROUTER_API_KEY ||
-	existsSync(join(homedir(), ".pi/agent/models.json"));
-const PROVIDER = "zhipuai";
+const hasApiKey = existsSync(join(homedir(), ".pi/agent/models.json"));
+const PROVIDER = "zhipuai-2";
 const MODEL = "glm-4.7";
 
 function makeClient(projectDir: string): RpcClient {
