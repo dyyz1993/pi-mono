@@ -109,16 +109,6 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			channel.emit("subagent_start", {
-				event: {
-					type: "subagent_start",
-					toolCallId,
-					description: params.agent,
-					instruction: params.task,
-				},
-				sessionId: "",
-			});
-
 			try {
 				const result = await coordinatorClient.call(
 					"session_delegate_sync",
