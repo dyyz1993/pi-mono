@@ -15,7 +15,6 @@ import type { CoordinatorChannelContract } from "../../../extensions/coordinator
 import type { LspChannelContract } from "../../../extensions/lsp/contract.js";
 import type { RulesChannelContract } from "../../../extensions/rules-engine/types.js";
 import type { SupervisorChannelContract } from "../../../extensions/session-supervisor/types.js";
-import type { SubagentExtChannelContract } from "../../../extensions/subagent-ext/contract.js";
 import type { SubagentV2ChannelContract } from "../../../extensions/subagent-v2/contract.js";
 import type { TodoChannelContract } from "../../../extensions/todo-ext/contract.js";
 
@@ -24,7 +23,7 @@ export interface ChannelTypeRegistry {
 	todo: TodoChannelContract;
 	lsp: LspChannelContract;
 	memory: MemoryChannelContract;
-	subagent: SubagentExtChannelContract & SubagentV2ChannelContract;
+	subagent: SubagentV2ChannelContract;
 	coordinator: CoordinatorChannelContract;
 	"rules-engine": RulesChannelContract;
 	supervisor: SupervisorChannelContract;
