@@ -158,7 +158,8 @@ export class AgentSessionRuntime {
 			type: "session_shutdown",
 			reason,
 			targetSessionFile,
-		});
+			variables: this.session.currentAgentVariables,
+		} as any);
 		this.beforeSessionInvalidate?.();
 		// Do NOT call session.dispose() here — it would invalidate the old
 		// runner, causing stale errors for any captured pi/ctx from async ops.
@@ -404,7 +405,8 @@ export class AgentSessionRuntime {
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason: "quit",
-		});
+			variables: this.session.currentAgentVariables,
+		} as any);
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
 	}

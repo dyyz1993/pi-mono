@@ -6,6 +6,14 @@ import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { DEFAULT_TIER_ALIASES } from "./defaults.js";
 
+/**
+ * Hooks configuration stored in settings.json files.
+ * Keys are hook event names (on_tool_start, on_tool_complete, etc. or "*" for wildcard).
+ * Values are arrays of hook entries (command/prompt/http or HookGroup).
+ * Same format as AgentConfig.hooks in agent markdown frontmatter.
+ */
+export type SettingsHooks = Partial<Record<string, unknown[]>>;
+
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
@@ -131,9 +139,12 @@ export interface Settings {
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	mcp?: McpSettings;
 	tierModels?: Record<string, string>;
+	/** Hooks configuration (command/prompt/http hooks for all events). Cascades: global → project → agent. */
+	hooks?: SettingsHooks;
 }
 
-/** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
+/** Deep merge settings: project/overrides take precedence, nested objects merge recursively.
+ *  Special case: `hooks` field merges by concatenating arrays per event key (not replacing). */
 function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const result: Settings = { ...base };
 
@@ -142,6 +153,18 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 		const baseValue = base[key];
 
 		if (overrideValue === undefined) {
+			continue;
+		}
+
+		// Special case: hooks field — concat arrays per event key
+		if (key === "hooks" && typeof overrideValue === "object" && overrideValue !== null && typeof baseValue === "object" && baseValue !== null) {
+			const merged: SettingsHooks = { ...(baseValue as SettingsHooks) };
+			for (const [eventKey, entries] of Object.entries(overrideValue as SettingsHooks)) {
+				if (!Array.isArray(entries)) continue;
+				const existing = (merged[eventKey] as unknown[]) ?? [];
+				merged[eventKey] = [...existing, ...entries];
+			}
+			(result as Record<string, unknown>)[key] = merged;
 			continue;
 		}
 

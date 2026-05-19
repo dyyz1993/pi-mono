@@ -1,17 +1,26 @@
 /**
  * Hooks Engine Extension
  *
- * Executes hooks defined in AgentConfig.hooks.
- * Hooks are stored as JSON in event.variables["agentHooks"].
+ * Unified multi-level hooks: Global → Project → Agent.
  *
- * Supported events: tool_call, tool_result, agent_start, agent_end
- * Supported hook types: command (spawn process), prompt (inject text)
+ * Hook sources (executed in order):
+ *   1. Global settings:    ~/.pi/agent/settings.json  → hooks field
+ *   2. Project settings:   <project>/.pi/settings.json → hooks field
+ *   3. Agent hooks:        agent markdown frontmatter  → hooks field (via event.variables["agentHooks"])
+ *
+ * All sources are concatenated per event key. Any hook returning deny (exit 2) short-circuits.
+ * Claude-compatible hooks (.claude/settings.json) are handled by the separate claude-hooks-compat extension.
+ *
+ * Supported events: tool_call, tool_result, agent_start, agent_end, session_start, session_shutdown
+ * Supported hook types: command (spawn process), prompt (inject text), http (POST request)
  *
  * Command hooks: exit code 2 = block operation, 0 = allow, 3 = ask user
- * Prompt hooks: text injected into the conversation
  */
 
 import type { ExtensionAPI, ExtensionContext, AgentHook, AgentHooks, AgentHookEntry } from "@dyyz1993/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 const EVENT_MAP: Record<string, string> = {
@@ -33,6 +42,9 @@ interface HookResult {
 	options?: string[];
 	message?: string;
 }
+
+/** Hooks shape stored in settings.json (same as AgentHooks but looser typing for disk-loaded JSON). */
+type SettingsHooks = Partial<Record<string, unknown[]>>;
 
 export function parseHooks(raw: string | undefined): AgentHooks | null {
 	if (!raw) return null;
@@ -198,6 +210,50 @@ export function groupMatches(matcher: string | undefined, toolName: string): boo
 	return matchesCondition(matcher, { toolName });
 }
 
+// ---------------------------------------------------------------------------
+// Settings hooks loading (global ~/.pi/agent/settings.json + project .pi/settings.json)
+// ---------------------------------------------------------------------------
+
+/** Read hooks from a single settings.json file. Returns null if file missing or no hooks. */
+export function loadSettingsHooks(filePath: string): AgentHooks | null {
+	if (!existsSync(filePath)) return null;
+	try {
+		const raw = readFileSync(filePath, "utf-8");
+		const json = JSON.parse(raw) as { hooks?: SettingsHooks };
+		if (!json.hooks || typeof json.hooks !== "object") return null;
+		const hooks: AgentHooks = {};
+		for (const [eventKey, entries] of Object.entries(json.hooks)) {
+			if (Array.isArray(entries) && entries.length > 0) {
+				hooks[eventKey] = entries as AgentHookEntry[];
+			}
+		}
+		return Object.keys(hooks).length > 0 ? hooks : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Load and merge hooks from global + project settings files. */
+export function loadMergedSettingsHooks(projectDir: string): AgentHooks {
+	const globalPath = join(homedir(), ".pi", "agent", "settings.json");
+	const projectPath = join(projectDir, ".pi", "settings.json");
+
+	const globalHooks = loadSettingsHooks(globalPath);
+	const projectHooks = loadSettingsHooks(projectPath);
+
+	// Merge: project hooks APPEND to global hooks per event key
+	const merged: AgentHooks = { ...(globalHooks ?? {}) };
+	for (const [eventKey, entries] of Object.entries(projectHooks ?? {})) {
+		const existing = merged[eventKey] ?? [];
+		merged[eventKey] = [...existing, ...entries];
+	}
+	return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Hook execution
+// ---------------------------------------------------------------------------
+
 async function processHook(
 	hook: AgentHook,
 	event: Record<string, unknown>,
@@ -280,43 +336,82 @@ async function processHook(
 	return undefined;
 }
 
+/** Execute a list of hook entries (flat or HookGroup). Returns first block result or undefined. */
+async function executeHookEntries(
+	entries: AgentHookEntry[],
+	event: Record<string, unknown>,
+	ctx: ExtensionContext,
+	onceSet: Set<string>,
+	hookKey: string,
+	promptResults: string[],
+): Promise<{ block: true; reason: string } | undefined> {
+	const toolName = (event.toolName as string) ?? "";
+
+	for (const entry of entries) {
+		// Handle HookGroup format
+		if (isHookGroup(entry)) {
+			if (!groupMatches(entry.matcher, toolName)) continue;
+
+			for (const hook of entry.hooks) {
+				const result = await processHook(hook, event, ctx, onceSet, hookKey, promptResults);
+				if (result) return result;
+			}
+			continue;
+		}
+
+		// Handle flat hook
+		const result = await processHook(entry as AgentHook, event, ctx, onceSet, hookKey, promptResults);
+		if (result) return result;
+	}
+
+	return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
+
 export default function hooksEngine(pi: ExtensionAPI): void {
 	const onceSet = new Set<string>();
+
+	// Cached settings hooks, refreshed on session_start
+	let cachedSettingsHooks: AgentHooks = {};
 
 	const subscribe = (eventName: string) => {
 		const hookKey = EVENT_MAP[eventName];
 		if (!hookKey) return;
 
 		pi.on(eventName, async (event: Record<string, unknown>, ctx: ExtensionContext) => {
+			// For session_start: refresh settings hooks cache first
+			if (eventName === "session_start") {
+				const cwd = ctx?.cwd;
+				if (cwd) {
+					cachedSettingsHooks = loadMergedSettingsHooks(cwd);
+					const hookCount = Object.values(cachedSettingsHooks).reduce((sum, arr) => sum + arr.length, 0);
+					if (hookCount > 0) {
+						console.log(`[hooks-engine] Loaded ${hookCount} settings hooks for ${Object.keys(cachedSettingsHooks).join(", ")}`);
+					}
+				}
+			}
+
+			// Collect hooks from all sources in priority order:
+			// 1. Settings hooks (global → project, already merged in cachedSettingsHooks)
+			// 2. Agent hooks (from agent markdown frontmatter, passed via event.variables)
+			const settingsHooks = cachedSettingsHooks[hookKey] ?? cachedSettingsHooks["*"] ?? [];
+
 			const vars = event.variables as Record<string, string> | undefined;
-			if (!vars?.agentHooks) return undefined;
+			const agentHooksRaw = vars?.agentHooks;
+			const agentHooks = agentHooksRaw ? parseHooks(agentHooksRaw) : null;
+			const agentEventHooks = agentHooks?.[hookKey] ?? agentHooks?.["*"] ?? [];
 
-			const hooks = parseHooks(vars.agentHooks);
-			if (!hooks) return undefined;
-
-			const eventHooks = hooks[hookKey] ?? hooks["*"] ?? [];
-			if (eventHooks.length === 0) return undefined;
-
-			const toolName = (event.toolName as string) ?? "";
+			// Merge: settings hooks first, then agent hooks
+			const allHooks = [...settingsHooks, ...agentEventHooks];
+			if (allHooks.length === 0) return undefined;
 
 			const promptResults: string[] = [];
 
-			for (const entry of eventHooks) {
-				// Handle HookGroup format
-				if (isHookGroup(entry)) {
-					if (!groupMatches(entry.matcher, toolName)) continue;
-
-					for (const hook of entry.hooks) {
-						const result = await processHook(hook, event, ctx, onceSet, hookKey, promptResults);
-						if (result) return result;
-					}
-					continue;
-				}
-
-				// Handle flat hook
-				const result = await processHook(entry as AgentHook, event, ctx, onceSet, hookKey, promptResults);
-				if (result) return result;
-			}
+			const blockResult = await executeHookEntries(allHooks, event, ctx, onceSet, hookKey, promptResults);
+			if (blockResult) return blockResult;
 
 			if (promptResults.length > 0) {
 				console.log("[hook] Prompts to inject:", promptResults);
