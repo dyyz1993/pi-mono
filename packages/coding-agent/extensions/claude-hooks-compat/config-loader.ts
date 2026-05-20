@@ -6,9 +6,10 @@ import type { ClaudeHookConfig, MatcherGroup } from "./types.js";
 function loadSingleConfig(path: string): ClaudeHookConfig | null {
 	if (!existsSync(path)) return null;
 	try {
-		return JSON.parse(readFileSync(path, "utf-8"));
+		const raw = readFileSync(path, "utf-8").trim();
+		if (!raw) return null;
+		return JSON.parse(raw);
 	} catch (err) {
-		console.debug("[claude-hooks-compat] config load failed:", err instanceof Error ? err.message : err);
 		return null;
 	}
 }
