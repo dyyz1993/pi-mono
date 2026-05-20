@@ -11,7 +11,9 @@ import { createDependencyResolver } from "./utils/dependency-resolver.js";
 import { createWriteThroughHooks } from "./hooks/writethrough.js";
 import { createLspToolRouter } from "./tools/lsp-tool.js";
 import { createServerMetricsCollector } from "./monitoring/server-metrics.js";
-import { scanProjectFileTypes, filterServersByProject } from "./utils/project-scanner.js";
+import { scanProjectFileTypes } from "./utils/project-scanner.js";
+import { createLazyActivator } from "./utils/lazy-activator.js";
+import { createIdleCleaner } from "./utils/idle-cleaner.js";
 
 export interface LspChannelEvent {
 	event:
@@ -24,6 +26,7 @@ export interface LspChannelEvent {
 		| "server_starting"
 		| "server_ready"
 		| "server_error"
+		| "server_unloaded"
 		| "language_activated";
 	timestamp: number;
 	servers?: unknown[];
@@ -91,6 +94,17 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	let idleCleanupTimer: ReturnType<typeof setTimeout> | undefined;
 	let lspChannel: ServerChannel<LspChannelContract> | null = null;
 
+	const lazyActivator = createLazyActivator(runtime);
+	const idleCleaner = createIdleCleaner(runtime, {
+		onUnload: (name: string) => {
+			lspChannel?.emit("server_unloaded", {
+				event: "server_unloaded",
+				timestamp: Date.now(),
+				serverName: name,
+			});
+		},
+	});
+
 	toolRouter.register(pi);
 	writeThroughHooks.register(pi);
 	agentEndHook.register(pi);
@@ -150,53 +164,68 @@ export default function lspExtension(pi: ExtensionAPI): void {
 
 		const config = configResolver.resolve();
 
-		// Scan project for file types and filter servers
+		// Build lazy activation index
+		lazyActivator.buildIndex(config.servers);
+
+		// Scan project for file counts to determine primary languages
 		const cwd = process.cwd();
 		const scanResult = scanProjectFileTypes(cwd);
-		const filteredServers = filterServersByProject(config.servers, scanResult);
-		const skippedNames = config.servers
-			.filter((s) => !filteredServers.some((f) => f.name === s.name))
-			.map((s) => s.name);
-		const discoveredExts = [...scanResult.discoveredExtensions].sort();
+		lazyActivator.markPrimary(scanResult.extensionCounts);
 
-		if (skippedNames.length > 0) {
-			console.log(
-				`[lsp] Project scan found [${discoveredExts.join(", ")}], starting ${filteredServers.length}/${config.servers.length} servers (skipped: ${skippedNames.join(", ")})`,
-			);
+		const primaryNames = lazyActivator.getPrimaryServerNames();
+
+		if (primaryNames.length > 0) {
+			console.log(`[lsp] Primary servers: ${primaryNames.join(", ")} (starting eagerly)`);
+		} else {
+			console.log(`[lsp] No primary servers detected, all servers will be lazy-activated`);
 		}
 
-		const filteredConfig = { ...config, servers: filteredServers };
+		if (scanResult.extensionCounts.size > 0) {
+			const topExts = [...scanResult.extensionCounts.entries()]
+				.sort((a, b) => b[1] - a[1])
+				.slice(0, 5)
+				.map(([ext, count]) => `${ext}(${count})`);
+			console.log(`[lsp] Project file types: ${topExts.join(", ")}`);
+		}
 
+		// Emit startup_begin event
 		lspChannel?.emit("startup_begin", {
 			event: "startup_begin",
 			timestamp: Date.now(),
-			servers: filteredConfig.servers.map((s) => ({ name: s.name, state: "starting", fileTypes: s.fileTypes })),
-			totalServers: filteredConfig.servers.length,
+			servers: primaryNames.map(name => {
+				const config_entry = config.servers.find(s => s.name === name);
+				return { name, state: "starting", fileTypes: config_entry?.fileTypes };
+			}),
+			totalServers: primaryNames.length,
 		});
 
-		await runtime.start(filteredConfig);
+		// Start primary servers
+		const startedNames = await lazyActivator.startPrimaryServers();
+
+		// Start idle cleaner
+		idleCleaner.start();
+
+		// Get final status for notifications
 		const status = runtime.getStatus();
 
-		for (const srv of status.servers) {
-			lspChannel?.emit("server_ready", {
-				event:
-					srv.status.state === "ready"
-						? "server_ready"
-						: srv.status.state === "error"
-							? "server_error"
-							: "server_error",
-				timestamp: Date.now(),
-				serverName: srv.name,
-				servers: [srv],
-			});
-
-			if (srv.status.state === "ready" && srv.fileTypes && srv.fileTypes.length > 0) {
-				lspChannel?.emit("language_activated", {
-					event: "language_activated",
+		// Emit per-server events for primary servers
+		for (const name of startedNames) {
+			const srv = status.servers.find(s => s.name === name);
+			if (srv) {
+				lspChannel?.emit("server_ready", {
+					event: srv.status.state === "ready" ? "server_ready" : "server_error",
 					timestamp: Date.now(),
 					serverName: srv.name,
-					languages: srv.fileTypes,
+					servers: [srv],
 				});
+				if (srv.status.state === "ready" && srv.fileTypes && srv.fileTypes.length > 0) {
+					lspChannel?.emit("language_activated", {
+						event: "language_activated",
+						timestamp: Date.now(),
+						serverName: srv.name,
+						languages: srv.fileTypes,
+					});
+				}
 			}
 		}
 
@@ -220,33 +249,18 @@ export default function lspExtension(pi: ExtensionAPI): void {
 
 		const readyCount = status.servers.filter((s) => s.status.state === "ready").length;
 		const errorCount = status.servers.filter((s) => s.status.state === "error").length;
-
 		const readyNames = status.servers.filter((s) => s.status.state === "ready").map((s) => s.name);
-		const errorEntries = status.servers.filter((s) => s.status.state === "error");
-		const errorNames = errorEntries.map((s) => `${s.name}(${s.status.reason.slice(0, 80)})`);
 
-		if (status.state === "error" || errorCount > 0) {
-			ctx.ui.notify(
-				`LSP: ${readyCount}/${config.servers.length} ready [${readyNames.join(", ")}]` +
-					(errorCount > 0 ? ` | ${errorCount} FAILED: ${errorNames.join(", ")}` : ""),
-				"warning",
-			);
-		} else if (readyCount > 0) {
-			ctx.ui.notify(`LSP ready: ${readyCount}/${config.servers.length} [${readyNames.join(", ")}]`, "info");
-		}
-
-		// Startup metrics log
-		const startupSnapshots = metrics.snapshot();
-		for (const snap of startupSnapshots) {
-			const startupMs = snap.startupDurationMs !== undefined ? `${snap.startupDurationMs}ms` : "n/a";
-			const types = snap.fileTypes.length > 0 ? snap.fileTypes.join(",") : "*";
-			console.log(`[lsp-metrics] ${snap.name} [${types}] state=${snap.state} startup=${startupMs} pid=${snap.pid ?? "n/a"}`);
+		if (readyCount > 0) {
+			ctx.ui.notify(`LSP ready: ${readyCount} primary [${readyNames.join(", ")}] (secondary: lazy)`, "info");
 		}
 	});
 
 	pi.on("session_shutdown", async () => {
 		// Session metrics report
 		console.log(metrics.summary());
+
+		idleCleaner.stop();
 
 		if (idleCleanupTimer !== undefined) {
 			clearTimeout(idleCleanupTimer);

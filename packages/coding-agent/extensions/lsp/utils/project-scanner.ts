@@ -5,6 +5,7 @@ import type { ResolvedLspServerConfig } from "../config/resolver.js";
 
 export interface ProjectScanResult {
 	discoveredExtensions: Set<string>;
+	extensionCounts: Map<string, number>;
 	fileCount?: number;
 }
 
@@ -56,6 +57,7 @@ const MAX_FILES_TO_SCAN = 5000;
  */
 export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 	const extensions = new Set<string>();
+	const extensionCounts = new Map<string, number>();
 	let fileCount = 0;
 
 	// Strategy 1: git ls-files (fast, respects gitignore)
@@ -69,13 +71,13 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 			}
 
 			const ext = extname(file).toLowerCase();
-			// Only collect common source code extensions
 			if (ext && COMMON_SOURCE_EXTENSIONS.has(ext)) {
 				extensions.add(ext);
+				extensionCounts.set(ext, (extensionCounts.get(ext) ?? 0) + 1);
 			}
 		}
 		console.log(`[lsp] Project scan found ${extensions.size} file types from ${fileCount} files (git mode)`);
-		return { discoveredExtensions: extensions, fileCount };
+		return { discoveredExtensions: extensions, extensionCounts, fileCount };
 	}
 
 	// Strategy 2: shallow find (maxdepth 3, skip many common dirs)
@@ -97,13 +99,11 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 
 			fileCount++;
 
-			// Check memory usage periodically
 			if (fileCount % 1000 === 0) {
 				const memUsage = process.memoryUsage();
 				const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
 				const heapTotalMB = Math.round(memUsage.heapTotal / 1024 / 1024);
 
-				// If we're using >3GB of heap, stop scanning
 				if (heapUsedMB > 3000) {
 					console.warn(`[lsp] Stopping scan due to high memory usage (${heapUsedMB}MB heap used)`);
 					break;
@@ -111,9 +111,9 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 			}
 
 			const ext = extname(trimmed).toLowerCase();
-			// Only collect common source code extensions
 			if (ext && COMMON_SOURCE_EXTENSIONS.has(ext)) {
 				extensions.add(ext);
+				extensionCounts.set(ext, (extensionCounts.get(ext) ?? 0) + 1);
 			}
 		}
 
@@ -122,10 +122,9 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 		if (error instanceof Error) {
 			console.warn(`[lsp] Project scan failed: ${error.message}`);
 		}
-		// If scan fails, return empty — will fall back to starting all servers
 	}
 
-	return { discoveredExtensions: extensions, fileCount };
+	return { discoveredExtensions: extensions, extensionCounts, fileCount };
 }
 
 function tryGitLsFiles(cwd: string): string[] {
@@ -151,6 +150,8 @@ function tryGitLsFiles(cwd: string): string[] {
  * Filter server configs to only those whose fileTypes match files in the project.
  * Servers WITHOUT fileTypes (catch-all) are always included.
  * If the project has no discoverable files, all servers are started (safe fallback).
+ *
+ * @deprecated Will be removed once index.ts is updated to use extensionCounts directly.
  */
 export function filterServersByProject(
 	servers: ResolvedLspServerConfig[],
