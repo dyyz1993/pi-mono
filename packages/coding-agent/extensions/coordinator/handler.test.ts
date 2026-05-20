@@ -635,6 +635,61 @@ describe("no double store operations in tool handlers (Bug 3/4/6 fix)", () => {
 	});
 });
 
+// ── TDD tests for hooks-engine agent param passthrough (P0) ──
+
+describe("Bug: session_delegate_sync handler missing (hooks not activated in subagent)", () => {
+	it("handler.ts registers session_delegate_sync handler", () => {
+		const handlerSource = fs.readFileSync(path.join(__dirname, "handler.ts"), "utf-8");
+		expect(handlerSource).toContain('channel.handle("session_delegate_sync"');
+	});
+
+	it("ProcessManagerApi includes delegate_sync method", () => {
+		const handlerSource = fs.readFileSync(path.join(__dirname, "handler.ts"), "utf-8");
+		expect(handlerSource).toContain("delegate_sync");
+	});
+
+	it("serverProxy passes agent param through to delegate_sync", () => {
+		const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
+
+		// The serverProxy should have a delegate_sync method that passes agent
+		expect(indexSource).toContain("delegate_sync");
+		expect(indexSource).toContain("agent");
+	});
+
+	it("session_delegate_sync handler passes agent to delegate_sync", () => {
+		const handlerSource = fs.readFileSync(path.join(__dirname, "handler.ts"), "utf-8");
+		const syncHandlerStart = handlerSource.indexOf('channel.handle("session_delegate_sync"');
+		expect(syncHandlerStart).toBeGreaterThan(-1);
+
+		const syncHandlerEnd = handlerSource.indexOf("});", syncHandlerStart);
+		const syncHandlerBlock = handlerSource.slice(syncHandlerStart, syncHandlerEnd);
+
+		// The handler should extract agent from params and pass it
+		expect(syncHandlerBlock).toContain("agent");
+		expect(syncHandlerBlock).toContain("delegate_sync");
+	});
+
+	it("session_delegate_sync tool is registered in index.ts with agent param", () => {
+		const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
+		expect(indexSource).toContain('name: "session_delegate_sync"');
+	});
+
+	it("session_delegate_sync DelegateSyncParams schema includes agent field", () => {
+		const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
+
+		// Find the DelegateSyncParams schema (or inline schema for session_delegate_sync tool)
+		const syncToolStart = indexSource.indexOf('name: "session_delegate_sync"');
+		if (syncToolStart === -1) {
+			// Tool doesn't exist yet - this is the RED test failing as expected
+			expect(syncToolStart).toBeGreaterThan(-1);
+			return;
+		}
+		const syncToolEnd = indexSource.indexOf("});", syncToolStart);
+		const syncToolBlock = indexSource.slice(syncToolStart, syncToolEnd);
+		expect(syncToolBlock).toMatch(/agent/i);
+	});
+});
+
 describe("message_received handler tracks task status (Bug 7 fix)", () => {
 	it("index.ts message_received handler detects completion signals and updates status", () => {
 		const indexSource = fs.readFileSync(

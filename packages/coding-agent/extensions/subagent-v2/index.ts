@@ -70,7 +70,7 @@ export default function (pi: ExtensionAPI) {
 			const startedAt = Date.now();
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
-			const agents = discovery.agents;
+			const agents = discovery.agents.filter((a) => a.mode !== "primary");
 			const timeoutMs = (params.timeout ?? 300) * 1000;
 
 			const details: SubagentDetails = {
