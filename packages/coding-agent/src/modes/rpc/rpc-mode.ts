@@ -345,6 +345,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				navigateTree: async (targetId, options) => {
 					const result = await session.navigateTree(targetId, {
 						summarize: options?.summarize,
+						skipFiles: options?.skipFiles,
 						customInstructions: options?.customInstructions,
 						replaceInstructions: options?.replaceInstructions,
 						label: options?.label,
@@ -656,7 +657,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					summarize: command.summarize ?? false,
 					skipFiles: command.skipFiles,
 				});
-				return success(id, "navigate_tree", { cancelled: navResult.cancelled, reason: navResult.reason });
+				return success(id, "navigate_tree", {
+					cancelled: navResult.cancelled,
+					reason: navResult.reason,
+					editorText: navResult.editorText,
+					newLeafId: session.sessionManager.getLeafId(),
+				});
 			}
 
 			case "rollback_preview": {

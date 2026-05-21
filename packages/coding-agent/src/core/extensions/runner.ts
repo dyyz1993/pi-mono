@@ -147,7 +147,9 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 			? SessionBeforeCompactResult | undefined
 			: TEvent extends { type: "session_before_tree" }
 				? SessionBeforeTreeResult | undefined
-				: undefined;
+				: TEvent extends { type: "session_tree" }
+					? import("./types.js").SessionTreePreviewResult | undefined
+					: undefined;
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
@@ -164,7 +166,7 @@ export type ForkHandler = (
 
 export type NavigateTreeHandler = (
 	targetId: string,
-	options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
+	options?: { summarize?: boolean; skipFiles?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
 ) => Promise<{ cancelled: boolean }>;
 
 export type SwitchSessionHandler = (
@@ -1011,6 +1013,7 @@ export class ExtensionRunner {
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
+		let treePreviewResult: import("./types.js").SessionTreePreviewResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -1027,6 +1030,14 @@ export class ExtensionRunner {
 							return result as RunnerEmitResult<TEvent>;
 						}
 					}
+
+					// Collect session_tree handler results (for preview mode)
+					if (event.type === "session_tree" && handlerResult) {
+						const preview = handlerResult as import("./types.js").SessionTreePreviewResult;
+						if (preview.restored || preview.deleted) {
+							treePreviewResult = preview;
+						}
+					}
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
@@ -1038,6 +1049,10 @@ export class ExtensionRunner {
 					});
 				}
 			}
+		}
+
+		if (event.type === "session_tree") {
+			return treePreviewResult as RunnerEmitResult<TEvent>;
 		}
 
 		return result as RunnerEmitResult<TEvent>;

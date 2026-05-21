@@ -259,6 +259,12 @@ export class FileSnapshotManager {
 			const data = custom.data as StepSnapshotData;
 			if (!data) continue;
 
+			// The first snapshot's baselineTreeHash is the session start state.
+			// Restore it so rollback-to-root can find the correct target.
+			if (this.sessionStartTreeHash === null && data.baselineTreeHash !== null) {
+				this.sessionStartTreeHash = data.baselineTreeHash;
+			}
+
 			this.snapshotIndex.set(entry.id, {
 				...data,
 				entryId: entry.id,

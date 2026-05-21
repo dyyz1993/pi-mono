@@ -3877,11 +3877,6 @@ export class AgentSession {
 			preview: true,
 		} as import("./extensions/types.js").SessionTreeEvent);
 
-		return (
-			(result as unknown as import("./extensions/types.js").SessionTreePreviewResult) ?? {
-				restored: [],
-				deleted: [],
-			}
-		);
+		return result ?? { restored: [], deleted: [] };
 	}
 }

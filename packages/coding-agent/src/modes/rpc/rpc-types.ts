@@ -349,6 +349,18 @@ export type RpcResponse =
 	| {
 			id?: string;
 			type: "response";
+			command: "navigate_tree";
+			success: true;
+			data: {
+				cancelled: boolean;
+				reason?: string;
+				editorText?: string;
+				newLeafId: string | null;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
 			command: "rollback_preview";
 			success: true;
 			data: { restored: string[]; deleted: string[] };
