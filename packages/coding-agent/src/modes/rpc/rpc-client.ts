@@ -408,6 +408,24 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	async deleteEntries(targetIds: string[]): Promise<{ entryId: string }> {
+		const response = await this.send({ type: "delete_entries", targetIds });
+		return this.getData(response);
+	}
+
+	async summarizeEntries(
+		targetIds: string[],
+		options?: { summary?: string; model?: string },
+	): Promise<{ entryId: string }> {
+		const response = await this.send({
+			type: "summarize_entries",
+			targetIds,
+			summary: options?.summary,
+			model: options?.model,
+		});
+		return this.getData(response);
+	}
+
 	/**
 	 * Get messages available for forking.
 	 */

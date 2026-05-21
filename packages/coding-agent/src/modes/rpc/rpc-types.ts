@@ -63,6 +63,8 @@ export type RpcCommand =
 	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
 	| { id?: string; type: "navigate_tree"; targetId: string; summarize?: boolean; skipFiles?: boolean }
 	| { id?: string; type: "rollback_preview"; targetId: string }
+	| { id?: string; type: "delete_entries"; targetIds: string[] }
+	| { id?: string; type: "summarize_entries"; targetIds: string[]; summary?: string; model?: string }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
@@ -351,6 +353,8 @@ export type RpcResponse =
 			success: true;
 			data: { restored: string[]; deleted: string[] };
 	  }
+	| { id?: string; type: "response"; command: "delete_entries"; success: true; data: { entryId: string } }
+	| { id?: string; type: "response"; command: "summarize_entries"; success: true; data: { entryId: string } }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

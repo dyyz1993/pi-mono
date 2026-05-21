@@ -353,3 +353,75 @@ export async function generateBranchSummary(
 		modifiedFiles,
 	};
 }
+
+// ============================================================================
+// Segment Summary
+// ============================================================================
+
+const SEGMENT_SUMMARY_PROMPT = `Summarize the following conversation segment concisely. Focus on:
+1. What was discussed or requested
+2. What was done (key actions, decisions, code changes)
+3. Important context (file paths, function names, error messages)
+
+Keep the summary under 200 words. Preserve exact technical references.`;
+
+export interface SegmentSummaryResult {
+	summary: string;
+	error?: string;
+}
+
+export interface GenerateSegmentSummaryOptions {
+	model: Model<any>;
+	apiKey: string;
+	headers?: Record<string, string>;
+	signal: AbortSignal;
+}
+
+export async function generateSegmentSummary(
+	entries: SessionEntry[],
+	options: GenerateSegmentSummaryOptions,
+): Promise<SegmentSummaryResult> {
+	const { model, apiKey, headers, signal } = options;
+
+	const messages: AgentMessage[] = [];
+	for (const entry of entries) {
+		const msg = getMessageFromEntry(entry);
+		if (msg) messages.push(msg);
+	}
+
+	if (messages.length === 0) {
+		return { summary: "No content to summarize", error: undefined };
+	}
+
+	const llmMessages = convertToLlm(messages);
+	const conversationText = serializeConversation(llmMessages);
+	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${SEGMENT_SUMMARY_PROMPT}`;
+
+	const summarizationMessages = [
+		{
+			role: "user" as const,
+			content: [{ type: "text" as const, text: promptText }],
+			timestamp: Date.now(),
+		},
+	];
+
+	const response = await completeSimple(
+		model,
+		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+		{ apiKey, headers, signal, maxTokens: 1024 },
+	);
+
+	if (response.stopReason === "aborted") {
+		return { summary: "", error: "Summarization aborted" };
+	}
+	if (response.stopReason === "error") {
+		return { summary: "", error: response.errorMessage || "Summarization failed" };
+	}
+
+	const summary = response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n");
+
+	return { summary: summary || "No summary generated" };
+}

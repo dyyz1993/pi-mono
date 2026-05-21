@@ -61,6 +61,7 @@ export {
 	findTurnStartIndex,
 	type GenerateBranchSummaryOptions,
 	generateBranchSummary,
+	generateSegmentSummary,
 	generateSummary,
 	getLastAssistantUsage,
 	prepareBranchEntries,

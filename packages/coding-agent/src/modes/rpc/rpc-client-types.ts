@@ -171,6 +171,8 @@ export interface RpcClientAPI {
 		options?: { summarize?: boolean; skipFiles?: boolean },
 	): Promise<SessionOperationResult>;
 	previewRollback(targetId: string): Promise<RollbackPreviewResult>;
+	deleteEntries(targetIds: string[]): Promise<{ entryId: string }>;
+	summarizeEntries(targetIds: string[], options?: { summary?: string; model?: string }): Promise<{ entryId: string }>;
 	clone(): Promise<SessionOperationResult>;
 	getForkMessages(): Promise<ForkMessage[]>;
 	getLastAssistantText(): Promise<string | null>;

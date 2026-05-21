@@ -166,6 +166,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
 		foldEntry: notInitialized,
+		deleteEntries: notInitialized,
+		summarizeEntries: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
@@ -461,6 +463,16 @@ function createExtensionAPI(extension: Extension, slot: RuntimeSlot, cwd: string
 		foldEntry(entryId, summary, originalTokens) {
 			getRuntime().assertActive();
 			getRuntime().foldEntry(entryId, summary, originalTokens);
+		},
+
+		deleteEntries(targetIds) {
+			getRuntime().assertActive();
+			getRuntime().deleteEntries(targetIds);
+		},
+
+		summarizeEntries(targetIds, summary) {
+			getRuntime().assertActive();
+			getRuntime().summarizeEntries(targetIds, summary);
 		},
 
 		setName(name: string) {

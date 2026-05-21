@@ -15,6 +15,7 @@ import * as crypto from "node:crypto";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import { discoverAgents, getBuiltinAgents } from "../../core/agent-types.js";
+import { generateSegmentSummary } from "../../core/compaction/branch-summarization.js";
 import { DEFAULT_TIER_ALIASES } from "../../core/defaults.js";
 import { ChannelManager } from "../../core/extensions/channel-manager.js";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.js";
@@ -661,6 +662,54 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "rollback_preview": {
 				const previewResult = await session.previewRollback(command.targetId);
 				return success(id, "rollback_preview", previewResult);
+			}
+
+			case "delete_entries": {
+				const entryId = session.sessionManager.appendDeletion(command.targetIds);
+				return success(id, "delete_entries", { entryId });
+			}
+
+			case "summarize_entries": {
+				let summary = command.summary;
+				if (!summary) {
+					const entries = command.targetIds
+						.map((tid) => session.sessionManager.getEntry(tid))
+						.filter((e) => e !== undefined);
+					if (entries.length === 0) {
+						return error(id, "summarize_entries", "No valid entries found for summarization");
+					}
+					const tierModels = session.getTierModels();
+					const modelInput = command.model || "pro";
+					const aliasTarget = resolveModelAlias(modelInput, tierModels);
+					let summarizationModel = session.model;
+					if (aliasTarget) {
+						const slashIndex = aliasTarget.indexOf("/");
+						if (slashIndex !== -1) {
+							const provider = aliasTarget.substring(0, slashIndex);
+							const modelId = aliasTarget.substring(slashIndex + 1);
+							summarizationModel = session.modelRegistry.find(provider, modelId) || session.model;
+						}
+					}
+					if (!summarizationModel) {
+						return error(id, "summarize_entries", "No model available for summarization");
+					}
+					const authResult = await session.modelRegistry.getApiKeyAndHeaders(summarizationModel);
+					if (!authResult.ok) {
+						return error(id, "summarize_entries", `No API key for summarization model: ${authResult.error}`);
+					}
+					const result = await generateSegmentSummary(entries, {
+						model: summarizationModel,
+						apiKey: authResult.apiKey || "",
+						headers: authResult.headers,
+						signal: AbortSignal.timeout(30000),
+					});
+					if (result.error) {
+						return error(id, "summarize_entries", result.error);
+					}
+					summary = result.summary;
+				}
+				const entryId = session.sessionManager.appendSegmentSummary(command.targetIds, summary!);
+				return success(id, "summarize_entries", { entryId });
 			}
 
 			case "clone": {

@@ -819,7 +819,11 @@ export class AgentSession {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start", variables: this._currentAgentVariables } as any);
 		} else if (event.type === "agent_end") {
-			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages, variables: this._currentAgentVariables } as any);
+			await this._extensionRunner.emit({
+				type: "agent_end",
+				messages: event.messages,
+				variables: this._currentAgentVariables,
+			} as any);
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {
 				type: "turn_start",
@@ -2498,6 +2502,12 @@ export class AgentSession {
 				foldEntry: (entryId, summary, originalTokens) => {
 					this.sessionManager.appendFold(entryId, summary, originalTokens);
 				},
+				deleteEntries: (targetIds) => {
+					this.sessionManager.appendDeletion(targetIds);
+				},
+				summarizeEntries: (targetIds, summary) => {
+					this.sessionManager.appendSegmentSummary(targetIds, summary);
+				},
 				setSessionName: (name) => {
 					const oldName = this.sessionManager.getSessionName();
 					const trimmed = name.trim();
@@ -2758,7 +2768,11 @@ export class AgentSession {
 
 	async reload(): Promise<void> {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
-		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload", variables: this._currentAgentVariables } as any);
+		await emitSessionShutdownEvent(this._extensionRunner, {
+			type: "session_shutdown",
+			reason: "reload",
+			variables: this._currentAgentVariables,
+		} as any);
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
@@ -2791,7 +2805,11 @@ export class AgentSession {
 			this._extensionShutdownHandler ||
 			this._extensionErrorListener;
 		if (hasBindings) {
-			await this._extensionRunner.emit({ type: "session_start", reason: "reload", variables: this._currentAgentVariables } as any);
+			await this._extensionRunner.emit({
+				type: "session_start",
+				reason: "reload",
+				variables: this._currentAgentVariables,
+			} as any);
 			await this.extendResourcesFromExtensions("reload");
 		}
 	}

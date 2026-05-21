@@ -1288,6 +1288,12 @@ export interface ExtensionAPI {
 	/** Fold a message entry, replacing its content with a summary in LLM context. */
 	foldEntry(entryId: string, summary: string, originalTokens: number): void;
 
+	/** Delete entries from LLM context (soft delete - entries remain in session file). */
+	deleteEntries(targetIds: string[]): void;
+
+	/** Replace a group of entries with a summary in LLM context. */
+	summarizeEntries(targetIds: string[], summary: string): void;
+
 	// =========================================================================
 	// Session Metadata
 	// =========================================================================
@@ -1542,6 +1548,10 @@ export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, opt
 
 export type FoldEntryHandler = (entryId: string, summary: string, originalTokens: number) => void;
 
+export type DeleteEntriesHandler = (targetIds: string[]) => void;
+
+export type SummarizeEntriesHandler = (targetIds: string[], summary: string) => void;
+
 export type SetSessionNameHandler = (name: string) => void;
 
 export type GetSessionNameHandler = () => string | undefined;
@@ -1662,6 +1672,8 @@ export interface ExtensionActions {
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
 	foldEntry: FoldEntryHandler;
+	deleteEntries: DeleteEntriesHandler;
+	summarizeEntries: SummarizeEntriesHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;
