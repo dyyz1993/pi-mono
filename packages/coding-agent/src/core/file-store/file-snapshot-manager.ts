@@ -41,7 +41,6 @@ export interface LiveChange {
 
 const FILE_SIZE_LIMIT = 1024 * 1024;
 
-// biome-ignore lint/noUnusedFunctionParameters: reserved for future use
 function findCanonicalGitRoot(cwd: string): string | null {
 	let dir: string;
 	try {
