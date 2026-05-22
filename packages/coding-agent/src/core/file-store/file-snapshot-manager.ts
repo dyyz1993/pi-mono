@@ -41,7 +41,7 @@ export interface LiveChange {
 
 const FILE_SIZE_LIMIT = 1024 * 1024;
 
-// @ts-expect-error reserved for future use
+// @ts-ignore reserved for future use — tsgo does not flag this, tsc does
 function findCanonicalGitRoot(cwd: string): string | null {
 	let dir: string;
 	try {

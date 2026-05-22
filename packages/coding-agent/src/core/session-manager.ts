@@ -758,7 +758,7 @@ function getLastActivityTime(entries: FileEntry[]): number | undefined {
 	return lastActivityTime;
 }
 
-// @ts-expect-error reserved for future use
+// @ts-ignore reserved for future use — tsgo does not flag this, tsc does
 function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, statsMtime: Date): Date {
 	const lastActivityTime = getLastActivityTime(entries);
 	if (typeof lastActivityTime === "number" && lastActivityTime > 0) {
