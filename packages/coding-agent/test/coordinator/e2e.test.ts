@@ -978,7 +978,7 @@ describe("Coordinator E2E: TaskStore persistence edge cases", () => {
 			title: "Persist Test",
 			task: "verify persistence",
 			projectPath: "/project",
-			dispatchedAt: 1000,
+			dispatchedAt: Date.now(),
 			status: "idle",
 		});
 

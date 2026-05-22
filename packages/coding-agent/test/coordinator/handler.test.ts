@@ -458,12 +458,13 @@ describe("TaskStore", () => {
 	});
 
 	it("should persist tasks to file", () => {
+		const now = Date.now();
 		store.add({
 			sessionId: "sess_001",
 			title: "Test Task",
 			task: "do something",
 			projectPath: "/project",
-			dispatchedAt: 1000,
+			dispatchedAt: now,
 			status: "idle",
 		});
 
@@ -476,12 +477,13 @@ describe("TaskStore", () => {
 	});
 
 	it("should reload tasks from file on construction", () => {
+		const now = Date.now();
 		store.add({
 			sessionId: "sess_001",
 			title: "Task 1",
 			task: "do something",
 			projectPath: "/project",
-			dispatchedAt: 1000,
+			dispatchedAt: now,
 			status: "idle",
 		});
 
