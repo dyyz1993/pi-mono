@@ -1,6 +1,22 @@
 # Changelog
 
-## [0.74.41]
+## [Unreleased]
+
+### Added
+- `file-review` built-in extension: approval state machine with session-scoped JSONL persistence via `appendEntry`.
+- `FileReviewChannelContract` registered in channel registry for typed extension communication.
+- Built-in extension auto-discovery from `extensions/` directory in `package-manager.ts`.
+- `getBuiltinExtensionsDir()` config helper.
+- `PI_HOOK_*` environment variables in `claude-hooks-compat` hook runner (`buildHookEnv`), mirroring `CLAUDE_*` for compatibility.
+- Streaming guard in `navigateTree()`: returns `{ cancelled: true, reason }` when session is streaming, preventing concurrent rollback.
+- Dirty file protection in `file-snapshot-manager.ts`: skips dirty files during restore, reports in `skipped` array.
+
+### Fixed
+- Rollback entry ID mismatch: backend `entryId` now preserved through entire frontend chain via `extractEntryId()` + `nextMsgId()`.
+- `_resolveOptionalModel()` now falls back to `this.model` when requested model is not found in tier config.
+- `session_start` events now include `variables: {}` field for consistent event shape.
+- Unused variable lint errors in `session-manager.ts`, `file-snapshot-manager.ts`, `messages.ts`.
+- Pre-existing test failures reduced by 9: agent-session-runtime-events, tier-models, model-resolution, reload-channel-flush, reload-stale-context.
 
 ## [0.74.40] - 2026-05-18
 

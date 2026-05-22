@@ -1,6 +1,9 @@
 # Changelog
 
-## [0.74.41]
+## [Unreleased]
+
+### Fixed
+- Synced with coding-agent release for lockstep versioning.
 
 ## [0.74.40] - 2026-05-18
 
