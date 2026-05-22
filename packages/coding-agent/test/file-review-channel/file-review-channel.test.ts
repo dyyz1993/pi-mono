@@ -1068,6 +1068,144 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 	});
 });
 
+describe('turn_end 持久化: appendEntry("file-review-turn") 写入验证', () => {
+	let harness: ReturnType<typeof createTestHarness>;
+
+	beforeEach(async () => {
+		harness = createTestHarness();
+		await harness.fireSessionStart();
+	});
+
+	afterEach(() => {
+		try {
+			rmSync(harness.tempDir, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it("turn_end with changes appends a file-review-turn entry", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("persisted.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(0);
+
+		const turnEntry = harness.appendEntries.find((e) => e.type === "file-review-turn");
+		expect(turnEntry).toBeDefined();
+		const data = turnEntry!.data as Record<string, unknown>;
+		expect(data.turnIndex).toBe(0);
+		const changes = data.changes as Array<Record<string, unknown>>;
+		expect(changes).toHaveLength(1);
+		expect(changes[0]!.path).toBe("persisted.ts");
+		expect(changes[0]!.status).toBe("added");
+		// Should NOT include diff
+		expect("diff" in changes[0]!).toBe(false);
+	});
+
+	it("turn_end without changes does NOT append entry", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(0);
+
+		const turnEntries = harness.appendEntries.filter((e) => e.type === "file-review-turn");
+		expect(turnEntries).toHaveLength(0);
+	});
+
+	it("multiple turns append multiple entries with correct indices", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("a.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(0);
+
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("b.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(1);
+
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("c.ts", "deleted")]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(2);
+
+		const turnEntries = harness.appendEntries.filter((e) => e.type === "file-review-turn");
+		expect(turnEntries).toHaveLength(3);
+		const indices = turnEntries.map((e) => (e.data as Record<string, unknown>).turnIndex);
+		expect(indices).toEqual([0, 1, 2]);
+	});
+});
+
+describe("session restart: turnLog and approvals restored from entries", () => {
+	it("restores turnLog and approvals from session entries, pending survives restart", async () => {
+		// Phase 1: Simulate a session that had turns and approvals
+		const harness = createTestHarness();
+		await harness.fireSessionStart();
+
+		// Turn 0: create a.ts, b.ts
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("a.ts", "added"), makeChange("b.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(0);
+
+		// Approve a.ts in turn 0
+		await simulateInbound(harness, "review.approve", {
+			turnIndex: 0,
+			path: "a.ts",
+		});
+
+		// Capture the entries that were persisted
+		const persistedTurnEntries = harness.appendEntries.filter((e) => e.type === "file-review-turn");
+		const persistedApprovalEntries = harness.appendEntries.filter((e) => e.type === "file-approval");
+		expect(persistedTurnEntries).toHaveLength(1);
+		expect(persistedApprovalEntries).toHaveLength(1);
+
+		// Phase 2: Simulate session restart — create a new harness with entries
+		const harness2 = createTestHarness();
+		const mockSessionManager = {
+			getBranch: () => [],
+			getEntries: () => [
+				{
+					type: "custom",
+					customType: "file-review-turn",
+					data: persistedTurnEntries[0]!.data,
+				},
+				{
+					type: "custom",
+					customType: "file-approval",
+					data: persistedApprovalEntries[0]!.data,
+				},
+			],
+		};
+
+		await harness2.fireSessionStart({
+			sessionManager: mockSessionManager,
+		});
+
+		// Verify: a.ts is approved (not in pending), b.ts is pending
+		const pending = await getPendingPaths(harness2);
+		expect(pending).toHaveLength(1);
+		expect(pending[0]).toEqual({ turnIndex: 0, path: "b.ts", status: "pending" });
+
+		// Verify: history is restored
+		const historyData = await simulateInbound(harness2, "review.history", {});
+		const historyResult = extractResponse(historyData);
+		const historyArr = Array.isArray(historyResult)
+			? historyResult
+			: Object.values(historyResult as Record<string, unknown>);
+		expect(historyArr).toHaveLength(1);
+
+		// Verify: approvals are restored (a.ts approved from entry)
+		// Note: getApproval() lazily creates pending entries, so b.ts may also appear
+		const approvalsData = await simulateInbound(harness2, "review.approvals", {});
+		const approvalsResult = extractResponse(approvalsData);
+		const approvalsArr = (
+			Array.isArray(approvalsResult) ? approvalsResult : Object.values(approvalsResult as Record<string, unknown>)
+		) as Array<Record<string, unknown>>;
+		// At minimum a.ts should be approved
+		const approvedA = approvalsArr.find((a) => a.path === "a.ts" && a.status === "approved");
+		expect(approvedA).toBeDefined();
+
+		try {
+			rmSync(harness.tempDir, { recursive: true, force: true });
+		} catch {}
+		try {
+			rmSync(harness2.tempDir, { recursive: true, force: true });
+		} catch {}
+	});
+});
+
 describe("BUG修复验证: file-snapshot 先提交 baseline 时 file-review 仍能拿到变更", () => {
 	let harness: ReturnType<typeof createTestHarness>;
 
