@@ -1,10 +1,7 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { describe, expect, it } from "vitest";
-import {
-	buildHalfSummary,
-	prepareHalfCompaction,
-} from "../../extensions/compaction-manager/half-compaction.js";
 import type { HalfCompactionConfig } from "../../extensions/compaction-manager/half-compaction.js";
+import { buildHalfSummary, prepareHalfCompaction } from "../../extensions/compaction-manager/half-compaction.js";
 
 interface CompactionPreparation {
 	firstKeptEntryId: string;
@@ -57,32 +54,19 @@ const defaultConfig: HalfCompactionConfig = { enabled: true, ratio: 0.5 };
 
 describe("prepareHalfCompaction", () => {
 	it("should return null when messagesToSummarize has 0 messages", () => {
-		const result = prepareHalfCompaction(
-			makePreparation({ messagesToSummarize: [] }),
-			defaultConfig,
-		);
+		const result = prepareHalfCompaction(makePreparation({ messagesToSummarize: [] }), defaultConfig);
 		expect(result).toBeNull();
 	});
 
 	it("should return null when messagesToSummarize has 1 message", () => {
 		const messages = [makeUserMessage("hello")];
-		const result = prepareHalfCompaction(
-			makePreparation({ messagesToSummarize: messages }),
-			defaultConfig,
-		);
+		const result = prepareHalfCompaction(makePreparation({ messagesToSummarize: messages }), defaultConfig);
 		expect(result).toBeNull();
 	});
 
 	it("should return null when messagesToSummarize has 3 messages", () => {
-		const messages = [
-			makeUserMessage("a"),
-			makeAssistantMessage("b"),
-			makeUserMessage("c"),
-		];
-		const result = prepareHalfCompaction(
-			makePreparation({ messagesToSummarize: messages }),
-			defaultConfig,
-		);
+		const messages = [makeUserMessage("a"), makeAssistantMessage("b"), makeUserMessage("c")];
+		const result = prepareHalfCompaction(makePreparation({ messagesToSummarize: messages }), defaultConfig);
 		expect(result).toBeNull();
 	});
 
@@ -227,11 +211,7 @@ describe("prepareHalfCompaction", () => {
 
 describe("buildHalfSummary", () => {
 	it("should include message count in summary", () => {
-		const messages = [
-			makeUserMessage("hello"),
-			makeAssistantMessage("hi"),
-			makeUserMessage("how are you"),
-		];
+		const messages = [makeUserMessage("hello"), makeAssistantMessage("hi"), makeUserMessage("how are you")];
 		const summary = buildHalfSummary(messages);
 
 		expect(summary).toContain("Compressed 3 message(s)");
@@ -279,7 +259,7 @@ describe("buildHalfSummary", () => {
 		const summary = buildHalfSummary(messages);
 
 		expect(summary).toContain("...");
-		expect(summary!.match(/User: (.*)/)?.[1]!.length).toBeLessThanOrEqual(123);
+		expect(summary!.match(/User: (.*)/)?.[1]?.length ?? 0).toBeLessThanOrEqual(123);
 	});
 
 	it("should handle empty messages array", () => {
