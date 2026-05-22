@@ -1,0 +1,5 @@
+#!/bin/sh
+# pre-commit: run checks before allowing a commit
+
+# Block new .js files in src/ directories (stale build artifacts)
+"$(git rev-parse --show-toplevel)/scripts/check-no-js-in-src.sh"
