@@ -115,7 +115,7 @@ export default function fileReview(pi: ExtensionAPI) {
 						turnIndex: record.turnIndex,
 						path: change.path,
 						status: "pending",
-						diff: change.diff,
+						diff: change.diff?.unifiedDiff ?? null,
 						timestamp: record.timestamp,
 					});
 				}

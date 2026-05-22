@@ -27,6 +27,16 @@ function createTempDir(): string {
 	return join(tmpdir(), `pi-review-channel-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 }
 
+/** Extract the response payload from a ServerChannel response. */
+function extractResponse(data: unknown): unknown {
+	const d = data as Record<string, unknown>;
+	if ("result" in d && d.result !== undefined) {
+		return d.result;
+	}
+	const { invokeId: _, ...rest } = d;
+	return rest;
+}
+
 /** Simulate an inbound RPC call and capture the outbound response. */
 async function simulateInbound(
 	harness: ReturnType<typeof createTestHarness>,
@@ -266,49 +276,35 @@ describe("file-review channel: review.pending (CRITICAL - the one frontend calls
 	});
 
 	it("returns empty when no turns have happened", async () => {
-		// review.pending reads from turnLog (internal state), not fileSnapshotManager
-		// When no turns have happened, turnLog is empty, so result should be []
 		const data = await simulateInbound(harness, "review.pending", {});
-
-		// ServerChannel wraps array as { ...(result ?? {}), invokeId }
-		// For empty array [], spread gives {}, so data = { invokeId }
-		// We strip invokeId and check the remaining is empty
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		expect(Object.keys(result)).toHaveLength(0);
+		const result = extractResponse(data);
+		expect(Array.isArray(result) ? result.length : Object.keys(result as Record<string, unknown>).length).toBe(0);
 	});
 
 	it("returns pending changes after a turn with file changes", async () => {
-		// Turn 0: mock getLiveChanges returns changes
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("new-file.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
 		const data = await simulateInbound(harness, "review.pending", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-
-		// Check that the response contains the pending change data
-		// The ServerChannel spreads the array, so numeric keys become properties
-		expect(result).toBeDefined();
-		// At minimum, the turn index info should be present
-		expect(Object.keys(result).length).toBeGreaterThan(0);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThan(0);
 	});
 
 	it("tracks pending changes across multiple turns", async () => {
-		// Turn 0: create a.ts
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("a.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// Turn 1: create b.ts
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("b.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(1);
 
 		const data = await simulateInbound(harness, "review.pending", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-
-		// Should have changes from both turns
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(2);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(2);
 	});
 });
 
@@ -371,13 +367,11 @@ describe("file-review channel: review.approve", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// Approve
 		await simulateInbound(harness, "review.approve", { turnIndex: 0, path: "will-approve.ts" });
 
-		// Check pending — should be empty
 		const data = await simulateInbound(harness, "review.pending", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		expect(Object.keys(result)).toHaveLength(0);
+		const result = extractResponse(data);
+		expect(Array.isArray(result) ? result.length : Object.keys(result as Record<string, unknown>).length).toBe(0);
 	});
 });
 
@@ -437,12 +431,10 @@ describe("file-review channel: review.approveAll", () => {
 	});
 
 	it("approves all pending changes", async () => {
-		// Turn 0: 2 changes
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("a.ts", "added"), makeChange("b.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// Turn 1: 1 change
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("c.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(1);
@@ -450,10 +442,13 @@ describe("file-review channel: review.approveAll", () => {
 		const data = await simulateInbound(harness, "review.approveAll", {});
 		expect((data as Record<string, unknown>).count).toBe(3);
 
-		// All should be approved now — pending should be empty
 		const pendingData = await simulateInbound(harness, "review.pending", {});
-		const { invokeId: _, ...pendingResult } = pendingData as Record<string, unknown>;
-		expect(Object.keys(pendingResult)).toHaveLength(0);
+		const pendingResult = extractResponse(pendingData);
+		expect(
+			Array.isArray(pendingResult)
+				? pendingResult.length
+				: Object.keys(pendingResult as Record<string, unknown>).length,
+		).toBe(0);
 	});
 
 	it("returns count:0 when nothing pending", async () => {
@@ -478,8 +473,8 @@ describe("file-review channel: review.history", () => {
 
 	it("returns empty when no turns", async () => {
 		const data = await simulateInbound(harness, "review.history", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		expect(Object.keys(result)).toHaveLength(0);
+		const result = extractResponse(data);
+		expect(Array.isArray(result) ? result.length : Object.keys(result as Record<string, unknown>).length).toBe(0);
 	});
 
 	it("returns turn records after changes", async () => {
@@ -488,9 +483,9 @@ describe("file-review channel: review.history", () => {
 		await harness.fireTurnEnd(0);
 
 		const data = await simulateInbound(harness, "review.history", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		// Should have at least one entry (turn 0)
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(1);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(1);
 	});
 
 	it("filters by fromTurn", async () => {
@@ -503,10 +498,9 @@ describe("file-review channel: review.history", () => {
 		await harness.fireTurnEnd(1);
 
 		const data = await simulateInbound(harness, "review.history", { fromTurn: 1 });
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-
-		// Should only have turn 1
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(1);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(1);
 	});
 });
 
@@ -526,8 +520,8 @@ describe("file-review channel: review.summary", () => {
 
 	it("returns empty when no turns", async () => {
 		const data = await simulateInbound(harness, "review.summary", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		expect(Object.keys(result)).toHaveLength(0);
+		const result = extractResponse(data);
+		expect(Array.isArray(result) ? result.length : Object.keys(result as Record<string, unknown>).length).toBe(0);
 	});
 
 	it("returns summary with counts", async () => {
@@ -536,9 +530,9 @@ describe("file-review channel: review.summary", () => {
 		await harness.fireTurnEnd(0);
 
 		const data = await simulateInbound(harness, "review.summary", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		// Summary returns an array of TurnSummaryItem
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(1);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(1);
 	});
 });
 
@@ -558,25 +552,23 @@ describe("file-review channel: review.fileHistory", () => {
 
 	it("returns empty for unknown file", async () => {
 		const data = await simulateInbound(harness, "review.fileHistory", { path: "unknown.ts" });
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		expect(Object.keys(result)).toHaveLength(0);
+		const result = extractResponse(data);
+		expect(Array.isArray(result) ? result.length : Object.keys(result as Record<string, unknown>).length).toBe(0);
 	});
 
 	it("returns history for file changed across turns", async () => {
-		// Turn 0: add file
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("evolved.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// Turn 1: modify file
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("evolved.ts", "modified")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(1);
 
 		const data = await simulateInbound(harness, "review.fileHistory", { path: "evolved.ts" });
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		// Should have 2 history entries
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(2);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(2);
 	});
 });
 
@@ -632,10 +624,13 @@ describe("file-review channel: review.clear", () => {
 		const data = await simulateInbound(harness, "review.clear", {});
 		expect((data as Record<string, unknown>).ok).toBe(true);
 
-		// History should now be empty
 		const historyData = await simulateInbound(harness, "review.history", {});
-		const { invokeId: _, ...historyResult } = historyData as Record<string, unknown>;
-		expect(Object.keys(historyResult)).toHaveLength(0);
+		const historyResult = extractResponse(historyData);
+		expect(
+			Array.isArray(historyResult)
+				? historyResult.length
+				: Object.keys(historyResult as Record<string, unknown>).length,
+		).toBe(0);
 	});
 });
 
@@ -655,8 +650,8 @@ describe("file-review channel: review.approvals", () => {
 
 	it("returns empty when no approvals", async () => {
 		const data = await simulateInbound(harness, "review.approvals", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		expect(Object.keys(result)).toHaveLength(0);
+		const result = extractResponse(data);
+		expect(Array.isArray(result) ? result.length : Object.keys(result as Record<string, unknown>).length).toBe(0);
 	});
 
 	it("returns approvals after approve/reject", async () => {
@@ -668,9 +663,9 @@ describe("file-review channel: review.approvals", () => {
 		await simulateInbound(harness, "review.reject", { turnIndex: 0, path: "app-b.ts" });
 
 		const data = await simulateInbound(harness, "review.approvals", {});
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		// Should have 2 approval entries
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(2);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(2);
 	});
 
 	it("filters by status=approved", async () => {
@@ -681,14 +676,17 @@ describe("file-review channel: review.approvals", () => {
 		await simulateInbound(harness, "review.approve", { turnIndex: 0, path: "f.ts" });
 
 		const data = await simulateInbound(harness, "review.approvals", { status: "approved" });
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		// Should have 1 approved entry
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(1);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(1);
 
-		// Filter by "rejected" should return empty
 		const rejectedData = await simulateInbound(harness, "review.approvals", { status: "rejected" });
-		const { invokeId: _2, ...rejectedResult } = rejectedData as Record<string, unknown>;
-		expect(Object.keys(rejectedResult)).toHaveLength(0);
+		const rejectedResult = extractResponse(rejectedData);
+		expect(
+			Array.isArray(rejectedResult)
+				? rejectedResult.length
+				: Object.keys(rejectedResult as Record<string, unknown>).length,
+		).toBe(0);
 	});
 });
 
@@ -707,12 +705,10 @@ describe("file-review channel: full lifecycle E2E", () => {
 	});
 
 	it("complete flow: changes → pending → approve → verify", async () => {
-		// Turn 0: 2 files
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("feature.ts", "added"), makeChange("test.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// Turn 1: 1 modified + 1 new
 		harness.mockGetLiveChanges.mockReturnValue([
 			makeChange("feature.ts", "modified"),
 			makeChange("config.json", "added"),
@@ -722,8 +718,9 @@ describe("file-review channel: full lifecycle E2E", () => {
 
 		// 1. Check pending has items
 		const pendingData = await simulateInbound(harness, "review.pending", {});
-		const { invokeId: _p, ...pending } = pendingData as Record<string, unknown>;
-		expect(Object.keys(pending).length).toBeGreaterThanOrEqual(3);
+		const pending = extractResponse(pendingData);
+		const pendingArr = Array.isArray(pending) ? pending : Object.values(pending as Record<string, unknown>);
+		expect(pendingArr.length).toBeGreaterThanOrEqual(3);
 
 		// 2. Approve feature.ts in turn 0
 		const approveResult = await simulateInbound(harness, "review.approve", {
@@ -734,8 +731,9 @@ describe("file-review channel: full lifecycle E2E", () => {
 
 		// 3. Get summary
 		const summaryData = await simulateInbound(harness, "review.summary", {});
-		const { invokeId: _s, ...summary } = summaryData as Record<string, unknown>;
-		expect(Object.keys(summary).length).toBeGreaterThanOrEqual(2); // 2 turns
+		const summary = extractResponse(summaryData);
+		const summaryArr = Array.isArray(summary) ? summary : Object.values(summary as Record<string, unknown>);
+		expect(summaryArr.length).toBeGreaterThanOrEqual(2);
 
 		// 4. Approve all remaining
 		const approveAllResult = await simulateInbound(harness, "review.approveAll", {});
@@ -743,12 +741,14 @@ describe("file-review channel: full lifecycle E2E", () => {
 
 		// 5. Verify pending is now empty
 		const finalPending = await simulateInbound(harness, "review.pending", {});
-		const { invokeId: _fp, ...finalResult } = finalPending as Record<string, unknown>;
-		expect(Object.keys(finalResult)).toHaveLength(0);
+		const finalResult = extractResponse(finalPending);
+		expect(
+			Array.isArray(finalResult) ? finalResult.length : Object.keys(finalResult as Record<string, unknown>).length,
+		).toBe(0);
 
 		// 6. Verify appendEntry calls
 		const approvalEntries = harness.appendEntries.filter((e) => e.type === "file-approval");
-		expect(approvalEntries.length).toBeGreaterThanOrEqual(2); // at least feature.ts + approveAll entries
+		expect(approvalEntries.length).toBeGreaterThanOrEqual(2);
 	});
 });
 
@@ -772,9 +772,9 @@ describe("file-review channel: session restoration", () => {
 		});
 
 		const data = await simulateInbound(harness, "review.approvals", { status: "approved" });
-		const { invokeId: _, ...result } = data as Record<string, unknown>;
-		// Should have the restored approval
-		expect(Object.keys(result).length).toBeGreaterThanOrEqual(1);
+		const result = extractResponse(data);
+		const arr = Array.isArray(result) ? result : Object.values(result as Record<string, unknown>);
+		expect(arr.length).toBeGreaterThanOrEqual(1);
 
 		try {
 			rmSync(harness.tempDir, { recursive: true, force: true });
@@ -794,21 +794,13 @@ async function getPendingPaths(
 	harness: ReturnType<typeof createTestHarness>,
 ): Promise<Array<{ turnIndex: number; path: string; status: string }>> {
 	const data = await simulateInbound(harness, "review.pending", {});
-	const { invokeId: _, ...raw } = data as Record<string, unknown>;
-
-	// Reconstruct array from numeric-keyed object
-	const entries: Array<{ turnIndex: number; path: string; status: string }> = [];
-	for (const key of Object.keys(raw)) {
-		if (/^\d+$/.test(key)) {
-			const item = raw[key] as Record<string, unknown>;
-			entries.push({
-				turnIndex: item.turnIndex as number,
-				path: item.path as string,
-				status: item.status as string,
-			});
-		}
-	}
-	return entries;
+	const result = extractResponse(data);
+	const arr = Array.isArray(result) ? result : [];
+	return arr.map((item: Record<string, unknown>) => ({
+		turnIndex: item.turnIndex as number,
+		path: item.path as string,
+		status: item.status as string,
+	}));
 }
 
 describe("用户场景: 完整 Change Review 交互流程", () => {
@@ -916,8 +908,11 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 		const historyData = await simulateInbound(harness, "review.fileHistory", {
 			path: "feature.ts",
 		});
-		const { invokeId: _, ...history } = historyData as Record<string, unknown>;
-		expect(Object.keys(history)).toHaveLength(2); // turn 0: added, turn 1: modified
+		const historyResult = extractResponse(historyData);
+		const historyArr = Array.isArray(historyResult)
+			? historyResult
+			: Object.values(historyResult as Record<string, unknown>);
+		expect(historyArr).toHaveLength(2);
 	});
 
 	// ── 场景 4: 拒绝后再修改 → 同文件重新出现为 pending ──
@@ -961,8 +956,10 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 
 		// approvals 应该有两条记录：rejected(turn 0) + approved(turn 1)
 		const approvalsData = await simulateInbound(harness, "review.approvals", {});
-		const { invokeId: _a, ...approvalsRaw } = approvalsData as Record<string, unknown>;
-		const approvalsList = Object.values(approvalsRaw) as Array<Record<string, unknown>>;
+		const approvalsResult = extractResponse(approvalsData);
+		const approvalsList = (
+			Array.isArray(approvalsResult) ? approvalsResult : Object.values(approvalsResult as Record<string, unknown>)
+		) as Array<Record<string, unknown>>;
 		const configApprovals = approvalsList.filter((a) => a.path === "config.ts");
 		expect(configApprovals).toHaveLength(2);
 		expect(configApprovals.find((a) => a.turnIndex === 0 && a.status === "rejected")).toBeDefined();
@@ -1020,8 +1017,10 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 
 		// 验证 approvals 总数: turn 0 批准 a.ts + turn 0 拒绝 b.ts + approveAll 的 4 个
 		const approvalsData = await simulateInbound(harness, "review.approvals", {});
-		const { invokeId: _, ...approvalsRaw } = approvalsData as Record<string, unknown>;
-		const approvalsList = Object.values(approvalsRaw) as Array<Record<string, unknown>>;
+		const approvalsResult = extractResponse(approvalsData);
+		const approvalsList = (
+			Array.isArray(approvalsResult) ? approvalsResult : Object.values(approvalsResult as Record<string, unknown>)
+		) as Array<Record<string, unknown>>;
 
 		// a.ts 有两条记录: turn 0 approved, turn 1 approved
 		const aApprovals = approvalsList.filter((a) => a.path === "a.ts");
