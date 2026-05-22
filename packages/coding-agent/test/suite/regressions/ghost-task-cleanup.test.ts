@@ -68,7 +68,7 @@ function createHarness(pmOverrides: Partial<ProcessManagerApi> = {}) {
 		emit: (event: string, payload: unknown) => {
 			emittedEvents.push({ event, payload });
 		},
-		handle: (method: string, handler: (params: unknown) => Promise<unknown>) => {
+		handle: (method: string, _handler: (params: unknown) => Promise<unknown>) => {
 			handledRequests.push({ method, params: undefined });
 		},
 		send: () => {},
