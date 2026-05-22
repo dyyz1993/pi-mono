@@ -2,7 +2,7 @@ import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@dyyz1993/pi-ai";
 import { randomUUID } from "crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from "fs";
-import { open, appendFile, readdir, stat, writeFile } from "fs/promises";
+import { appendFile, open, readdir, stat, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
@@ -583,9 +583,10 @@ function loadEntriesStreaming(filePath: string, skipGitUndoState: boolean): File
 	const bufferSize = 1024 * 1024;
 	const buffer = Buffer.alloc(bufferSize);
 	let remainder = "";
-	let bytesRead: number;
 
 	try {
+		let bytesRead: number;
+		// biome-ignore lint/suspicious/noAssignInExpressions: idiomatic read loop
 		while ((bytesRead = readSync(fd, buffer, 0, bufferSize, null)) > 0) {
 			const chunk = buffer.toString("utf8", 0, bytesRead);
 			const data = remainder + chunk;
@@ -642,7 +643,9 @@ export function loadEntriesFromFile(filePath: string, options?: LoadEntriesOptio
 	const skipGitUndoState = options?.skipGitUndoState ?? true;
 
 	if (isLarge) {
-		console.warn(`[session-manager] Loading large session file (${Math.round(fileStat.size / 1024 / 1024)}MB): ${filePath}`);
+		console.warn(
+			`[session-manager] Loading large session file (${Math.round(fileStat.size / 1024 / 1024)}MB): ${filePath}`,
+		);
 		return loadEntriesStreaming(filePath, skipGitUndoState);
 	}
 
@@ -758,7 +761,7 @@ function getLastActivityTime(entries: FileEntry[]): number | undefined {
 	return lastActivityTime;
 }
 
-// @ts-ignore reserved for future use — tsgo does not flag this, tsc does
+// @ts-expect-error reserved for future use — tsgo does not flag this, tsc does
 function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, statsMtime: Date): Date {
 	const lastActivityTime = getLastActivityTime(entries);
 	if (typeof lastActivityTime === "number" && lastActivityTime > 0) {
