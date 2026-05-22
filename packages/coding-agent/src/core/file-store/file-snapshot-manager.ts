@@ -41,7 +41,7 @@ export interface LiveChange {
 
 const FILE_SIZE_LIMIT = 1024 * 1024;
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+// @ts-expect-error reserved for future use
 function findCanonicalGitRoot(cwd: string): string | null {
 	let dir: string;
 	try {
