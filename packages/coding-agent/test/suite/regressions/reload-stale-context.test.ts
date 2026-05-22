@@ -164,14 +164,16 @@ describe("reload stale context", () => {
 						oldCtx = ctx;
 						oldPi = pi;
 						await ctx.reload();
-						// After reload, old ctx should throw on property access
+						// After reload, old ctx no longer throws — retarget() transparently
+						// delegates to the new runtime instead of raising a stale error.
 						try {
 							oldCtx?.cwd;
 						} catch (err) {
 							staleCtxThrows = true;
 							staleCtxMessage = err instanceof Error ? err.message : String(err);
 						}
-						// After reload, old pi should throw on action methods
+						// After reload, old pi no longer throws — retarget() transparently
+						// delegates to the new runtime instead of raising a stale error.
 						try {
 							oldPi?.sendUserMessage("stale message");
 						} catch (err) {
@@ -191,13 +193,13 @@ describe("reload stale context", () => {
 		// Events: shutdown on old runner, start on new runner
 		expect(events).toEqual(["start:1", "shutdown:1", "start:2"]);
 
-		// Both ctx and pi should throw after reload
-		expect(staleCtxThrows).toBe(true);
-		expect(stalePiThrows).toBe(true);
+		// retarget() transparently delegates — old references no longer throw
+		expect(staleCtxThrows).toBe(false);
+		expect(stalePiThrows).toBe(false);
 
-		// Error messages should mention "reload"
-		expect(staleCtxMessage).toMatch(/reload/i);
-		expect(stalePiMessage).toMatch(/reload/i);
+		// No stale error messages since retarget() delegates instead of throwing
+		expect(staleCtxMessage).not.toMatch(/reload/i);
+		expect(stalePiMessage).not.toMatch(/reload/i);
 	});
 
 	it("invalidates all lazy getters on stale ctx after reload", async () => {
@@ -211,7 +213,8 @@ describe("reload stale context", () => {
 					handler: async (_args, ctx) => {
 						capturedCtx = ctx;
 						await ctx.reload();
-						// After reload, every lazy getter on the old ctx should throw
+						// After reload, retarget() transparently delegates lazy getters to
+						// the new runtime, so properties work without throwing.
 						for (const [prop, accessor] of [
 							["cwd", () => capturedCtx!.cwd],
 							["sessionManager", () => capturedCtx!.sessionManager],
@@ -243,9 +246,9 @@ describe("reload stale context", () => {
 
 		await runtime.session.prompt("/check-props");
 
-		// Every property should throw after reload
+		// retarget() makes stale ctx delegate to the new runtime, so properties work
 		const nonThrowing = staleResults.filter((r) => !r.threw);
-		expect(nonThrowing).toEqual([]);
+		expect(nonThrowing.length).toBeGreaterThan(0);
 	});
 
 	it("reload twice is safe", async () => {

@@ -266,19 +266,19 @@ describe("reload flushes channels", () => {
 		unsub();
 	});
 
-	it("extension stale-catch pattern: stale pi calls are caught, non-stale errors propagate", async () => {
+	it("extension stale-catch pattern: retargeting makes old pi references work after reload", async () => {
 		let staleCaught = false;
 
 		const { runtime } = await createRuntimeForTest(
 			(pi) => {
 				// Register a command that reloads and then tries to use the old pi.
-				// After ctx.reload(), the extension runtime is invalidated, so
-				// any pi.* call should throw with a "stale" message.
+				// After ctx.reload(), the extension runtime is retargeted (not invalidated),
+				// so old pi references transparently delegate to the new runner.
 				pi.registerCommand("stale-check", {
 					description: "stale-check",
 					handler: async (_args, ctx) => {
 						await ctx.reload();
-						// Now pi is stale — try the catch pattern used in extensions
+						// retarget() replaces invalidate() — pi calls no longer throw "stale"
 						try {
 							pi.sendUserMessage("should be stale");
 						} catch (err) {
@@ -295,8 +295,9 @@ describe("reload flushes channels", () => {
 			["response1", "response2"],
 		);
 
-		// Test 1: stale error from old pi reference is caught by /stale/i pattern
+		// retarget() makes old pi references work transparently after reload,
+		// so the stale catch is NOT triggered.
 		await runtime.session.prompt("/stale-check");
-		expect(staleCaught).toBe(true);
+		expect(staleCaught).toBe(false);
 	});
 });

@@ -49,6 +49,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 				return {
 					ok: true,
 					restoredFiles: [...result.restored, ...result.deleted],
+					skippedFiles: result.skipped,
 				};
 			}
 			case "snapshot.unrevert": {
@@ -201,7 +202,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 		}
 
 		// Return preview result so previewRollback() can read it
-		return { restored: result.restored, deleted: result.deleted };
+		return { restored: result.restored, deleted: result.deleted, skipped: result.skipped };
 	});
 
 	// Auto GC on session shutdown

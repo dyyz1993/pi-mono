@@ -90,7 +90,7 @@ export function replaceEnvVarsInHeaders(
 	return result;
 }
 
-function buildHookEnv(cwd: string, eventName: string): NodeJS.ProcessEnv {
+function buildHookEnv(cwd: string, eventName: string, stdinData?: HookStdinData): NodeJS.ProcessEnv {
 	const env = { ...process.env } as NodeJS.ProcessEnv;
 
 	if (process.env.GITHUB_ACTIONS === "true") {
@@ -108,6 +108,18 @@ function buildHookEnv(cwd: string, eventName: string): NodeJS.ProcessEnv {
 		env.CLAUDE_ENV_FILE = `/tmp/claude-env-${Date.now()}`;
 	}
 
+	// Also set PI_HOOK_* env vars for compatibility with hooks-engine hook scripts
+	if (stdinData) {
+		env.PI_HOOK_TOOL = stdinData.tool_name ?? "";
+		env.PI_HOOK_TOOL_CALL_ID = stdinData.tool_use_id ?? "";
+		env.PI_HOOK_INPUT = JSON.stringify(stdinData.tool_input ?? {});
+		env.PI_HOOK_EVENT_NAME = stdinData.hook_event_name ?? "";
+		env.PI_HOOK_AGENT_NAME = stdinData.agent_type ?? "";
+		env.PI_HOOK_SESSION_ID = stdinData.session_id ?? "";
+		env.PI_HOOK_CWD = stdinData.cwd ?? cwd;
+		env.PI_HOOK_PERMISSION_MODE = stdinData.permission_mode ?? "";
+	}
+
 	return env;
 }
 
@@ -119,7 +131,7 @@ function runCommandHandler(handler: HookHandler, stdinData: HookStdinData, ctx: 
 		let stderr = "";
 		let settled = false;
 
-		const env = buildHookEnv(ctx.cwd, stdinData.hook_event_name);
+		const env = buildHookEnv(ctx.cwd, stdinData.hook_event_name, stdinData);
 		const proc = spawn("bash", ["-c", command], {
 			cwd: ctx.cwd,
 			env,

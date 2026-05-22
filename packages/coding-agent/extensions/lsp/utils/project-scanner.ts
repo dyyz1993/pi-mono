@@ -37,7 +37,7 @@ const COMMON_SOURCE_EXTENSIONS = new Set([
 ]);
 
 // Directories to exclude from scanning (in addition to .git, node_modules)
-const EXCLUDED_DIRS = [
+const EXCLUDED_DIRS = new Set([
 	"node_modules", ".git", "target", "dist", "build", ".pi",
 	".next", ".nuxt", ".output", ".vercel",
 	"venv", "env", ".venv", "envs", ".envs", "__pycache__",
@@ -45,10 +45,26 @@ const EXCLUDED_DIRS = [
 	"coverage", ".nyc_output",
 	".cache", "tmp", "temp",
 	".DS_Store", "Thumbs.db",
-];
+]);
+
+// If this many consecutive files yield no new extensions, stop early
+const EARLY_EXIT_WINDOW = 200;
 
 // Maximum files to scan before stopping
 const MAX_FILES_TO_SCAN = 5000;
+
+/**
+ * Check if a file path is under an excluded directory.
+ */
+function isUnderExcludedDir(filePath: string): boolean {
+	const parts = filePath.split("/");
+	for (const part of parts) {
+		if (EXCLUDED_DIRS.has(part)) {
+			return true;
+		}
+	}
+	return false;
+}
 
 /**
  * Scan the project for file types present on disk.
@@ -59,30 +75,72 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 	const extensions = new Set<string>();
 	const extensionCounts = new Map<string, number>();
 	let fileCount = 0;
+	let skippedCount = 0;
+	const skippedDirs = new Map<string, number>();
 
 	// Strategy 1: git ls-files (fast, respects gitignore)
 	const gitFiles = tryGitLsFiles(cwd);
 	if (gitFiles.length > 0) {
+		let noNewExtCount = 0;
+
 		for (const file of gitFiles) {
+			// Skip files under excluded directories (frames/, dist/, etc.)
+			if (isUnderExcludedDir(file)) {
+				skippedCount++;
+				const topDir = file.split("/")[0];
+				if (topDir && topDir !== file) {
+					skippedDirs.set(topDir, (skippedDirs.get(topDir) ?? 0) + 1);
+				}
+				continue;
+			}
+
 			fileCount++;
 			if (fileCount > MAX_FILES_TO_SCAN) {
 				console.warn(`[lsp] Stopped scan after ${MAX_FILES_TO_SCAN} files (too many files)`);
 				break;
 			}
 
+			const prevSize = extensions.size;
 			const ext = extname(file).toLowerCase();
 			if (ext && COMMON_SOURCE_EXTENSIONS.has(ext)) {
 				extensions.add(ext);
 				extensionCounts.set(ext, (extensionCounts.get(ext) ?? 0) + 1);
 			}
+
+			// Early exit: if no new extension found for a while, stop
+			if (extensions.size === prevSize) {
+				noNewExtCount++;
+				if (noNewExtCount >= EARLY_EXIT_WINDOW) {
+					console.log(`[lsp] Early exit: no new extensions in last ${EARLY_EXIT_WINDOW} files, scanned ${fileCount}/${gitFiles.length}`);
+					break;
+				}
+			} else {
+				noNewExtCount = 0;
+			}
 		}
-		console.log(`[lsp] Project scan found ${extensions.size} file types from ${fileCount} files (git mode)`);
+
+		const extDetails = [...extensionCounts.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.map(([ext, count]) => `${ext}(${count})`)
+			.join(", ");
+		console.log(`[lsp] Project scan found ${extensions.size} file types from ${fileCount} files (git mode, skipped ${skippedCount} in excluded dirs)`);
+		console.log(`[lsp] Project file types: ${extDetails}`);
+
+		if (skippedDirs.size > 0) {
+			const topSkipped = [...skippedDirs.entries()]
+				.sort((a, b) => b[1] - a[1])
+				.slice(0, 5)
+				.map(([dir, count]) => `${dir}/(${count})`)
+				.join(", ");
+			console.log(`[lsp] Skipped dirs (top 5): ${topSkipped}`);
+		}
+
 		return { discoveredExtensions: extensions, extensionCounts, fileCount };
 	}
 
 	// Strategy 2: shallow find (maxdepth 3, skip many common dirs)
 	try {
-		const excludeArgs = EXCLUDED_DIRS.map((dir) => `-not -path "*/${dir}/*"`).join(" ");
+		const excludeArgs = [...EXCLUDED_DIRS].map((dir) => `-not -path "*/${dir}/*"`).join(" ");
 		const command = `find . -maxdepth 3 -type f ${excludeArgs} 2>/dev/null | head -${MAX_FILES_TO_SCAN}`;
 		const output = execSync(command, {
 			cwd,

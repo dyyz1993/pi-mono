@@ -393,7 +393,7 @@ export class RpcClient {
 	async navigateTree(
 		targetId: string,
 		options?: { summarize?: boolean; skipFiles?: boolean },
-	): Promise<{ cancelled: boolean }> {
+	): Promise<{ cancelled: boolean; reason?: string }> {
 		const response = await this.send({
 			type: "navigate_tree",
 			targetId,

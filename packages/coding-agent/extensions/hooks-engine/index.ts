@@ -402,7 +402,10 @@ export default function hooksEngine(pi: ExtensionAPI): void {
 			const vars = event.variables as Record<string, string> | undefined;
 			const agentHooksRaw = vars?.agentHooks;
 			const agentHooks = agentHooksRaw ? parseHooks(agentHooksRaw) : null;
-			const agentEventHooks = agentHooks?.[hookKey] ?? agentHooks?.["*"] ?? [];
+			// Agent hooks use original event names (agent_start, tool_call, etc.)
+			// while EVENT_MAP maps them to on_agent_start, on_tool_start, etc.
+			// Try both the mapped key and the original event name for compatibility.
+			const agentEventHooks = agentHooks?.[hookKey] ?? agentHooks?.[eventName] ?? agentHooks?.["*"] ?? [];
 
 			// Merge: settings hooks first, then agent hooks
 			const allHooks = [...settingsHooks, ...agentEventHooks];

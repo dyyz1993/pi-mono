@@ -157,7 +157,7 @@ export type NewSessionHandler = (options?: {
 	parentSession?: string;
 	setup?: (sessionManager: SessionManager) => Promise<void>;
 	withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-}) => Promise<{ cancelled: boolean }>;
+}) => Promise<{ cancelled: boolean; reason?: string }>;
 
 export type ForkHandler = (
 	entryId: string,

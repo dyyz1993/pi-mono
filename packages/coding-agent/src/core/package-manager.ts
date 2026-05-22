@@ -27,7 +27,7 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME } from "../config.js";
+import { CONFIG_DIR_NAME, getBuiltinExtensionsDir } from "../config.js";
 import { shouldUseWindowsShell } from "../utils/child-process.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
@@ -2278,6 +2278,23 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.themes,
 			globalBaseDir,
 		);
+
+		const builtinExtensionsDir = getBuiltinExtensionsDir();
+		const builtinExtensionEntries = collectAutoExtensionEntries(builtinExtensionsDir);
+		if (builtinExtensionEntries.length > 0) {
+			const builtinMetadata: PathMetadata = {
+				source: "auto",
+				scope: "user",
+				origin: "top-level",
+				baseDir: builtinExtensionsDir,
+			};
+			const builtinTarget = accumulator.extensions;
+			for (const entry of builtinExtensionEntries) {
+				if (!builtinTarget.has(entry)) {
+					builtinTarget.set(entry, { metadata: builtinMetadata, enabled: true });
+				}
+			}
+		}
 	}
 
 	private collectFilesFromPaths(paths: string[], resourceType: ResourceType): string[] {

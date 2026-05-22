@@ -658,6 +658,7 @@ export type SessionEvent =
 export interface SessionTreePreviewResult {
 	restored: string[];
 	deleted: string[];
+	skipped: string[];
 }
 
 // ============================================================================

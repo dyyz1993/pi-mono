@@ -79,10 +79,7 @@ describe("SettingsManager hooks merge", () => {
 				},
 			}),
 		);
-		writeFileSync(
-			join(projectDir, ".pi", "settings.json"),
-			JSON.stringify({}),
-		);
+		writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({}));
 
 		const manager = SettingsManager.create(projectDir, agentDir);
 		const settings = manager.getMergedSettings();
@@ -135,10 +132,7 @@ describe("SettingsManager hooks merge", () => {
 	});
 
 	it("should not merge hooks when global hooks value is not an object", () => {
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({ hooks: "invalid" }),
-		);
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ hooks: "invalid" }));
 		writeFileSync(
 			join(projectDir, ".pi", "settings.json"),
 			JSON.stringify({

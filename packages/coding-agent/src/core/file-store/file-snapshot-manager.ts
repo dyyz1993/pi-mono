@@ -575,13 +575,17 @@ export class FileSnapshotManager {
 		const preRollbackFiles = readFilteredWorkingDir(this.git, cwd);
 		const preRollbackTreeHash = preRollbackFiles.size > 0 ? this.git.writeTree(preRollbackFiles).treeHash : null;
 
+		// Skip dirty files (externally modified) to avoid silent overwrite
+		const dirtySet = new Set(dirty);
+		const safeRestore = filteredRestore.filter((p) => !dirtySet.has(p));
+
 		options.appendEntry("unrevert-point", {
 			preRollbackTreeHash,
 			rolledBackToLeaf: options.targetEntryId ?? "",
-			restoredFiles: filteredRestore,
+			restoredFiles: safeRestore,
 		});
 
-		for (const path of filteredRestore) {
+		for (const path of safeRestore) {
 			const content = targetFiles.get(path);
 			if (content === undefined) continue;
 			const absPath = join(cwd, path);
@@ -599,9 +603,9 @@ export class FileSnapshotManager {
 		this.lastCommittedTreeHash = targetTreeHash;
 
 		return {
-			restored: filteredRestore.sort(),
+			restored: safeRestore.sort(),
 			deleted: filteredDelete.sort(),
-			skipped: [],
+			skipped: dirty,
 			dirty,
 		};
 	}

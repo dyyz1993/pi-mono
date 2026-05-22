@@ -363,7 +363,7 @@ export type RpcResponse =
 			type: "response";
 			command: "rollback_preview";
 			success: true;
-			data: { restored: string[]; deleted: string[] };
+			data: { restored: string[]; deleted: string[]; skipped: string[] };
 	  }
 	| { id?: string; type: "response"; command: "delete_entries"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "summarize_entries"; success: true; data: { entryId: string } }

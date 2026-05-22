@@ -157,7 +157,13 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 		}
 
 		// Special case: hooks field — concat arrays per event key
-		if (key === "hooks" && typeof overrideValue === "object" && overrideValue !== null && typeof baseValue === "object" && baseValue !== null) {
+		if (
+			key === "hooks" &&
+			typeof overrideValue === "object" &&
+			overrideValue !== null &&
+			typeof baseValue === "object" &&
+			baseValue !== null
+		) {
 			const merged: SettingsHooks = { ...(baseValue as SettingsHooks) };
 			for (const [eventKey, entries] of Object.entries(overrideValue as SettingsHooks)) {
 				if (!Array.isArray(entries)) continue;

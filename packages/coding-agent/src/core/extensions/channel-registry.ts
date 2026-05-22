@@ -12,6 +12,7 @@
 import type { MemoryChannelContract } from "../../../extensions/auto-memory/contract.js";
 import type { BashChannelContract } from "../../../extensions/bash-ext/contract.js";
 import type { CoordinatorChannelContract } from "../../../extensions/coordinator/types.js";
+import type { FileReviewChannelContract } from "../../../extensions/file-review/contract.js";
 import type { LspChannelContract } from "../../../extensions/lsp/contract.js";
 import type { RulesChannelContract } from "../../../extensions/rules-engine/types.js";
 import type { SupervisorChannelContract } from "../../../extensions/session-supervisor/types.js";
@@ -27,4 +28,5 @@ export interface ChannelTypeRegistry {
 	coordinator: CoordinatorChannelContract;
 	"rules-engine": RulesChannelContract;
 	supervisor: SupervisorChannelContract;
+	"file-review": FileReviewChannelContract;
 }

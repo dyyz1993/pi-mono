@@ -3105,6 +3105,11 @@ export class AgentSession {
 		summaryEntry?: BranchSummaryEntry;
 		reason?: string;
 	}> {
+		// Block rollback while agent is actively streaming
+		if (this.isStreaming) {
+			return { cancelled: true, reason: "Cannot rollback while agent is streaming" };
+		}
+
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target
@@ -3542,7 +3547,8 @@ export class AgentSession {
 			const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
 			const resolved = aliasResolved ?? modelSpec;
 			const available = await this._modelRegistry.getAvailable();
-			return available.find((m) => m.id === resolved || `${m.provider}/${m.id}` === resolved);
+			const found = available.find((m) => m.id === resolved || `${m.provider}/${m.id}` === resolved);
+			return found ?? this.model;
 		}
 		return this.model;
 	}

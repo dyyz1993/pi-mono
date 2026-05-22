@@ -1,11 +1,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import type { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import hooksEngine, {
-	loadMergedSettingsHooks,
-	loadSettingsHooks,
-} from "../../extensions/hooks-engine/index.js";
+import hooksEngine, { loadMergedSettingsHooks, loadSettingsHooks } from "../../extensions/hooks-engine/index.js";
 
 describe("loadSettingsHooks", () => {
 	const tmpDir = join(process.cwd(), "test-hooks-settings-tmp");
@@ -67,7 +64,10 @@ describe("loadSettingsHooks", () => {
 
 	it("filters out non-array entries", () => {
 		const p = join(tmpDir, "settings.json");
-		writeFileSync(p, JSON.stringify({ hooks: { on_tool_start: "not-array", valid: [{ type: "command", command: "echo ok" }] } }));
+		writeFileSync(
+			p,
+			JSON.stringify({ hooks: { on_tool_start: "not-array", valid: [{ type: "command", command: "echo ok" }] } }),
+		);
 		const result = loadSettingsHooks(p);
 		expect(result).toEqual({ valid: [{ type: "command", command: "echo ok" }] });
 	});
@@ -219,9 +219,14 @@ describe("hooksEngine multi-source hooks (settings + agent)", () => {
 
 		await emitEvent(pi, "session_start", {}, { cwd: projectDir });
 
-		const result = await emitEvent(pi, "tool_call", {
-			toolName: "Bash",
-		}, { cwd: projectDir });
+		const result = await emitEvent(
+			pi,
+			"tool_call",
+			{
+				toolName: "Bash",
+			},
+			{ cwd: projectDir },
+		);
 
 		expect(result).toEqual({ block: true, reason: "settings-deny" });
 	});
@@ -240,14 +245,19 @@ describe("hooksEngine multi-source hooks (settings + agent)", () => {
 
 		await emitEvent(pi, "session_start", {}, { cwd: projectDir });
 
-		const result = await emitEvent(pi, "tool_call", {
-			toolName: "Bash",
-			variables: {
-				agentHooks: JSON.stringify({
-					on_tool_start: [{ type: "command", command: "echo 'agent-deny'; exit 2" }],
-				}),
+		const result = await emitEvent(
+			pi,
+			"tool_call",
+			{
+				toolName: "Bash",
+				variables: {
+					agentHooks: JSON.stringify({
+						on_tool_start: [{ type: "command", command: "echo 'agent-deny'; exit 2" }],
+					}),
+				},
 			},
-		}, { cwd: projectDir });
+			{ cwd: projectDir },
+		);
 
 		expect(result).toEqual({ block: true, reason: "agent-deny" });
 	});
@@ -288,14 +298,24 @@ describe("hooksEngine multi-source hooks (settings + agent)", () => {
 		expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Loaded"));
 		expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("settings hooks"));
 
-		const result1 = await emitEvent(pi, "tool_call", {
-			toolName: "Bash",
-		}, { cwd: projectDir });
+		const result1 = await emitEvent(
+			pi,
+			"tool_call",
+			{
+				toolName: "Bash",
+			},
+			{ cwd: projectDir },
+		);
 		expect(result1).toBeUndefined();
 
-		const result2 = await emitEvent(pi, "tool_call", {
-			toolName: "Read",
-		}, { cwd: projectDir });
+		const result2 = await emitEvent(
+			pi,
+			"tool_call",
+			{
+				toolName: "Read",
+			},
+			{ cwd: projectDir },
+		);
 		expect(result2).toBeUndefined();
 
 		consoleSpy.mockRestore();

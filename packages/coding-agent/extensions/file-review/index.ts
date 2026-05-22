@@ -1,7 +1,17 @@
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 import type { LiveChange } from "../../src/core/file-store/file-snapshot-manager.js";
-import { FILE_REVIEW_CHANNEL_NAME, type FileReviewChannelContract, type TurnChangeRecord } from "./contract.js";
+import {
+	FILE_REVIEW_CHANNEL_NAME,
+	type FileApproval,
+	type FileReviewChannelContract,
+	type PendingChange,
+	type TurnChangeRecord,
+} from "./contract.js";
+
+function approvalKey(turnIndex: number, path: string): string {
+	return `${turnIndex}:${path}`;
+}
 
 export default function fileReview(pi: ExtensionAPI) {
 	let ctx: ExtensionContext | null = null;
@@ -9,6 +19,31 @@ export default function fileReview(pi: ExtensionAPI) {
 	const turnLog: TurnChangeRecord[] = [];
 	let currentTurnChanges: LiveChange[] = [];
 	let currentTurnIndex = -1;
+
+	const approvals = new Map<string, FileApproval>();
+
+	function getApproval(turnIndex: number, path: string): FileApproval {
+		const key = approvalKey(turnIndex, path);
+		const existing = approvals.get(key);
+		if (existing) return existing;
+		const pending: FileApproval = { turnIndex, path, status: "pending", timestamp: Date.now() };
+		approvals.set(key, pending);
+		return pending;
+	}
+
+	function setApproval(turnIndex: number, path: string, status: "approved" | "rejected"): boolean {
+		const record = turnLog.find((t) => t.turnIndex === turnIndex);
+		if (!record) return false;
+		const change = record.changes.find((c) => c.path === path);
+		if (!change) return false;
+
+		const key = approvalKey(turnIndex, path);
+		const entry: FileApproval = { turnIndex, path, status, timestamp: Date.now() };
+		approvals.set(key, entry);
+
+		pi.appendEntry("file-approval", { turnIndex, path, status, timestamp: entry.timestamp });
+		return true;
+	}
 
 	// ─── Typed channel ──────────────────────────────────────────────
 
@@ -70,12 +105,91 @@ export default function fileReview(pi: ExtensionAPI) {
 		return { ok: true };
 	});
 
+	channel?.handle("review.pending", () => {
+		const result: PendingChange[] = [];
+		for (const record of turnLog) {
+			for (const change of record.changes) {
+				const approval = getApproval(record.turnIndex, change.path);
+				if (approval.status === "pending") {
+					result.push({
+						turnIndex: record.turnIndex,
+						path: change.path,
+						status: "pending",
+						diff: change.diff,
+						timestamp: record.timestamp,
+					});
+				}
+			}
+		}
+		return result;
+	});
+
+	channel?.handle("review.approve", (params) => {
+		return { ok: setApproval(params.turnIndex, params.path, "approved") };
+	});
+
+	channel?.handle("review.reject", (params) => {
+		return { ok: setApproval(params.turnIndex, params.path, "rejected") };
+	});
+
+	channel?.handle("review.approveAll", () => {
+		let count = 0;
+		for (const record of turnLog) {
+			for (const change of record.changes) {
+				const approval = getApproval(record.turnIndex, change.path);
+				if (approval.status === "pending") {
+					const key = approvalKey(record.turnIndex, change.path);
+					const entry: FileApproval = {
+						turnIndex: record.turnIndex,
+						path: change.path,
+						status: "approved",
+						timestamp: Date.now(),
+					};
+					approvals.set(key, entry);
+					pi.appendEntry("file-approval", {
+						turnIndex: record.turnIndex,
+						path: change.path,
+						status: "approved",
+						timestamp: entry.timestamp,
+					});
+					count++;
+				}
+			}
+		}
+		return { count };
+	});
+
+	channel?.handle("review.approvals", (params) => {
+		const all = [...approvals.values()];
+		if (params.status) {
+			return all.filter((a) => a.status === params.status);
+		}
+		return all;
+	});
+
 	// ─── Event handlers ─────────────────────────────────────────────
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event, _ctx: ExtensionContext) => {
+		ctx = _ctx;
 		turnLog.length = 0;
 		currentTurnChanges = [];
 		currentTurnIndex = -1;
+		approvals.clear();
+
+		const entries = _ctx.sessionManager.getEntries();
+		for (const entry of entries) {
+			if (entry.type !== "custom") continue;
+			if (entry.customType !== "file-approval") continue;
+			const data = entry.data as { turnIndex: number; path: string; status: "approved" | "rejected"; timestamp: number } | undefined;
+			if (!data) continue;
+			const key = approvalKey(data.turnIndex, data.path);
+			approvals.set(key, {
+				turnIndex: data.turnIndex,
+				path: data.path,
+				status: data.status,
+				timestamp: data.timestamp,
+			});
+		}
 	});
 
 	pi.on("turn_start", async () => {

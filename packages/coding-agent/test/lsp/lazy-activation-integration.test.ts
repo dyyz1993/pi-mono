@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createLspRuntimeRegistry, type LspRuntimeRegistry } from "../../extensions/lsp/client/registry.js";
 import type { LspClientRuntime, LspRuntimeState } from "../../extensions/lsp/client/runtime.js";
-import { createLazyActivator, type LazyActivator } from "../../extensions/lsp/utils/lazy-activator.js";
-import { createIdleCleaner, getIdleTimeoutMs, type IdleCleaner } from "../../extensions/lsp/utils/idle-cleaner.js";
 import type { ResolvedLspServerConfig } from "../../extensions/lsp/config/resolver.js";
+import { createIdleCleaner, getIdleTimeoutMs, type IdleCleaner } from "../../extensions/lsp/utils/idle-cleaner.js";
+import { createLazyActivator, type LazyActivator } from "../../extensions/lsp/utils/lazy-activator.js";
 
 type MockRuntimeMap = Map<string, LspClientRuntime>;
 
@@ -36,7 +36,11 @@ function createMockRuntime(): LspClientRuntime {
 }
 
 const testServers: ResolvedLspServerConfig[] = [
-	{ name: "typescript", command: ["typescript-language-server", "--stdio"], fileTypes: [".ts", ".tsx", ".js", ".jsx"] },
+	{
+		name: "typescript",
+		command: ["typescript-language-server", "--stdio"],
+		fileTypes: [".ts", ".tsx", ".js", ".jsx"],
+	},
 	{ name: "eslint", command: ["eslint-lsp", "--stdio"], fileTypes: [".ts", ".tsx", ".js", ".jsx"] },
 	{ name: "json", command: ["vscode-json-language-server", "--stdio"], fileTypes: [".json"] },
 	{ name: "css", command: ["vscode-css-language-server", "--stdio"], fileTypes: [".css", ".scss", ".less"] },

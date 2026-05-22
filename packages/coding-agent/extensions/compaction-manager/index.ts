@@ -2,11 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import type { AssistantMessage } from "@dyyz1993/pi-ai";
-import { DEFAULT_CONFIG, type CompactionManagerConfig } from "./config.js";
+import { DEFAULT_CONFIG, type CompactionManagerConfig, type CompactionStrategy } from "./config.js";
 import { extractFoldSummary, estimateMessageTokens, findFoldableEntries } from "./context-fold.js";
 import { microcompactMessages, stripThinkingBlocks } from "./microcompact.js";
 import { buildMemorySummary, readMemoryFiles } from "./session-memory.js";
 import { shouldWarn, shouldForceCompact } from "./reactive.js";
+import { prepareHalfCompaction } from "./half-compaction.js";
+import { prepareSegmentCompaction } from "./segment-compaction.js";
+import { applySlidingWindow } from "./sliding-window.js";
 
 function loadConfig(): CompactionManagerConfig {
 	const configPath = join(process.cwd(), ".pi", "compaction.json");
@@ -18,6 +21,10 @@ function loadConfig(): CompactionManagerConfig {
 				sessionMemory: { ...DEFAULT_CONFIG.sessionMemory, ...raw.sessionMemory },
 				reactive: { ...DEFAULT_CONFIG.reactive, ...raw.reactive },
 				contextFold: { ...DEFAULT_CONFIG.contextFold, ...raw.contextFold },
+				strategy: (raw.strategy as CompactionStrategy) ?? DEFAULT_CONFIG.strategy,
+				halfCompaction: { ...DEFAULT_CONFIG.halfCompaction, ...raw.halfCompaction },
+				segmentCompaction: { ...DEFAULT_CONFIG.segmentCompaction, ...raw.segmentCompaction },
+				slidingWindow: { ...DEFAULT_CONFIG.slidingWindow, ...raw.slidingWindow },
 			};
 		} catch (err) {
 			console.debug("[compaction-manager] config load failed:", err instanceof Error ? err.message : err);
@@ -27,15 +34,47 @@ function loadConfig(): CompactionManagerConfig {
 	return DEFAULT_CONFIG;
 }
 
-let compactMetrics = { foldCount: 0, memoryCompactCount: 0, forceCompactCount: 0, rateLimitHits: 0, serverErrors: 0 };
+let compactMetrics = {
+	foldCount: 0,
+	memoryCompactCount: 0,
+	forceCompactCount: 0,
+	rateLimitHits: 0,
+	serverErrors: 0,
+	strategyCompactCount: 0,
+	slidingWindowTruncations: 0,
+};
 
 export default function (pi: ExtensionAPI) {
 	const config = loadConfig();
 
 	pi.on("session_start", () => {
-		compactMetrics = { foldCount: 0, memoryCompactCount: 0, forceCompactCount: 0, rateLimitHits: 0, serverErrors: 0 };
+		compactMetrics = {
+			foldCount: 0,
+			memoryCompactCount: 0,
+			forceCompactCount: 0,
+			rateLimitHits: 0,
+			serverErrors: 0,
+			strategyCompactCount: 0,
+			slidingWindowTruncations: 0,
+		};
 	});
 
+	// === Sliding window: intercept context hook (no LLM, no CompactionEntry) ===
+	if (config.strategy === "sliding-window" || config.slidingWindow.enabled) {
+		pi.on("context", (event, _ctx) => {
+			const result = applySlidingWindow(event.messages, config.slidingWindow);
+			if (result) {
+				compactMetrics.slidingWindowTruncations++;
+				pi.appendEntry("compaction_sliding_window", {
+					total: compactMetrics.slidingWindowTruncations,
+					timestamp: Date.now(),
+				});
+				return result;
+			}
+		});
+	}
+
+	// === Microcompact: clear old tool results and strip thinking ===
 	if (config.microcompact.enabled) {
 		pi.on("context", (event, _ctx) => {
 			const microResult = microcompactMessages(event.messages, config.microcompact.clearableTools, config.microcompact.maxAgeMs);
@@ -49,6 +88,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// === Context fold: fold old assistant messages ===
 	if (config.contextFold.enabled) {
 		pi.on("turn_end", (_event, ctx) => {
 			const entries = ctx.sessionManager.getBranch();
@@ -86,7 +126,36 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-		if (config.sessionMemory.enabled) {
+	// === Half / Segment compaction: intercept session_before_compact ===
+	if (config.strategy === "half" || config.strategy === "segment") {
+		pi.on("session_before_compact", async (event, _ctx) => {
+			const { preparation, signal } = event;
+			if (signal.aborted) return;
+
+			let result: ReturnType<typeof prepareHalfCompaction> | ReturnType<typeof prepareSegmentCompaction> = null;
+
+			if (config.strategy === "half") {
+				result = prepareHalfCompaction(preparation, config.halfCompaction);
+			} else if (config.strategy === "segment") {
+				result = prepareSegmentCompaction(preparation, config.segmentCompaction);
+			}
+
+			if (!result) return; // fall through to default full compaction
+
+			compactMetrics.strategyCompactCount++;
+			pi.appendEntry("compaction_strategy", {
+				strategy: config.strategy,
+				tokensBefore: result.tokensBefore,
+				total: compactMetrics.strategyCompactCount,
+				timestamp: Date.now(),
+			});
+
+			return { compaction: result };
+		});
+	}
+
+	// === Session memory: override compaction with memory files ===
+	if (config.sessionMemory.enabled) {
 		pi.on("session_before_compact", async (event, ctx) => {
 			const { preparation, signal } = event;
 
@@ -111,6 +180,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// === Reactive: context usage warnings and /compact-force ===
 	if (config.reactive.enabled) {
 		let warnedThisTurn = false;
 

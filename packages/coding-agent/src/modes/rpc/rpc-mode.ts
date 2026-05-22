@@ -350,7 +350,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						replaceInstructions: options?.replaceInstructions,
 						label: options?.label,
 					});
-					return { cancelled: result.cancelled };
+					return { cancelled: result.cancelled, reason: result.reason };
 				},
 				switchSession: async (sessionPath, options) => {
 					return runtimeHost.switchSession(sessionPath, options);
