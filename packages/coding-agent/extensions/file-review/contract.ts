@@ -42,7 +42,6 @@ export interface PendingChange {
 	turnIndex: number;
 	path: string;
 	status: ApprovalStatus;
-	diff: LiveChange["diff"];
 	timestamp: number;
 }
 
