@@ -51,6 +51,49 @@ const DEFAULT_IGNORE_PATTERNS = [
 	".vscode/",
 	"*.swp",
 	"*.swo",
+	// Binary / image files — reading these with readFileSync("utf-8") causes OOM
+	"*.png",
+	"*.jpg",
+	"*.jpeg",
+	"*.gif",
+	"*.bmp",
+	"*.ico",
+	"*.webp",
+	"*.svg",
+	"*.mp4",
+	"*.mov",
+	"*.avi",
+	"*.mkv",
+	"*.webm",
+	"*.mp3",
+	"*.wav",
+	"*.flac",
+	"*.ogg",
+	"*.zip",
+	"*.tar",
+	"*.gz",
+	"*.bz2",
+	"*.7z",
+	"*.rar",
+	"*.woff",
+	"*.woff2",
+	"*.ttf",
+	"*.eot",
+	"*.otf",
+	"*.pdf",
+	"*.doc",
+	"*.docx",
+	"*.xls",
+	"*.xlsx",
+	"*.ppt",
+	"*.pptx",
+	"*.exe",
+	"*.dll",
+	"*.so",
+	"*.dylib",
+	"*.wasm",
+	"*.sqlite",
+	"*.db",
 ];
 
 function fnv1a(data: string): string {
@@ -196,6 +239,9 @@ export class InternalGit {
 			} else if (entry.isFile()) {
 				if (ig.ignores(relPath)) continue;
 				try {
+					// Pre-read size check: skip files > 1MB to prevent OOM
+					const stat = statSync(fullPath);
+					if (stat.size > 1_000_000) continue;
 					const content = readFileSync(fullPath, "utf-8");
 					result.set(relPath, content);
 				} catch {}
