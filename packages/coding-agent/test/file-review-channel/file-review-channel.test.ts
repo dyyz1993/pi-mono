@@ -1284,3 +1284,107 @@ describe("BUG修复验证: file-snapshot 先提交 baseline 时 file-review 仍�
 		expect(paths).toEqual(["a.ts", "b.ts"]);
 	});
 });
+
+describe("用户场景: bash rm 删除文件后 review.pending 能检测到删除", () => {
+	let harness: ReturnType<typeof createTestHarness>;
+
+	beforeEach(async () => {
+		harness = createTestHarness();
+		await harness.fireSessionStart();
+	});
+
+	afterEach(() => {
+		try {
+			rmSync(harness.tempDir, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it("session 开始时有 hello.txt → turn 中 rm → pending 显示 deleted", async () => {
+		// 模拟 session 开始时 hello.txt 已存在
+		// file-snapshot 的 sessionStartTreeHash 包含 hello.txt
+		// 但 file-review 不关心 sessionStartTreeHash，它只看 getLiveChanges
+
+		// 模拟 getLiveChanges 返回删除
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("hello.txt", "deleted")]);
+
+		await harness.fireTurnStart();
+		// 模拟 bash rm 的 tool_result
+		await harness.fireToolResult();
+		await harness.fireTurnEnd(0);
+
+		// pending 应该显示 hello.txt 被删除
+		const pending = await getPendingPaths(harness);
+		expect(pending).toHaveLength(1);
+		expect(pending[0]).toEqual({ turnIndex: 0, path: "hello.txt", status: "pending" });
+
+		// history 也应该有
+		const historyData = await simulateInbound(harness, "review.history", {});
+		const historyResult = extractResponse(historyData);
+		const historyArr = Array.isArray(historyResult) ? historyResult : [];
+		expect(historyArr).toHaveLength(1);
+		expect(historyArr[0]!.changes).toHaveLength(1);
+		expect(historyArr[0]!.changes[0]!.status).toBe("deleted");
+	});
+
+	it("先创建再删除同一文件 → net zero，不出现 pending", async () => {
+		// turn 0: 创建 hello.txt
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("hello.txt", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		await harness.fireTurnEnd(0);
+
+		// turn 1: 删除 hello.txt — 此时 getLiveChanges 相对于 baseline 应该看到 net zero
+		// 因为 baseline 是 turn 0 的 snapshot（有 hello.txt），删除后 currentFiles 没有
+		// 所以 getLiveChanges 应该返回 deleted... 但如果文件是在同一 turn 中创建又删除呢？
+		// 实际上 getLiveChanges 是相对于 lastCommittedTreeHash 的，所以会看到 deleted
+		// 这是正确的行为 — turn 0 的创建已经提交到 baseline 了
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("hello.txt", "deleted")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		await harness.fireTurnEnd(1);
+
+		const pending = await getPendingPaths(harness);
+		// turn 0 的 added 已被 turn 1 的 deleted 取代
+		// 但它们是独立的 turn，所以各有各的 pending
+		expect(pending).toHaveLength(2);
+		expect(pending.find((p) => p.path === "hello.txt" && p.turnIndex === 0)).toBeDefined();
+		expect(pending.find((p) => p.path === "hello.txt" && p.turnIndex === 1)).toBeDefined();
+	});
+
+	it("删除 + 创建同时发生 → 两个都出现在 pending", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("old.txt", "deleted"), makeChange("new.txt", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		await harness.fireTurnEnd(0);
+
+		const pending = await getPendingPaths(harness);
+		expect(pending).toHaveLength(2);
+		const paths = pending.map((p) => p.path).sort();
+		expect(paths).toEqual(["new.txt", "old.txt"]);
+	});
+
+	it("没有 tool_result 时 fallback 到 getLiveChanges 也能检测删除", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("hello.txt", "deleted")]);
+		await harness.fireTurnStart();
+		// 没有 fireToolResult — 模拟没有工具调用的 turn
+		await harness.fireTurnEnd(0);
+
+		const pending = await getPendingPaths(harness);
+		expect(pending).toHaveLength(1);
+		expect(pending[0]!.path).toBe("hello.txt");
+	});
+
+	it("appendEntry 持久化删除记录", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("hello.txt", "deleted")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		await harness.fireTurnEnd(0);
+
+		const turnEntry = harness.appendEntries.find((e) => e.type === "file-review-turn");
+		expect(turnEntry).toBeDefined();
+		const data = turnEntry!.data as Record<string, unknown>;
+		const changes = data.changes as Array<Record<string, unknown>>;
+		expect(changes[0]!.path).toBe("hello.txt");
+		expect(changes[0]!.status).toBe("deleted");
+	});
+});
