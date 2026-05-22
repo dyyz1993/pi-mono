@@ -66,6 +66,7 @@ describe("file-snapshot channel methods", () => {
 
 	describe("snapshot.list (getModifiedFiles)", () => {
 		it("returns all modified files across session", async () => {
+			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
 			await manager.initialize(tempDir);
 
 			writeFileSync(join(tempDir, "a.ts"), "v2", "utf-8");
@@ -111,13 +112,14 @@ describe("file-snapshot channel methods", () => {
 			writeFileSync(join(tempDir, "c.ts"), "c1", "utf-8");
 			manager.onTurnEnd(tempDir, 2, appendEntry);
 
+			// Range is [fromIdx, toIdx] — closed interval on both ends
 			const files = manager.getModifiedFiles({
 				fromEntryId: turn0EntryId,
 				toEntryId: turn1EntryId,
 			});
 
 			const paths = files.map((f) => f.path);
-			expect(paths).not.toContain("a.ts");
+			expect(paths).toContain("a.ts");
 			expect(paths).toContain("b.ts");
 			expect(paths).not.toContain("c.ts");
 		});

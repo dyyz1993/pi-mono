@@ -41,16 +41,19 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 			const { __call: _, invokeId, ...params } = msg;
 			const result = handler(params);
 
-			if (result instanceof Promise) {
-				result.then((res) => {
-					if (invokeId) {
-						this.raw.send({ ...(res ?? {}), invokeId });
-					}
-				});
-			} else {
-				if (invokeId) {
-					this.raw.send({ ...(result ?? {}), invokeId });
+			const sendResponse = (res: unknown) => {
+				if (!invokeId) return;
+				if (Array.isArray(res)) {
+					this.raw.send({ result: res, invokeId });
+				} else {
+					this.raw.send({ ...(res as Record<string, unknown> ?? {}), invokeId });
 				}
+			};
+
+			if (result instanceof Promise) {
+				result.then(sendResponse);
+			} else {
+				sendResponse(result);
 			}
 		});
 	}
