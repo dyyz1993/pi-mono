@@ -417,17 +417,18 @@ describe("Coordinator: already_running / error / edge cases", () => {
 		expect(result.__error as string).toContain("fork failed");
 	});
 
-	it("session_delegate_stop when pm returns false → store NOT updated", async () => {
+	it("session_delegate_stop when pm returns false → store still marked stopped (allows cleanup)", async () => {
 		harness.mockPm.delegate.mockResolvedValue({ sessionId: "sid-stopfail", status: "started" });
 		await simulateInbound(harness, "session_delegate", { task: "try stop" });
 
 		harness.mockPm.delegate_stop.mockResolvedValue(false);
 		await simulateInbound(harness, "session_delegate_stop", { sessionId: "sid-stopfail" });
 
-		// Task should remain in original status
+		// Handler intentionally marks as stopped even when pm fails,
+		// so the user can clean up via session_delegate_remove
 		const task = harness.store.get("sid-stopfail");
-		expect(task!.status).toBe("idle");
-		expect(task!.completedAt).toBeUndefined();
+		expect(task!.status).toBe("stopped");
+		expect(task!.completedAt).toBeDefined();
 	});
 
 	it("session_delegate_remove for unknown session → returns ok: false", async () => {

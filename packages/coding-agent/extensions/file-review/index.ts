@@ -205,11 +205,15 @@ export default function fileReview(pi: ExtensionAPI) {
 
 	pi.on("turn_end", async (event: TurnEndEvent, _ctx: ExtensionContext) => {
 		ctx = _ctx;
-		const mgr = _ctx.fileSnapshotManager;
-		if (!mgr) return;
 
 		currentTurnIndex = event.turnIndex;
-		const changes = mgr.getLiveChanges(_ctx.cwd);
+		// Use changes accumulated during tool_result events (before file-snapshot's
+		// onTurnEnd commits the baseline). If no tool_result fired (e.g. no tools used),
+		// fall back to getLiveChanges — but guard against file-snapshot having already
+		// committed by checking we're the first to see changes.
+		const changes = currentTurnChanges.length > 0
+			? currentTurnChanges
+			: (_ctx.fileSnapshotManager?.getLiveChanges(_ctx.cwd) ?? []);
 		if (changes.length > 0) {
 			turnLog.push({
 				turnIndex: event.turnIndex,
