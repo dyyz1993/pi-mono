@@ -235,40 +235,43 @@ describe("regression #2860: replaced session callbacks", () => {
 		]);
 	});
 
-	it.todo("supports withSession for switchSession - retargeting changes withSession behavior for switchSession", async () => {
-		let targetSessionPath = "";
-		const { runtime } = await createRuntimeForTest(
-			(pi) => {
-				pi.registerCommand("switch-it", {
-					description: "switch-it",
-					handler: async (_args, ctx) => {
-						await ctx.switchSession(targetSessionPath, {
-							withSession: async (replacedCtx) => {
-								await replacedCtx.sendUserMessage("switch callback message");
-							},
-						});
-					},
-				});
-			},
-			["root reply", "target reply", "switch reply"],
-		);
+	it.todo(
+		"supports withSession for switchSession - retargeting changes withSession behavior for switchSession",
+		async () => {
+			let targetSessionPath = "";
+			const { runtime } = await createRuntimeForTest(
+				(pi) => {
+					pi.registerCommand("switch-it", {
+						description: "switch-it",
+						handler: async (_args, ctx) => {
+							await ctx.switchSession(targetSessionPath, {
+								withSession: async (replacedCtx) => {
+									await replacedCtx.sendUserMessage("switch callback message");
+								},
+							});
+						},
+					});
+				},
+				["root reply", "target reply", "switch reply"],
+			);
 
-		await runtime.session.prompt("root");
-		const originalSessionPath = runtime.session.sessionFile;
-		const newSessionResult = await runtime.newSession();
-		expect(newSessionResult.cancelled).toBe(false);
-		await runtime.session.prompt("target");
-		targetSessionPath = runtime.session.sessionFile!;
-		await runtime.switchSession(originalSessionPath!);
+			await runtime.session.prompt("root");
+			const originalSessionPath = runtime.session.sessionFile;
+			const newSessionResult = await runtime.newSession();
+			expect(newSessionResult.cancelled).toBe(false);
+			await runtime.session.prompt("target");
+			targetSessionPath = runtime.session.sessionFile!;
+			await runtime.switchSession(originalSessionPath!);
 
-		await runtime.session.prompt("/switch-it");
+			await runtime.session.prompt("/switch-it");
 
-		expect(runtime.session.sessionFile).toBe(targetSessionPath);
-		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
-			"user:target",
-			"assistant:target reply",
-			"user:switch callback message",
-			"assistant:switch reply",
-		]);
-	});
+			expect(runtime.session.sessionFile).toBe(targetSessionPath);
+			expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
+				"user:target",
+				"assistant:target reply",
+				"user:switch callback message",
+				"assistant:switch reply",
+			]);
+		},
+	);
 });

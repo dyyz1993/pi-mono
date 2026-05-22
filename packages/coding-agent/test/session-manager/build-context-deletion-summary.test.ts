@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildSessionContext,
 	type CompactionEntry,
 	type DeletionEntry,
 	type FoldEntry,
 	type SegmentSummaryEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
-	buildSessionContext,
 } from "../../src/core/session-manager.js";
 
 function userMsg(id: string, parentId: string | null, text: string): SessionMessageEntry {

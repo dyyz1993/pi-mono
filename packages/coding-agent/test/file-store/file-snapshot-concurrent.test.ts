@@ -141,9 +141,7 @@ describe("FileSnapshotManager concurrent/external modification", () => {
 		manager.onTurnEnd(tempDir, 1, appendEntry);
 		manager.onTurnEnd(tempDir, 2, appendEntry);
 
-		const snapshotCount = appendedEntries.filter(
-			(e) => e.customType === "step-snapshot",
-		).length;
+		const snapshotCount = appendedEntries.filter((e) => e.customType === "step-snapshot").length;
 		expect(snapshotCount).toBe(1);
 	});
 

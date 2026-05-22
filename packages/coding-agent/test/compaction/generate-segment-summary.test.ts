@@ -16,9 +16,7 @@ vi.mock("@dyyz1993/pi-ai", async (importOriginal) => {
 	};
 });
 
-function makeEntry(
-	overrides: Partial<SessionEntry> & { type: SessionEntry["type"]; id: string },
-): SessionEntry {
+function makeEntry(overrides: Partial<SessionEntry> & { type: SessionEntry["type"]; id: string }): SessionEntry {
 	return {
 		parentId: null,
 		timestamp: new Date().toISOString(),
@@ -36,11 +34,20 @@ function makeMessageEntry(id: string, role: AgentMessage["role"], content: strin
 }
 
 function makeThinkingLevelEntry(id: string): SessionEntry {
-	return makeEntry({ type: "thinking_level_change", id, thinkingLevel: "high" } as Partial<SessionEntry>) as SessionEntry;
+	return makeEntry({
+		type: "thinking_level_change",
+		id,
+		thinkingLevel: "high",
+	} as Partial<SessionEntry>) as SessionEntry;
 }
 
 function makeModelChangeEntry(id: string): SessionEntry {
-	return makeEntry({ type: "model_change", id, provider: "anthropic", modelId: "claude-3-opus" } as Partial<SessionEntry>) as SessionEntry;
+	return makeEntry({
+		type: "model_change",
+		id,
+		provider: "anthropic",
+		modelId: "claude-3-opus",
+	} as Partial<SessionEntry>) as SessionEntry;
 }
 
 function makeCustomEntry(id: string): SessionEntry {

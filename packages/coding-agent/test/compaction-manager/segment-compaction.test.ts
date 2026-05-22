@@ -105,17 +105,17 @@ describe("prepareSegmentCompaction", () => {
 	it("should clamp segmentCount to [2, 10]", () => {
 		const messages = makeMessages(20);
 
-		const resultLow = prepareSegmentCompaction(
-			makePreparation({ messagesToSummarize: messages }),
-			{ enabled: true, segmentCount: 1 },
-		);
+		const resultLow = prepareSegmentCompaction(makePreparation({ messagesToSummarize: messages }), {
+			enabled: true,
+			segmentCount: 1,
+		});
 		expect(resultLow).toBeDefined();
 		expect(resultLow!.details!.segmentCount).toBe(2);
 
-		const resultHigh = prepareSegmentCompaction(
-			makePreparation({ messagesToSummarize: makeMessages(40) }),
-			{ enabled: true, segmentCount: 20 },
-		);
+		const resultHigh = prepareSegmentCompaction(makePreparation({ messagesToSummarize: makeMessages(40) }), {
+			enabled: true,
+			segmentCount: 20,
+		});
 		expect(resultHigh).toBeDefined();
 		expect(resultHigh!.details!.segmentCount).toBe(10);
 	});
@@ -186,7 +186,11 @@ describe("splitIntoSegments", () => {
 	it("should split array into equal segments", () => {
 		const result = splitIntoSegments([1, 2, 3, 4, 5, 6], 3);
 
-		expect(result).toEqual([[1, 2], [3, 4], [5, 6]]);
+		expect(result).toEqual([
+			[1, 2],
+			[3, 4],
+			[5, 6],
+		]);
 	});
 
 	it("should handle uneven splits", () => {

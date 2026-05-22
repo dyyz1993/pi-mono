@@ -1,19 +1,15 @@
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { describe, expect, it } from "vitest";
+import type { CompactionSummaryMessage, FoldSummaryMessage, SegmentSummaryMessage } from "../src/core/messages.js";
 import {
-	convertToLlm,
-	SEGMENT_SUMMARY_PREFIX,
-	SEGMENT_SUMMARY_SUFFIX,
 	COMPACTION_SUMMARY_PREFIX,
 	COMPACTION_SUMMARY_SUFFIX,
+	convertToLlm,
 	FOLD_SUMMARY_PREFIX,
 	FOLD_SUMMARY_SUFFIX,
+	SEGMENT_SUMMARY_PREFIX,
+	SEGMENT_SUMMARY_SUFFIX,
 } from "../src/core/messages.js";
-import type {
-	SegmentSummaryMessage,
-	CompactionSummaryMessage,
-	FoldSummaryMessage,
-} from "../src/core/messages.js";
-import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 
 function makeSegmentSummary(summary: string, timestamp = 1_700_000_000_000): SegmentSummaryMessage {
 	return { role: "segmentSummary", summary, timestamp };
@@ -113,9 +109,7 @@ describe("convertToLlm: mixed message types", () => {
 
 		expect(result[4].role).toBe("user");
 		const compactText = (result[4].content as Array<{ type: string; text: string }>)[0].text;
-		expect(compactText).toBe(
-			COMPACTION_SUMMARY_PREFIX + "Compacted content" + COMPACTION_SUMMARY_SUFFIX,
-		);
+		expect(compactText).toBe(COMPACTION_SUMMARY_PREFIX + "Compacted content" + COMPACTION_SUMMARY_SUFFIX);
 	});
 
 	it("each converted message preserves its original timestamp", () => {

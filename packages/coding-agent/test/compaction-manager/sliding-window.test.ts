@@ -19,10 +19,7 @@ describe("applySlidingWindow", () => {
 	});
 
 	it("should return undefined when all messages fit within window", () => {
-		const messages: AgentMessage[] = [
-			makeUserMessage("hello"),
-			makeAssistantMessage("world"),
-		];
+		const messages: AgentMessage[] = [makeUserMessage("hello"), makeAssistantMessage("world")];
 		const result = applySlidingWindow(messages, { ...defaultConfig, windowTokens: 80000 });
 		expect(result).toBeUndefined();
 	});
@@ -79,10 +76,10 @@ describe("applySlidingWindow", () => {
 	it("should preserve first user message when messages are truncated and first is user role", () => {
 		// Each user message: 200 chars → 50 tokens. windowTokens=80 → keeps ~1 newest
 		const messages: AgentMessage[] = [
-			makeUserMessage("system prompt"),     // short, ~4 tokens
-			makeUserMessage("a".repeat(200)),     // 50 tokens
-			makeUserMessage("b".repeat(200)),     // 50 tokens
-			makeUserMessage("c".repeat(200)),     // 50 tokens
+			makeUserMessage("system prompt"), // short, ~4 tokens
+			makeUserMessage("a".repeat(200)), // 50 tokens
+			makeUserMessage("b".repeat(200)), // 50 tokens
+			makeUserMessage("c".repeat(200)), // 50 tokens
 		];
 		const result = applySlidingWindow(messages, { ...defaultConfig, windowTokens: 80 });
 		expect(result).toBeDefined();
@@ -101,7 +98,12 @@ describe("applySlidingWindow", () => {
 			const c = (m as { content: unknown }).content;
 			if (Array.isArray(c)) {
 				return c.some(
-					(b) => typeof b === "object" && b !== null && "text" in b && typeof b.text === "string" && b.text.includes("[Sliding window:"),
+					(b) =>
+						typeof b === "object" &&
+						b !== null &&
+						"text" in b &&
+						typeof b.text === "string" &&
+						b.text.includes("[Sliding window:"),
 				);
 			}
 			return false;
@@ -120,7 +122,12 @@ describe("applySlidingWindow", () => {
 			const c = (m as { content: unknown }).content;
 			if (Array.isArray(c)) {
 				return c.some(
-					(b) => typeof b === "object" && b !== null && "text" in b && typeof b.text === "string" && b.text.includes("[Sliding window:"),
+					(b) =>
+						typeof b === "object" &&
+						b !== null &&
+						"text" in b &&
+						typeof b.text === "string" &&
+						b.text.includes("[Sliding window:"),
 				);
 			}
 			return false;
@@ -129,19 +136,13 @@ describe("applySlidingWindow", () => {
 	});
 
 	it("should correctly count tokens from messages with string content", () => {
-		const messages: AgentMessage[] = [
-			makeUserMessage("a".repeat(400)),
-			makeUserMessage("short"),
-		];
+		const messages: AgentMessage[] = [makeUserMessage("a".repeat(400)), makeUserMessage("short")];
 		const result = applySlidingWindow(messages, { ...defaultConfig, windowTokens: 50 });
 		expect(result).toBeDefined();
 	});
 
 	it("should correctly count tokens from messages with array content", () => {
-		const messages: AgentMessage[] = [
-			makeAssistantMessage("a".repeat(400)),
-			makeAssistantMessage("short"),
-		];
+		const messages: AgentMessage[] = [makeAssistantMessage("a".repeat(400)), makeAssistantMessage("short")];
 		const result = applySlidingWindow(messages, { ...defaultConfig, windowTokens: 50 });
 		expect(result).toBeDefined();
 	});

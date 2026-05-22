@@ -487,7 +487,7 @@ describe("turn_end reactive branches", () => {
 	});
 });
 
-	describe("context fold branches", () => {
+describe("context fold branches", () => {
 	it("already folded entry is not re-folded", async () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
@@ -632,10 +632,13 @@ describe("sliding-window strategy integration", () => {
 			const ctx = createMockCtx();
 			await slidingWindowHandler({ type: "context", messages }, ctx);
 
-			expect(pi.appendEntry).toHaveBeenCalledWith("compaction_sliding_window", expect.objectContaining({
-				total: expect.any(Number),
-				timestamp: expect.any(Number),
-			}));
+			expect(pi.appendEntry).toHaveBeenCalledWith(
+				"compaction_sliding_window",
+				expect.objectContaining({
+					total: expect.any(Number),
+					timestamp: expect.any(Number),
+				}),
+			);
 		} finally {
 			process.chdir(origCwd);
 			await rm(tmpDir, { recursive: true });
@@ -759,12 +762,15 @@ describe("half compaction strategy integration", () => {
 			const ctx = createMockCtx();
 			await handler({ preparation, signal: new AbortController().signal }, ctx);
 
-			expect(pi.appendEntry).toHaveBeenCalledWith("compaction_strategy", expect.objectContaining({
-				strategy: "half",
-				tokensBefore: 100000,
-				total: expect.any(Number),
-				timestamp: expect.any(Number),
-			}));
+			expect(pi.appendEntry).toHaveBeenCalledWith(
+				"compaction_strategy",
+				expect.objectContaining({
+					strategy: "half",
+					tokensBefore: 100000,
+					total: expect.any(Number),
+					timestamp: expect.any(Number),
+				}),
+			);
 		} finally {
 			process.chdir(origCwd);
 			await rm(tmpDir, { recursive: true });
@@ -889,12 +895,15 @@ describe("segment compaction strategy integration", () => {
 			const ctx = createMockCtx();
 			await handler({ preparation, signal: new AbortController().signal }, ctx);
 
-			expect(pi.appendEntry).toHaveBeenCalledWith("compaction_strategy", expect.objectContaining({
-				strategy: "segment",
-				tokensBefore: 100000,
-				total: expect.any(Number),
-				timestamp: expect.any(Number),
-			}));
+			expect(pi.appendEntry).toHaveBeenCalledWith(
+				"compaction_strategy",
+				expect.objectContaining({
+					strategy: "segment",
+					tokensBefore: 100000,
+					total: expect.any(Number),
+					timestamp: expect.any(Number),
+				}),
+			);
 		} finally {
 			process.chdir(origCwd);
 			await rm(tmpDir, { recursive: true });

@@ -166,7 +166,13 @@ export type ForkHandler = (
 
 export type NavigateTreeHandler = (
 	targetId: string,
-	options?: { summarize?: boolean; skipFiles?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
+	options?: {
+		summarize?: boolean;
+		skipFiles?: boolean;
+		customInstructions?: string;
+		replaceInstructions?: boolean;
+		label?: string;
+	},
 ) => Promise<{ cancelled: boolean }>;
 
 export type SwitchSessionHandler = (
