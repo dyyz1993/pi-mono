@@ -2,7 +2,7 @@ import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@dyyz1993/pi-ai";
 import { randomUUID } from "crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from "fs";
-import { open, appendFile, readdir, readFile, stat, writeFile } from "fs/promises";
+import { open, appendFile, readdir, stat, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
@@ -831,73 +831,7 @@ async function buildSessionInfoFast(filePath: string, fileStat: { mtime: Date })
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const fileStat = await stat(filePath);
-
-		if (fileStat.size > MAX_SESSION_INFO_SIZE) {
-			return buildSessionInfoFast(filePath, fileStat);
-		}
-
-		const content = await readFile(filePath, "utf8");
-		const entries: FileEntry[] = [];
-		const lines = content.trim().split("\n");
-
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			try {
-				entries.push(JSON.parse(line) as FileEntry);
-			} catch {
-				// Skip malformed lines
-			}
-		}
-
-		if (entries.length === 0) return null;
-		const header = entries[0];
-		if (header.type !== "session") return null;
-
-		let messageCount = 0;
-		let firstMessage = "";
-		const allMessages: string[] = [];
-		let name: string | undefined;
-
-		for (const entry of entries) {
-			// Extract session name (use latest, including explicit clears)
-			if (entry.type === "session_info") {
-				const infoEntry = entry as SessionInfoEntry;
-				name = infoEntry.name?.trim() || undefined;
-			}
-
-			if (entry.type !== "message") continue;
-			messageCount++;
-
-			const message = (entry as SessionMessageEntry).message;
-			if (!isMessageWithContent(message)) continue;
-			if (message.role !== "user" && message.role !== "assistant") continue;
-
-			const textContent = extractTextContent(message);
-			if (!textContent) continue;
-
-			allMessages.push(textContent);
-			if (!firstMessage && message.role === "user") {
-				firstMessage = textContent;
-			}
-		}
-
-		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
-		const parentSessionPath = (header as SessionHeader).parentSession;
-
-		const modified = getSessionModifiedDate(entries, header as SessionHeader, fileStat.mtime);
-
-		return {
-			path: filePath,
-			id: (header as SessionHeader).id,
-			cwd,
-			name,
-			parentSessionPath,
-			created: new Date((header as SessionHeader).timestamp),
-			modified,
-			messageCount,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText: allMessages.join(" "),
-		};
+		return buildSessionInfoFast(filePath, fileStat);
 	} catch {
 		return null;
 	}
@@ -1830,7 +1764,7 @@ export class SessionManager {
 			cwd: targetCwd,
 			parentSession: sourcePath,
 		};
-		const { writeFileSync: writeSync, appendFileSync: appendSync } = require("fs") as typeof import("fs");
+		const { appendFileSync: appendSync } = require("fs") as typeof import("fs");
 		appendSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
 
 		// Copy all non-header entries from source

@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import type { CustomEntry, SessionEntry } from "../session-manager.js";
 import type { InternalGit, TreeEntry } from "./internal-git.js";
 
@@ -41,6 +41,7 @@ export interface LiveChange {
 
 const FILE_SIZE_LIMIT = 1024 * 1024;
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function findCanonicalGitRoot(cwd: string): string | null {
 	let dir: string;
 	try {
@@ -104,7 +105,6 @@ function generateUnifiedDiff(oldContent: string | null, newContent: string | nul
 			i++;
 			j++;
 		} else {
-			const hunkStart = Math.max(0, i - 3);
 			const hunkOldEnd = Math.min(oldLines.length, i + 3);
 			const hunkNewEnd = Math.min(newLines.length, j + 3);
 
