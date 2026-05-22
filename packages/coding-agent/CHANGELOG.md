@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.53] - 2026-05-22
 
 ### Added
 - `file-review` built-in extension: approval state machine with session-scoped JSONL persistence via `appendEntry`.
