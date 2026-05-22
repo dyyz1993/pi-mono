@@ -136,10 +136,12 @@ function expandPath(p: string): string {
 
 function resolvePath(extPath: string, cwd: string): string {
 	const expanded = expandPath(extPath);
-	if (path.isAbsolute(expanded)) {
-		return expanded;
+	const resolved = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+	try {
+		return fs.realpathSync(resolved);
+	} catch {
+		return resolved;
 	}
-	return path.resolve(cwd, expanded);
 }
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
@@ -164,6 +166,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
 		foldEntry: notInitialized,
+		deleteEntries: notInitialized,
+		summarizeEntries: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
@@ -461,6 +465,16 @@ function createExtensionAPI(extension: Extension, slot: RuntimeSlot, cwd: string
 			getRuntime().foldEntry(entryId, summary, originalTokens);
 		},
 
+		deleteEntries(targetIds) {
+			getRuntime().assertActive();
+			getRuntime().deleteEntries(targetIds);
+		},
+
+		summarizeEntries(targetIds, summary) {
+			getRuntime().assertActive();
+			getRuntime().summarizeEntries(targetIds, summary);
+		},
+
 		setName(name: string) {
 			extension.name = name;
 		},
@@ -648,21 +662,27 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	const packageJsonPath = path.join(dir, "package.json");
 	if (fs.existsSync(packageJsonPath)) {
 		const manifest = readPiManifest(packageJsonPath);
-		if (manifest?.extensions?.length) {
-			const entries: string[] = [];
-			for (const extPath of manifest.extensions) {
-				const resolvedExtPath = path.resolve(dir, extPath);
-				if (fs.existsSync(resolvedExtPath)) {
-					entries.push(resolvedExtPath);
+		if (manifest) {
+			// Has a "pi" field — treat it as an explicit declaration.
+			// If pi.extensions is declared, resolve those paths.
+			// If pi.extensions is missing/empty, skip this directory entirely
+			// (e.g. shared libraries that aren't standalone extensions).
+			if (manifest.extensions?.length) {
+				const entries: string[] = [];
+				for (const extPath of manifest.extensions) {
+					const resolvedExtPath = path.resolve(dir, extPath);
+					if (fs.existsSync(resolvedExtPath)) {
+						entries.push(resolvedExtPath);
+					}
 				}
+				return entries.length > 0 ? entries : null;
 			}
-			if (entries.length > 0) {
-				return entries;
-			}
+			// pi field present but no extensions declared — not an extension, skip.
+			return null;
 		}
 	}
 
-	// Check for index.ts or index.js
+	// No package.json or no "pi" field — auto-discover index file.
 	const indexTs = path.join(dir, "index.ts");
 	const indexJs = path.join(dir, "index.js");
 	if (fs.existsSync(indexTs)) {

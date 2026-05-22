@@ -27,6 +27,12 @@ export interface LspRuntimeRegistryRequestOptions {
 	timeoutMs?: number;
 }
 
+export interface LspRuntimeEntryMeta {
+	isPrimary: boolean;
+	accessCount: number;
+	lastAccessTime: number;
+}
+
 export interface LspRuntimeRegistry {
 	start(config: ResolvedLspConfig): Promise<void>;
 	stop(): Promise<void>;
@@ -38,6 +44,12 @@ export interface LspRuntimeRegistry {
 	clearPublishedDiagnostics(filePath: string): void;
 	getStatus(): LspRuntimeRegistryStatus;
 	getStatusForPath(filePath: string): ReturnType<LspClientRuntime["getStatus"]> | undefined;
+	startSingle(name: string, command: string[], fileTypes?: string[]): Promise<void>;
+	stopSingle(name: string): Promise<void>;
+	touchAccess(name: string): void;
+	getIdleServers(timeoutMs: number): string[];
+	setPrimary(name: string): void;
+	getEntryMeta(name: string): LspRuntimeEntryMeta | undefined;
 }
 
 export interface LspRuntimeRegistryOptions extends Omit<LspClientRuntimeOptions, "spawn"> {
@@ -48,12 +60,16 @@ export interface LspRuntimeRegistryOptions extends Omit<LspClientRuntimeOptions,
 interface RuntimeEntry {
 	server: ResolvedLspServerConfig;
 	runtime: LspClientRuntime;
+	isPrimary: boolean;
+	accessCount: number;
+	lastAccessTime: number;
 }
 
 export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}): LspRuntimeRegistry {
 	const createRuntime = options.createRuntime ?? (() => createLspClientRuntime(options));
 	const metrics = options.metrics;
 	const entries = new Map<string, RuntimeEntry>();
+	const preservedAccessCounts = new Map<string, number>();
 
 	let lifecycle: LspRuntimeRegistryStatus["state"] = "inactive";
 	let lifecycleReason = "LSP registry has not started.";
@@ -75,7 +91,13 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 			for (const server of servers) {
 				metrics?.onStarting(server.name, server.fileTypes ?? []);
 				const runtime = createRuntime();
-				entries.set(server.name, { server, runtime });
+				entries.set(server.name, {
+					server,
+					runtime,
+					isPrimary: false,
+					accessCount: 0,
+					lastAccessTime: Date.now(),
+				});
 				await runtime.start(server.command);
 				const serverStatus = runtime.getStatus();
 				if (serverStatus.state === "ready") {
@@ -95,6 +117,7 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 			const stopPromises = [...entries.values()].map(({ runtime }) => runtime.stop());
 			await Promise.allSettled(stopPromises);
 			entries.clear();
+			preservedAccessCounts.clear();
 			lifecycle = "inactive";
 			lifecycleReason = "LSP registry stopped.";
 		},
@@ -217,6 +240,72 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 		getStatusForPath(filePath: string): ReturnType<LspClientRuntime["getStatus"]> | undefined {
 			const entry = selectEntryForPath(filePath);
 			return entry?.runtime.getStatus();
+		},
+
+		async startSingle(name: string, command: string[], fileTypes?: string[]): Promise<void> {
+			if (entries.has(name)) return;
+			metrics?.onStarting(name, fileTypes ?? []);
+			const runtime = createRuntime();
+			const preservedCount = preservedAccessCounts.get(name) ?? 0;
+			entries.set(name, {
+				server: { name, command, fileTypes },
+				runtime,
+				isPrimary: false,
+				accessCount: preservedCount,
+				lastAccessTime: Date.now(),
+			});
+			await runtime.start(command);
+			const serverStatus = runtime.getStatus();
+			if (serverStatus.state === "ready") {
+				metrics?.onReady(name, serverStatus.pid);
+			} else {
+				metrics?.onError(name);
+			}
+			syncLifecycle();
+		},
+
+		async stopSingle(name: string): Promise<void> {
+			const entry = entries.get(name);
+			if (!entry) return;
+			metrics?.onStop(name);
+			preservedAccessCounts.set(name, entry.accessCount);
+			await entry.runtime.stop();
+			entries.delete(name);
+			syncLifecycle();
+		},
+
+		touchAccess(name: string): void {
+			const entry = entries.get(name);
+			if (!entry) return;
+			entry.accessCount += 1;
+			entry.lastAccessTime = Date.now();
+		},
+
+		getIdleServers(timeoutMs: number): string[] {
+			const now = Date.now();
+			const idle: string[] = [];
+			for (const [name, entry] of entries) {
+				if (entry.isPrimary) continue;
+				if (now - entry.lastAccessTime > timeoutMs) {
+					idle.push(name);
+				}
+			}
+			return idle;
+		},
+
+		setPrimary(name: string): void {
+			const entry = entries.get(name);
+			if (entry) entry.isPrimary = true;
+		},
+
+		getEntryMeta(name: string): LspRuntimeEntryMeta | undefined {
+			const entry = entries.get(name);
+			if (!entry) return undefined;
+			return {
+				isPrimary: entry.isPrimary,
+				accessCount: entry.accessCount,
+				lastAccessTime: entry.lastAccessTime,
+			};
 		},
 	};
 

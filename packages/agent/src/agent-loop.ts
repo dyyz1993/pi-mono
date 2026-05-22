@@ -560,9 +560,19 @@ async function prepareToolCall(
 				signal,
 			);
 			if (beforeResult?.block) {
+				const reason = beforeResult.reason || "Tool execution was blocked";
 				return {
 					kind: "immediate",
-					result: createErrorToolResult(beforeResult.reason || "Tool execution was blocked"),
+					result: {
+						content: [{ type: "text", text: reason }],
+						details: {
+							hookDenial: {
+								reason,
+								toolName: toolCall.name,
+								timestamp: Date.now(),
+							},
+						},
+					},
 					isError: true,
 				};
 			}

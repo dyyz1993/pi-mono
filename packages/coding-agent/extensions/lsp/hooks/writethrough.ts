@@ -13,6 +13,7 @@ import {
 	normalizeRange,
 } from "../utils/lsp-helpers.js";
 import type { DiagnosticsMode } from "./diagnostics-mode.js";
+import type { LazyActivator } from "../utils/lazy-activator.js";
 import { waitForPushDiagnostics } from "../utils/diagnostics-wait.js";
 
 interface LspTextEdit {
@@ -39,6 +40,7 @@ export function createWriteThroughHooks(
 	options: WriteThroughOptions = {},
 	mode?: DiagnosticsMode,
 	fileTracker?: FileTracker,
+	lazyActivator?: LazyActivator,
 ): WriteThroughHooks {
 	const cwd = options.cwd ?? process.cwd();
 	const formatOnWrite = options.formatOnWrite ?? true;
@@ -75,6 +77,9 @@ export function createWriteThroughHooks(
 			return;
 		}
 
+		if (lazyActivator) {
+			await lazyActivator.ensureServerForFile(filePath);
+		}
 		const pathStatus = runtime.getStatusForPath(filePath);
 		if (!pathStatus || pathStatus.state !== "ready") {
 			return;

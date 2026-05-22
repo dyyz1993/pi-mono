@@ -487,7 +487,7 @@ describe("turn_end reactive branches", () => {
 	});
 });
 
-describe("context fold branches", () => {
+	describe("context fold branches", () => {
 	it("already folded entry is not re-folded", async () => {
 		const { pi, handlers } = createMockPi();
 		compactionManager(pi);
@@ -513,5 +513,391 @@ describe("context fold branches", () => {
 		await contextFoldHandler({}, ctx);
 
 		expect(pi.foldEntry).not.toHaveBeenCalled();
+	});
+});
+
+function writeCompactionConfig(tmpDir: string, config: Record<string, unknown>) {
+	const configDir = join(tmpDir, ".pi");
+	return mkdir(configDir, { recursive: true }).then(() =>
+		writeFile(join(configDir, "compaction.json"), JSON.stringify(config)),
+	);
+}
+
+function makeUserMessage(text: string): AgentMessage {
+	return {
+		role: "user",
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	} as AgentMessage;
+}
+
+function makeAssistantMessage(text: string): AgentMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	} as AgentMessage;
+}
+
+describe("sliding-window strategy integration", () => {
+	it("should register context hook when strategy is sliding-window", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "sliding-window",
+			slidingWindow: { enabled: true, windowTokens: 100, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: false, ratio: 0.5 },
+			segmentCompaction: { enabled: false, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			expect(handlers.context.length).toBeGreaterThanOrEqual(1);
+			expect(pi.on).toHaveBeenCalledWith("context", expect.any(Function));
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("should truncate messages via context hook when strategy is sliding-window", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "sliding-window",
+			slidingWindow: { enabled: true, windowTokens: 100, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: false, ratio: 0.5 },
+			segmentCompaction: { enabled: false, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			const slidingWindowHandler = handlers.context[0];
+
+			const messages: AgentMessage[] = [];
+			for (let i = 0; i < 20; i++) {
+				messages.push(makeUserMessage(`Message ${i} with enough text to consume tokens beyond the small window`));
+			}
+
+			const ctx = createMockCtx();
+			const result = await slidingWindowHandler({ type: "context", messages }, ctx);
+			expect(result).toBeDefined();
+			expect(result.messages.length).toBeLessThan(messages.length);
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("should append compaction_sliding_window entry on truncation", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "sliding-window",
+			slidingWindow: { enabled: true, windowTokens: 100, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: false, ratio: 0.5 },
+			segmentCompaction: { enabled: false, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			const slidingWindowHandler = handlers.context[0];
+
+			const messages: AgentMessage[] = [];
+			for (let i = 0; i < 20; i++) {
+				messages.push(makeUserMessage(`Message ${i} with enough text to consume tokens beyond the small window`));
+			}
+
+			const ctx = createMockCtx();
+			await slidingWindowHandler({ type: "context", messages }, ctx);
+
+			expect(pi.appendEntry).toHaveBeenCalledWith("compaction_sliding_window", expect.objectContaining({
+				total: expect.any(Number),
+				timestamp: expect.any(Number),
+			}));
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+});
+
+describe("half compaction strategy integration", () => {
+	it("should register session_before_compact hook when strategy is half", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "half",
+			slidingWindow: { enabled: false, windowTokens: 80000, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: true, ratio: 0.5 },
+			segmentCompaction: { enabled: false, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			expect(handlers.session_before_compact.length).toBeGreaterThanOrEqual(1);
+			expect(pi.on).toHaveBeenCalledWith("session_before_compact", expect.any(Function));
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("should return compaction result from half strategy handler", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "half",
+			slidingWindow: { enabled: false, windowTokens: 80000, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: true, ratio: 0.5 },
+			segmentCompaction: { enabled: false, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			const handler = handlers.session_before_compact[0];
+			const messagesToSummarize: AgentMessage[] = [];
+			for (let i = 0; i < 8; i++) {
+				messagesToSummarize.push(makeUserMessage(`User message ${i} about some topic`));
+				messagesToSummarize.push(makeAssistantMessage(`Assistant response ${i} about some topic`));
+			}
+
+			const preparation = {
+				firstKeptEntryId: "entry-1",
+				messagesToSummarize,
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+				tokensBefore: 100000,
+				fileOps: {},
+				settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+			};
+
+			const ctx = createMockCtx();
+			const result = await handler({ preparation, signal: new AbortController().signal }, ctx);
+
+			expect(result).toBeDefined();
+			expect(result.compaction).toBeDefined();
+			expect(result.compaction.summary).toContain("Half Compaction Summary");
+			expect(result.compaction.firstKeptEntryId).toBe("entry-1");
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("should append compaction_strategy entry on half compaction", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "half",
+			slidingWindow: { enabled: false, windowTokens: 80000, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: true, ratio: 0.5 },
+			segmentCompaction: { enabled: false, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			const handler = handlers.session_before_compact[0];
+			const messagesToSummarize: AgentMessage[] = [];
+			for (let i = 0; i < 8; i++) {
+				messagesToSummarize.push(makeUserMessage(`User message ${i}`));
+				messagesToSummarize.push(makeAssistantMessage(`Assistant response ${i}`));
+			}
+
+			const preparation = {
+				firstKeptEntryId: "entry-1",
+				messagesToSummarize,
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+				tokensBefore: 100000,
+				fileOps: {},
+				settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+			};
+
+			const ctx = createMockCtx();
+			await handler({ preparation, signal: new AbortController().signal }, ctx);
+
+			expect(pi.appendEntry).toHaveBeenCalledWith("compaction_strategy", expect.objectContaining({
+				strategy: "half",
+				tokensBefore: 100000,
+				total: expect.any(Number),
+				timestamp: expect.any(Number),
+			}));
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+});
+
+describe("segment compaction strategy integration", () => {
+	it("should register session_before_compact hook when strategy is segment", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "segment",
+			slidingWindow: { enabled: false, windowTokens: 80000, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: false, ratio: 0.5 },
+			segmentCompaction: { enabled: true, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			expect(handlers.session_before_compact.length).toBeGreaterThanOrEqual(1);
+			expect(pi.on).toHaveBeenCalledWith("session_before_compact", expect.any(Function));
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("should return compaction result from segment strategy handler", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "segment",
+			slidingWindow: { enabled: false, windowTokens: 80000, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: false, ratio: 0.5 },
+			segmentCompaction: { enabled: true, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			const handler = handlers.session_before_compact[0];
+			const messagesToSummarize: AgentMessage[] = [];
+			for (let i = 0; i < 10; i++) {
+				messagesToSummarize.push(makeUserMessage(`User message ${i} about feature development`));
+				messagesToSummarize.push(makeAssistantMessage(`Assistant response ${i} about feature development`));
+			}
+
+			const preparation = {
+				firstKeptEntryId: "entry-1",
+				messagesToSummarize,
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+				tokensBefore: 100000,
+				fileOps: {},
+				settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+			};
+
+			const ctx = createMockCtx();
+			const result = await handler({ preparation, signal: new AbortController().signal }, ctx);
+
+			expect(result).toBeDefined();
+			expect(result.compaction).toBeDefined();
+			expect(result.compaction.summary).toContain("Segment Compaction Summary");
+			expect(result.compaction.details).toBeDefined();
+			expect(result.compaction.details.segmentCount).toBe(3);
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
+	});
+
+	it("should append compaction_strategy entry on segment compaction", async () => {
+		const tmpDir = await mkdtemp(join(tmpdir(), "pi-compaction-test-"));
+		await writeCompactionConfig(tmpDir, {
+			strategy: "segment",
+			slidingWindow: { enabled: false, windowTokens: 80000, truncationNotice: true },
+			microcompact: { enabled: false, maxAgeMs: 3600000, clearableTools: [] },
+			sessionMemory: { enabled: false, memoryDir: ".pi/memory", minContentLength: 50 },
+			reactive: { enabled: false, warnPercent: 75, forceCompactPercent: 90 },
+			contextFold: { enabled: false, maxAgeMs: 1800000, keepRecentCount: 6, maxSummaryLength: 200 },
+			halfCompaction: { enabled: false, ratio: 0.5 },
+			segmentCompaction: { enabled: true, segmentCount: 3 },
+		});
+
+		const origCwd = process.cwd();
+		process.chdir(tmpDir);
+		try {
+			const { pi, handlers } = createMockPi();
+			compactionManager(pi);
+
+			const handler = handlers.session_before_compact[0];
+			const messagesToSummarize: AgentMessage[] = [];
+			for (let i = 0; i < 10; i++) {
+				messagesToSummarize.push(makeUserMessage(`User message ${i}`));
+				messagesToSummarize.push(makeAssistantMessage(`Assistant response ${i}`));
+			}
+
+			const preparation = {
+				firstKeptEntryId: "entry-1",
+				messagesToSummarize,
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+				tokensBefore: 100000,
+				fileOps: {},
+				settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+			};
+
+			const ctx = createMockCtx();
+			await handler({ preparation, signal: new AbortController().signal }, ctx);
+
+			expect(pi.appendEntry).toHaveBeenCalledWith("compaction_strategy", expect.objectContaining({
+				strategy: "segment",
+				tokensBefore: 100000,
+				total: expect.any(Number),
+				timestamp: expect.any(Number),
+			}));
+		} finally {
+			process.chdir(origCwd);
+			await rm(tmpDir, { recursive: true });
+		}
 	});
 });

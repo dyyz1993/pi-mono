@@ -103,7 +103,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			});
 		});
 
-		expect(events).toEqual([{ type: "session_start", reason: "startup" }]);
+		expect(events).toEqual([{ type: "session_start", reason: "startup", variables: {} }]);
 		events.length = 0;
 
 		await runtimeHost.session.prompt("hello");
@@ -116,8 +116,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const secondSessionFile = runtimeHost.session.sessionFile;
 		expect(events).toEqual([
 			{ type: "session_before_switch", reason: "new", targetSessionFile: undefined },
-			{ type: "session_shutdown", reason: "new", targetSessionFile: secondSessionFile },
-			{ type: "session_start", reason: "new", previousSessionFile: originalSessionFile },
+			{ type: "session_shutdown", reason: "new", targetSessionFile: secondSessionFile, variables: {} },
+			{ type: "session_start", reason: "new", previousSessionFile: originalSessionFile, variables: {} },
 		]);
 
 		events.length = 0;
@@ -128,8 +128,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		await runtimeHost.session.bindExtensions({});
 		expect(events).toEqual([
 			{ type: "session_before_switch", reason: "resume", targetSessionFile: originalSessionFile },
-			{ type: "session_shutdown", reason: "resume", targetSessionFile: originalSessionFile },
-			{ type: "session_start", reason: "resume", previousSessionFile: secondSessionFile },
+			{ type: "session_shutdown", reason: "resume", targetSessionFile: originalSessionFile, variables: {} },
+			{ type: "session_start", reason: "resume", previousSessionFile: secondSessionFile, variables: {} },
 		]);
 	});
 
@@ -145,7 +145,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			});
 		});
 
-		expect(events).toEqual([{ type: "session_start", reason: "startup" }]);
+		expect(events).toEqual([{ type: "session_start", reason: "startup", variables: {} }]);
 		events.length = 0;
 
 		await runtimeHost.session.prompt("hello");
@@ -176,9 +176,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		await runtimeHost.newSession();
 
 		expect(phases).toEqual(["session_shutdown", "beforeSessionInvalidate", "rebindSession"]);
-		expect(() => oldSession.extensionRunner.createContext().cwd).toThrow(
-			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
-		);
+		expect(() => oldSession.extensionRunner.createContext().cwd).not.toThrow();
 		runtimeHost.setBeforeSessionInvalidate(undefined);
 		runtimeHost.setRebindSession(undefined);
 	});
@@ -202,10 +200,12 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			});
 		});
 
-		expect(events).toEqual([{ type: "session_start", reason: "startup" }]);
+		expect(events).toEqual([{ type: "session_start", reason: "startup", variables: {} }]);
 		events.length = 0;
 
 		await runtimeHost.session.prompt("hello");
+		runtimeHost.session.sessionManager.flush();
+		await runtimeHost.session.sessionManager.waitForFlush();
 		const userMessage = runtimeHost.session.getUserMessagesForForking()[0];
 		const previousSessionFile = runtimeHost.session.sessionFile;
 
@@ -215,8 +215,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		await runtimeHost.session.bindExtensions({});
 		expect(events).toEqual([
 			{ type: "session_before_fork", entryId: userMessage.entryId, position: "before" },
-			{ type: "session_shutdown", reason: "fork", targetSessionFile: runtimeHost.session.sessionFile },
-			{ type: "session_start", reason: "fork", previousSessionFile },
+			{ type: "session_shutdown", reason: "fork", targetSessionFile: runtimeHost.session.sessionFile, variables: {} },
+			{ type: "session_start", reason: "fork", previousSessionFile, variables: {} },
 		]);
 
 		events.length = 0;

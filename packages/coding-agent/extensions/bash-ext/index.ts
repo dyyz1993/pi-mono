@@ -526,11 +526,6 @@ export default function(pi: ExtensionAPI) {
               proc.exitCode = code;
               proc.endedAt = Date.now();
               proc.status = code === 0 ? "done" : "error";
-              if (m.killedByUser) {
-                if (!deletedIds.has(toolCallId)) history.push({ ...proc });
-                managed.delete(toolCallId);
-                return;
-              }
               channel?.emit(proc.status === "done" ? "end" : "error", {
                 type: proc.status === "done" ? "end" : "error",
                 toolCallId,
@@ -541,9 +536,13 @@ export default function(pi: ExtensionAPI) {
               if (!deletedIds.has(toolCallId)) history.push({ ...proc });
               managed.delete(toolCallId);
               try {
+                const deliverAs = m.killedByUser ? undefined : "steer";
+                const suffix = m.killedByUser
+                  ? "was killed by user"
+                  : `exited with code ${code ?? "unknown"}`;
                 pi.sendUserMessage(
-                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) exited with code ${code ?? "unknown"} after ${formatDuration((proc.endedAt ?? Date.now()) - proc.startedAt)}.${proc.logPath ? ` Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
-                  { deliverAs: "followUp" },
+                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) ${suffix} after ${formatDuration((proc.endedAt ?? Date.now()) - proc.startedAt)}.${proc.logPath ? ` Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
+                  deliverAs ? { deliverAs } : undefined,
                 );
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -691,11 +690,6 @@ export default function(pi: ExtensionAPI) {
               proc.endedAt = Date.now();
               proc.exitCode = null;
               proc.error = err.message;
-              if (m.killedByUser) {
-                if (!deletedIds.has(toolCallId)) history.push({ ...proc });
-                managed.delete(toolCallId);
-                return;
-              }
               channel?.emit("error", {
                 type: "error",
                 toolCallId,
@@ -706,9 +700,13 @@ export default function(pi: ExtensionAPI) {
               if (!deletedIds.has(toolCallId)) history.push({ ...proc });
               managed.delete(toolCallId);
               try {
+                const deliverAs = m.killedByUser ? undefined : "steer";
+                const suffix = m.killedByUser
+                  ? "was killed by user"
+                  : `crashed: ${err.message}`;
                 pi.sendUserMessage(
-                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) crashed: ${err.message}${proc.logPath ? `. Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
-                  { deliverAs: "followUp" },
+                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) ${suffix}${proc.logPath ? `. Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
+                  deliverAs ? { deliverAs } : undefined,
                 );
               } catch (innerErr) {
                 const msg = innerErr instanceof Error ? innerErr.message : String(innerErr);

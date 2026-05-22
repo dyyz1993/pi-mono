@@ -1508,7 +1508,7 @@ export class InteractiveMode {
 						label: options?.label,
 					});
 					if (result.cancelled) {
-						return { cancelled: true };
+						return { cancelled: true, reason: result.reason };
 					}
 
 					this.chatContainer.clear();
@@ -4284,7 +4284,7 @@ export class InteractiveMode {
 							return;
 						}
 						if (result.cancelled) {
-							this.showStatus("Navigation cancelled");
+							this.showStatus(result.reason ?? "Navigation cancelled");
 							return;
 						}
 

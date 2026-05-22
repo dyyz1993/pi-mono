@@ -28,6 +28,11 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 				return snapshots;
 			}
 			case "snapshot.rollback": {
+				// WARNING: This only restores files without moving the message pointer.
+				// For a complete rollback (messages + files), use navigate_tree instead.
+				// This channel method exists for internal use (e.g., unrevert) and
+				// selective file restoration. Using it standalone will desynchronize
+				// the message context from the disk state.
 				const { snapshotId, files } = msg.params as {
 					sessionId: string;
 					snapshotId: string;
@@ -44,6 +49,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 				return {
 					ok: true,
 					restoredFiles: [...result.restored, ...result.deleted],
+					skippedFiles: result.skipped,
 				};
 			}
 			case "snapshot.unrevert": {
@@ -194,6 +200,9 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 				}
 			}
 		}
+
+		// Return preview result so previewRollback() can read it
+		return { restored: result.restored, deleted: result.deleted, skipped: result.skipped };
 	});
 
 	// Auto GC on session shutdown

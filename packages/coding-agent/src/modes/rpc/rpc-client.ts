@@ -393,7 +393,7 @@ export class RpcClient {
 	async navigateTree(
 		targetId: string,
 		options?: { summarize?: boolean; skipFiles?: boolean },
-	): Promise<{ cancelled: boolean }> {
+	): Promise<{ cancelled: boolean; reason?: string }> {
 		const response = await this.send({
 			type: "navigate_tree",
 			targetId,
@@ -405,6 +405,24 @@ export class RpcClient {
 
 	async previewRollback(targetId: string): Promise<RollbackPreviewResult> {
 		const response = await this.send({ type: "rollback_preview", targetId });
+		return this.getData(response);
+	}
+
+	async deleteEntries(targetIds: string[]): Promise<{ entryId: string }> {
+		const response = await this.send({ type: "delete_entries", targetIds });
+		return this.getData(response);
+	}
+
+	async summarizeEntries(
+		targetIds: string[],
+		options?: { summary?: string; model?: string },
+	): Promise<{ entryId: string }> {
+		const response = await this.send({
+			type: "summarize_entries",
+			targetIds,
+			summary: options?.summary,
+			model: options?.model,
+		});
 		return this.getData(response);
 	}
 

@@ -32,6 +32,14 @@ const DelegateForkParams = Type.Object({
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the forked session in. Defaults to the current working directory." })),
 });
 
+const DelegateSyncParams = Type.Object({
+  task: Type.String({ description: "Task description to delegate synchronously" }),
+  title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
+  agent: Type.Optional(Type.String({ description: "Agent name to activate in the delegated session" })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds. Default: 180000." })),
+  projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
+});
+
 export default function coordinatorExtension(pi: ExtensionAPI) {
   const rawChannel = pi.registerChannel(COORDINATOR_CHANNEL_NAME);
 
@@ -123,6 +131,25 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
         return 0;
       }
     },
+
+    async delegate_sync(task, agent, timeoutMs, projectPath) {
+      try {
+        const result = await client.call(
+          "session_delegate_sync",
+          { task, title: agent ? `${agent}: ${task.slice(0, 40)}` : undefined, agent, timeoutMs, projectPath },
+          timeoutMs + 30_000,
+        );
+        return result;
+      } catch (err) {
+        return {
+          sessionId: "",
+          status: "error" as const,
+          exitCode: 1,
+          finalText: "",
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
   };
 
   createCoordinatorHandler(
@@ -184,7 +211,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
       }
     },
   });
@@ -220,7 +247,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
       }
     },
   });
@@ -277,7 +304,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
       }
     },
   });
@@ -331,6 +358,53 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
         content: [{ type: "text" as const, text: `Cleared ${removed} stopped/completed task(s).` }],
         details: { removed },
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_sync",
+    label: "Session Delegate Sync",
+    description: [
+      "Synchronously delegate a task to a subagent session and wait for the result.",
+      "Optionally specify an agent name to activate in the delegated session.",
+      "The agent parameter is passed through to the child session so hooks and permissions are applied.",
+    ].join(" "),
+    parameters: DelegateSyncParams,
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      const sid = currentSessionId || ctx.sessionManager.getSessionId();
+      const projectPath = params.projectPath || ctx.cwd;
+      const timeoutMs = params.timeoutMs ?? 180_000;
+
+      try {
+        const result = await serverProxy.delegate_sync(params.task, params.agent, timeoutMs, projectPath);
+
+        pi.appendEntry("coordinator_delegate_sync", {
+          sessionId: result.sessionId,
+          status: result.status,
+          exitCode: result.exitCode,
+          agent: params.agent,
+          task: params.task,
+          title: params.title,
+          projectPath,
+          dispatchedBy: sid,
+        });
+
+        if (result.exitCode !== 0) {
+          return {
+            content: [{ type: "text" as const, text: `Sync delegate ${result.status}: ${result.error || result.finalText}` }],
+            details: { ...result, dispatchedBy: sid, projectPath },
+            isError: true,
+          };
+        }
+
+        return {
+          content: [{ type: "text" as const, text: result.finalText }],
+          details: { ...result, dispatchedBy: sid, projectPath },
+        };
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
+      }
     },
   });
 

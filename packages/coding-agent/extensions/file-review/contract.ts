@@ -29,6 +29,23 @@ export interface LiveChangesResult {
 	changes: LiveChange[];
 }
 
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface FileApproval {
+	turnIndex: number;
+	path: string;
+	status: ApprovalStatus;
+	timestamp: number;
+}
+
+export interface PendingChange {
+	turnIndex: number;
+	path: string;
+	status: ApprovalStatus;
+	diff: LiveChange["diff"];
+	timestamp: number;
+}
+
 export interface FileReviewChannelContract extends ChannelContract {
 	methods: {
 		"review.live": {
@@ -50,6 +67,26 @@ export interface FileReviewChannelContract extends ChannelContract {
 		"review.clear": {
 			params: Record<string, never>;
 			return: { ok: boolean };
+		};
+		"review.pending": {
+			params: Record<string, never>;
+			return: PendingChange[];
+		};
+		"review.approve": {
+			params: { turnIndex: number; path: string };
+			return: { ok: boolean };
+		};
+		"review.reject": {
+			params: { turnIndex: number; path: string };
+			return: { ok: boolean };
+		};
+		"review.approveAll": {
+			params: Record<string, never>;
+			return: { count: number };
+		};
+		"review.approvals": {
+			params: { status?: ApprovalStatus };
+			return: FileApproval[];
 		};
 	};
 }

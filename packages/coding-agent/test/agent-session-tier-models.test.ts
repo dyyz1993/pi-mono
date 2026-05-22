@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { DEFAULT_TIER_ALIASES } from "../src/core/defaults.js";
 import { createHarness } from "./test-harness.js";
 
 describe("AgentSession tier models", () => {
@@ -8,10 +9,10 @@ describe("AgentSession tier models", () => {
 		harness?.cleanup();
 	});
 
-	test("getTierModels returns empty object by default", () => {
+	test("getTierModels returns DEFAULT_TIER_ALIASES when no user config", () => {
 		harness = createHarness();
 		const result = harness.session.getTierModels();
-		expect(result).toEqual({});
+		expect(result).toEqual({ ...DEFAULT_TIER_ALIASES });
 	});
 
 	test("setTierModels stores mapping and getTierModels returns it", () => {

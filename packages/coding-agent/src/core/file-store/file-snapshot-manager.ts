@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import type { CustomEntry, SessionEntry } from "../session-manager.js";
 import type { InternalGit, TreeEntry } from "./internal-git.js";
 
@@ -41,6 +41,7 @@ export interface LiveChange {
 
 const FILE_SIZE_LIMIT = 1024 * 1024;
 
+// @ts-expect-error reserved for future use
 function findCanonicalGitRoot(cwd: string): string | null {
 	let dir: string;
 	try {
@@ -104,7 +105,6 @@ function generateUnifiedDiff(oldContent: string | null, newContent: string | nul
 			i++;
 			j++;
 		} else {
-			const hunkStart = Math.max(0, i - 3);
 			const hunkOldEnd = Math.min(oldLines.length, i + 3);
 			const hunkNewEnd = Math.min(newLines.length, j + 3);
 
@@ -258,6 +258,12 @@ export class FileSnapshotManager {
 
 			const data = custom.data as StepSnapshotData;
 			if (!data) continue;
+
+			// The first snapshot's baselineTreeHash is the session start state.
+			// Restore it so rollback-to-root can find the correct target.
+			if (this.sessionStartTreeHash === null && data.baselineTreeHash !== null) {
+				this.sessionStartTreeHash = data.baselineTreeHash;
+			}
 
 			this.snapshotIndex.set(entry.id, {
 				...data,
@@ -569,13 +575,17 @@ export class FileSnapshotManager {
 		const preRollbackFiles = readFilteredWorkingDir(this.git, cwd);
 		const preRollbackTreeHash = preRollbackFiles.size > 0 ? this.git.writeTree(preRollbackFiles).treeHash : null;
 
+		// Skip dirty files (externally modified) to avoid silent overwrite
+		const dirtySet = new Set(dirty);
+		const safeRestore = filteredRestore.filter((p) => !dirtySet.has(p));
+
 		options.appendEntry("unrevert-point", {
 			preRollbackTreeHash,
 			rolledBackToLeaf: options.targetEntryId ?? "",
-			restoredFiles: filteredRestore,
+			restoredFiles: safeRestore,
 		});
 
-		for (const path of filteredRestore) {
+		for (const path of safeRestore) {
 			const content = targetFiles.get(path);
 			if (content === undefined) continue;
 			const absPath = join(cwd, path);
@@ -593,9 +603,9 @@ export class FileSnapshotManager {
 		this.lastCommittedTreeHash = targetTreeHash;
 
 		return {
-			restored: filteredRestore.sort(),
+			restored: safeRestore.sort(),
 			deleted: filteredDelete.sort(),
-			skipped: [],
+			skipped: dirty,
 			dirty,
 		};
 	}

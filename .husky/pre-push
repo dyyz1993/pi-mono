@@ -1,0 +1,32 @@
+#!/bin/sh
+# pre-push hook: 拦截会覆盖远程提交的 force push 到 main/master
+
+zero="0000000000000000000000000000000000000000"
+
+while read local_ref local_oid remote_ref remote_oid; do
+  branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
+  if [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
+    continue
+  fi
+
+  if [ "$local_oid" != "$zero" ] && [ "$remote_oid" != "$zero" ]; then
+    merge_base=$(git merge-base "$local_oid" "$remote_oid" 2>/dev/null)
+    if [ "$merge_base" != "$remote_oid" ]; then
+      echo ""
+      echo "❌ BLOCKED: Force push to $branch detected!"
+      echo "   Remote HEAD: $remote_oid"
+      echo "   Local HEAD:  $local_oid"
+      echo "   This would OVERWRITE remote commits."
+      echo "   If intentional, use: git push --force-with-lease"
+      echo ""
+      exit 1
+    fi
+  fi
+
+  if [ "$local_oid" = "$zero" ]; then
+    echo "❌ BLOCKED: Deleting $branch is not allowed."
+    exit 1
+  fi
+done
+
+exit 0

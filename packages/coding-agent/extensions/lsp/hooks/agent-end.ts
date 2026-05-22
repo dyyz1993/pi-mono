@@ -8,6 +8,7 @@ import type { DependencyResolver } from "../utils/dependency-resolver.js";
 import { waitForPushDiagnostics } from "../utils/diagnostics-wait.js";
 import { extractPullDiagnostics, type LspDiagnostic, languageIdFromPath } from "../utils/lsp-helpers.js";
 import type { DiagnosticsMode } from "./diagnostics-mode.js";
+import type { LazyActivator } from "../utils/lazy-activator.js";
 
 export interface FileDiagnostics {
 	filePath: string;
@@ -25,6 +26,7 @@ export function createAgentEndHook(
 	fileTracker?: FileTracker,
 	dependencyResolver?: DependencyResolver,
 	onDiagnostics?: (results: FileDiagnostics[]) => void,
+	lazyActivator?: LazyActivator,
 ): AgentEndHook {
 	return {
 		register(pi: ExtensionAPI): void {
@@ -84,6 +86,10 @@ export function createAgentEndHook(
 	}
 
 	async function runDiagnosticsForFile(filePath: string): Promise<LspDiagnostic[]> {
+		if (lazyActivator) {
+			await lazyActivator.ensureServerForFile(filePath);
+		}
+
 		const cwd = process.cwd();
 		const uri = pathToFileURL(resolve(cwd, filePath)).href;
 

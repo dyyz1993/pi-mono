@@ -362,6 +362,11 @@ export class AgentSession {
 	private _currentAgentName: string = "build";
 	private _currentAgentVariables: Record<string, string> = {};
 
+	/** Read-only access to current agent variables (for session lifecycle events). */
+	get currentAgentVariables(): Readonly<Record<string, string>> {
+		return this._currentAgentVariables;
+	}
+
 	private _tierModels: Record<string, string> = {};
 
 	// Tool registry for extension getTools/setTools
@@ -554,7 +559,8 @@ export class AgentSession {
 				content: result.content,
 				details: result.details,
 				isError,
-			});
+				variables: this._currentAgentVariables,
+			} as any);
 
 			if (!hookResult) {
 				return undefined;
@@ -811,9 +817,13 @@ export class AgentSession {
 	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
-			await this._extensionRunner.emit({ type: "agent_start" });
+			await this._extensionRunner.emit({ type: "agent_start", variables: this._currentAgentVariables } as any);
 		} else if (event.type === "agent_end") {
-			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
+			await this._extensionRunner.emit({
+				type: "agent_end",
+				messages: event.messages,
+				variables: this._currentAgentVariables,
+			} as any);
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {
 				type: "turn_start",
@@ -2357,7 +2367,7 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
-		await this._extensionRunner.emit(this._sessionStartEvent);
+		await this._extensionRunner.emit({ ...this._sessionStartEvent, variables: this._currentAgentVariables } as any);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
 	}
 
@@ -2491,6 +2501,12 @@ export class AgentSession {
 				},
 				foldEntry: (entryId, summary, originalTokens) => {
 					this.sessionManager.appendFold(entryId, summary, originalTokens);
+				},
+				deleteEntries: (targetIds) => {
+					this.sessionManager.appendDeletion(targetIds);
+				},
+				summarizeEntries: (targetIds, summary) => {
+					this.sessionManager.appendSegmentSummary(targetIds, summary);
 				},
 				setSessionName: (name) => {
 					const oldName = this.sessionManager.getSessionName();
@@ -2752,7 +2768,11 @@ export class AgentSession {
 
 	async reload(): Promise<void> {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
-		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
+		await emitSessionShutdownEvent(this._extensionRunner, {
+			type: "session_shutdown",
+			reason: "reload",
+			variables: this._currentAgentVariables,
+		} as any);
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
@@ -2785,7 +2805,11 @@ export class AgentSession {
 			this._extensionShutdownHandler ||
 			this._extensionErrorListener;
 		if (hasBindings) {
-			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+			await this._extensionRunner.emit({
+				type: "session_start",
+				reason: "reload",
+				variables: this._currentAgentVariables,
+			} as any);
 			await this.extendResourcesFromExtensions("reload");
 		}
 	}
@@ -3081,6 +3105,11 @@ export class AgentSession {
 		summaryEntry?: BranchSummaryEntry;
 		reason?: string;
 	}> {
+		// Block rollback while agent is actively streaming
+		if (this.isStreaming) {
+			return { cancelled: true, reason: "Cannot rollback while agent is streaming" };
+		}
+
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target
@@ -3518,7 +3547,8 @@ export class AgentSession {
 			const aliasResolved = resolveModelAlias(modelSpec, this._tierModels);
 			const resolved = aliasResolved ?? modelSpec;
 			const available = await this._modelRegistry.getAvailable();
-			return available.find((m) => m.id === resolved || `${m.provider}/${m.id}` === resolved);
+			const found = available.find((m) => m.id === resolved || `${m.provider}/${m.id}` === resolved);
+			return found ?? this.model;
 		}
 		return this.model;
 	}
@@ -3853,11 +3883,6 @@ export class AgentSession {
 			preview: true,
 		} as import("./extensions/types.js").SessionTreeEvent);
 
-		return (
-			(result as unknown as import("./extensions/types.js").SessionTreePreviewResult) ?? {
-				restored: [],
-				deleted: [],
-			}
-		);
+		return result ?? { restored: [], deleted: [] };
 	}
 }

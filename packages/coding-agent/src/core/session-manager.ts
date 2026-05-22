@@ -2,7 +2,7 @@ import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@dyyz1993/pi-ai";
 import { randomUUID } from "crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from "fs";
-import { appendFile, readdir, readFile, stat, writeFile } from "fs/promises";
+import { open, appendFile, readdir, stat, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
@@ -16,6 +16,25 @@ import {
 } from "./messages.js";
 
 export const CURRENT_SESSION_VERSION = 3;
+
+const MAX_SESSION_INFO_SIZE = 5 * 1024 * 1024;
+const MAX_LIST_CONCURRENCY = 10;
+
+async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+	const results: R[] = new Array(items.length);
+	let nextIndex = 0;
+
+	async function worker(): Promise<void> {
+		while (nextIndex < items.length) {
+			const i = nextIndex++;
+			results[i] = await fn(items[i]);
+		}
+	}
+
+	const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+	await Promise.all(workers);
+	return results;
+}
 
 export interface SessionHeader {
 	type: "session";
@@ -558,9 +577,74 @@ export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultA
 	return sessionDir;
 }
 
+function loadEntriesStreaming(filePath: string, skipGitUndoState: boolean): FileEntry[] {
+	const entries: FileEntry[] = [];
+	const fd = openSync(filePath, "r");
+	const bufferSize = 1024 * 1024;
+	const buffer = Buffer.alloc(bufferSize);
+	let remainder = "";
+	let bytesRead: number;
+
+	try {
+		while ((bytesRead = readSync(fd, buffer, 0, bufferSize, null)) > 0) {
+			const chunk = buffer.toString("utf8", 0, bytesRead);
+			const data = remainder + chunk;
+			const lines = data.split("\n");
+			remainder = lines.pop() ?? "";
+
+			for (const line of lines) {
+				if (!line.trim()) continue;
+				try {
+					const entry = JSON.parse(line) as FileEntry;
+					if (skipGitUndoState && entry.type === "custom" && (entry as any).customType === "git-undo-state") {
+						continue;
+					}
+					entries.push(entry);
+				} catch {
+					// Skip malformed lines
+				}
+			}
+		}
+
+		if (remainder.trim()) {
+			try {
+				const entry = JSON.parse(remainder) as FileEntry;
+				if (!(skipGitUndoState && entry.type === "custom" && (entry as any).customType === "git-undo-state")) {
+					entries.push(entry);
+				}
+			} catch {
+				// Skip malformed
+			}
+		}
+	} finally {
+		closeSync(fd);
+	}
+
+	if (entries.length === 0) return entries;
+	const header = entries[0];
+	if (header.type !== "session" || typeof (header as any).id !== "string") {
+		return [];
+	}
+
+	return entries;
+}
+
+export interface LoadEntriesOptions {
+	skipGitUndoState?: boolean;
+}
+
 /** Exported for testing */
-export function loadEntriesFromFile(filePath: string): FileEntry[] {
+export function loadEntriesFromFile(filePath: string, options?: LoadEntriesOptions): FileEntry[] {
 	if (!existsSync(filePath)) return [];
+
+	const fileStat = statSync(filePath);
+	const isLarge = fileStat.size > MAX_SESSION_INFO_SIZE;
+	const skipGitUndoState = options?.skipGitUndoState ?? true;
+
+	if (isLarge) {
+		console.warn(`[session-manager] Loading large session file (${Math.round(fileStat.size / 1024 / 1024)}MB): ${filePath}`);
+		return loadEntriesStreaming(filePath, skipGitUndoState);
+	}
 
 	const content = readFileSync(filePath, "utf8");
 	const entries: FileEntry[] = [];
@@ -570,13 +654,15 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 		if (!line.trim()) continue;
 		try {
 			const entry = JSON.parse(line) as FileEntry;
+			if (skipGitUndoState && entry.type === "custom" && (entry as any).customType === "git-undo-state") {
+				continue;
+			}
 			entries.push(entry);
 		} catch {
 			// Skip malformed lines
 		}
 	}
 
-	// Validate session header
 	if (entries.length === 0) return entries;
 	const header = entries[0];
 	if (header.type !== "session" || typeof (header as any).id !== "string") {
@@ -604,14 +690,26 @@ function isValidSessionFile(filePath: string): boolean {
 /** Exported for testing */
 export function findMostRecentSession(sessionDir: string): string | null {
 	try {
-		const files = readdirSync(sessionDir)
+		const candidates = readdirSync(sessionDir)
 			.filter((f) => f.endsWith(".jsonl"))
-			.map((f) => join(sessionDir, f))
-			.filter(isValidSessionFile)
-			.map((path) => ({ path, mtime: statSync(path).mtime }))
-			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+			.map((f) => {
+				const fullPath = join(sessionDir, f);
+				try {
+					return { path: fullPath, mtime: statSync(fullPath).mtime.getTime() };
+				} catch {
+					return null;
+				}
+			})
+			.filter((e): e is { path: string; mtime: number } => e !== null)
+			.sort((a, b) => b.mtime - a.mtime);
 
-		return files[0]?.path || null;
+		// Only validate the most recent candidate instead of all files
+		for (const candidate of candidates) {
+			if (isValidSessionFile(candidate.path)) {
+				return candidate.path;
+			}
+		}
+		return null;
 	} catch {
 		return null;
 	}
@@ -660,6 +758,7 @@ function getLastActivityTime(entries: FileEntry[]): number | undefined {
 	return lastActivityTime;
 }
 
+// @ts-expect-error reserved for future use
 function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, statsMtime: Date): Date {
 	const lastActivityTime = getLastActivityTime(entries);
 	if (typeof lastActivityTime === "number" && lastActivityTime > 0) {
@@ -670,71 +769,70 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 	return !Number.isNaN(headerTime) ? new Date(headerTime) : statsMtime;
 }
 
+async function buildSessionInfoFast(filePath: string, fileStat: { mtime: Date }): Promise<SessionInfo | null> {
+	try {
+		const handle = await open(filePath, "r");
+		try {
+			const buffer = Buffer.alloc(65536);
+			const { bytesRead } = await handle.read(buffer, 0, 65536, 0);
+			const content = buffer.toString("utf8", 0, bytesRead);
+
+			const lines = content.split("\n");
+			if (lines.length < 2) return null;
+
+			const header = JSON.parse(lines[0]);
+			if (header.type !== "session") return null;
+
+			let firstMessage = "";
+			let name: string | undefined;
+
+			for (let i = 1; i < lines.length; i++) {
+				const line = lines[i]?.trim();
+				if (!line) continue;
+				try {
+					const entry = JSON.parse(line);
+					if (entry.type === "session_info" && entry.name?.trim()) {
+						name = entry.name.trim();
+					}
+					if (entry.type === "message" && !firstMessage) {
+						const message = entry.message;
+						if (message?.role === "user") {
+							const text = extractTextContent(message);
+							if (text) firstMessage = text;
+						}
+					}
+					if (firstMessage && name) break;
+				} catch {
+					// Skip malformed lines
+				}
+			}
+
+			const cwd = typeof header.cwd === "string" ? header.cwd : "";
+
+			return {
+				path: filePath,
+				id: header.id,
+				cwd,
+				name,
+				parentSessionPath: header.parentSession,
+				created: new Date(header.timestamp),
+				modified: fileStat.mtime,
+				messageCount: -1,
+				firstMessage: firstMessage || "(large session)",
+				allMessagesText: "",
+			};
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		return null;
+	}
+}
+
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
-		const content = await readFile(filePath, "utf8");
-		const entries: FileEntry[] = [];
-		const lines = content.trim().split("\n");
-
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			try {
-				entries.push(JSON.parse(line) as FileEntry);
-			} catch {
-				// Skip malformed lines
-			}
-		}
-
-		if (entries.length === 0) return null;
-		const header = entries[0];
-		if (header.type !== "session") return null;
-
-		const stats = await stat(filePath);
-		let messageCount = 0;
-		let firstMessage = "";
-		const allMessages: string[] = [];
-		let name: string | undefined;
-
-		for (const entry of entries) {
-			// Extract session name (use latest, including explicit clears)
-			if (entry.type === "session_info") {
-				const infoEntry = entry as SessionInfoEntry;
-				name = infoEntry.name?.trim() || undefined;
-			}
-
-			if (entry.type !== "message") continue;
-			messageCount++;
-
-			const message = (entry as SessionMessageEntry).message;
-			if (!isMessageWithContent(message)) continue;
-			if (message.role !== "user" && message.role !== "assistant") continue;
-
-			const textContent = extractTextContent(message);
-			if (!textContent) continue;
-
-			allMessages.push(textContent);
-			if (!firstMessage && message.role === "user") {
-				firstMessage = textContent;
-			}
-		}
-
-		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
-		const parentSessionPath = (header as SessionHeader).parentSession;
-
-		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
-
-		return {
-			path: filePath,
-			id: (header as SessionHeader).id,
-			cwd,
-			name,
-			parentSessionPath,
-			created: new Date((header as SessionHeader).timestamp),
-			modified,
-			messageCount,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText: allMessages.join(" "),
-		};
+		const fileStat = await stat(filePath);
+		return buildSessionInfoFast(filePath, fileStat);
 	} catch {
 		return null;
 	}
@@ -759,14 +857,12 @@ async function listSessionsFromDir(
 		const total = progressTotal ?? files.length;
 
 		let loaded = 0;
-		const results = await Promise.all(
-			files.map(async (file) => {
-				const info = await buildSessionInfo(file);
-				loaded++;
-				onProgress?.(progressOffset + loaded, total);
-				return info;
-			}),
-		);
+		const results = await mapConcurrent(files, MAX_LIST_CONCURRENCY, async (file) => {
+			const info = await buildSessionInfo(file);
+			loaded++;
+			onProgress?.(progressOffset + loaded, total);
+			return info;
+		});
 		for (const info of results) {
 			if (info) {
 				sessions.push(info);
@@ -1669,7 +1765,7 @@ export class SessionManager {
 			cwd: targetCwd,
 			parentSession: sourcePath,
 		};
-		const { writeFileSync: writeSync, appendFileSync: appendSync } = require("fs") as typeof import("fs");
+		const { appendFileSync: appendSync } = require("fs") as typeof import("fs");
 		appendSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
 
 		// Copy all non-header entries from source
@@ -1727,14 +1823,12 @@ export class SessionManager {
 			const sessions: SessionInfo[] = [];
 			const allFiles = dirFiles.flat();
 
-			const results = await Promise.all(
-				allFiles.map(async (file) => {
-					const info = await buildSessionInfo(file);
-					loaded++;
-					onProgress?.(loaded, totalFiles);
-					return info;
-				}),
-			);
+			const results = await mapConcurrent(allFiles, MAX_LIST_CONCURRENCY, async (file) => {
+				const info = await buildSessionInfo(file);
+				loaded++;
+				onProgress?.(loaded, totalFiles);
+				return info;
+			});
 
 			for (const info of results) {
 				if (info) {

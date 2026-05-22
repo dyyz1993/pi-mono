@@ -44,7 +44,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
       return: DelegateCreateResult;
     };
     session_delegate_send: {
-      params: { targetSessionId: string; message: string };
+      params: { targetSessionId: string; message: string; mode?: "followUp" | "steer" };
       return: DelegateSendResult;
     };
     session_delegate_status: {
@@ -70,6 +70,22 @@ export interface CoordinatorChannelContract extends ChannelContract {
     session_delegate_fork: {
       params: { sessionId: string; task: string; title?: string; projectPath?: string };
       return: DelegateCreateResult;
+    };
+    session_delegate_sync: {
+      params: {
+        task: string;
+        title?: string;
+        agent?: string;
+        timeoutMs?: number;
+        projectPath?: string;
+      };
+      return: {
+        sessionId: string;
+        status: "completed" | "timeout" | "error" | "aborted";
+        exitCode: number;
+        finalText: string;
+        error?: string;
+      };
     };
   };
   events: {

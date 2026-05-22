@@ -27,7 +27,7 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME } from "../config.js";
+import { CONFIG_DIR_NAME, getBuiltinExtensionsDir } from "../config.js";
 import { shouldUseWindowsShell } from "../utils/child-process.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
@@ -528,17 +528,23 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	const packageJsonPath = join(dir, "package.json");
 	if (existsSync(packageJsonPath)) {
 		const manifest = readPiManifestFile(packageJsonPath);
-		if (manifest?.extensions?.length) {
-			const entries: string[] = [];
-			for (const extPath of manifest.extensions) {
-				const resolvedExtPath = resolve(dir, extPath);
-				if (existsSync(resolvedExtPath)) {
-					entries.push(resolvedExtPath);
+		if (manifest) {
+			// Has a "pi" field — treat as explicit declaration.
+			// If extensions are declared, resolve those paths.
+			// If no extensions declared, skip entirely (e.g. shared libraries).
+			if (manifest.extensions?.length) {
+				const entries: string[] = [];
+				for (const extPath of manifest.extensions) {
+					const resolvedExtPath = resolve(dir, extPath);
+					if (existsSync(resolvedExtPath)) {
+						entries.push(resolvedExtPath);
+					}
+				}
+				if (entries.length > 0) {
+					return entries;
 				}
 			}
-			if (entries.length > 0) {
-				return entries;
-			}
+			return null;
 		}
 	}
 
@@ -2272,6 +2278,23 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.themes,
 			globalBaseDir,
 		);
+
+		const builtinExtensionsDir = getBuiltinExtensionsDir();
+		const builtinExtensionEntries = collectAutoExtensionEntries(builtinExtensionsDir);
+		if (builtinExtensionEntries.length > 0) {
+			const builtinMetadata: PathMetadata = {
+				source: "auto",
+				scope: "user",
+				origin: "top-level",
+				baseDir: builtinExtensionsDir,
+			};
+			const builtinTarget = accumulator.extensions;
+			for (const entry of builtinExtensionEntries) {
+				if (!builtinTarget.has(entry)) {
+					builtinTarget.set(entry, { metadata: builtinMetadata, enabled: true });
+				}
+			}
+		}
 	}
 
 	private collectFilesFromPaths(paths: string[], resourceType: ResourceType): string[] {

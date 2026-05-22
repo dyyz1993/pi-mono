@@ -100,6 +100,7 @@ describe("coordinator cleanup mechanism - fix verification", () => {
 				"session_delegate_fork",
 				"session_delegate_remove",
 				"session_delegate_clear_stopped",
+				"session_delegate_sync",
 			];
 
 			for (const name of expectedTools) {

@@ -356,6 +356,24 @@ export function getExportTemplateDir(): string {
 	return join(packageDir, srcOrDist, "core", "export-html");
 }
 
+/**
+ * Get path to built-in extensions directory (shipped with package).
+ * - For Bun binary: extensions/ next to executable
+ * - For Node.js (dist/): dist/extensions/
+ * - For tsx (src/): extensions/
+ */
+export function getBuiltinExtensionsDir(): string {
+	if (isBunBinary) {
+		return join(getPackageDir(), "extensions");
+	}
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	if (srcOrDist === "src") {
+		return join(packageDir, "extensions");
+	}
+	return join(packageDir, srcOrDist, "extensions");
+}
+
 /** Get path to package.json */
 export function getPackageJsonPath(): string {
 	return join(getPackageDir(), "package.json");

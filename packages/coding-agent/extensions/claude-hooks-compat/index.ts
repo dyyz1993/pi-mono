@@ -1,10 +1,12 @@
-import type { ExtensionAPI, ToolResultEvent, BeforeAgentStartEvent } from "@dyyz1993/pi-coding-agent";
+import { createTypedChannel, type ExtensionAPI, type ToolResultEvent, type BeforeAgentStartEvent } from "@dyyz1993/pi-coding-agent";
 import type { MatcherGroup, HookHandler } from "./types.js";
-import { loadConfigs } from "./config-loader.js";
+import { loadConfigs, loadConfigSources, type ConfigSource } from "./config-loader.js";
 import { matchesMatcher } from "./matcher.js";
 import { matchesIfClause } from "./if-parser.js";
 import { buildStdinData } from "./stdin-builder.js";
 import { runHandler, interpretHookOutput } from "./handler-runner.js";
+import { RingBuffer, extractSnippet, computeRuleStats, type HookLogEntry, type HookLogResult, type HookConfigSnapshot, truncateMiddle } from "./hooks-log.js";
+import { HOOKS_CHANNEL_NAME, type HooksChannelContract } from "./channel-contract.js";
 
 function matchesPiVariables(
 	handler: HookHandler,
@@ -26,8 +28,34 @@ export default function (pi: ExtensionAPI) {
 	let configs: Map<string, MatcherGroup[]> = new Map();
 	const onceHandlers = new Set<number>();
 
+	const RING_BUFFER_CAPACITY = 200;
+	const logBuffer = new RingBuffer<HookLogEntry>(RING_BUFFER_CAPACITY);
+	let logIdCounter = 0;
+	let configSources: ConfigSource[] = [];
+
+	const rawChannel = pi.registerChannel(HOOKS_CHANNEL_NAME);
+	const channel = createTypedChannel<HooksChannelContract>(rawChannel).server;
+
+	channel.handle("hooks.getLog", (params: { limit?: number; event?: string }) => {
+		let entries = logBuffer.snapshot(params.limit);
+		if (params.event) {
+			entries = entries.filter(e => e.event === params.event);
+		}
+		return buildLogResult(entries);
+	});
+
+	channel.handle("hooks.getConfig", () => {
+		return buildLogResult([]);
+	});
+
+	channel.handle("hooks.clear", () => {
+		logBuffer.clear();
+		return { ok: true };
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		configs = loadConfigs(ctx.cwd);
+		configSources = loadConfigSources(ctx.cwd);
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -122,9 +150,33 @@ export default function (pi: ExtensionAPI) {
 				const isAsync = handler.async ?? handler.asyncRewake ?? false;
 				if (isAsync && hookEventName === "PreToolUse") {
 					const runner = getCallLLM(pi);
+					const asyncT0 = Date.now();
 					runHandler(handler, stdinData, ctx, runner).then((output) => {
 						try {
+							const asyncDuration = Date.now() - asyncT0;
 							const result = interpretHookOutput(output);
+
+							const decision: "allow" | "block" | "ask" =
+								result.shouldBlock ? (output.exitCode === 3 ? "ask" : "block") : "allow";
+							const entry: HookLogEntry = {
+								id: ++logIdCounter,
+								timestamp: asyncT0,
+								durationMs: asyncDuration,
+								event: hookEventName,
+								toolName: event.toolName,
+								matcher: group.matcher ?? "*",
+								hookType: handler.type ?? "command",
+								command: truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200),
+								decision,
+								reason: result.reason ?? "",
+								exitCode: output.exitCode,
+								source: group.__source__ ?? "unknown",
+								snippet: extractSnippet(event.input),
+							};
+							logBuffer.push(entry);
+							channel.emit("hook_executed", entry);
+							if (decision === "block") channel.emit("hook_blocked", entry);
+
 							if (handler.asyncRewake && output.exitCode === 2 && result.reason) {
 								pi.sendMessage({
 									customType: "hook_async_block",
@@ -140,8 +192,31 @@ export default function (pi: ExtensionAPI) {
 					continue;
 				}
 
+				const t0 = Date.now();
 				const output = await runHandler(handler, stdinData, ctx, getCallLLM(pi));
+				const durationMs = Date.now() - t0;
 				const result = interpretHookOutput(output);
+
+				const decision: "allow" | "block" | "ask" =
+					result.shouldBlock ? (output.exitCode === 3 ? "ask" : "block") : "allow";
+				const entry: HookLogEntry = {
+					id: ++logIdCounter,
+					timestamp: t0,
+					durationMs,
+					event: hookEventName,
+					toolName: event.toolName,
+					matcher: group.matcher ?? "*",
+					hookType: handler.type ?? "command",
+					command: truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200),
+					decision,
+					reason: result.reason ?? "",
+					exitCode: output.exitCode,
+					source: group.__source__ ?? "unknown",
+					snippet: extractSnippet(event.input),
+				};
+				logBuffer.push(entry);
+				channel.emit("hook_executed", entry);
+				if (decision === "block") channel.emit("hook_blocked", entry);
 
 				if (result.shouldBlock) {
 					return { block: true, reason: result.reason };
@@ -154,6 +229,47 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		return undefined;
+	}
+
+	function buildLogResult(entries: HookLogEntry[]): HookLogResult {
+		return {
+			entries,
+			ruleStats: computeRuleStats(logBuffer.snapshot()),
+			totalExecutions: logBuffer.total,
+			configSnapshot: buildConfigSnapshot(),
+		};
+	}
+
+	function buildConfigSnapshot(): HookConfigSnapshot {
+		const events: HookConfigSnapshot["events"] = [];
+		for (const [eventName, groups] of configs.entries()) {
+			events.push({
+				name: eventName,
+				groups: groups.map(g => ({
+					matcher: g.matcher ?? "*",
+					source: g.__source__ ?? "unknown",
+					hooks: g.hooks.map(h => ({
+						type: h.type ?? "command",
+						command: h.command,
+						url: h.url,
+						prompt: h.prompt,
+						timeout: h.timeout,
+						async: h.async,
+						once: h.once,
+						if: h.if,
+					})),
+				})),
+			});
+		}
+		return {
+			sources: configSources.map(s => ({
+				path: s.path,
+				scope: s.scope,
+				exists: s.exists,
+				disabled: s.disabled,
+			})),
+			events,
+		};
 	}
 }
 

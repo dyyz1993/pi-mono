@@ -6,6 +6,8 @@ export interface ClaudeHookConfig {
 export interface MatcherGroup {
 	matcher?: string;
 	hooks: HookHandler[];
+	/** Annotated by config-loader: scope where this group was loaded from */
+	__source__?: string;
 }
 
 export interface HookHandler {

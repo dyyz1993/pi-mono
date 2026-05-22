@@ -102,7 +102,7 @@ describe.skipIf(!hasApiKey)("file-snapshot RPC e2e", () => {
 		expect(readFileSync(join(projectDir, "version.txt"), "utf-8")).toContain("v1");
 
 		const tree1 = await client.getTree();
-		const userEntries = tree1.filter((e) => e.label === "user");
+		const userEntries = tree1.entries.filter((e) => e.label === "user");
 		expect(userEntries.length).toBeGreaterThanOrEqual(1);
 		const targetId = userEntries[0]!.id;
 
@@ -122,7 +122,7 @@ describe.skipIf(!hasApiKey)("file-snapshot RPC e2e", () => {
 		await client.promptAndWait("Create alpha.txt with content 'aaa'. Use the write tool.", undefined, 120_000);
 
 		const tree1 = await client.getTree();
-		const userEntries = tree1.filter((e) => e.label === "user");
+		const userEntries = tree1.entries.filter((e) => e.label === "user");
 		const targetId = userEntries[0]!.id;
 
 		await client.promptAndWait("Create beta.txt with content 'bbb'. Use the write tool.", undefined, 120_000);

@@ -1,126 +1,26 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import type { Message } from "@dyyz1993/pi-ai";
 import { StringEnum } from "@dyyz1993/pi-ai";
 import {
 	type AgentScope,
 	type ExtensionAPI,
-	RpcClient,
 	createTypedChannel,
 	discoverAgents,
 } from "@dyyz1993/pi-coding-agent";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
 
-import {
-	type SubagentChannelContract,
-	type SubagentEventPayload,
-	type SingleResult,
-	accumulateUsage,
-	cleanupTempFiles,
-	formatToolCall,
-	formatUsageStats,
-	getFinalOutput,
-	getDisplayItems,
-	makeUsage,
-	renderSingleResult,
-	writePromptToTempFile,
-} from "../subagent-shared/index.js";
-
-// ── subagent-v2 logic ──
-
-const STEER_GRACE_MS = 30_000;
+import { type SubagentChannelContract } from "./subagent-shared/index.js";
+import type { CoordinatorChannelContract } from "../coordinator/types.js";
 
 interface SubagentDetails {
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
-	result: SingleResult | null;
-}
-
-interface BackgroundTask {
-	taskId: string;
-	client: RpcClient;
-	sessionId: string;
-	sessionPath: string;
-	startedAt: number;
-}
-
-const backgroundTasks = new Map<string, BackgroundTask>();
-
-function sessionDir(): string {
-	const dir = path.join(os.tmpdir(), "pi-subagent-v2-sessions");
-	fs.mkdirSync(dir, { recursive: true });
-	return dir;
-}
-
-function subscribeToClient(
-	client: RpcClient,
-	result: SingleResult,
-	onEventData: (event: unknown, meta: Record<string, unknown>) => void,
-	meta: Record<string, unknown>,
-	onMessage?: () => void,
-): () => void {
-	return client.onEvent((event) => {
-		onEventData(event, meta);
-		if (event.type === "message_end" && event.message) {
-			const msg = event.message as Message;
-			result.messages.push(msg);
-			accumulateUsage(result, msg);
-			onMessage?.();
-		}
-	});
-}
-
-async function runWithTimeout(
-	client: RpcClient,
-	prompt: string,
-	timeoutMs: number,
-	signal?: AbortSignal,
-): Promise<"done" | "timeout" | "aborted"> {
-	const promptTimeout = timeoutMs - STEER_GRACE_MS;
-
-	const completionPromise = (async () => {
-		await client.prompt(prompt);
-		await client.waitForIdle(promptTimeout);
-	})();
-
-	const timeoutPromise = new Promise<"timeout">((resolve) => {
-		setTimeout(() => resolve("timeout"), promptTimeout);
-	});
-
-	const promises: Promise<"done" | "timeout" | "aborted">[] = [
-		completionPromise.then(() => "done" as const),
-		timeoutPromise,
-	];
-
-	if (signal) {
-		if (signal.aborted) return "aborted";
-		promises.push(
-			new Promise<"aborted">((resolve) => {
-				signal.addEventListener("abort", () => resolve("aborted"), { once: true });
-			}),
-		);
-	}
-
-	return Promise.race(promises);
-}
-
-async function handleGracePeriod(client: RpcClient, result: SingleResult): Promise<void> {
-	await client.steer("Please summarize your findings and wrap up now. You have 30 seconds remaining.");
-	await Promise.race([
-		new Promise<void>((resolve) => {
-			const sub = client.onEvent((event) => {
-				if (event.type === "agent_end") {
-					sub();
-					resolve();
-				}
-			});
-		}),
-		new Promise<void>((resolve) => setTimeout(resolve, STEER_GRACE_MS)),
-	]);
-	result.stopReason = "timeout";
-	result.exitCode = 1;
+	result: {
+		sessionId: string;
+		status: string;
+		exitCode: number;
+		finalText: string;
+		error?: string;
+	} | null;
 }
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -152,27 +52,26 @@ export default function (pi: ExtensionAPI) {
 	const rawChannel = pi.registerChannel("subagent");
 	const channel = createTypedChannel<SubagentChannelContract>(rawChannel).server;
 
+	const coordinatorRaw = pi.registerChannel("coordinator_client");
+	const coordinatorClient = createTypedChannel<CoordinatorChannelContract>(coordinatorRaw).client;
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
 		description: [
-			"Delegate a task to a specialized subagent with isolated context using RPC mode.",
+			"Delegate a task to a specialized subagent with isolated context.",
 			"Agents are discovered from ~/.pi/agent/agents/ (user) and .pi/agents/ (project).",
 			'Use agentScope to control discovery: "user" (default), "project", or "both".',
-			"Set background: true to run without blocking. The parent is notified on completion.",
-			"Sessions are persisted for later resume via subagent_resume.",
+			"The task is dispatched through the coordinator channel to Process Manager.",
 		].join(" "),
 		parameters: SubagentParams,
 
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+			const startedAt = Date.now();
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
-			const agents = discovery.agents;
-			const timeoutMs = Math.max((params.timeout ?? 300) * 1000, STEER_GRACE_MS + 10_000);
-			const background = params.background ?? false;
-
-			// Extract parent todo list from session history (for read-only reference)
-			const parentTodos = extractParentTodos(ctx.sessionManager.getBranch());
+			const agents = discovery.agents.filter((a) => a.mode !== "primary");
+			const timeoutMs = (params.timeout ?? 300) * 1000;
 
 			const details: SubagentDetails = {
 				agentScope,
@@ -191,6 +90,7 @@ export default function (pi: ExtensionAPI) {
 					const ok = await ctx.ui.confirm(
 						"Run project-local agent?",
 						`Agent: ${agent.name}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+						{ timeout: 30_000 },
 					);
 					if (!ok)
 						return {
@@ -209,250 +109,70 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			const sessionId = `subagent-v2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-			const sessionPath = path.join(sessionDir(), `${sessionId}.json`);
-			const startedAt = Date.now();
-
-			let tmpPromptDir: string | null = null;
-			let tmpPromptPath: string | null = null;
-			let compressDir: string | null = null;
-
-			const extraArgs: string[] = ["--session", sessionPath];
-			if (agent.systemPrompt.trim()) {
-				const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt, "pi-subagent-v2-");
-				tmpPromptDir = tmp.dir;
-				tmpPromptPath = tmp.filePath;
-				extraArgs.push("--append-system-prompt", tmpPromptPath);
-			}
-
-			// Append compression awareness guidance so the sub-agent knows how to
-			// handle approaching context limits before lossy compaction occurs.
-			const compressGuidance = [
-				"---",
-				"# Context Compression Awareness",
-				"",
-				"Your context window is limited. When it approaches capacity, automatic compaction",
-				"(lossy compression) will occur. Compaction reduces detail — current findings may",
-				"become unreliable after compression.",
-				"",
-				"Note: The parent is blocked waiting for you to finish. Your results are returned",
-				"automatically only when you complete the task (end the conversation).",
-				"You cannot send intermediate results back while the task is running.",
-				"",
-				"If you detect context warnings, complete early:",
-				"1. Wrap up your current work and present your findings as the final answer.",
-				"2. If the task is too large, return your current direction and partial findings",
-				"   so the parent can re-dispatch more targeted sub-tasks with fresh context.",
-				"3. Do NOT try to continue — automatic compaction will make current details",
-				"   unreliable, and the parent is waiting for you to complete.",
-			].join("\n");
-			const compressTmp = await writePromptToTempFile("compression-awareness", compressGuidance, "pi-subagent-v2-");
-			extraArgs.push("--append-system-prompt", compressTmp.filePath);
-			compressDir = compressTmp.dir;
-
-			if (agent.tools && agent.tools.length > 0) {
-				extraArgs.push("--tools", agent.tools.join(","));
-			}
-
-			const currentResult: SingleResult = {
-				agent: params.agent,
-				agentSource: agent.source,
-				task: params.task,
-				exitCode: 0,
-				messages: [],
-				stderr: "",
-				usage: makeUsage(),
-				model: agent.model,
-				sessionPath,
-			};
-
-			const emitUpdate = () => {
-				if (onUpdate) {
-					onUpdate({
-						content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
-						details: { ...details, result: { ...currentResult } },
-					});
-				}
-			};
-
-			// Pass subagent role and parent todos to child process via env vars
-		const env: Record<string, string> = { PI_SUBAGENT: "true" };
-		if (parentTodos.length > 0) {
-			env.PI_PARENT_TODOS = JSON.stringify(parentTodos);
-		}
-
-		const client = new RpcClient({
-				cwd: params.cwd ?? ctx.cwd,
-				provider: ctx.model?.provider || undefined,
-				model: agent.model,
-				env,
-				args: extraArgs,
-			});
-
-			if (background) {
-				const taskId = `bg-${sessionId}`;
-
-				const startBg = async () => {
-					try {
-						await client.start();
-						if (agent.tools && agent.tools.length > 0) await client.setActiveTools(agent.tools);
-
-						const unsubscribe = subscribeToClient(
-							client,
-							currentResult,
-							(event, meta) => channel.emit("event", { event, ...meta } as SubagentEventPayload),
-							{ sessionId, taskId },
-						);
-
-						const raceResult = await runWithTimeout(client, params.task, timeoutMs);
-						if (raceResult === "timeout") await handleGracePeriod(client, currentResult);
-						unsubscribe();
-
-						if (currentResult.exitCode === 0) {
-							currentResult.exitCode = currentResult.stopReason === "error" ? 1 : 0;
-						}
-					} catch (err) {
-						currentResult.exitCode = 1;
-						currentResult.errorMessage = err instanceof Error ? err.message : String(err);
-						currentResult.stderr = client.getStderr();
-					} finally {
-						await client.stop();
-						cleanupTempFiles(tmpPromptPath, tmpPromptDir, "subagent-v2");
-						cleanupTempFiles(null, compressDir, "subagent-v2");
-						backgroundTasks.delete(taskId);
-
-						try {
-							const finalText = getFinalOutput(currentResult.messages) || "(no output)";
-							pi.appendEntry("subagent", {
-								toolCallId,
-								sessionId,
-								sessionPath,
-								description: params.agent,
-								instruction: params.task,
-								startedAt,
-								completedAt: Date.now(),
-								exitCode: currentResult.exitCode,
-								finalText,
-							});
-
-							const isCrash = currentResult.exitCode !== 0;
-							const summary = finalText.slice(0, 200);
-							const msg = isCrash
-								? `子任务中断：${params.agent} — ${currentResult.errorMessage || summary}`
-								: `子任务完成：${params.agent} — ${summary}`;
-							try {
-								pi.sendUserMessage(msg, { deliverAs: "followUp" });
-							} catch (err) {
-								const eMsg = err instanceof Error ? err.message : String(err);
-								if (/stale/i.test(eMsg)) return;
-								console.debug("[subagent-v2] followUp delivery failed:", eMsg);
-								pi.sendUserMessage(msg);
-							}
-						} catch (err) {
-							const eMsg = err instanceof Error ? err.message : String(err);
-							if (/stale/i.test(eMsg)) return;
-							throw err;
-						}
-					}
-				};
-
-				backgroundTasks.set(taskId, { taskId, client, sessionId, sessionPath, startedAt });
-				startBg().catch((err) => {
-					console.debug("[subagent-v2] background task failed:", err instanceof Error ? err.message : err);
-				});
-
-				return {
-					content: [{ type: "text", text: `Started background task: ${taskId}` }],
-					details: { agentScope, projectAgentsDir: discovery.projectAgentsDir, result: null },
-				};
-			}
-
-			let wasAborted = false;
-
 			try {
-				await client.start();
-				if (agent.tools && agent.tools.length > 0) await client.setActiveTools(agent.tools);
-
-				const unsubscribe = subscribeToClient(
-					client,
-					currentResult,
-					(event, meta) => channel.emit("event", { event, ...meta } as SubagentEventPayload),
-					{ sessionId },
-					emitUpdate,
+				const result = await coordinatorClient.call(
+					"session_delegate_sync",
+					{
+						task: params.task,
+						title: `${params.agent}: ${params.task.slice(0, 40)}`,
+						agent: params.agent,
+						timeoutMs,
+						projectPath: params.cwd ?? ctx.cwd,
+					},
+					timeoutMs + 30_000,
 				);
 
-				const raceResult = await runWithTimeout(client, params.task, timeoutMs, signal);
+				pi.appendEntry("subagent", {
+					toolCallId,
+					sessionId: result.sessionId,
+					sessionPath: "",
+					description: params.agent,
+					instruction: params.task,
+					startedAt,
+					completedAt: Date.now(),
+					exitCode: result.exitCode,
+					finalText: result.finalText,
+				});
 
-				if (raceResult === "aborted") {
-					wasAborted = true;
-					await client.abort();
-					currentResult.stopReason = "aborted";
-					currentResult.exitCode = 1;
-				} else if (raceResult === "timeout") {
-					await handleGracePeriod(client, currentResult);
+				if (result.exitCode !== 0) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Agent ${result.status}: ${result.error || result.finalText}`,
+							},
+						],
+						details: { ...details, result },
+						isError: true,
+					};
 				}
 
-				unsubscribe();
-				if (currentResult.exitCode === 0 && !wasAborted) {
-					currentResult.exitCode = currentResult.stopReason === "error" ? 1 : 0;
-				}
-			} catch (err) {
-				currentResult.exitCode = 1;
-				currentResult.errorMessage = err instanceof Error ? err.message : String(err);
-				currentResult.stderr = client.getStderr();
-			} finally {
-				await client.stop();
-				cleanupTempFiles(tmpPromptPath, tmpPromptDir, "subagent-v2");
-				cleanupTempFiles(null, compressDir, "subagent-v2");
-			}
-
-			const finalText = getFinalOutput(currentResult.messages) || "(no output)";
-
-			pi.appendEntry("subagent", {
-				toolCallId,
-				sessionId,
-				sessionPath,
-				description: params.agent,
-				instruction: params.task,
-				startedAt,
-				completedAt: Date.now(),
-				exitCode: currentResult.exitCode,
-				finalText,
-			});
-
-			const isError =
-				currentResult.exitCode !== 0 ||
-				currentResult.stopReason === "error" ||
-				currentResult.stopReason === "aborted" ||
-				currentResult.stopReason === "timeout";
-			if (isError) {
-				let errorMsg = currentResult.errorMessage || currentResult.stderr || finalText || "(no output)";
-				if (currentResult.sessionPath) {
-					errorMsg += `\n\nSession saved: ${currentResult.sessionPath}\nTo resume: use subagent_resume with sessionPath="${currentResult.sessionPath}"`;
-				}
 				return {
-					content: [{ type: "text", text: `Agent ${currentResult.stopReason || "failed"}: ${errorMsg}` }],
-					details: { ...details, result: currentResult },
+					content: [{ type: "text", text: result.finalText }],
+					details: { ...details, result },
+				};
+			} catch (err) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Agent failed: ${err instanceof Error ? err.message : String(err)}`,
+						},
+					],
+					details,
 					isError: true,
 				};
 			}
-
-			return {
-				content: [{ type: "text", text: finalText }],
-				details: { ...details, result: currentResult },
-			};
 		},
 
 		renderCall(args, theme, _context) {
 			const scope: AgentScope = args.agentScope ?? "user";
-			const bg = args.background ? theme.fg("warning", " [bg]") : "";
 			const agentName = args.agent || "...";
 			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
 			let text =
 				theme.fg("toolTitle", theme.bold("subagent ")) +
 				theme.fg("accent", agentName) +
-				theme.fg("muted", ` [${scope}]`) +
-				bg;
+				theme.fg("muted", ` [${scope}]`);
 			text += `\n  ${theme.fg("dim", preview)}`;
 			return new Text(text, 0, 0);
 		},
@@ -463,17 +183,24 @@ export default function (pi: ExtensionAPI) {
 				const text = result.content[0];
 				return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 			}
-			return renderSingleResult(details.result, expanded, theme);
+			const r = details.result;
+			return new Text(
+				theme.fg("toolTitle", "subagent result") +
+					(r.exitCode !== 0 ? theme.fg("error", ` [exit: ${r.exitCode}]`) : "") +
+					`\n  ${r.finalText.slice(0, 300)}`,
+				0,
+				0,
+			);
 		},
 	});
 
 	pi.registerTool({
 		name: "subagent_resume",
 		label: "Subagent Resume",
-		description: "Resume a previously interrupted subagent session. The agent continues from where it left off.",
+		description: "Resume a previously interrupted subagent session by dispatching a new session with resume context.",
 		parameters: SubagentResumeParams,
 
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			const sPath = params.sessionPath;
 			if (!sPath) {
 				return {
@@ -482,172 +209,70 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			if (!fs.existsSync(sPath)) {
-				return {
-					content: [{ type: "text", text: `Session file not found: ${sPath}` }],
-					details: { agentScope: "user" as AgentScope, projectAgentsDir: null, result: null },
-				};
-			}
-
-			const timeoutMs = Math.max((params.timeout ?? 300) * 1000, STEER_GRACE_MS + 10_000);
-			const background = params.background ?? false;
-
-			const currentResult: SingleResult = {
-				agent: "(resumed)",
-				agentSource: "unknown",
-				task: params.instruction ?? "(resume)",
-				exitCode: 0,
-				messages: [],
-				stderr: "",
-				usage: makeUsage(),
-				sessionPath: sPath,
-			};
-
+			const timeoutMs = (params.timeout ?? 300) * 1000;
 			const details: SubagentDetails = { agentScope: "user", projectAgentsDir: null, result: null };
-
-			const emitUpdate = () => {
-				if (onUpdate) {
-					onUpdate({
-						content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(resuming...)" }],
-						details: { ...details, result: { ...currentResult } },
-					});
-				}
-			};
-
-			const client = new RpcClient({
-				cwd: ctx.cwd,
-				provider: ctx.model?.provider || undefined,
-				args: ["--session", sPath, "-c"],
-			});
-
-			const sessionId = params.sessionId ?? `resume-${Date.now()}`;
-			const resumePrompt = params.instruction ?? "Please continue from where you left off.";
-
-			if (background) {
-				const taskId = `bg-resume-${sessionId}`;
-				const startedAt = Date.now();
-
-				const startBg = async () => {
-					try {
-						await client.start();
-						const unsubscribe = subscribeToClient(
-							client,
-							currentResult,
-							(event, meta) => channel.emit("event", { event, ...meta } as SubagentEventPayload),
-							{ sessionId, taskId },
-						);
-
-						const raceResult = await runWithTimeout(client, resumePrompt, timeoutMs);
-						if (raceResult === "timeout") await handleGracePeriod(client, currentResult);
-						unsubscribe();
-
-						if (currentResult.exitCode === 0) {
-							currentResult.exitCode = currentResult.stopReason === "error" ? 1 : 0;
-						}
-					} catch (err) {
-						currentResult.exitCode = 1;
-						currentResult.errorMessage = err instanceof Error ? err.message : String(err);
-						currentResult.stderr = client.getStderr();
-					} finally {
-						await client.stop();
-						backgroundTasks.delete(taskId);
-
-						try {
-							const finalText = getFinalOutput(currentResult.messages) || "(no output)";
-							pi.appendEntry("subagent", {
-								toolCallId,
-								sessionId,
-								sessionPath: sPath,
-								description: "(resumed)",
-								instruction: params.instruction ?? "(resume)",
-								startedAt,
-								completedAt: Date.now(),
-								exitCode: currentResult.exitCode,
-								finalText,
-							});
-
-							const isCrash = currentResult.exitCode !== 0;
-							const summary = finalText.slice(0, 200);
-							const msg = isCrash
-								? `子任务中断：(resumed) — ${currentResult.errorMessage || summary}`
-								: `子任务完成：(resumed) — ${summary}`;
-							try {
-								pi.sendUserMessage(msg, { deliverAs: "followUp" });
-							} catch (err) {
-								const eMsg = err instanceof Error ? err.message : String(err);
-								if (/stale/i.test(eMsg)) return;
-								console.debug("[subagent-v2] resumed followUp delivery failed:", eMsg);
-								pi.sendUserMessage(msg);
-							}
-						} catch (err) {
-							const eMsg = err instanceof Error ? err.message : String(err);
-							if (/stale/i.test(eMsg)) return;
-							throw err;
-						}
-					}
-				};
-
-				backgroundTasks.set(taskId, { taskId, client, sessionId, sessionPath: sPath, startedAt });
-				startBg().catch((err) => {
-					console.debug("[subagent-v2] background task failed:", err instanceof Error ? err.message : err);
-				});
-
-				return {
-					content: [{ type: "text", text: `Started background resume task: ${taskId}` }],
-					details: { agentScope: "user", projectAgentsDir: null, result: null },
-				};
-			}
-
-			let wasAborted = false;
+			const startedAt = Date.now();
+			const resumePrompt =
+				params.instruction ?? "Continue the previous task from where you left off.";
 
 			try {
-				await client.start();
-				const unsubscribe = subscribeToClient(
-					client,
-					currentResult,
-					(event, meta) => channel.emit("event", { event, ...meta } as SubagentEventPayload),
-					{ sessionId },
-					emitUpdate,
+				const result = await coordinatorClient.call(
+					"session_delegate_sync",
+					{
+						task: `[Resuming from session: ${sPath.split("/").pop()}]\n\n${resumePrompt}`,
+						title: `Resume: ${sPath.split("/").pop()}`,
+						timeoutMs,
+						projectPath: ctx.cwd,
+					},
+					timeoutMs + 30_000,
 				);
 
-				const raceResult = await runWithTimeout(client, resumePrompt, timeoutMs, signal);
+				pi.appendEntry("subagent", {
+					toolCallId,
+					sessionId: result.sessionId,
+					sessionPath: sPath,
+					description: "(resumed)",
+					instruction: params.instruction ?? "(resume)",
+					startedAt,
+					completedAt: Date.now(),
+					exitCode: result.exitCode,
+					finalText: result.finalText,
+				});
 
-				if (raceResult === "aborted") {
-					wasAborted = true;
-					await client.abort();
-					currentResult.stopReason = "aborted";
-					currentResult.exitCode = 1;
-				} else if (raceResult === "timeout") {
-					await handleGracePeriod(client, currentResult);
+				if (result.exitCode !== 0) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Agent ${result.status}: ${result.error || result.finalText}`,
+							},
+						],
+						details: { ...details, result },
+						isError: true,
+					};
 				}
 
-				unsubscribe();
-				if (currentResult.exitCode === 0 && !wasAborted) {
-					currentResult.exitCode = currentResult.stopReason === "error" ? 1 : 0;
-				}
+				return {
+					content: [{ type: "text", text: result.finalText }],
+					details: { ...details, result },
+				};
 			} catch (err) {
-				currentResult.exitCode = 1;
-				currentResult.errorMessage = err instanceof Error ? err.message : String(err);
-				currentResult.stderr = client.getStderr();
-			} finally {
-				await client.stop();
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Resume failed: ${err instanceof Error ? err.message : String(err)}`,
+						},
+					],
+					details,
+					isError: true,
+				};
 			}
-
-			let finalText = getFinalOutput(currentResult.messages) || "(no output)";
-			if (currentResult.exitCode !== 0 && currentResult.sessionPath) {
-				finalText += `\n\nSession saved: ${currentResult.sessionPath}\nTo resume again: use subagent_resume with sessionPath="${currentResult.sessionPath}"`;
-			}
-
-			return {
-				content: [{ type: "text", text: finalText }],
-				details: { ...details, result: currentResult },
-			};
 		},
 
 		renderCall(args, theme, _context) {
-			const bg = args.background ? theme.fg("warning", " [bg]") : "";
 			const sPath = args.sessionPath ?? args.sessionId ?? "...";
-			return new Text(theme.fg("toolTitle", theme.bold("subagent_resume ")) + theme.fg("accent", sPath) + bg, 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("subagent_resume ")) + theme.fg("accent", sPath), 0, 0);
 		},
 
 		renderResult(result, { expanded }, theme, _context) {
@@ -656,16 +281,18 @@ export default function (pi: ExtensionAPI) {
 				const text = result.content[0];
 				return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 			}
-			return renderSingleResult(details.result, expanded, theme);
+			const r = details.result;
+			return new Text(
+				theme.fg("toolTitle", "subagent_resume result") +
+					(r.exitCode !== 0 ? theme.fg("error", ` [exit: ${r.exitCode}]`) : "") +
+					`\n  ${r.finalText.slice(0, 300)}`,
+				0,
+				0,
+			);
 		},
 	});
 }
 
-/**
- * Extract the parent session's todo list from session history entries.
- * Scans custom "todo" entries and tool result messages for the latest list.
- * Returns active (not deleted, not done) todos for read-only reference.
- */
 export function extractParentTodos(branch: unknown[]): Array<{ id: number; text: string; priority?: string; done: boolean }> {
 	let todos: Array<{ id: number; text: string; done: boolean; deleted?: boolean; priority?: string }> = [];
 	let nextId = 1;
