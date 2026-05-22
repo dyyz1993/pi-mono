@@ -178,16 +178,31 @@ export default function fileReview(pi: ExtensionAPI) {
 		const entries = _ctx.sessionManager.getEntries();
 		for (const entry of entries) {
 			if (entry.type !== "custom") continue;
-			if (entry.customType !== "file-approval") continue;
-			const data = entry.data as { turnIndex: number; path: string; status: "approved" | "rejected"; timestamp: number } | undefined;
-			if (!data) continue;
-			const key = approvalKey(data.turnIndex, data.path);
-			approvals.set(key, {
-				turnIndex: data.turnIndex,
-				path: data.path,
-				status: data.status,
-				timestamp: data.timestamp,
-			});
+
+			if (entry.customType === "file-approval") {
+				const data = entry.data as { turnIndex: number; path: string; status: "approved" | "rejected"; timestamp: number } | undefined;
+				if (!data) continue;
+				const key = approvalKey(data.turnIndex, data.path);
+				approvals.set(key, {
+					turnIndex: data.turnIndex,
+					path: data.path,
+					status: data.status,
+					timestamp: data.timestamp,
+				});
+			} else if (entry.customType === "file-review-turn") {
+				const data = entry.data as { turnIndex: number; timestamp: number; changes: Array<{ path: string; status: string }> } | undefined;
+				if (!data) continue;
+				// Rebuild turnLog entry (without diff — diff comes from snapshot system)
+				turnLog.push({
+					turnIndex: data.turnIndex,
+					timestamp: data.timestamp,
+					changes: data.changes.map((c) => ({
+						path: c.path,
+						status: c.status as LiveChange["status"],
+						diff: null,
+					})),
+				});
+			}
 		}
 	});
 
@@ -214,10 +229,17 @@ export default function fileReview(pi: ExtensionAPI) {
 			? currentTurnChanges
 			: (_ctx.fileSnapshotManager?.getLiveChanges(_ctx.cwd) ?? []);
 		if (changes.length > 0) {
+			const timestamp = Date.now();
 			turnLog.push({
 				turnIndex: event.turnIndex,
-				timestamp: Date.now(),
+				timestamp,
 				changes,
+			});
+			// Persist turn record (without diff — diff comes from snapshot system)
+			pi.appendEntry("file-review-turn", {
+				turnIndex: event.turnIndex,
+				timestamp,
+				changes: changes.map((c) => ({ path: c.path, status: c.status })),
 			});
 		}
 		currentTurnChanges = [];
