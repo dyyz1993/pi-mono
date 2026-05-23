@@ -102,6 +102,7 @@ function createMockSession() {
 		getContextUsage: vi.fn().mockReturnValue(null),
 		sessionManager: {
 			getEntries: vi.fn().mockReturnValue([]),
+			getBranch: vi.fn().mockReturnValue([]),
 			getLeafId: vi.fn().mockReturnValue(null),
 			getSessionName: vi.fn().mockReturnValue(undefined),
 			getSessionFile: vi.fn().mockReturnValue("/tmp/test.jsonl"),
@@ -638,10 +639,12 @@ describe("RPC mode command handling", () => {
 		});
 
 		it("paginates with limit", async () => {
-			session.sessionManager.getEntries.mockReturnValueOnce([
+			const entries = [
 				{ id: "e1", type: "message", message: { role: "user", content: "hi" } },
 				{ id: "e2", type: "message", message: { role: "assistant", content: "hello" } },
-			]);
+			];
+			session.sessionManager.getEntries.mockReturnValueOnce(entries);
+			session.sessionManager.getBranch.mockReturnValueOnce(entries);
 
 			const resp = await sendCommand({ type: "get_full_messages", id: "gfm2", limit: 1 });
 

@@ -759,7 +759,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_full_messages": {
 				const allEntries = session.sessionManager.getEntries();
-				const messageEntries = allEntries.filter((e) => e.type === "message");
+
+				// Use getBranch() to only return messages on the current leaf-to-root path.
+				// This ensures rollback (which moves the leaf pointer) is reflected in the
+				// message list. The tree/custom/compaction data still uses allEntries for
+				// full tree visualization.
+				const branchEntries = session.sessionManager.getBranch();
+				const branchIds = new Set(branchEntries.map((e) => e.id));
+				const messageEntries = allEntries.filter((e) => e.type === "message" && branchIds.has(e.id));
 				const persistedMessages: (AgentMessage & { entryId: string })[] = messageEntries.map((e) => ({
 					...(e as { message: AgentMessage }).message,
 					entryId: e.id,
