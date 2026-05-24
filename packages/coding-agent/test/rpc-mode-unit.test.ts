@@ -961,6 +961,112 @@ describe("RPC mode command handling", () => {
 			expect(resp.success).toBe(true);
 			expect(resp.data.files).toEqual([]);
 		});
+
+		it("resolves toUserMsgEntryId to turnIndex via session entries", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
+
+			session.sessionManager.getEntries.mockReturnValueOnce([
+				{ id: "user-msg-1", type: "message", message: { role: "user" } },
+				{ id: "snap-1", type: "custom", customType: "step-snapshot", data: { turnIndex: 5 } },
+			]);
+
+			await sendCommand({
+				type: "get_modified_files",
+				id: "gmf-tuid1",
+				toUserMsgEntryId: "user-msg-1",
+			});
+
+			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
+				fromEntryId: undefined,
+				toEntryId: undefined,
+				toTurnIndex: 5,
+			});
+		});
+
+		it("skips entries before userMsg when resolving toUserMsgEntryId", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
+
+			session.sessionManager.getEntries.mockReturnValueOnce([
+				{ id: "snap-0", type: "custom", customType: "step-snapshot", data: { turnIndex: 0 } },
+				{ id: "user-msg-2", type: "message", message: { role: "user" } },
+				{ id: "snap-1", type: "custom", customType: "step-snapshot", data: { turnIndex: 3 } },
+			]);
+
+			await sendCommand({
+				type: "get_modified_files",
+				id: "gmf-tuid2",
+				toUserMsgEntryId: "user-msg-2",
+			});
+
+			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
+				fromEntryId: undefined,
+				toEntryId: undefined,
+				toTurnIndex: 3,
+			});
+		});
+
+		it("falls back when toUserMsgEntryId not found", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
+
+			session.sessionManager.getEntries.mockReturnValueOnce([
+				{ id: "snap-0", type: "custom", customType: "step-snapshot", data: { turnIndex: 0 } },
+			]);
+
+			await sendCommand({
+				type: "get_modified_files",
+				id: "gmf-tuid3",
+				toUserMsgEntryId: "nonexistent",
+			});
+
+			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
+				fromEntryId: undefined,
+				toEntryId: undefined,
+				toTurnIndex: undefined,
+			});
+		});
+
+		it("falls back when no step-snapshot after userMsg", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
+
+			session.sessionManager.getEntries.mockReturnValueOnce([
+				{ id: "user-msg-3", type: "message", message: { role: "user" } },
+				{ id: "other", type: "custom", customType: "other-type", data: { foo: "bar" } },
+			]);
+
+			await sendCommand({
+				type: "get_modified_files",
+				id: "gmf-tuid4",
+				toUserMsgEntryId: "user-msg-3",
+			});
+
+			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
+				fromEntryId: undefined,
+				toEntryId: undefined,
+				toTurnIndex: undefined,
+			});
+		});
+
+		it("prefers explicit toTurnIndex over toUserMsgEntryId", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
+
+			session.sessionManager.getEntries.mockReturnValueOnce([
+				{ id: "user-msg-4", type: "message", message: { role: "user" } },
+				{ id: "snap-1", type: "custom", customType: "step-snapshot", data: { turnIndex: 5 } },
+			]);
+
+			await sendCommand({
+				type: "get_modified_files",
+				id: "gmf-tuid5",
+				toTurnIndex: 2,
+				toUserMsgEntryId: "user-msg-4",
+			});
+
+			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
+				fromEntryId: undefined,
+				toEntryId: undefined,
+				toTurnIndex: 2,
+			});
+		});
 	});
 
 	describe("get_file_diff", () => {
