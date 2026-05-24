@@ -1184,56 +1184,38 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// avoiding a round-trip through turnIndex which breaks when multiple snapshots
 				// share the same turnIndex (e.g. after rollback + continue chatting).
 				let fromEntryId = command.fromEntryId;
-				console.log("[get_modified_files] command:", JSON.stringify({
-					fromEntryId: command.fromEntryId,
-					toEntryId: command.toEntryId,
-					toUserMsgEntryId: command.toUserMsgEntryId,
-					toTurnIndex: command.toTurnIndex,
-				}));
 				if (!fromEntryId && command.toUserMsgEntryId) {
 					const entries = session.sessionManager.getEntries();
 					const userEntryIdx = entries.findIndex((e) => e.id === command.toUserMsgEntryId);
-					console.log("[get_modified_files] userEntryIdx:", userEntryIdx, "total entries:", entries.length);
 					if (userEntryIdx !== -1) {
-						// Log nearby entries for debugging
-						for (let i = Math.max(0, userEntryIdx - 1); i < Math.min(entries.length, userEntryIdx + 5); i++) {
-							const e = entries[i];
-							console.log(`[get_modified_files] entry[${i}]: type=${e.type} customType=${(e as any).customType ?? "n/a"} id=${e.id}`);
-						}
 						for (let i = userEntryIdx; i < entries.length; i++) {
 							const entry = entries[i];
 							if (entry.type === "custom" && (entry as any).customType === "step-snapshot") {
 								fromEntryId = entry.id;
-								console.log("[get_modified_files] found step-snapshot at idx:", i, "id:", entry.id);
 								break;
 							}
 						}
 					}
 				}
-				console.log("[get_modified_files] final fromEntryId:", fromEntryId);
 
 				const files = fileSnapshotManager.getModifiedFiles({
 					fromEntryId,
 					toEntryId: command.toEntryId,
 					toTurnIndex: command.toTurnIndex,
 				});
-				console.log("[get_modified_files] result files:", JSON.stringify(files.map((f: any) => ({ path: f.path, status: f.status, entryId: f.entryId }))));
 				return success(id, "get_modified_files", { files });
 			}
 
 			case "get_file_diff": {
 				const fileSnapshotManager = (session as any).fileSnapshotManager;
 				if (!fileSnapshotManager) {
-					console.log("[get_file_diff] no fileSnapshotManager, returning null");
 					return success(id, "get_file_diff", null);
 				}
-				console.log("[get_file_diff] command:", JSON.stringify({ filePath: command.filePath, fromEntryId: command.fromEntryId, toEntryId: command.toEntryId }));
 				const diff = fileSnapshotManager.getFileDiff({
 					filePath: command.filePath,
 					fromEntryId: command.fromEntryId,
 					toEntryId: command.toEntryId,
 				});
-				console.log("[get_file_diff] result:", diff ? `oldContent=${diff.oldContent?.length ?? 0}chars, newContent=${diff.newContent?.length ?? 0}chars, unifiedDiff=${diff.unifiedDiff?.length ?? 0}chars` : "null");
 				if (!diff) {
 					return success(id, "get_file_diff", null);
 				}
