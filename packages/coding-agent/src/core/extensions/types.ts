@@ -87,6 +87,14 @@ export type { AppKeybinding, KeybindingsManager } from "../keybindings.js";
 // UI Context
 // ============================================================================
 
+/** Hook metadata for structured confirm dialog rendering. */
+export interface HookMeta {
+	toolName: string;
+	matcher: string;
+	command?: string;
+	reason: string;
+}
+
 /** Options for extension UI dialogs. */
 export interface ExtensionUIDialogOptions {
 	/** AbortSignal to programmatically dismiss the dialog. */
@@ -96,6 +104,8 @@ export interface ExtensionUIDialogOptions {
 	multiple?: boolean;
 	/** Associated tool call ID for inline rendering in UI */
 	toolCallId?: string;
+	/** Hook metadata for structured UI rendering */
+	hookMeta?: HookMeta;
 }
 
 /** Placement for extension widgets. */
