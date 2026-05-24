@@ -802,6 +802,43 @@ describe("FileSnapshotManager", () => {
 			expect(turn0Paths).not.toContain("a.ts");
 			expect(turn0Files.every((f) => f.status === "added")).toBe(true);
 		});
+
+		it("getModifiedFiles respects toTurnIndex filter", async () => {
+			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
+			await manager.initialize(tempDir);
+
+			writeFileSync(join(tempDir, "b.ts"), "b", "utf-8");
+			manager.onTurnEnd(tempDir, 0, appendEntry);
+
+			writeFileSync(join(tempDir, "c.ts"), "c", "utf-8");
+			manager.onTurnEnd(tempDir, 1, appendEntry);
+
+			writeFileSync(join(tempDir, "d.ts"), "d", "utf-8");
+			manager.onTurnEnd(tempDir, 2, appendEntry);
+
+			const turn0Files = manager.getModifiedFiles({ toTurnIndex: 0 });
+			expect(turn0Files.map((f) => f.path)).toEqual(["b.ts"]);
+
+			const turn1Files = manager.getModifiedFiles({ toTurnIndex: 1 });
+			const turn1Paths = turn1Files.map((f) => f.path);
+			expect(turn1Paths).toContain("b.ts");
+			expect(turn1Paths).toContain("c.ts");
+			expect(turn1Paths).not.toContain("d.ts");
+
+			const allFiles = manager.getModifiedFiles({ toTurnIndex: 2 });
+			expect(allFiles.map((f) => f.path).sort()).toEqual(["b.ts", "c.ts", "d.ts"]);
+		});
+
+		it("getModifiedFiles with invalid toTurnIndex returns all files", async () => {
+			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
+			await manager.initialize(tempDir);
+
+			writeFileSync(join(tempDir, "b.ts"), "b", "utf-8");
+			manager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const files = manager.getModifiedFiles({ toTurnIndex: 999 });
+			expect(files.map((f) => f.path)).toEqual(["b.ts"]);
+		});
 	});
 
 	describe("getFileDiff for deleted files", () => {
