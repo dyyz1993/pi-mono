@@ -94,7 +94,14 @@ export type RpcCommand =
 	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
 
 	// Rollback
-	| { id?: string; type: "get_modified_files"; fromEntryId?: string; toEntryId?: string }
+	| {
+			id?: string;
+			type: "get_modified_files";
+			fromEntryId?: string;
+			toEntryId?: string;
+			toTurnIndex?: number;
+			toUserMsgEntryId?: string;
+	  }
 	| { id?: string; type: "get_file_diff"; filePath: string; fromEntryId?: string; toEntryId?: string }
 	| { id?: string; type: "get_batch_diffs"; fromEntryId?: string; toEntryId?: string }
 	| { id?: string; type: "get_file_history"; filePath: string }

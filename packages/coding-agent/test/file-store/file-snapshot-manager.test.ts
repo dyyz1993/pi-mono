@@ -829,6 +829,37 @@ describe("FileSnapshotManager", () => {
 			expect(allFiles.map((f) => f.path).sort()).toEqual(["b.ts", "c.ts", "d.ts"]);
 		});
 
+		it("getModifiedFiles toTurnIndex mismaps after rollback + new turn", async () => {
+			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
+			await manager.initialize(tempDir);
+
+			writeFileSync(join(tempDir, "b.ts"), "b", "utf-8");
+			manager.onTurnEnd(tempDir, 0, appendEntry);
+
+			writeFileSync(join(tempDir, "c.ts"), "c", "utf-8");
+			manager.onTurnEnd(tempDir, 1, appendEntry);
+
+			writeFileSync(join(tempDir, "d.ts"), "d", "utf-8");
+			manager.onTurnEnd(tempDir, 2, appendEntry);
+
+			rmSync(join(tempDir, "d.ts"));
+			writeFileSync(join(tempDir, "e.ts"), "e", "utf-8");
+			manager.onTurnEnd(tempDir, 3, appendEntry);
+
+			const snap2 = manager.getSnapshotAtTurn(2);
+			expect(snap2).not.toBeNull();
+			expect(snap2!.diff!.added).toContain("d.ts");
+
+			const snap3 = manager.getSnapshotAtTurn(3);
+			expect(snap3).not.toBeNull();
+			expect(snap3!.diff!.added).toContain("e.ts");
+
+			const turn2Files = manager.getModifiedFiles({ toTurnIndex: 2 });
+			const turn2Paths = turn2Files.map((f) => f.path);
+			expect(turn2Paths).toContain("d.ts");
+			expect(turn2Paths).not.toContain("e.ts");
+		});
+
 		it("getModifiedFiles with invalid toTurnIndex returns all files", async () => {
 			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
 			await manager.initialize(tempDir);

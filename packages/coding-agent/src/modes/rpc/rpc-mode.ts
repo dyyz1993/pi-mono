@@ -1179,10 +1179,30 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!fileSnapshotManager) {
 					return success(id, "get_modified_files", { files: [] });
 				}
+
+				let toTurnIndex = command.toTurnIndex;
+
+				if (toTurnIndex === undefined && command.toUserMsgEntryId) {
+					const entries = (session as any).sessionManager?.getEntries() ?? [];
+					const userEntryIdx = entries.findIndex((e: any) => e.id === command.toUserMsgEntryId);
+					if (userEntryIdx !== -1) {
+						for (let i = userEntryIdx; i < entries.length; i++) {
+							const entry = entries[i];
+							if (entry.type === "custom" && (entry as any).customType === "step-snapshot") {
+								const data = (entry as any).data;
+								if (data && data.turnIndex !== undefined) {
+									toTurnIndex = data.turnIndex;
+									break;
+								}
+							}
+						}
+					}
+				}
+
 				const files = fileSnapshotManager.getModifiedFiles({
 					fromEntryId: command.fromEntryId,
 					toEntryId: command.toEntryId,
-					toTurnIndex: command.toTurnIndex,
+					toTurnIndex,
 				});
 				return success(id, "get_modified_files", { files });
 			}
