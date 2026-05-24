@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { LiveChange } from "../../src/core/file-store/file-snapshot-manager.js";
 import {
 	FILE_REVIEW_CHANNEL_NAME,
@@ -9,8 +11,8 @@ import {
 	type TurnChangeRecord,
 } from "./contract.js";
 
-function approvalKey(turnIndex: number, path: string): string {
-	return `${turnIndex}:${path}`;
+function approvalKey(path: string): string {
+	return path;
 }
 
 export default function fileReview(pi: ExtensionAPI) {
@@ -21,27 +23,38 @@ export default function fileReview(pi: ExtensionAPI) {
 	let currentTurnIndex = -1;
 
 	const approvals = new Map<string, FileApproval>();
+	/** Tracks paths that were ever approved — used to prevent net-zero filtering on previously-approved files */
+	const everApproved = new Set<string>();
+	/** Maps path → entryId of the snapshot when the file was last approved */
+	const approvedSnapshotEntry = new Map<string, string>();
 
-	function getApproval(turnIndex: number, path: string): FileApproval {
-		const key = approvalKey(turnIndex, path);
+	function getApproval(path: string): FileApproval {
+		const key = approvalKey(path);
 		const existing = approvals.get(key);
 		if (existing) return existing;
-		const pending: FileApproval = { turnIndex, path, status: "pending", timestamp: Date.now() };
+		const pending: FileApproval = { turnIndex: -1, path, status: "pending", timestamp: Date.now() };
 		approvals.set(key, pending);
 		return pending;
 	}
 
-	function setApproval(turnIndex: number, path: string, status: "approved" | "rejected"): boolean {
-		const record = turnLog.find((t) => t.turnIndex === turnIndex);
-		if (!record) return false;
-		const change = record.changes.find((c) => c.path === path);
-		if (!change) return false;
-
-		const key = approvalKey(turnIndex, path);
-		const entry: FileApproval = { turnIndex, path, status, timestamp: Date.now() };
+	function setApproval(path: string, status: "approved" | "rejected"): boolean {
+		const key = approvalKey(path);
+		const entry: FileApproval = { turnIndex: -1, path, status, timestamp: Date.now() };
 		approvals.set(key, entry);
-
-		pi.appendEntry("file-approval", { turnIndex, path, status, timestamp: entry.timestamp });
+		if (status === "approved") {
+			everApproved.add(path);
+			const mgr = ctx?.fileSnapshotManager;
+			if (mgr && ctx) {
+				const entries = ctx.sessionManager.getEntries();
+				for (let i = entries.length - 1; i >= 0; i--) {
+					if (entries[i].type === "custom" && (entries[i] as Record<string, unknown>).customType === "step-snapshot") {
+						approvedSnapshotEntry.set(path, entries[i].id);
+						break;
+					}
+				}
+			}
+		}
+		pi.appendEntry("file-approval", { path, status, timestamp: entry.timestamp });
 		return true;
 	}
 
@@ -106,56 +119,201 @@ export default function fileReview(pi: ExtensionAPI) {
 	});
 
 	channel?.handle("review.pending", () => {
-		const result: PendingChange[] = [];
+		// Aggregate by path: track FIRST and LATEST status for each file.
+		// Net-zero rule: if first=added AND latest=deleted (never approved), skip it.
+		type PathMeta = { firstStatus: LiveChange["status"]; latestTurnIndex: number; latestFileStatus: LiveChange["status"]; latestTimestamp: number };
+		const pathMeta = new Map<string, PathMeta>();
 		for (const record of turnLog) {
 			for (const change of record.changes) {
-				const approval = getApproval(record.turnIndex, change.path);
-				if (approval.status === "pending") {
-					result.push({
-						turnIndex: record.turnIndex,
-						path: change.path,
-						status: "pending",
-						timestamp: record.timestamp,
+				const existing = pathMeta.get(change.path);
+				if (!existing) {
+					// First time seeing this path
+					pathMeta.set(change.path, {
+						firstStatus: change.status,
+						latestTurnIndex: record.turnIndex,
+						latestFileStatus: change.status,
+						latestTimestamp: record.timestamp,
 					});
+				} else {
+					// Update latest only
+					existing.latestTurnIndex = record.turnIndex;
+					existing.latestFileStatus = change.status;
+					existing.latestTimestamp = record.timestamp;
 				}
 			}
+		}
+
+		// Get diff data from fileSnapshotManager for content info
+		const mgr = ctx?.fileSnapshotManager;
+		const diffMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
+		if (mgr && ctx) {
+			try {
+				for (const [path] of pathMeta) {
+					const approvedEntryId = approvedSnapshotEntry.get(path);
+					const diff = approvedEntryId
+						? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId })
+						: mgr.getFileDiff({ filePath: path });
+					if (diff) {
+						diffMap.set(path, { oldContent: diff.oldContent, newContent: diff.newContent });
+					}
+				}
+			} catch {}
+		}
+
+		const result: PendingChange[] = [];
+		for (const [path, meta] of pathMeta) {
+			const approval = getApproval(path);
+			if (approval.status !== "pending") continue;
+
+			// Net-zero: file was added then deleted without ever being approved
+			if (meta.firstStatus === "added" && meta.latestFileStatus === "deleted" && !everApproved.has(path)) {
+				continue;
+			}
+
+			const diffInfo = diffMap.get(path);
+			result.push({
+				turnIndex: meta.latestTurnIndex,
+				path,
+				fileStatus: meta.latestFileStatus,
+				status: "pending",
+				timestamp: meta.latestTimestamp,
+				oldContent: diffInfo?.oldContent ?? null,
+				newContent: diffInfo?.newContent ?? null,
+			});
 		}
 		return result;
 	});
 
 	channel?.handle("review.approve", (params) => {
-		return { ok: setApproval(params.turnIndex, params.path, "approved") };
+		return { ok: setApproval(params.path, "approved") };
 	});
 
 	channel?.handle("review.reject", (params) => {
-		return { ok: setApproval(params.turnIndex, params.path, "rejected") };
+		// Roll back the file to its pre-modification state
+		if (!ctx) return { ok: false, error: "No session context" };
+		const mgr = ctx.fileSnapshotManager;
+		if (!mgr) return { ok: false, error: "No file snapshot manager" };
+
+		// Get the diff data for this file
+		let diffInfo: { oldContent: string | null; newContent: string | null } | null = null;
+		try {
+			const approvedEntryId = approvedSnapshotEntry.get(params.path);
+			const diff = approvedEntryId
+				? mgr.getFileDiff({ filePath: params.path, fromEntryId: approvedEntryId })
+				: mgr.getFileDiff({ filePath: params.path });
+			if (diff) {
+				diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+			}
+		} catch {}
+		if (!diffInfo) return { ok: false, error: "No diff data for file" };
+
+		// Perform rollback based on file status
+		const fullPath = join(ctx.cwd, params.path);
+
+		let rolledBack = false;
+		// Determine file status by checking if oldContent exists
+		if (diffInfo.oldContent === null && diffInfo.newContent !== null) {
+			// File was ADDED — delete it
+			try {
+				unlinkSync(fullPath);
+				rolledBack = true;
+			} catch {}
+		} else if (diffInfo.oldContent !== null && diffInfo.newContent === null) {
+			// File was DELETED — restore it
+			try {
+				mkdirSync(dirname(fullPath), { recursive: true });
+				writeFileSync(fullPath, diffInfo.oldContent, "utf-8");
+				rolledBack = true;
+			} catch {}
+		} else if (diffInfo.oldContent !== null && diffInfo.newContent !== null) {
+			// File was MODIFIED — restore old content
+			try {
+				writeFileSync(fullPath, diffInfo.oldContent, "utf-8");
+				rolledBack = true;
+			} catch {}
+		}
+
+		if (rolledBack) {
+			// Also remove this file from turnLog since it's been rolled back
+			for (const record of turnLog) {
+				record.changes = record.changes.filter((c) => c.path !== params.path);
+			}
+		}
+
+		setApproval(params.path, "rejected");
+		return { ok: true, rolledBack };
 	});
 
 	channel?.handle("review.approveAll", () => {
 		let count = 0;
+		// Get aggregated paths from turnLog (latest by path)
+		const latestByPath = new Map<string, { turnIndex: number; timestamp: number }>();
 		for (const record of turnLog) {
 			for (const change of record.changes) {
-				const approval = getApproval(record.turnIndex, change.path);
-				if (approval.status === "pending") {
-					const key = approvalKey(record.turnIndex, change.path);
-					const entry: FileApproval = {
-						turnIndex: record.turnIndex,
-						path: change.path,
-						status: "approved",
-						timestamp: Date.now(),
-					};
-					approvals.set(key, entry);
-					pi.appendEntry("file-approval", {
-						turnIndex: record.turnIndex,
-						path: change.path,
-						status: "approved",
-						timestamp: entry.timestamp,
-					});
-					count++;
-				}
+				latestByPath.set(change.path, { turnIndex: record.turnIndex, timestamp: record.timestamp });
+			}
+		}
+		for (const [path] of latestByPath) {
+			const approval = getApproval(path);
+			if (approval.status === "pending") {
+				setApproval(path, "approved");
+				count++;
 			}
 		}
 		return { count };
+	});
+
+	channel?.handle("review.rejectAll", () => {
+		if (!ctx) return { count: 0, rolledBack: 0 };
+		const mgr = ctx.fileSnapshotManager;
+
+		// Get aggregated paths from turnLog (latest by path)
+		const latestByPath = new Map<string, { turnIndex: number; timestamp: number }>();
+		for (const record of turnLog) {
+			for (const change of record.changes) {
+				latestByPath.set(change.path, { turnIndex: record.turnIndex, timestamp: record.timestamp });
+			}
+		}
+
+		let count = 0;
+		let rolledBack = 0;
+		for (const [path] of latestByPath) {
+			const approval = getApproval(path);
+			if (approval.status === "pending") {
+				// Roll back this file
+				if (mgr) {
+					let diffInfo: { oldContent: string | null; newContent: string | null } | null = null;
+					try {
+						const approvedEntryId = approvedSnapshotEntry.get(path);
+						const diff = approvedEntryId
+							? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId })
+							: mgr.getFileDiff({ filePath: path });
+						if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+					} catch {}
+
+					if (diffInfo) {
+						const fullPath = join(ctx.cwd, path);
+						let didRollback = false;
+						if (diffInfo.oldContent === null && diffInfo.newContent !== null) {
+							try { unlinkSync(fullPath); didRollback = true; } catch {}
+						} else if (diffInfo.oldContent !== null && diffInfo.newContent === null) {
+							try { mkdirSync(dirname(fullPath), { recursive: true }); writeFileSync(fullPath, diffInfo.oldContent, "utf-8"); didRollback = true; } catch {}
+						} else if (diffInfo.oldContent !== null && diffInfo.newContent !== null) {
+							try { writeFileSync(fullPath, diffInfo.oldContent, "utf-8"); didRollback = true; } catch {}
+						}
+						if (didRollback) {
+							rolledBack++;
+							for (const record of turnLog) {
+								record.changes = record.changes.filter((c) => c.path !== path);
+							}
+						}
+					}
+				}
+				setApproval(path, "rejected");
+				count++;
+			}
+		}
+		return { count, rolledBack };
 	});
 
 	channel?.handle("review.approvals", (params) => {
@@ -174,25 +332,35 @@ export default function fileReview(pi: ExtensionAPI) {
 		currentTurnChanges = [];
 		currentTurnIndex = -1;
 		approvals.clear();
+		everApproved.clear();
+		approvedSnapshotEntry.clear();
 
 		const entries = _ctx.sessionManager.getEntries();
+		let lastStepSnapshotId: string | undefined;
 		for (const entry of entries) {
 			if (entry.type !== "custom") continue;
 
-			if (entry.customType === "file-approval") {
-				const data = entry.data as { turnIndex: number; path: string; status: "approved" | "rejected"; timestamp: number } | undefined;
+			if (entry.customType === "step-snapshot") {
+				lastStepSnapshotId = entry.id;
+			} else if (entry.customType === "file-approval") {
+				const data = entry.data as { path: string; status: "approved" | "rejected"; timestamp: number } | undefined;
 				if (!data) continue;
-				const key = approvalKey(data.turnIndex, data.path);
+				const key = approvalKey(data.path);
 				approvals.set(key, {
-					turnIndex: data.turnIndex,
+					turnIndex: -1,
 					path: data.path,
 					status: data.status,
 					timestamp: data.timestamp,
 				});
+				if (data.status === "approved") {
+					everApproved.add(data.path);
+					if (lastStepSnapshotId) {
+						approvedSnapshotEntry.set(data.path, lastStepSnapshotId);
+					}
+				}
 			} else if (entry.customType === "file-review-turn") {
 				const data = entry.data as { turnIndex: number; timestamp: number; changes: Array<{ path: string; status: string }> } | undefined;
 				if (!data) continue;
-				// Rebuild turnLog entry (without diff — diff comes from snapshot system)
 				turnLog.push({
 					turnIndex: data.turnIndex,
 					timestamp: data.timestamp,
@@ -221,10 +389,6 @@ export default function fileReview(pi: ExtensionAPI) {
 		ctx = _ctx;
 
 		currentTurnIndex = event.turnIndex;
-		// Use changes accumulated during tool_result events (before file-snapshot's
-		// onTurnEnd commits the baseline). If no tool_result fired (e.g. no tools used),
-		// fall back to getLiveChanges — but guard against file-snapshot having already
-		// committed by checking we're the first to see changes.
 		const changes = currentTurnChanges.length > 0
 			? currentTurnChanges
 			: (_ctx.fileSnapshotManager?.getLiveChanges(_ctx.cwd) ?? []);
@@ -235,12 +399,20 @@ export default function fileReview(pi: ExtensionAPI) {
 				timestamp,
 				changes,
 			});
-			// Persist turn record (without diff — diff comes from snapshot system)
 			pi.appendEntry("file-review-turn", {
 				turnIndex: event.turnIndex,
 				timestamp,
 				changes: changes.map((c) => ({ path: c.path, status: c.status })),
 			});
+
+			// Reset approval to pending for any file that changed after being approved/rejected
+			for (const change of changes) {
+				const existing = approvals.get(approvalKey(change.path));
+				if (existing && (existing.status === "approved" || existing.status === "rejected")) {
+					existing.status = "pending";
+					existing.timestamp = Date.now();
+				}
+			}
 		}
 		currentTurnChanges = [];
 	});

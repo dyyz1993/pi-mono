@@ -41,8 +41,13 @@ export interface FileApproval {
 export interface PendingChange {
 	turnIndex: number;
 	path: string;
+	fileStatus: LiveChange["status"];
 	status: ApprovalStatus;
 	timestamp: number;
+	/** For added: null. For modified: original content. For deleted: original content. */
+	oldContent: string | null;
+	/** For added: current content. For modified: current content. For deleted: null. */
+	newContent: string | null;
 }
 
 export interface FileReviewChannelContract extends ChannelContract {
@@ -72,16 +77,20 @@ export interface FileReviewChannelContract extends ChannelContract {
 			return: PendingChange[];
 		};
 		"review.approve": {
-			params: { turnIndex: number; path: string };
+			params: { path: string };
 			return: { ok: boolean };
 		};
 		"review.reject": {
-			params: { turnIndex: number; path: string };
-			return: { ok: boolean };
+			params: { path: string };
+			return: { ok: boolean; rolledBack?: boolean; error?: string };
 		};
 		"review.approveAll": {
 			params: Record<string, never>;
 			return: { count: number };
+		};
+		"review.rejectAll": {
+			params: Record<string, never>;
+			return: { count: number; rolledBack: number };
 		};
 		"review.approvals": {
 			params: { status?: ApprovalStatus };
