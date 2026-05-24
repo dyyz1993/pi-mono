@@ -318,11 +318,16 @@ export class FileSnapshotManager {
 		};
 	}
 
-	getModifiedFiles(options?: { fromEntryId?: string; toEntryId?: string }): ModifiedFileInfo[] {
+	getModifiedFiles(options?: { fromEntryId?: string; toEntryId?: string; toTurnIndex?: number }): ModifiedFileInfo[] {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
 
+		let toEntryId = options?.toEntryId;
+		if (!toEntryId && options?.toTurnIndex !== undefined) {
+			toEntryId = this.turnIndexMap.get(options.toTurnIndex) ?? undefined;
+		}
+
 		const fromIdx = options?.fromEntryId ? snapshots.findIndex((s) => s.entryId === options.fromEntryId) : -1;
-		const toIdx = options?.toEntryId ? snapshots.findIndex((s) => s.entryId === options.toEntryId) : -1;
+		const toIdx = toEntryId ? snapshots.findIndex((s) => s.entryId === toEntryId) : -1;
 
 		const start = fromIdx === -1 ? 0 : fromIdx;
 		const end = toIdx === -1 ? snapshots.length - 1 : toIdx;
