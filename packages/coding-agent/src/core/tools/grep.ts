@@ -1,4 +1,3 @@
-import { createInterface } from "node:readline";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { Text } from "@dyyz1993/pi-tui";
 import { spawn } from "child_process";
@@ -52,6 +51,16 @@ export interface GrepOperations {
 	isDirectory: (absolutePath: string) => Promise<boolean> | boolean;
 	/** Read file contents for context lines */
 	readFile: (absolutePath: string) => Promise<string> | string;
+	/**
+	 * Execute a grep search and return rg --json output.
+	 * When provided, replaces the local rg spawn entirely.
+	 * The returned string should be in ripgrep JSON format (one JSON object per line).
+	 */
+	search?: (pattern: string, searchPath: string, options: {
+		ignoreCase?: boolean;
+		literal?: boolean;
+		glob?: string;
+	}) => Promise<string>;
 }
 
 const defaultGrepOperations: GrepOperations = {
@@ -168,12 +177,6 @@ export function createGrepToolDefinition(
 
 				(async () => {
 					try {
-						const rgPath = await ensureTool("rg", true);
-						if (!rgPath) {
-							settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
-							return;
-						}
-
 						const searchPath = resolveToCwd(searchDir || ".", cwd);
 						const ops = customOps ?? defaultGrepOperations;
 						let isDirectory: boolean;
@@ -211,40 +214,50 @@ export function createGrepToolDefinition(
 							return lines;
 						};
 
-						const args: string[] = ["--json", "--line-number", "--color=never", "--hidden"];
-						if (ignoreCase) args.push("--ignore-case");
-						if (literal) args.push("--fixed-strings");
-						if (glob) args.push("--glob", glob);
-						args.push("--", pattern, searchPath);
+						let rawJsonOutput: string;
+						if (customOps?.search) {
+							rawJsonOutput = await customOps.search(pattern, searchPath, {
+								ignoreCase,
+								literal,
+								glob,
+							});
+						} else {
+							const rgPath = await ensureTool("rg", true);
+							if (!rgPath) {
+								settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
+								return;
+							}
 
-						const child = spawn(rgPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-						const rl = createInterface({ input: child.stdout });
-						let stderr = "";
+							const args: string[] = ["--json", "--line-number", "--color=never", "--hidden"];
+							if (ignoreCase) args.push("--ignore-case");
+							if (literal) args.push("--fixed-strings");
+							if (glob) args.push("--glob", glob);
+							args.push("--", pattern, searchPath);
+
+							rawJsonOutput = await new Promise<string>((res, rej) => {
+								const child = spawn(rgPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+								let stdout = "";
+								let stderr = "";
+								child.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+								child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+								child.on("error", (err) => rej(new Error(`Failed to run ripgrep: ${err.message}`)));
+								child.on("close", (code) => {
+									if (code !== 0 && code !== 1) rej(new Error(stderr.trim() || `ripgrep exited with code ${code}`));
+									else res(stdout);
+								});
+							});
+						}
+
+						if (signal?.aborted) {
+							settle(() => reject(new Error("Operation aborted")));
+							return;
+						}
+
+						const matches: Array<{ filePath: string; lineNumber: number; lineText?: string }> = [];
 						let matchCount = 0;
 						let matchLimitReached = false;
 						let linesTruncated = false;
-						let aborted = false;
-						let killedDueToLimit = false;
 						const outputLines: string[] = [];
-
-						const cleanup = () => {
-							rl.close();
-							signal?.removeEventListener("abort", onAbort);
-						};
-						const stopChild = (dueToLimit = false) => {
-							if (!child.killed) {
-								killedDueToLimit = dueToLimit;
-								child.kill();
-							}
-						};
-						const onAbort = () => {
-							aborted = true;
-							stopChild();
-						};
-						signal?.addEventListener("abort", onAbort, { once: true });
-						child.stderr?.on("data", (chunk) => {
-							stderr += chunk.toString();
-						});
 
 						const formatBlock = async (filePath: string, lineNumber: number): Promise<string[]> => {
 							const relativePath = formatPath(filePath);
@@ -266,15 +279,13 @@ export function createGrepToolDefinition(
 							return block;
 						};
 
-						// Collect matches during streaming, then format them after rg exits.
-						const matches: Array<{ filePath: string; lineNumber: number; lineText?: string }> = [];
-						rl.on("line", (line) => {
-							if (!line.trim() || matchCount >= effectiveLimit) return;
+						for (const line of rawJsonOutput.split("\n")) {
+							if (!line.trim() || matchCount >= effectiveLimit) continue;
 							let event: any;
 							try {
 								event = JSON.parse(line);
 							} catch {
-								return;
+								continue;
 							}
 							if (event.type === "match") {
 								matchCount++;
@@ -283,29 +294,11 @@ export function createGrepToolDefinition(
 								const lineText = event.data?.lines?.text;
 								if (filePath && typeof lineNumber === "number")
 									matches.push({ filePath, lineNumber, lineText });
-								if (matchCount >= effectiveLimit) {
-									matchLimitReached = true;
-									stopChild(true);
-								}
+								if (matchCount >= effectiveLimit) matchLimitReached = true;
 							}
-						});
+						}
 
-						child.on("error", (error) => {
-							cleanup();
-							settle(() => reject(new Error(`Failed to run ripgrep: ${error.message}`)));
-						});
-						child.on("close", async (code) => {
-							cleanup();
-							if (aborted) {
-								settle(() => reject(new Error("Operation aborted")));
-								return;
-							}
-							if (!killedDueToLimit && code !== 0 && code !== 1) {
-								const errorMsg = stderr.trim() || `ripgrep exited with code ${code}`;
-								settle(() => reject(new Error(errorMsg)));
-								return;
-							}
-							if (matchCount === 0) {
+						if (matchCount === 0) {
 								settle(() =>
 									resolve({ content: [{ type: "text", text: "No matches found" }], details: undefined }),
 								);
@@ -352,14 +345,13 @@ export function createGrepToolDefinition(
 								);
 								details.linesTruncated = true;
 							}
-							if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
-							settle(() =>
-								resolve({
-									content: [{ type: "text", text: output }],
-									details: Object.keys(details).length > 0 ? details : undefined,
-								}),
-							);
-						});
+						if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
+						settle(() =>
+							resolve({
+								content: [{ type: "text", text: output }],
+								details: Object.keys(details).length > 0 ? details : undefined,
+							}),
+						);
 					} catch (err) {
 						settle(() => reject(err as Error));
 					}
