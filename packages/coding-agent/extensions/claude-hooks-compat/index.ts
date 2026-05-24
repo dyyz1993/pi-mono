@@ -177,7 +177,13 @@ export default function (pi: ExtensionAPI) {
 							channel.emit("hook_executed", entry);
 							if (decision === "block") channel.emit("hook_blocked", entry);
 
-							if (handler.asyncRewake && output.exitCode === 2 && result.reason) {
+							if (output.exitCode === 3 && result.shouldBlock) {
+								pi.sendMessage({
+									customType: "hook_ask_no_ui",
+									content: `Hook requires confirmation but is running in async mode: ${result.reason}`,
+									display: true,
+								});
+							} else if (handler.asyncRewake && output.exitCode === 2 && result.reason) {
 								pi.sendMessage({
 									customType: "hook_async_block",
 									content: result.reason,
@@ -219,6 +225,19 @@ export default function (pi: ExtensionAPI) {
 				if (decision === "block") channel.emit("hook_blocked", entry);
 
 				if (result.shouldBlock) {
+					if (output.exitCode === 3) {
+						const question = result.reason || "Confirm this operation?";
+						const uiCtx = ((ctx as Record<string, unknown>).ui) as { confirm?: (title: string, message: string) => Promise<boolean> } | undefined;
+						if (uiCtx?.confirm) {
+							const confirmed = await uiCtx.confirm("Hook Confirmation", question);
+							if (confirmed) {
+								entry.decision = "allow";
+								return undefined;
+							}
+							return { block: true, reason: `[hook] User denied: ${question}` };
+						}
+						return { block: true, reason: `[hook] Confirmation required (no UI available): ${question}` };
+					}
 					return { block: true, reason: result.reason };
 				}
 
