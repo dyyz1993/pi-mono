@@ -215,7 +215,12 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		await runtimeHost.session.bindExtensions({});
 		expect(events).toEqual([
 			{ type: "session_before_fork", entryId: userMessage.entryId, position: "before" },
-			{ type: "session_shutdown", reason: "fork", targetSessionFile: runtimeHost.session.sessionFile, variables: {} },
+			{
+				type: "session_shutdown",
+				reason: "fork",
+				targetSessionFile: runtimeHost.session.sessionFile,
+				variables: {},
+			},
 			{ type: "session_start", reason: "fork", previousSessionFile, variables: {} },
 		]);
 

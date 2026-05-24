@@ -33,7 +33,6 @@ export default function (pi: ExtensionAPI) {
 	let logIdCounter = 0;
 	let configSources: ConfigSource[] = [];
 
-	const sessionAllowList = new Map<string, Set<string>>();
 	let currentSessionId: string | undefined;
 
 	const rawChannel = pi.registerChannel(HOOKS_CHANNEL_NAME);
@@ -53,14 +52,6 @@ export default function (pi: ExtensionAPI) {
 
 	channel.handle("hooks.clear", () => {
 		logBuffer.clear();
-		return { ok: true };
-	});
-
-	channel.handle("hooks.alwaysAllow", (params: { sessionId: string; toolName: string; matcher: string }) => {
-		const { sessionId, toolName, matcher } = params;
-		let set = sessionAllowList.get(sessionId);
-		if (!set) { set = new Set(); sessionAllowList.set(sessionId, set); }
-		set.add(`${toolName}:${matcher}`);
 		return { ok: true };
 	});
 
@@ -158,9 +149,7 @@ export default function (pi: ExtensionAPI) {
 		for (const group of groups) {
 			if (!matchesMatcher(group.matcher, event.toolName)) continue;
 
-			const allowKey = `${event.toolName}:${group.matcher ?? "*"}`;
-			const isInAllowList = currentSessionId ? (sessionAllowList.get(currentSessionId)?.has(allowKey) ?? false) : false;
-			if (currentSessionId && sessionAllowList.get(currentSessionId)?.has(allowKey)) continue;
+
 
 			for (let i = 0; i < group.hooks.length; i++) {
 				const handler = group.hooks[i];
@@ -268,15 +257,9 @@ export default function (pi: ExtensionAPI) {
 										reason: question,
 									},
 								},
-							) as { confirmed: boolean; alwaysAllow: boolean } | boolean;
+							) as boolean | { confirmed: boolean };
 							const confirmed = typeof confirmResult === "object" ? confirmResult.confirmed : !!confirmResult;
-						const alwaysAllow = typeof confirmResult === "object" ? confirmResult.alwaysAllow : false;
 						if (confirmed) {
-							if (alwaysAllow && currentSessionId) {
-								let set = sessionAllowList.get(currentSessionId);
-								if (!set) { set = new Set(); sessionAllowList.set(currentSessionId, set); }
-								set.add(allowKey);
-							}
 								entry.decision = "allow";
 								return undefined;
 							}

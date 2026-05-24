@@ -41,6 +41,7 @@ import { getAgentDir } from "../config.js";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
+import { isRetryableError, withRetry } from "../utils/with-retry.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
@@ -183,7 +184,8 @@ export type AgentSessionEvent =
 				fullName: string;
 				description: string;
 			}>;
-	  };
+	  }
+	| { type: "extension_llm_error"; error: string; source?: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -461,8 +463,15 @@ export class AgentSession {
 			const cwd = this._cwd;
 			const git = InternalGit.createForProject(storeRoot, cwd);
 			this._fileSnapshotManager = new FileSnapshotManager(git);
+			// Rebuild snapshot index from current branch entries so getModifiedFiles
+			// can filter by turn even for historical turns. Only snapshots on the path
+			// from leafId to root are kept — rolled-back branch snapshots are excluded.
+			const entries = this.sessionManager.getEntries();
+			const leafId = this.sessionManager.getLeafId();
+			this._fileSnapshotManager.rebuildIndex(entries, leafId);
 			this._extensionRunner.setFileSnapshotManager(this._fileSnapshotManager);
-		} catch {
+		} catch (err) {
+			console.warn("[initFileSnapshotManager] failed, file snapshots disabled:", err instanceof Error ? err.message : String(err));
 			this._fileSnapshotManager = null;
 			this._extensionRunner.setFileSnapshotManager(null);
 		}
@@ -2877,11 +2886,7 @@ export class AgentSession {
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
 
-		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
-			err,
-		);
+		return isRetryableError(message.errorMessage);
 	}
 
 	/**
@@ -3628,12 +3633,47 @@ export class AgentSession {
 				systemPrompt: options.systemPrompt,
 				messages,
 			};
-			const response = await complete(model, context, {
+			const providerRetry = this.settingsManager.getProviderRetrySettings();
+			const completeOpts = {
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				maxTokens: options.maxTokens,
 				signal: options.signal,
-			});
+				timeoutMs: options.timeoutMs ?? providerRetry.timeoutMs ?? 60_000,
+				maxRetries: providerRetry.maxRetries ?? 2,
+			};
+
+			const doCall = () => complete(model, context, completeOpts);
+
+			let response;
+			try {
+				response = options.retry
+					? await withRetry(doCall, {
+							maxRetries: options.retry.maxRetries,
+							baseDelayMs: options.retry.baseDelayMs ?? 5000,
+							signal: options.signal,
+							onRetry: (info) => {
+								this._emit({
+									type: "auto_retry_start",
+									attempt: info.attempt,
+									maxAttempts: info.maxAttempts,
+									delayMs: info.delayMs,
+									errorMessage: info.error instanceof Error ? info.error.message : String(info.error),
+								});
+							},
+						})
+					: await doCall();
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				if (isRetryableError(err)) {
+					this._emit({ type: "extension_llm_error", error: errMsg });
+				}
+				throw err;
+			} finally {
+				if (options.retry) {
+					this._emit({ type: "auto_retry_end", success: false, attempt: 0 });
+				}
+			}
 			return response.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
 				.map((c) => c.text)
@@ -3657,12 +3697,47 @@ export class AgentSession {
 				systemPrompt: options.systemPrompt,
 				messages,
 			};
-			const response = await complete(model, context, {
+			const providerRetry = this.settingsManager.getProviderRetrySettings();
+			const completeOpts = {
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				maxTokens: options.maxTokens,
 				signal: options.signal,
-			});
+				timeoutMs: options.timeoutMs ?? providerRetry.timeoutMs ?? 60_000,
+				maxRetries: providerRetry.maxRetries ?? 2,
+			};
+
+			const doCall = () => complete(model, context, completeOpts);
+
+			let response;
+			try {
+				response = options.retry
+					? await withRetry(doCall, {
+							maxRetries: options.retry.maxRetries,
+							baseDelayMs: options.retry.baseDelayMs ?? 5000,
+							signal: options.signal,
+							onRetry: (info) => {
+								this._emit({
+									type: "auto_retry_start",
+									attempt: info.attempt,
+									maxAttempts: info.maxAttempts,
+									delayMs: info.delayMs,
+									errorMessage: info.error instanceof Error ? info.error.message : String(info.error),
+								});
+							},
+						})
+					: await doCall();
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				if (isRetryableError(err)) {
+					this._emit({ type: "extension_llm_error", error: errMsg });
+				}
+				throw err;
+			} finally {
+				if (options.retry) {
+					this._emit({ type: "auto_retry_end", success: false, attempt: 0 });
+				}
+			}
 			return response.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
 				.map((c) => c.text)

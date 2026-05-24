@@ -243,12 +243,14 @@ export class FileSnapshotManager {
 		this.turnIndex = turnIndex + 1;
 	}
 
-	rebuildIndex(entries: SessionEntry[]): void {
+	rebuildIndex(entries: SessionEntry[], leafId?: string | null): void {
 		this.snapshotIndex.clear();
 		this.turnIndexMap.clear();
 		this.lastCommittedTreeHash = null;
 		this.sessionStartTreeHash = null;
 		this.turnIndex = 0;
+
+		const byId = leafId ? new Map(entries.map((e) => [e.id, e] as const)) : null;
 
 		for (const entry of entries) {
 			if (entry.type !== "custom") continue;
@@ -257,6 +259,11 @@ export class FileSnapshotManager {
 
 			const data = custom.data as StepSnapshotData;
 			if (!data) continue;
+
+			// Skip snapshots not on the current branch path (e.g. from rolled-back turns).
+			// Without this filter, getModifiedFiles could include old branch snapshots
+			// that share the same turnIndex as current branch snapshots.
+			if (leafId && byId && !isOnPathTo(byId, leafId, entry.id)) continue;
 
 			// The first snapshot's baselineTreeHash is the session start state.
 			// Restore it so rollback-to-root can find the correct target.
@@ -318,24 +325,36 @@ export class FileSnapshotManager {
 		};
 	}
 
-	getModifiedFiles(options?: { fromEntryId?: string; toEntryId?: string; toTurnIndex?: number }): ModifiedFileInfo[] {
+	getModifiedFiles(options?: { fromEntryId?: string; toEntryId?: string; toTurnIndex?: number; fromTurnIndex?: number }): ModifiedFileInfo[] {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
+		if (snapshots.length === 0) return [];
 
-		let toEntryId = options?.toEntryId;
-		if (!toEntryId && options?.toTurnIndex !== undefined) {
-			toEntryId = this.turnIndexMap.get(options.toTurnIndex) ?? undefined;
+		// fromTurnIndex (rollback semantics): start from this turn to the latest
+		// toTurnIndex (legacy): alias for fromTurnIndex for backward compat
+		const effectiveFromTurnIndex = options?.fromTurnIndex ?? options?.toTurnIndex;
+
+		let startIdx = 0;
+		if (effectiveFromTurnIndex !== undefined) {
+			const entryId = this.turnIndexMap.get(effectiveFromTurnIndex);
+			if (!entryId) return [];
+			startIdx = snapshots.findIndex((s) => s.entryId === entryId);
+			if (startIdx === -1) return [];
 		}
 
-		const fromIdx = options?.fromEntryId ? snapshots.findIndex((s) => s.entryId === options.fromEntryId) : -1;
-		const toIdx = toEntryId ? snapshots.findIndex((s) => s.entryId === toEntryId) : -1;
+		let endIdx = snapshots.length - 1;
+		if (options?.fromEntryId) {
+			const fromIdx = snapshots.findIndex((s) => s.entryId === options.fromEntryId);
+			if (fromIdx !== -1) startIdx = fromIdx;
+		}
+		if (options?.toEntryId) {
+			const toIdx = snapshots.findIndex((s) => s.entryId === options.toEntryId);
+			if (toIdx !== -1) endIdx = toIdx;
+		}
 
-		const start = fromIdx === -1 ? 0 : fromIdx;
-		const end = toIdx === -1 ? snapshots.length - 1 : toIdx;
-
-		if (start > end || snapshots.length === 0) return [];
+		if (startIdx > endIdx) return [];
 
 		const fileMap = new Map<string, ModifiedFileInfo>();
-		for (let i = start; i <= end; i++) {
+		for (let i = startIdx; i <= endIdx; i++) {
 			const snap = snapshots[i];
 			if (!snap?.diff) continue;
 
@@ -367,7 +386,7 @@ export class FileSnapshotManager {
 	getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): FileDiffInfo | null {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
 
-		const fromHash = options.fromEntryId
+		let fromHash = options.fromEntryId
 			? (snapshots.find((s) => s.entryId === options.fromEntryId)?.snapshotTreeHash ?? null)
 			: this.sessionStartTreeHash;
 		const toHash = options.toEntryId
@@ -376,13 +395,36 @@ export class FileSnapshotManager {
 
 		if (!fromHash && !toHash) return null;
 
-		const fromFiles = fromHash ? this.git.readTree(fromHash) : new Map<string, string>();
+		let fromFiles = fromHash ? this.git.readTree(fromHash) : new Map<string, string>();
 		const toFiles = toHash ? this.git.readTree(toHash) : new Map<string, string>();
 
-		const oldContent = fromFiles.get(options.filePath) ?? null;
+		let oldContent = fromFiles.get(options.filePath) ?? null;
 		const newContent = toFiles.get(options.filePath) ?? null;
 
-		if (oldContent === null && newContent === null) return null;
+		// If the file doesn't exist in either snapshot, it may have been created
+		// and deleted within the same range. Walk backward through snapshots from
+		// the fromEntryId to find the last snapshot where the file existed, so we
+		// can show what content was lost.
+		if (oldContent === null && newContent === null) {
+			const fromIdx = options.fromEntryId
+				? snapshots.findIndex((s) => s.entryId === options.fromEntryId)
+				: 0;
+			const toIdx = options.toEntryId
+				? snapshots.findIndex((s) => s.entryId === options.toEntryId)
+				: snapshots.length - 1;
+			// Search backward from the toEntry snapshot for the file's last known content
+			for (let i = toIdx; i >= fromIdx; i--) {
+				const snap = snapshots[i];
+				if (!snap?.snapshotTreeHash) continue;
+				const snapFiles = this.git.readTree(snap.snapshotTreeHash);
+				const content = snapFiles.get(options.filePath);
+				if (content !== undefined) {
+					oldContent = content;
+					break;
+				}
+			}
+			if (oldContent === null) return null;
+		}
 
 		return {
 			path: options.filePath,

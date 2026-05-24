@@ -1601,6 +1601,13 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
 // callLLM
 // ============================================================================
 
+export interface CallLLMRetryOptions {
+	/** Maximum number of retry attempts (exponential backoff: baseDelayMs * 2^attempt) */
+	maxRetries: number;
+	/** Base delay in ms for exponential backoff. Default: 5000 */
+	baseDelayMs?: number;
+}
+
 export interface CallLLMOptions {
 	/** Optional model override. Accepts tier aliases ("fast", "pro", "max"), provider/model format, or bare model id. Falls back to session model if not specified or resolution fails. */
 	model?: string;
@@ -1610,6 +1617,11 @@ export interface CallLLMOptions {
 	maxTurns?: number;
 	maxTokens?: number;
 	signal?: AbortSignal;
+	/** HTTP request timeout in milliseconds. Falls back to settings.retry.provider.timeoutMs or 60000. */
+	timeoutMs?: number;
+	/** Opt-in retry with exponential backoff. When set, callLLM will retry on transient errors
+	 *  (rate limits, server errors, network failures) and emit auto_retry_start/auto_retry_end events. */
+	retry?: CallLLMRetryOptions;
 }
 
 export type CallLLMHandler = (options: CallLLMOptions) => Promise<string>;

@@ -962,7 +962,7 @@ describe("RPC mode command handling", () => {
 			expect(resp.data.files).toEqual([]);
 		});
 
-		it("resolves toUserMsgEntryId to turnIndex via session entries", async () => {
+		it("resolves toUserMsgEntryId to fromEntryId via session entries", async () => {
 			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
 
 			session.sessionManager.getEntries.mockReturnValueOnce([
@@ -977,9 +977,9 @@ describe("RPC mode command handling", () => {
 			});
 
 			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: undefined,
+				fromEntryId: "snap-1",
 				toEntryId: undefined,
-				toTurnIndex: 5,
+				toTurnIndex: undefined,
 			});
 		});
 
@@ -999,9 +999,9 @@ describe("RPC mode command handling", () => {
 			});
 
 			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: undefined,
+				fromEntryId: "snap-1",
 				toEntryId: undefined,
-				toTurnIndex: 3,
+				toTurnIndex: undefined,
 			});
 		});
 
@@ -1046,7 +1046,7 @@ describe("RPC mode command handling", () => {
 			});
 		});
 
-		it("prefers explicit toTurnIndex over toUserMsgEntryId", async () => {
+		it("resolves toUserMsgEntryId even when explicit toTurnIndex is also present", async () => {
 			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
 
 			session.sessionManager.getEntries.mockReturnValueOnce([
@@ -1061,8 +1061,10 @@ describe("RPC mode command handling", () => {
 				toUserMsgEntryId: "user-msg-4",
 			});
 
+			// Both fromEntryId (from toUserMsgEntryId) and toTurnIndex are passed;
+			// fromEntryId takes precedence in getModifiedFiles
 			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: undefined,
+				fromEntryId: "snap-1",
 				toEntryId: undefined,
 				toTurnIndex: 2,
 			});

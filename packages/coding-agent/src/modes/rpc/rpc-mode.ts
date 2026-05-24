@@ -156,8 +156,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			),
 
 		confirm: (title, message, opts) =>
-			createDialogPromise(opts, { confirmed: false, alwaysAllow: false }, { method: "confirm", title, message, timeout: opts?.timeout, hookMeta: opts?.hookMeta }, (r) =>
-				"cancelled" in r && r.cancelled ? { confirmed: false, alwaysAllow: false } : "confirmed" in r ? { confirmed: r.confirmed, alwaysAllow: !!r.alwaysAllow } : { confirmed: false, alwaysAllow: false },
+			createDialogPromise(opts, false, { method: "confirm", title, message, timeout: opts?.timeout, hookMeta: opts?.hookMeta }, (r) =>
+				"cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false,
 			) as unknown as Promise<boolean>,
 
 		input: (title, placeholder, opts) =>
@@ -1177,39 +1177,32 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_modified_files": {
 				const fileSnapshotManager = session.fileSnapshotManager;
 				if (!fileSnapshotManager) {
-					console.error("[get_modified_files] fileSnapshotManager is NULL");
 					return success(id, "get_modified_files", { files: [] });
 				}
 
-				let toTurnIndex = command.toTurnIndex;
-				console.error("[get_modified_files] toUserMsgEntryId:", command.toUserMsgEntryId, "toTurnIndex:", command.toTurnIndex);
-
-				if (toTurnIndex === undefined && command.toUserMsgEntryId) {
+				// Resolve fromEntryId directly from the user message entry's step-snapshot,
+				// avoiding a round-trip through turnIndex which breaks when multiple snapshots
+				// share the same turnIndex (e.g. after rollback + continue chatting).
+				let fromEntryId = command.fromEntryId;
+				if (!fromEntryId && command.toUserMsgEntryId) {
 					const entries = session.sessionManager.getEntries();
 					const userEntryIdx = entries.findIndex((e) => e.id === command.toUserMsgEntryId);
-					console.error("[get_modified_files] entries:", entries.length, "userEntryIdx:", userEntryIdx);
 					if (userEntryIdx !== -1) {
 						for (let i = userEntryIdx; i < entries.length; i++) {
 							const entry = entries[i];
 							if (entry.type === "custom" && entry.customType === "step-snapshot") {
-								const data = entry.data as { turnIndex?: number } | undefined;
-								if (data && data.turnIndex !== undefined) {
-									toTurnIndex = data.turnIndex;
-									console.error("[get_modified_files] resolved toTurnIndex:", toTurnIndex);
-									break;
-								}
+								fromEntryId = entry.id;
+								break;
 							}
 						}
 					}
 				}
 
-				console.error("[get_modified_files] final toTurnIndex:", toTurnIndex);
 				const files = fileSnapshotManager.getModifiedFiles({
-					fromEntryId: command.fromEntryId,
+					fromEntryId,
 					toEntryId: command.toEntryId,
-					toTurnIndex,
+					toTurnIndex: command.toTurnIndex,
 				});
-				console.error("[get_modified_files] returning files:", files.length);
 				return success(id, "get_modified_files", { files });
 			}
 

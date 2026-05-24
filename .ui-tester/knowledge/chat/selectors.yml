@@ -1,0 +1,69 @@
+# Module: chat
+# Site: http://localhost:5173 (pi-agent-chat WebUI)
+# Version: 1
+# Status: verified
+# Last updated: 2026-05-24
+# Last verified: 2026-05-24
+
+auth_page:
+  url: "http://localhost:5173"
+  token_input: "#auth-token"
+  connect_button: "button:has-text('连接')"
+  token_prefilled: "demo-test-token"
+
+chat_page:
+  url: "http://localhost:5173"
+  message_input: "[data-testid='chat-input']"
+  send_button: "button:has-text('发送')"
+  stop_button: "button:has-text('停止')"
+  new_session_button: "[data-testid='new-session-button']"
+  settings_button: "[data-testid='settings-open-btn']"
+  theme_toggle: "[data-testid='theme-menu-toggle']"
+  notification_bell: "[data-testid='notification-bell']"
+  session_search: "[data-testid='session-search']"
+
+sidebar:
+  collapse_button: "button[title='收起侧边栏']"
+  expand_button: "button[title='打开会话面板']"
+  filter_all: "button:has-text('全部')"
+  filter_delegated: "button:has-text('委派')"
+  filter_normal: "button:has-text('普通')"
+  agent_filter_dropdown: "combobox"
+
+right_panel:
+  review_tab: "button:has-text('审核')"
+  git_tab: "button:has-text('Git')"
+  files_tab: "button:has-text('文件')"
+  status_tab: "button:has-text('状态')"
+  agent_tab: "button:has-text('Agent')"
+  rpc_tab: "button:has-text('RPC')"
+  memory_tab: "button:has-text('记忆')"
+  rules_tab: "button:has-text('Rules')"
+  hooks_tab: "button:has-text('Hooks')"
+  snapshot_tab: "button:has-text('快照')"
+
+toolbar:
+  model_selector: "button[title='模型选择']"
+  agent_selector: "button[title='选择智能体']"
+  thinking_level: "button[title='思考级别选择']"
+  speed_fast: "button:has-text('快')"
+  speed_medium: "button:has-text('中')"
+  speed_thinking: "button:has-text('思考')"
+
+settings_panel:
+  view_mode_developer: "radio:has-text('开发者')"
+  view_mode_simple: "radio:has-text('简洁')"
+  show_tool_calls: "toggle:has-text('显示工具调用')"
+  show_tool_results: "toggle:has-text('显示工具结果')"
+  show_thinking: "toggle:has-text('显示思考过程')"
+  close_button: "button:has-text('关闭')"
+
+theme_menu:
+  themes:
+    - "Nord"
+    - "Solarized"
+    - "Warm Dark"
+    - "Rosé Pine"
+    - "Latte"
+    - "Sunset"
+    - "跟随系统"

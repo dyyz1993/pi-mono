@@ -803,7 +803,7 @@ describe("FileSnapshotManager", () => {
 			expect(turn0Files.every((f) => f.status === "added")).toBe(true);
 		});
 
-		it("getModifiedFiles respects toTurnIndex filter", async () => {
+		it("getModifiedFiles respects toTurnIndex filter (fromTurnIndex semantics)", async () => {
 			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
 			await manager.initialize(tempDir);
 
@@ -816,20 +816,26 @@ describe("FileSnapshotManager", () => {
 			writeFileSync(join(tempDir, "d.ts"), "d", "utf-8");
 			manager.onTurnEnd(tempDir, 2, appendEntry);
 
+			// toTurnIndex is now a lower bound (fromTurnIndex): returns that turn through the latest
+			// toTurnIndex=0 → from turn 0 to end → b.ts + c.ts + d.ts
 			const turn0Files = manager.getModifiedFiles({ toTurnIndex: 0 });
-			expect(turn0Files.map((f) => f.path)).toEqual(["b.ts"]);
+			expect(turn0Files.map((f) => f.path).sort()).toEqual(["b.ts", "c.ts", "d.ts"]);
 
+			// toTurnIndex=1 → from turn 1 to end → c.ts + d.ts
 			const turn1Files = manager.getModifiedFiles({ toTurnIndex: 1 });
-			const turn1Paths = turn1Files.map((f) => f.path);
-			expect(turn1Paths).toContain("b.ts");
-			expect(turn1Paths).toContain("c.ts");
-			expect(turn1Paths).not.toContain("d.ts");
+			const turn1Paths = turn1Files.map((f) => f.path).sort();
+			expect(turn1Paths).toEqual(["c.ts", "d.ts"]);
 
-			const allFiles = manager.getModifiedFiles({ toTurnIndex: 2 });
+			// toTurnIndex=2 → from turn 2 to end → d.ts only
+			const turn2Files = manager.getModifiedFiles({ toTurnIndex: 2 });
+			expect(turn2Files.map((f) => f.path)).toEqual(["d.ts"]);
+
+			// No filter → all files
+			const allFiles = manager.getModifiedFiles();
 			expect(allFiles.map((f) => f.path).sort()).toEqual(["b.ts", "c.ts", "d.ts"]);
 		});
 
-		it("getModifiedFiles toTurnIndex mismaps after rollback + new turn", async () => {
+		it("getModifiedFiles fromTurnIndex includes all turns from target to latest", async () => {
 			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
 			await manager.initialize(tempDir);
 
@@ -854,21 +860,23 @@ describe("FileSnapshotManager", () => {
 			expect(snap3).not.toBeNull();
 			expect(snap3!.diff!.added).toContain("e.ts");
 
+			// toTurnIndex=2 means "from turn 2 to end" → includes d.ts (turn 2) and e.ts (turn 3)
 			const turn2Files = manager.getModifiedFiles({ toTurnIndex: 2 });
 			const turn2Paths = turn2Files.map((f) => f.path);
 			expect(turn2Paths).toContain("d.ts");
-			expect(turn2Paths).not.toContain("e.ts");
+			expect(turn2Paths).toContain("e.ts");
 		});
 
-		it("getModifiedFiles with invalid toTurnIndex returns all files", async () => {
+		it("getModifiedFiles with invalid toTurnIndex returns empty", async () => {
 			writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
 			await manager.initialize(tempDir);
 
 			writeFileSync(join(tempDir, "b.ts"), "b", "utf-8");
 			manager.onTurnEnd(tempDir, 0, appendEntry);
 
+			// Invalid turnIndex that doesn't exist in turnIndexMap → returns empty
 			const files = manager.getModifiedFiles({ toTurnIndex: 999 });
-			expect(files.map((f) => f.path)).toEqual(["b.ts"]);
+			expect(files).toEqual([]);
 		});
 	});
 
