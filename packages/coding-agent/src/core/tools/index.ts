@@ -94,6 +94,36 @@ export interface ToolsOptions {
 	ls?: LsToolOptions;
 }
 
+import type { BashOperations } from "./bash.js";
+import type { ReadOperations } from "./read.js";
+import type { WriteOperations } from "./write.js";
+import type { EditOperations } from "./edit.js";
+import type { GrepOperations } from "./grep.js";
+import type { FindOperations } from "./find.js";
+import type { LsOperations } from "./ls.js";
+
+export interface ToolOperationsProvider {
+	bash?: BashOperations;
+	read?: ReadOperations;
+	write?: WriteOperations;
+	edit?: EditOperations;
+	grep?: GrepOperations;
+	find?: FindOperations;
+	ls?: LsOperations;
+}
+
+export function toolsOptionsFromProvider(provider: ToolOperationsProvider): ToolsOptions {
+	const options: ToolsOptions = {};
+	if (provider.bash) options.bash = { operations: provider.bash };
+	if (provider.read) options.read = { operations: provider.read };
+	if (provider.write) options.write = { operations: provider.write };
+	if (provider.edit) options.edit = { operations: provider.edit };
+	if (provider.grep) options.grep = { operations: provider.grep };
+	if (provider.find) options.find = { operations: provider.find };
+	if (provider.ls) options.ls = { operations: provider.ls };
+	return options;
+}
+
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
 		case "read":

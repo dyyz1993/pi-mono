@@ -251,6 +251,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		callLLMStructured: () => Promise.reject(new Error("Extension runtime not initialized")),
 		forkAgent: () => Promise.reject(new Error("Extension runtime not initialized")),
 		background: notInitialized,
+		setToolOperationsProvider: () => {},
+		getToolOperationsProvider: () => undefined,
 		assertActive,
 		invalidate: (message) => {
 			state.staleMessage ??=
@@ -403,6 +405,16 @@ function createExtensionAPI(extension: Extension, slot: RuntimeSlot, cwd: string
 		setActiveTools(toolNames: string[]): void {
 			getRuntime().assertActive();
 			getRuntime().setActiveTools(toolNames);
+		},
+
+		setToolOperationsProvider(provider) {
+			getRuntime().assertActive();
+			getRuntime().setToolOperationsProvider(provider);
+		},
+
+		getToolOperationsProvider() {
+			getRuntime().assertActive();
+			return getRuntime().getToolOperationsProvider();
 		},
 
 		getCommands() {

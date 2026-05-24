@@ -166,7 +166,13 @@ export type ForkHandler = (
 
 export type NavigateTreeHandler = (
 	targetId: string,
-	options?: { summarize?: boolean; skipFiles?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
+	options?: {
+		summarize?: boolean;
+		skipFiles?: boolean;
+		customInstructions?: string;
+		replaceInstructions?: boolean;
+		label?: string;
+	},
 ) => Promise<{ cancelled: boolean }>;
 
 export type SwitchSessionHandler = (
@@ -333,6 +339,8 @@ export class ExtensionRunner {
 		this.runtime.getAllTools = actions.getAllTools;
 		this.runtime.setActiveTools = actions.setActiveTools;
 		this.runtime.refreshTools = actions.refreshTools;
+		this.runtime.setToolOperationsProvider = actions.setToolOperationsProvider;
+		this.runtime.getToolOperationsProvider = actions.getToolOperationsProvider;
 		this.runtime.getCommands = actions.getCommands;
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;

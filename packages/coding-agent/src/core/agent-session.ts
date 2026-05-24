@@ -119,7 +119,7 @@ import {
 } from "./storage.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
-import { createAllToolDefinitions, createTool, type ToolName } from "./tools/index.js";
+import { createAllToolDefinitions, createTool, toolsOptionsFromProvider, type ToolName } from "./tools/index.js";
 import { stripMarkdownCodeBlock } from "./tools/strip-markdown.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 
@@ -222,6 +222,12 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Skip MCP server initialization entirely. */
 	noMcp?: boolean;
+	/**
+	 * Provide custom operations for built-in tools (bash, read, write, edit, grep, find, ls).
+	 * When set, the corresponding tool will use these operations instead of local filesystem/shell.
+	 * This enables delegating tool execution to remote environments (e.g. sandbox containers).
+	 */
+	toolOperationsProvider?: import("./tools/index.js").ToolOperationsProvider;
 }
 
 export interface ExtensionBindings {
@@ -359,6 +365,7 @@ export class AgentSession {
 	private _mcpToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _mcpServerScopes: Map<string, "global" | "project"> = new Map();
 	private _noMcp: boolean;
+	private _toolOperationsProvider?: import("./tools/index.js").ToolOperationsProvider;
 	private _currentAgentName: string = "build";
 	private _currentAgentVariables: Record<string, string> = {};
 
@@ -395,6 +402,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._noMcp = config.noMcp ?? false;
+		this._toolOperationsProvider = config.toolOperationsProvider;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -414,6 +422,37 @@ export class AgentSession {
 
 	get fileSnapshotManager(): FileSnapshotManager | null {
 		return this._fileSnapshotManager;
+	}
+
+	set toolOperationsProvider(provider: import("./tools/index.js").ToolOperationsProvider | undefined) {
+		this._toolOperationsProvider = provider;
+		this._rebuildBaseToolDefinitions();
+		this._refreshToolRegistry();
+	}
+
+	get toolOperationsProvider(): import("./tools/index.js").ToolOperationsProvider | undefined {
+		return this._toolOperationsProvider;
+	}
+
+	private _rebuildBaseToolDefinitions(): void {
+		const autoResizeImages = this.settingsManager.getImageAutoResize();
+		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
+		const shellPath = this.settingsManager.getShellPath();
+		const providerOptions = this._toolOperationsProvider
+			? toolsOptionsFromProvider(this._toolOperationsProvider)
+			: {};
+		const baseToolDefinitions = createAllToolDefinitions(this._cwd, {
+			read: { autoResizeImages, ...providerOptions.read },
+			bash: { commandPrefix: shellCommandPrefix, shellPath, ...providerOptions.bash },
+			write: providerOptions.write,
+			edit: providerOptions.edit,
+			grep: providerOptions.grep,
+			find: providerOptions.find,
+			ls: providerOptions.ls,
+		});
+		this._baseToolDefinitions = new Map(
+			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
+		);
 	}
 
 	private _initFileSnapshotManager(): void {
@@ -816,7 +855,6 @@ export class AgentSession {
 	/** Emit extension events based on agent events */
 	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
 		if (event.type === "agent_start") {
-			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start", variables: this._currentAgentVariables } as any);
 		} else if (event.type === "agent_end") {
 			await this._extensionRunner.emit({
@@ -2532,6 +2570,8 @@ export class AgentSession {
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
 				refreshTools: () => this._refreshToolRegistry(),
+				setToolOperationsProvider: (provider) => { this.toolOperationsProvider = provider; },
+				getToolOperationsProvider: () => this.toolOperationsProvider,
 				getCommands,
 				setModel: async (model) => {
 					if (!this.modelRegistry.hasConfiguredAuth(model)) return false;
@@ -2693,6 +2733,9 @@ export class AgentSession {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		const providerOptions = this._toolOperationsProvider
+			? toolsOptionsFromProvider(this._toolOperationsProvider)
+			: {};
 		const baseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -2701,8 +2744,13 @@ export class AgentSession {
 					]),
 				)
 			: createAllToolDefinitions(this._cwd, {
-					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					read: { autoResizeImages, ...providerOptions.read },
+					bash: { commandPrefix: shellCommandPrefix, shellPath, ...providerOptions.bash },
+					write: providerOptions.write,
+					edit: providerOptions.edit,
+					grep: providerOptions.grep,
+					find: providerOptions.find,
+					ls: providerOptions.ls,
 				});
 
 		this._baseToolDefinitions = new Map(
