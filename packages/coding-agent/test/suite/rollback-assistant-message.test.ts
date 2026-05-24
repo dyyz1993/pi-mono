@@ -2,7 +2,27 @@ import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
 
-describe("rollback assistant message: targetId correctness", () => {
+/**
+ * Tests for rollback behavior with navigateTree's role-based logic.
+ *
+ * Backend navigateTree (agent-session.ts line 3225-3242):
+ * - target is user message → newLeafId = parentId (jumps before the user msg)
+ * - target is assistant/other → newLeafId = targetId (stays at the target)
+ *
+ * This means:
+ * - navigateTree(assistantEntryId) → leaf = assistant → assistant is VISIBLE (on path)
+ * - navigateTree(userEntryId) → leaf = parentId → user is NOT visible
+ *
+ * For "rollback this assistant reply" (remove it):
+ *   Frontend should pass parentId of the assistant, not the assistant itself.
+ *   navigateTree(parentId=userEntryId) → backend sees user → newLeafId = user's parentId
+ *   → everything from that user onward is removed, including the assistant.
+ *
+ * For "jump to this point in history" (keep it visible):
+ *   Frontend passes the entryId directly.
+ *   navigateTree(assistantEntryId) → leaf = assistant → assistant is visible.
+ */
+describe("rollback assistant message: navigateTree role-based behavior", () => {
 	const harnesses: Harness[] = [];
 	afterEach(() => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
@@ -16,7 +36,7 @@ describe("rollback assistant message: targetId correctness", () => {
 		await h.session.prompt(prompt);
 	}
 
-	it("navigateTree(leafId) is no-op when leaf is already at that position", async () => {
+	it("navigateTree(currentLeaf) is no-op", async () => {
 		const h = await createHarness();
 		harnesses.push(h);
 
@@ -24,193 +44,122 @@ describe("rollback assistant message: targetId correctness", () => {
 		await doSimpleTurn(h, "turn2");
 
 		const leafId = h.sessionManager.getLeafId()!;
-		expect(leafId).toBeTruthy();
-
 		const messagesBefore = h.session.messages.length;
 
 		const result = await h.session.navigateTree(leafId, { summarize: false });
-
 		expect(result.cancelled).toBe(false);
+		expect(h.session.messages.length).toBe(messagesBefore);
+	});
+
+	it("navigateTree(assistantEntryId) keeps assistant visible — leaf stays at target", async () => {
+		const h = await createHarness();
+		harnesses.push(h);
+
+		await doSimpleTurn(h, "turn1");
+		await doSimpleTurn(h, "turn2");
+
+		// Find turn1's last assistant entry
+		const entries = h.sessionManager.getEntries();
+		const messageEntries = entries.filter((e) => e.type === "message");
+		const assistantEntries = messageEntries.filter((e) => (e as any).message?.role === "assistant");
+		// Turn 1's assistant: entries [1] and [3] (toolCall + text)
+		const turn1LastAssistant = assistantEntries[1]; // "done" after turn1
+
+		const messagesBefore = h.session.messages.length;
+
+		// navigateTree(assistant) → backend: newLeafId = targetId (stays here)
+		await h.session.navigateTree(turn1LastAssistant.id, { summarize: false });
+
+		// Leaf should be at the assistant entry
+		expect(h.sessionManager.getLeafId()).toBe(turn1LastAssistant.id);
+
+		// Messages should decrease (turn2 stuff removed)
 		const messagesAfter = h.session.messages.length;
-		expect(messagesAfter).toBe(messagesBefore);
+		expect(messagesAfter).toBeLessThan(messagesBefore);
+
+		// But the assistant entry itself should be visible (on the path)
+		const branch = h.sessionManager.getBranch();
+		expect(branch.some((e) => e.id === turn1LastAssistant.id)).toBe(true);
 	});
 
-	it("navigateTree(assistantEntryId) keeps e4 in path because leaf stays at e4", async () => {
+	it("navigateTree(userEntryId) removes user and everything after — backend jumps to parentId", async () => {
 		const h = await createHarness();
 		harnesses.push(h);
 
 		await doSimpleTurn(h, "turn1");
 		await doSimpleTurn(h, "turn2");
 
+		// Find turn2's user entry
 		const entries = h.sessionManager.getEntries();
 		const messageEntries = entries.filter((e) => e.type === "message");
+		const userEntries = messageEntries.filter((e) => (e as any).message?.role === "user");
+		const turn2User = userEntries[1];
 
-		const assistantEntries = messageEntries.filter(
-			(e) => (e as any).message?.role === "assistant",
-		);
-		expect(assistantEntries.length).toBeGreaterThanOrEqual(2);
-
-		const lastAssistant = assistantEntries[assistantEntries.length - 1];
-		const lastAssistantId = lastAssistant.id;
-
-		const leafBefore = h.sessionManager.getLeafId();
 		const messagesBefore = h.session.messages.length;
 
-		const branchBefore = h.sessionManager.getBranch();
-		const branchIncludesAssistant = branchBefore.some((e) => e.id === lastAssistantId);
-		expect(branchIncludesAssistant).toBe(true);
+		// navigateTree(user) → backend: newLeafId = parentId (before user)
+		await h.session.navigateTree(turn2User.id, { summarize: false });
 
-		if (lastAssistantId !== leafBefore) {
-			await h.session.navigateTree(lastAssistantId, { summarize: false });
+		// Leaf should be BEFORE turn2User
+		const leafAfter = h.sessionManager.getLeafId();
+		expect(leafAfter).not.toBe(turn2User.id);
 
-			const leafAfter = h.sessionManager.getLeafId();
-			expect(leafAfter).toBe(lastAssistantId);
+		// Turn2 user should NOT be on the path
+		const branch = h.sessionManager.getBranch();
+		expect(branch.some((e) => e.id === turn2User.id)).toBe(false);
 
-			const messagesAfter = h.session.messages.length;
-			expect(messagesAfter).toBeLessThanOrEqual(messagesBefore);
+		// Messages should decrease
+		expect(h.session.messages.length).toBeLessThan(messagesBefore);
 
-			const branchAfter = h.sessionManager.getBranch();
-			const stillInBranch = branchAfter.some((e) => e.id === lastAssistantId);
-			expect(stillInBranch).toBe(true);
-		}
+		// Only 1 user message should remain
+		const userMsgs = h.session.messages.filter((m) => m.role === "user").length;
+		expect(userMsgs).toBe(1);
 	});
 
-	it("navigateTree(parentOfLastAssistant) correctly removes e4 assistant message", async () => {
+	it("rollback scenario: pass assistant's parentId (user entry) removes both turn2 messages", async () => {
 		const h = await createHarness();
 		harnesses.push(h);
 
 		await doSimpleTurn(h, "turn1");
 		await doSimpleTurn(h, "turn2");
 
-		const leafId = h.sessionManager.getLeafId()!;
-		const leafEntry = h.sessionManager.getEntry(leafId)!;
-		expect(leafEntry).toBeTruthy();
-
-		const parentId = leafEntry.parentId;
-		expect(parentId).toBeTruthy();
-
-		const messagesBeforeRollback = h.session.messages.length;
-
-		await h.session.navigateTree(parentId!, { summarize: false });
-
-		const leafAfterRollback = h.sessionManager.getLeafId()!;
-		expect(leafAfterRollback).toBe(parentId);
-
-		const messagesAfterRollback = h.session.messages.length;
-		expect(messagesAfterRollback).toBeLessThan(messagesBeforeRollback);
-
-		const branchAfterRollback = h.sessionManager.getBranch();
-		const leafEntryStillInBranch = branchAfterRollback.some((e) => e.id === leafId);
-		expect(leafEntryStillInBranch).toBe(false);
-	});
-
-	it("full scenario: 2 turns → verify e1-e4 → navigateTree(e4) no-op → navigateTree(e3) removes e4", async () => {
-		const h = await createHarness();
-		harnesses.push(h);
-
-		await doSimpleTurn(h, "turn1");
-		await doSimpleTurn(h, "turn2");
-
+		// Find turn2's user entry (= parentId of turn2's first assistant)
 		const entries = h.sessionManager.getEntries();
 		const messageEntries = entries.filter((e) => e.type === "message");
+		const userEntries = messageEntries.filter((e) => (e as any).message?.role === "user");
+		const turn2User = userEntries[1];
 
-		const userEntries = messageEntries.filter(
-			(e) => (e as any).message?.role === "user",
-		);
-		const assistantEntries = messageEntries.filter(
-			(e) => (e as any).message?.role === "assistant",
-		);
+		// Frontend passes turn2User.id (parentId of assistant)
+		// Backend sees user → newLeafId = turn2User.parentId (before turn2)
+		await h.session.navigateTree(turn2User.id, { summarize: false });
 
-		expect(userEntries.length).toBe(2);
-		expect(assistantEntries.length).toBeGreaterThanOrEqual(2);
+		// Only turn1 should remain
+		const userMsgs = h.session.messages.filter((m) => m.role === "user");
+		expect(userMsgs.length).toBe(1);
+	});
 
-		const leafId = h.sessionManager.getLeafId()!;
-		const leafEntry = h.sessionManager.getEntry(leafId)!;
-		const parentId = leafEntry.parentId!;
+	it("getBranch confirms path structure", async () => {
+		const h = await createHarness();
+		harnesses.push(h);
 
-		const result = await h.session.navigateTree(leafId, { summarize: false });
-		expect(result.cancelled).toBe(false);
-		expect(h.sessionManager.getLeafId()).toBe(leafId);
+		await doSimpleTurn(h, "turn1");
+		await doSimpleTurn(h, "turn2");
 
-		const messagesBeforeParentRollback = h.session.messages.length;
-		const userMsgsBefore = h.session.messages.filter((m) => m.role === "user").length;
+		const leafBefore = h.sessionManager.getLeafId()!;
+		const branchBefore = h.sessionManager.getBranch(leafBefore);
 
-		await h.session.navigateTree(parentId, { summarize: false });
+		// Navigate to turn1's last assistant (keeping it visible)
+		const entries = h.sessionManager.getEntries();
+		const messageEntries = entries.filter((e) => e.type === "message");
+		const assistantEntries = messageEntries.filter((e) => (e as any).message?.role === "assistant");
+		const turn1LastAssistant = assistantEntries[1];
 
-		const messagesAfterRollback = h.session.messages.length;
-		expect(messagesAfterRollback).toBeLessThan(messagesBeforeParentRollback);
+		await h.session.navigateTree(turn1LastAssistant.id, { summarize: false });
 
-		const userMsgsAfter = h.session.messages.filter((m) => m.role === "user").length;
-		expect(userMsgsAfter).toBe(userMsgsBefore);
-
-		const assistantMsgsAfter = h.session.messages.filter((m) => m.role === "assistant").length;
-		const assistantMsgsBefore = messagesBeforeParentRollback - messagesBeforeParentRollback;
-
+		const leafAfter = h.sessionManager.getLeafId()!;
 		const branchAfter = h.sessionManager.getBranch();
-		const messageIdsInBranch = new Set(
-			branchAfter.filter((e) => e.type === "message").map((e) => e.id),
-		);
-		expect(messageIdsInBranch.has(leafId)).toBe(false);
-	});
 
-	it("getBranch(fromId) returns correct path for each target", async () => {
-		const h = await createHarness();
-		harnesses.push(h);
-
-		await doSimpleTurn(h, "turn1");
-		await doSimpleTurn(h, "turn2");
-
-		const leafId = h.sessionManager.getLeafId()!;
-		const leafEntry = h.sessionManager.getEntry(leafId)!;
-		const parentId = leafEntry.parentId!;
-
-		const branchFromLeaf = h.sessionManager.getBranch(leafId);
-		const branchFromParent = h.sessionManager.getBranch(parentId);
-
-		expect(branchFromLeaf.length).toBeGreaterThan(branchFromParent.length);
-
-		const leafInBranchFromLeaf = branchFromLeaf.some((e) => e.id === leafId);
-		expect(leafInBranchFromLeaf).toBe(true);
-
-		const leafInBranchFromParent = branchFromParent.some((e) => e.id === leafId);
-		expect(leafInBranchFromParent).toBe(false);
-
-		const userMsgsFromParent = branchFromParent.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
-		expect(userMsgsFromParent.length).toBe(2);
-	});
-
-	it("getBranch from e3 still has both user messages but not e4 assistant entries", async () => {
-		const h = await createHarness();
-		harnesses.push(h);
-
-		await doSimpleTurn(h, "turn1");
-		await doSimpleTurn(h, "turn2");
-
-		const entries = h.sessionManager.getEntries();
-		const messageEntries = entries.filter((e) => e.type === "message");
-
-		const userEntries = messageEntries.filter(
-			(e) => (e as any).message?.role === "user",
-		);
-
-		const leafId = h.sessionManager.getLeafId()!;
-		const leafEntry = h.sessionManager.getEntry(leafId)!;
-		const parentId = leafEntry.parentId!;
-
-		const branchFromParent = h.sessionManager.getBranch(parentId);
-
-		for (const ue of userEntries) {
-			expect(branchFromParent.some((e) => e.id === ue.id)).toBe(true);
-		}
-
-		const assistantInParentBranch = branchFromParent.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "assistant",
-		);
-		const assistantInLeafBranch = messageEntries.filter(
-			(e) => (e as any).message?.role === "assistant",
-		);
-		expect(assistantInParentBranch.length).toBeLessThan(assistantInLeafBranch.length);
+		expect(branchAfter.length).toBeLessThan(branchBefore.length);
+		expect(branchAfter.some((e) => e.id === turn1LastAssistant.id)).toBe(true);
 	});
 });

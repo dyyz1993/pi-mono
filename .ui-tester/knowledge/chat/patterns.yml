@@ -1,0 +1,104 @@
+# Module: chat
+# Reusable operation sequences for testing chat functionality
+# Version: 1
+# Last updated: 2026-05-24
+
+auth_flow:
+  description: "Authenticate with pre-filled token"
+  steps:
+    - action: verify
+      description: "Auth page shows with pre-filled demo-test-token"
+    - action: click
+      selector: "button:has-text('连接')"
+      description: "Click Connect button"
+    - action: wait
+      ms: 5000
+  expected_result: "Main chat UI loads with sidebar and session list"
+
+send_message_flow:
+  description: "Send a chat message and wait for response"
+  steps:
+    - action: fill
+      selector: "[data-testid='chat-input']"
+      description: "Type message in chat input"
+    - action: snapshot
+      description: "Get fresh refs to find enabled send button"
+    - action: click
+      selector: "button:has-text('发送')"
+      description: "Click Send button (enabled after typing)"
+    - action: wait
+      ms: 8000
+  expected_result: "User message appears in chat, assistant responds"
+
+new_session_flow:
+  description: "Create a new empty chat session"
+  steps:
+    - action: click
+      selector: "[data-testid='new-session-button']"
+      description: "Click New Session button in toolbar"
+    - action: wait
+      ms: 2000
+  expected_result: "New empty chat session opens with '开始对话吧' placeholder"
+
+search_sessions_flow:
+  description: "Search sessions in sidebar"
+  steps:
+    - action: fill
+      selector: "[data-testid='session-search']"
+      description: "Type search query in session search input"
+    - action: wait
+      ms: 500
+  expected_result: "Session list filters to matching sessions"
+
+toggle_theme_flow:
+  description: "Switch between themes"
+  steps:
+    - action: click
+      selector: "[data-testid='theme-menu-toggle']"
+      description: "Open theme dropdown"
+    - action: click
+      selector: "text matching theme name (e.g. 'Latte', 'Nord')"
+      description: "Select desired theme"
+    - action: wait
+      ms: 500
+  expected_result: "UI theme changes immediately"
+
+toggle_sidebar_flow:
+  description: "Collapse and expand sidebar"
+  steps:
+    - action: click
+      selector: "button[title='收起侧边栏']"
+      description: "Collapse sidebar"
+    - action: wait
+      ms: 500
+    - action: click
+      selector: "button[title='打开会话面板']"
+      description: "Expand sidebar back"
+  expected_result: "Sidebar collapses and expands correctly"
+
+settings_panel_flow:
+  description: "Open and configure settings"
+  steps:
+    - action: click
+      selector: "[data-testid='settings-open-btn']"
+      description: "Open settings panel"
+    - action: verify
+      description: "Settings panel shows view modes and toggles"
+    - action: click
+      selector: "button:has-text('关闭')"
+      description: "Close settings panel"
+  expected_result: "Settings panel opens/closes correctly, all toggles work"
+
+tips:
+  - "App requires auth token on first load - localStorage 'rpc-auth-token'"
+  - "Auth page auto-fills 'demo-test-token' - just click Connect"
+  - "Send button is DISABLED until text is typed in input"
+  - "After typing, re-snapshot to get fresh refs (send button ref changes)"
+  - "Console warnings about 'tier switch failed' and 'fetchStatus failed' are benign"
+  - "WebSocket connections tracked at CDP level, may not show in websockets command"
+  - "Right panel has many tabs: 审核, Git, 文件, 状态, Agent, RPC, 记忆, Rules, Hooks, 快照"
+  - "Settings panel has view modes (开发者/简洁) and display toggles"
+  - "Theme menu offers: Nord, Solarized, Warm Dark, Rosé Pine, Latte, Sunset, 跟随系统"
+  - "Session search filters sidebar list in real-time"
+  - "Session filters: 全部, 委派, 普通 + agent role dropdown filter"
+  - "Use Escape key or eval to close dropdowns/menus"

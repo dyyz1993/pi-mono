@@ -82,7 +82,8 @@ describe("FileSnapshotManager concurrent/external modification", () => {
 		});
 
 		expect(result.dirty).toContain("a.ts");
-		expect(readFileSync(join(tempDir, "a.ts"), "utf-8")).toBe("v2");
+		expect(result.skipped).toContain("a.ts");
+		expect(readFileSync(join(tempDir, "a.ts"), "utf-8")).toBe("v3-dirty");
 	});
 
 	it("external file added between turns IS captured in snapshot and gets deleted on rollback", async () => {
@@ -141,9 +142,7 @@ describe("FileSnapshotManager concurrent/external modification", () => {
 		manager.onTurnEnd(tempDir, 1, appendEntry);
 		manager.onTurnEnd(tempDir, 2, appendEntry);
 
-		const snapshotCount = appendedEntries.filter(
-			(e) => e.customType === "step-snapshot",
-		).length;
+		const snapshotCount = appendedEntries.filter((e) => e.customType === "step-snapshot").length;
 		expect(snapshotCount).toBe(1);
 	});
 

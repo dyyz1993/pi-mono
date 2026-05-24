@@ -891,19 +891,17 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 	let ctx: ExtensionContext | null = null;
 
 	const callLLMWithRetry: CallLLMFn = async (opts) => {
-		const MAX_RETRIES = 100;
-		const RETRY_DELAY_MS = 5_000;
-		for (let attempt = 0; ; attempt++) {
-			try {
-				return await pi.callLLM(opts);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				if (/stale/i.test(msg)) throw err;
-				const isRateLimit = /429|rate.?limit|too.?many.?request|quota/i.test(msg);
-				if (!isRateLimit || attempt >= MAX_RETRIES) throw err;
-				console.error(`[callLLM] rate limited (attempt ${attempt + 1}/${MAX_RETRIES}), retrying in ${RETRY_DELAY_MS}ms`);
-				await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-			}
+		try {
+			return await pi.callLLM({
+				...opts,
+				timeoutMs: 30_000,
+				retry: { maxRetries: 3, baseDelayMs: 3000 },
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (/stale/i.test(msg)) throw err;
+			console.debug("[auto-memory] LLM call failed:", msg);
+			throw err;
 		}
 	};
 

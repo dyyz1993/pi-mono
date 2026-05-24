@@ -46,7 +46,7 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 				if (Array.isArray(res)) {
 					this.raw.send({ result: res, invokeId });
 				} else {
-					this.raw.send({ ...(res as Record<string, unknown> ?? {}), invokeId });
+					this.raw.send({ ...((res as Record<string, unknown>) ?? {}), invokeId });
 				}
 			};
 

@@ -203,6 +203,7 @@ export interface RpcClientAPI {
 	getModifiedFiles(options?: {
 		fromEntryId?: string;
 		toEntryId?: string;
+		toUserMsgEntryId?: string;
 	}): Promise<Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>>;
 	getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): Promise<{
 		path: string;
