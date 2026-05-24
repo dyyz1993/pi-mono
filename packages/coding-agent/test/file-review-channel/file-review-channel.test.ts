@@ -81,10 +81,14 @@ function createTestHarness() {
 	// Mock fileSnapshotManager — we control what getLiveChanges returns
 	const mockGetLiveChanges = vi.fn((): LiveChange[] => []);
 	const mockOnTurnEnd = vi.fn();
+	const mockGetFileDiff = vi.fn(() => null);
+	const mockGetBatchDiffs = vi.fn(() => ({ files: [] }));
 	const mockFileSnapshotManager = {
 		getLiveChanges: mockGetLiveChanges,
 		onTurnEnd: mockOnTurnEnd,
 		initialize: vi.fn(async () => {}),
+		getFileDiff: mockGetFileDiff,
+		getBatchDiffs: mockGetBatchDiffs,
 	};
 
 	// Mock ExtensionAPI (pi)
@@ -207,6 +211,8 @@ function createTestHarness() {
 		tempDir,
 		mockFileSnapshotManager,
 		mockGetLiveChanges,
+		mockGetFileDiff,
+		mockGetBatchDiffs,
 		mockOnTurnEnd,
 		makeCtx,
 		fireSessionStart,
@@ -323,26 +329,23 @@ describe("file-review channel: review.approve", () => {
 	});
 
 	it("returns ok:true for existing change", async () => {
-		// Create turn 0 with a change
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("approve-me.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
 		const data = await simulateInbound(harness, "review.approve", {
-			turnIndex: 0,
 			path: "approve-me.ts",
 		});
 
 		expect((data as Record<string, unknown>).ok).toBe(true);
 	});
 
-	it("returns ok:false for non-existent change", async () => {
+	it("returns ok:true for non-existent change (always succeeds)", async () => {
 		const data = await simulateInbound(harness, "review.approve", {
-			turnIndex: 99,
 			path: "non-existent.ts",
 		});
 
-		expect((data as Record<string, unknown>).ok).toBe(false);
+		expect((data as Record<string, unknown>).ok).toBe(true);
 	});
 
 	it("persists approval via appendEntry", async () => {
@@ -351,7 +354,6 @@ describe("file-review channel: review.approve", () => {
 		await harness.fireTurnEnd(0);
 
 		await simulateInbound(harness, "review.approve", {
-			turnIndex: 0,
 			path: "persist.ts",
 		});
 
@@ -367,7 +369,7 @@ describe("file-review channel: review.approve", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		await simulateInbound(harness, "review.approve", { turnIndex: 0, path: "will-approve.ts" });
+		await simulateInbound(harness, "review.approve", { path: "will-approve.ts" });
 
 		const data = await simulateInbound(harness, "review.pending", {});
 		const result = extractResponse(data);
@@ -389,17 +391,25 @@ describe("file-review channel: review.reject", () => {
 		} catch {}
 	});
 
-	it("returns ok:true for existing change", async () => {
+	it("reject rolls back added file (deleted)", async () => {
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("reject-me.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
+		// Create file on disk so rollback can delete it
+		writeFileSync(join(harness.tempDir, "reject-me.ts"), "new", "utf-8");
+
+		harness.mockGetFileDiff.mockReturnValue({
+			oldContent: null,
+			newContent: "new",
+		});
+
 		const data = await simulateInbound(harness, "review.reject", {
-			turnIndex: 0,
 			path: "reject-me.ts",
 		});
 
 		expect((data as Record<string, unknown>).ok).toBe(true);
+		expect((data as Record<string, unknown>).rolledBack).toBe(true);
 	});
 
 	it("persists rejection via appendEntry", async () => {
@@ -407,7 +417,13 @@ describe("file-review channel: review.reject", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		await simulateInbound(harness, "review.reject", { turnIndex: 0, path: "r.ts" });
+		writeFileSync(join(harness.tempDir, "r.ts"), "new", "utf-8");
+		harness.mockGetFileDiff.mockReturnValue({
+			oldContent: null,
+			newContent: "new",
+		});
+
+		await simulateInbound(harness, "review.reject", { path: "r.ts" });
 
 		const entry = harness.appendEntries.find(
 			(e) => e.type === "file-approval" && (e.data as Record<string, unknown>).status === "rejected",
@@ -659,8 +675,9 @@ describe("file-review channel: review.approvals", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		await simulateInbound(harness, "review.approve", { turnIndex: 0, path: "app-a.ts" });
-		await simulateInbound(harness, "review.reject", { turnIndex: 0, path: "app-b.ts" });
+		await simulateInbound(harness, "review.approve", { path: "app-a.ts" });
+		harness.mockGetFileDiff.mockReturnValue({ oldContent: null, newContent: "new" });
+		await simulateInbound(harness, "review.reject", { path: "app-b.ts" });
 
 		const data = await simulateInbound(harness, "review.approvals", {});
 		const result = extractResponse(data);
@@ -673,7 +690,7 @@ describe("file-review channel: review.approvals", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		await simulateInbound(harness, "review.approve", { turnIndex: 0, path: "f.ts" });
+		await simulateInbound(harness, "review.approve", { path: "f.ts" });
 
 		const data = await simulateInbound(harness, "review.approvals", { status: "approved" });
 		const result = extractResponse(data);
@@ -716,15 +733,14 @@ describe("file-review channel: full lifecycle E2E", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(1);
 
-		// 1. Check pending has items
+		// 1. Check pending has items (aggregated by path: feature.ts, test.ts, config.json = 3 unique paths)
 		const pendingData = await simulateInbound(harness, "review.pending", {});
 		const pending = extractResponse(pendingData);
 		const pendingArr = Array.isArray(pending) ? pending : Object.values(pending as Record<string, unknown>);
 		expect(pendingArr.length).toBeGreaterThanOrEqual(3);
 
-		// 2. Approve feature.ts in turn 0
+		// 2. Approve feature.ts
 		const approveResult = await simulateInbound(harness, "review.approve", {
-			turnIndex: 0,
 			path: "feature.ts",
 		});
 		expect((approveResult as Record<string, unknown>).ok).toBe(true);
@@ -762,7 +778,7 @@ describe("file-review channel: session restoration", () => {
 				{
 					type: "custom",
 					customType: "file-approval",
-					data: { turnIndex: 0, path: "restored.ts", status: "approved", timestamp: Date.now() },
+					data: { path: "restored.ts", status: "approved", timestamp: Date.now() },
 				},
 			],
 		};
@@ -832,7 +848,6 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 
 		// Step 3: 用户点 [批准 a.ts]
 		const approveResult = await simulateInbound(harness, "review.approve", {
-			turnIndex: 0,
 			path: "a.ts",
 		});
 		expect((approveResult as Record<string, unknown>).ok).toBe(true);
@@ -856,8 +871,8 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 		expect(pending[0]!.path).toBe("b.ts");
 
 		// 用户点 [拒绝 b.ts]
+		harness.mockGetFileDiff.mockReturnValue({ oldContent: null, newContent: "new" });
 		const rejectResult = await simulateInbound(harness, "review.reject", {
-			turnIndex: 0,
 			path: "b.ts",
 		});
 		expect((rejectResult as Record<string, unknown>).ok).toBe(true);
@@ -876,35 +891,29 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 		expect(rejectionEntry).toBeDefined();
 	});
 
-	// ── 场景 3: 批准后再修改 → 同文件重新出现为 pending ──
+	// ── 场景 3: approve is per-path, not per-turn ──
 
-	it("场景3: Turn0 批准 feature.ts → Turn1 再次修改 feature.ts → feature.ts 重新 pending", async () => {
-		// Turn 0: 创建 feature.ts
+	it("场景3: approve path once → subsequent turn modification resets to pending", async () => {
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("feature.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// 批准 turn 0 的 feature.ts
 		await simulateInbound(harness, "review.approve", {
-			turnIndex: 0,
 			path: "feature.ts",
 		});
 
-		// 确认 pending 为空
 		const afterFirstApprove = await getPendingPaths(harness);
 		expect(afterFirstApprove).toHaveLength(0);
 
-		// Turn 1: 再次修改 feature.ts
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("feature.ts", "modified")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(1);
 
-		// pending 应该重新出现 feature.ts（turn 1 的，key="1:feature.ts"）
+		// New behavior: modification resets approval to pending — file reappears
 		const pending = await getPendingPaths(harness);
 		expect(pending).toHaveLength(1);
 		expect(pending[0]).toEqual({ turnIndex: 1, path: "feature.ts", status: "pending" });
 
-		// fileHistory 应该有两条记录
 		const historyData = await simulateInbound(harness, "review.fileHistory", {
 			path: "feature.ts",
 		});
@@ -917,59 +926,32 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 
 	// ── 场景 4: 拒绝后再修改 → 同文件重新出现为 pending ──
 
-	it("场景4: Turn0 拒绝 config.ts → Turn1 再次修改 config.ts → config.ts 重新 pending", async () => {
-		// Turn 0: 创建 config.ts
+	it("场景4: Turn0 拒绝 config.ts → Turn1 再次修改 config.ts → config.ts reappears as pending", async () => {
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("config.ts", "added")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// 拒绝 turn 0 的 config.ts
+		harness.mockGetFileDiff.mockReturnValue({ oldContent: null, newContent: "new" });
 		await simulateInbound(harness, "review.reject", {
-			turnIndex: 0,
 			path: "config.ts",
 		});
 
-		// 确认 pending 为空
 		const afterReject = await getPendingPaths(harness);
 		expect(afterReject).toHaveLength(0);
 
-		// Turn 1: 再次修改 config.ts
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("config.ts", "modified")]);
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(1);
 
-		// pending 应该重新出现 config.ts（turn 1 的，新 key）
+		// New behavior: modification resets rejection to pending — file reappears
 		const pending = await getPendingPaths(harness);
 		expect(pending).toHaveLength(1);
 		expect(pending[0]).toEqual({ turnIndex: 1, path: "config.ts", status: "pending" });
-
-		// 批准 turn 1 的修改
-		const approveResult = await simulateInbound(harness, "review.approve", {
-			turnIndex: 1,
-			path: "config.ts",
-		});
-		expect((approveResult as Record<string, unknown>).ok).toBe(true);
-
-		// 最终 pending 为空
-		const finalPending = await getPendingPaths(harness);
-		expect(finalPending).toHaveLength(0);
-
-		// approvals 应该有两条记录：rejected(turn 0) + approved(turn 1)
-		const approvalsData = await simulateInbound(harness, "review.approvals", {});
-		const approvalsResult = extractResponse(approvalsData);
-		const approvalsList = (
-			Array.isArray(approvalsResult) ? approvalsResult : Object.values(approvalsResult as Record<string, unknown>)
-		) as Array<Record<string, unknown>>;
-		const configApprovals = approvalsList.filter((a) => a.path === "config.ts");
-		expect(configApprovals).toHaveLength(2);
-		expect(configApprovals.find((a) => a.turnIndex === 0 && a.status === "rejected")).toBeDefined();
-		expect(configApprovals.find((a) => a.turnIndex === 1 && a.status === "approved")).toBeDefined();
 	});
 
 	// ── 场景 5: 混合场景 — 多文件 + 部分批准 + 部分拒绝 + 再修改 ──
 
-	it("场景5: 多文件混合审批 + 同文件跨 turn 审批历史", async () => {
-		// Turn 0: 创建 a.ts, b.ts, c.ts
+	it("场景5: 多文件混合审批 — re-modified files reappear as pending", async () => {
 		harness.mockGetLiveChanges.mockReturnValue([
 			makeChange("a.ts", "added"),
 			makeChange("b.ts", "added"),
@@ -978,20 +960,17 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(0);
 
-		// pending: a.ts, b.ts, c.ts
 		const pending0 = await getPendingPaths(harness);
 		expect(pending0).toHaveLength(3);
 
-		// 批准 a.ts，拒绝 b.ts，c.ts 保持 pending
-		await simulateInbound(harness, "review.approve", { turnIndex: 0, path: "a.ts" });
-		await simulateInbound(harness, "review.reject", { turnIndex: 0, path: "b.ts" });
+		await simulateInbound(harness, "review.approve", { path: "a.ts" });
+		harness.mockGetFileDiff.mockReturnValue({ oldContent: null, newContent: "new" });
+		await simulateInbound(harness, "review.reject", { path: "b.ts" });
 
-		// pending 应只剩 c.ts
 		const pending1 = await getPendingPaths(harness);
 		expect(pending1).toHaveLength(1);
 		expect(pending1[0]!.path).toBe("c.ts");
 
-		// Turn 1: 修改 a.ts（已批准的又改了）+ 修改 b.ts（已拒绝的又改了）+ 创建 d.ts
 		harness.mockGetLiveChanges.mockReturnValue([
 			makeChange("a.ts", "modified"),
 			makeChange("b.ts", "modified"),
@@ -1000,48 +979,19 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 		await harness.fireTurnStart();
 		await harness.fireTurnEnd(1);
 
-		// pending 应该有: c.ts (turn 0 pending) + a.ts (turn 1) + b.ts (turn 1) + d.ts (turn 1) = 4 个
+		// New behavior: a.ts and b.ts reset to "pending" after re-modification
+		// pending: a.ts (pending) + b.ts (pending) + c.ts (pending) + d.ts (pending) = 4
 		const pending2 = await getPendingPaths(harness);
 		expect(pending2).toHaveLength(4);
 
-		const paths = pending2.map((p) => `${p.turnIndex}:${p.path}`).sort();
-		expect(paths).toEqual(["0:c.ts", "1:a.ts", "1:b.ts", "1:d.ts"]);
+		const paths = pending2.map((p) => p.path).sort();
+		expect(paths).toEqual(["a.ts", "b.ts", "c.ts", "d.ts"]);
 
-		// 批准全部
 		const approveAllResult = await simulateInbound(harness, "review.approveAll", {});
 		expect((approveAllResult as Record<string, unknown>).count).toBe(4);
 
-		// 最终 pending 为空
 		const finalPending = await getPendingPaths(harness);
 		expect(finalPending).toHaveLength(0);
-
-		// 验证 approvals 总数: turn 0 批准 a.ts + turn 0 拒绝 b.ts + approveAll 的 4 个
-		const approvalsData = await simulateInbound(harness, "review.approvals", {});
-		const approvalsResult = extractResponse(approvalsData);
-		const approvalsList = (
-			Array.isArray(approvalsResult) ? approvalsResult : Object.values(approvalsResult as Record<string, unknown>)
-		) as Array<Record<string, unknown>>;
-
-		// a.ts 有两条记录: turn 0 approved, turn 1 approved
-		const aApprovals = approvalsList.filter((a) => a.path === "a.ts");
-		expect(aApprovals).toHaveLength(2);
-		expect(aApprovals.every((a) => a.status === "approved")).toBe(true);
-
-		// b.ts 有两条记录: turn 0 rejected, turn 1 approved
-		const bApprovals = approvalsList.filter((a) => a.path === "b.ts");
-		expect(bApprovals).toHaveLength(2);
-		expect(bApprovals.find((a) => a.turnIndex === 0 && a.status === "rejected")).toBeDefined();
-		expect(bApprovals.find((a) => a.turnIndex === 1 && a.status === "approved")).toBeDefined();
-
-		// c.ts: turn 0 approved (via approveAll)
-		const cApprovals = approvalsList.filter((a) => a.path === "c.ts");
-		expect(cApprovals).toHaveLength(1);
-		expect(cApprovals[0]!.status).toBe("approved");
-
-		// d.ts: turn 1 approved (via approveAll)
-		const dApprovals = approvalsList.filter((a) => a.path === "d.ts");
-		expect(dApprovals).toHaveLength(1);
-		expect(dApprovals[0]!.status).toBe("approved");
 	});
 
 	// ── 场景 6: 拒绝后的文件不再修改 → 始终不出现 ──
@@ -1053,7 +1003,8 @@ describe("用户场景: 完整 Change Review 交互流程", () => {
 		await harness.fireTurnEnd(0);
 
 		// 拒绝
-		await simulateInbound(harness, "review.reject", { turnIndex: 0, path: "x.ts" });
+		harness.mockGetFileDiff.mockReturnValue({ oldContent: null, newContent: "new" });
+		await simulateInbound(harness, "review.reject", { path: "x.ts" });
 
 		// Turn 1: 创建 y.ts（x.ts 没有改动）
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("y.ts", "added")]);
@@ -1141,7 +1092,6 @@ describe("session restart: turnLog and approvals restored from entries", () => {
 
 		// Approve a.ts in turn 0
 		await simulateInbound(harness, "review.approve", {
-			turnIndex: 0,
 			path: "a.ts",
 		});
 
@@ -1285,6 +1235,78 @@ describe("BUG修复验证: file-snapshot 先提交 baseline 时 file-review 仍�
 	});
 });
 
+describe("BUG reproduction: approved file re-modified in subsequent turn does not appear in pending", () => {
+	let harness: ReturnType<typeof createTestHarness>;
+
+	beforeEach(async () => {
+		harness = createTestHarness();
+		await harness.fireSessionStart();
+	});
+
+	afterEach(() => {
+		try {
+			rmSync(harness.tempDir, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it("step-by-step: add foo.ts → approve → modify foo.ts → file reappears as pending", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("foo.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(0);
+
+		const pending1 = await getPendingPaths(harness);
+		expect(pending1).toHaveLength(1);
+		expect(pending1[0]).toEqual({ turnIndex: 0, path: "foo.ts", status: "pending" });
+
+		const approveResult = await simulateInbound(harness, "review.approve", {
+			path: "foo.ts",
+		});
+		expect((approveResult as Record<string, unknown>).ok).toBe(true);
+
+		const pending2 = await getPendingPaths(harness);
+		expect(pending2).toHaveLength(0);
+
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("foo.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(1);
+
+		// New behavior — modification resets approval, file reappears as pending
+		const pending3 = await getPendingPaths(harness);
+		expect(pending3).toHaveLength(1);
+		expect(pending3[0]).toEqual({ turnIndex: 1, path: "foo.ts", status: "pending" });
+
+		const historyData = await simulateInbound(harness, "review.history", {});
+		const historyResult = extractResponse(historyData);
+		const historyArr = Array.isArray(historyResult) ? historyResult : [];
+		expect(historyArr).toHaveLength(2);
+		expect(historyArr[0]!.turnIndex).toBe(0);
+		expect(historyArr[1]!.turnIndex).toBe(1);
+	});
+
+	it("without tool_result: same scenario — file reappears as pending", async () => {
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("foo.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(0);
+
+		await simulateInbound(harness, "review.approve", { path: "foo.ts" });
+		const pending1 = await getPendingPaths(harness);
+		expect(pending1).toHaveLength(0);
+
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("foo.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireTurnEnd(1);
+
+		// New behavior: modification resets approval, file reappears as pending
+		const pending2 = await getPendingPaths(harness);
+		expect(pending2).toHaveLength(1);
+		expect(pending2[0]).toEqual({ turnIndex: 1, path: "foo.ts", status: "pending" });
+	});
+});
+
 describe("用户场景: bash rm 删除文件后 review.pending 能检测到删除", () => {
 	let harness: ReturnType<typeof createTestHarness>;
 
@@ -1333,22 +1355,15 @@ describe("用户场景: bash rm 删除文件后 review.pending 能检测到删�
 		await harness.fireToolResult();
 		await harness.fireTurnEnd(0);
 
-		// turn 1: 删除 hello.txt — 此时 getLiveChanges 相对于 baseline 应该看到 net zero
-		// 因为 baseline 是 turn 0 的 snapshot（有 hello.txt），删除后 currentFiles 没有
-		// 所以 getLiveChanges 应该返回 deleted... 但如果文件是在同一 turn 中创建又删除呢？
-		// 实际上 getLiveChanges 是相对于 lastCommittedTreeHash 的，所以会看到 deleted
-		// 这是正确的行为 — turn 0 的创建已经提交到 baseline 了
+		// turn 1: 删除 hello.txt — first=added, latest=deleted → net zero
 		harness.mockGetLiveChanges.mockReturnValue([makeChange("hello.txt", "deleted")]);
 		await harness.fireTurnStart();
 		await harness.fireToolResult();
 		await harness.fireTurnEnd(1);
 
 		const pending = await getPendingPaths(harness);
-		// turn 0 的 added 已被 turn 1 的 deleted 取代
-		// 但它们是独立的 turn，所以各有各的 pending
-		expect(pending).toHaveLength(2);
-		expect(pending.find((p) => p.path === "hello.txt" && p.turnIndex === 0)).toBeDefined();
-		expect(pending.find((p) => p.path === "hello.txt" && p.turnIndex === 1)).toBeDefined();
+		// Net zero: added then deleted without approval → should NOT appear
+		expect(pending).toHaveLength(0);
 	});
 
 	it("删除 + 创建同时发生 → 两个都出现在 pending", async () => {
@@ -1386,5 +1401,218 @@ describe("用户场景: bash rm 删除文件后 review.pending 能检测到删�
 		const changes = data.changes as Array<Record<string, unknown>>;
 		expect(changes[0]!.path).toBe("hello.txt");
 		expect(changes[0]!.status).toBe("deleted");
+	});
+});
+
+async function getPendingDetailed(
+	harness: ReturnType<typeof createTestHarness>,
+): Promise<Array<{ turnIndex: number; path: string; status: string; fileStatus: string }>> {
+	const data = await simulateInbound(harness, "review.pending", {});
+	const result = extractResponse(data);
+	const arr = Array.isArray(result) ? result : [];
+	return arr.map((item: Record<string, unknown>) => ({
+		turnIndex: item.turnIndex as number,
+		path: item.path as string,
+		status: item.status as string,
+		fileStatus: item.fileStatus as string,
+	}));
+}
+
+describe("re-modification after approval", () => {
+	let harness: ReturnType<typeof createTestHarness>;
+
+	beforeEach(async () => {
+		harness = createTestHarness();
+		await harness.fireSessionStart();
+	});
+
+	afterEach(() => {
+		try {
+			rmSync(harness.tempDir, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it("should show file as pending when modified again after approval (multi-turn)", async () => {
+		// Turn 1: Create src/app.ts
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(1);
+
+		// Approve src/app.ts
+		const approveResult = await simulateInbound(harness, "review.approve", {
+			path: "src/app.ts",
+		});
+		expect((approveResult as Record<string, unknown>).ok).toBe(true);
+
+		// Verify pending is empty after approval
+		const afterApprove = await getPendingPaths(harness);
+		expect(afterApprove).toHaveLength(0);
+
+		// Turn 2: Modify src/app.ts
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(2);
+
+		// New behavior: modification resets approval, file reappears as pending
+		const pending = await getPendingDetailed(harness);
+		expect(pending).toHaveLength(1);
+		expect(pending[0]).toEqual(
+			expect.objectContaining({ turnIndex: 2, path: "src/app.ts", fileStatus: "modified", status: "pending" }),
+		);
+	});
+
+	it("should show file as pending when modified after approveAll", async () => {
+		// Turn 1: Create src/app.ts and src/utils.ts
+		harness.mockGetLiveChanges.mockReturnValue([
+			makeChange("src/app.ts", "added"),
+			makeChange("src/utils.ts", "added"),
+		]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(1);
+
+		// Approve all
+		const approveAllResult = await simulateInbound(harness, "review.approveAll", {});
+		expect((approveAllResult as Record<string, unknown>).count).toBe(2);
+
+		// Verify pending is empty
+		const afterApproveAll = await getPendingPaths(harness);
+		expect(afterApproveAll).toHaveLength(0);
+
+		// Turn 2: Modify src/app.ts only
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(2);
+
+		// New behavior: modification resets approval, file reappears as pending
+		const pending = await getPendingDetailed(harness);
+		expect(pending).toHaveLength(1);
+		expect(pending[0]).toEqual(
+			expect.objectContaining({ turnIndex: 2, path: "src/app.ts", fileStatus: "modified", status: "pending" }),
+		);
+	});
+
+	it("should track file through added→modified→deleted across turns", async () => {
+		// Turn 1: Create src/app.ts
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(1);
+
+		// Approve turn 1
+		await simulateInbound(harness, "review.approve", { path: "src/app.ts" });
+
+		// Turn 2: Modify src/app.ts
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(2);
+
+		// Approve turn 2
+		await simulateInbound(harness, "review.approve", { path: "src/app.ts" });
+
+		// Turn 3: Delete src/app.ts
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "deleted")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(3);
+
+		// New behavior: deletion resets approval to pending, everApproved prevents net-zero filter
+		const pending = await getPendingDetailed(harness);
+		expect(pending).toHaveLength(1);
+		expect(pending[0]).toEqual(
+			expect.objectContaining({ turnIndex: 3, path: "src/app.ts", fileStatus: "deleted", status: "pending" }),
+		);
+	});
+
+	it("should show file as pending after 3 consecutive modifications with approvals", async () => {
+		// Turn 1: Create src/app.ts
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "added")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(1);
+		await simulateInbound(harness, "review.approve", { path: "src/app.ts" });
+
+		// Turn 2: Modify to v2
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(2);
+		await simulateInbound(harness, "review.approve", { path: "src/app.ts" });
+
+		// Turn 3: Modify to v3
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(3);
+		await simulateInbound(harness, "review.approve", { path: "src/app.ts" });
+
+		// Turn 4: Modify to v4 — no approval
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/app.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(4);
+
+		// New behavior: Turn 4 modification resets approval to pending
+		const pending = await getPendingDetailed(harness);
+		expect(pending).toHaveLength(1);
+		expect(pending[0]).toEqual(
+			expect.objectContaining({ turnIndex: 4, path: "src/app.ts", fileStatus: "modified", status: "pending" }),
+		);
+
+		// History should have all 4 turns
+		const historyData = await simulateInbound(harness, "review.history", {});
+		const historyResult = extractResponse(historyData);
+		const historyArr = Array.isArray(historyResult) ? historyResult : [];
+		expect(historyArr).toHaveLength(4);
+	});
+
+	it("should handle multiple files where some approved and some pending, then one re-modified", async () => {
+		// Turn 1: Create 3 files
+		harness.mockGetLiveChanges.mockReturnValue([
+			makeChange("src/a.ts", "added"),
+			makeChange("src/b.ts", "added"),
+			makeChange("src/c.ts", "added"),
+		]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(1);
+
+		// Approve a.ts and b.ts (c.ts stays pending)
+		await simulateInbound(harness, "review.approve", { path: "src/a.ts" });
+		await simulateInbound(harness, "review.approve", { path: "src/b.ts" });
+
+		// Pending should only have c.ts
+		const pendingAfterApprove = await getPendingPaths(harness);
+		expect(pendingAfterApprove).toHaveLength(1);
+		expect(pendingAfterApprove[0]!.path).toBe("src/c.ts");
+
+		// Turn 2: Modify src/a.ts (which was approved)
+		harness.mockGetLiveChanges.mockReturnValue([makeChange("src/a.ts", "modified")]);
+		await harness.fireTurnStart();
+		await harness.fireToolResult();
+		harness.mockGetLiveChanges.mockReturnValue([]);
+		await harness.fireTurnEnd(2);
+
+		// New behavior: a.ts reset to pending after re-modification, c.ts still pending = 2 items
+		const pending = await getPendingDetailed(harness);
+		expect(pending).toHaveLength(2);
+		const paths = pending.map((p) => p.path).sort();
+		expect(paths).toEqual(["src/a.ts", "src/c.ts"]);
 	});
 });
