@@ -716,8 +716,18 @@ export type RpcExtensionUIRequest =
 			options: string[];
 			multiple?: boolean;
 			timeout?: number;
+			toolCallId?: string;
 	  }
-	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "confirm";
+			title: string;
+			message: string;
+			timeout?: number;
+			toolCallId?: string;
+			hookMeta?: { toolName: string; matcher: string; command?: string; reason: string };
+		}
 	| {
 			type: "extension_ui_request";
 			id: string;
@@ -725,8 +735,9 @@ export type RpcExtensionUIRequest =
 			title: string;
 			placeholder?: string;
 			timeout?: number;
+			toolCallId?: string;
 	  }
-	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
+	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string; toolCallId?: string }
 	| {
 			type: "extension_ui_request";
 			id: string;
@@ -759,7 +770,7 @@ export type RpcExtensionUIRequest =
 /** Response to an extension UI request */
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
-	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| { type: "extension_ui_response"; id: string; confirmed: boolean; alwaysAllow?: boolean }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 /** Emitted when a remote tool is called by the child LLM */

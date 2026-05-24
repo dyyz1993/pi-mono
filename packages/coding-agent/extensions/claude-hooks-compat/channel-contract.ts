@@ -17,6 +17,10 @@ export interface HooksChannelContract extends ChannelContract {
 			params: Record<string, never>;
 			return: { ok: boolean };
 		};
+		"hooks.alwaysAllow": {
+			params: { sessionId: string; toolName: string; matcher: string };
+			return: { ok: boolean };
+		};
 	};
 	events: {
 		hook_executed: HookLogEntry;

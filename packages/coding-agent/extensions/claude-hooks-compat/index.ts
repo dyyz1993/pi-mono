@@ -33,6 +33,9 @@ export default function (pi: ExtensionAPI) {
 	let logIdCounter = 0;
 	let configSources: ConfigSource[] = [];
 
+	const sessionAllowList = new Map<string, Set<string>>();
+	let currentSessionId: string | undefined;
+
 	const rawChannel = pi.registerChannel(HOOKS_CHANNEL_NAME);
 	const channel = createTypedChannel<HooksChannelContract>(rawChannel).server;
 
@@ -53,9 +56,20 @@ export default function (pi: ExtensionAPI) {
 		return { ok: true };
 	});
 
+	channel.handle("hooks.alwaysAllow", (params: { sessionId: string; toolName: string; matcher: string }) => {
+		const { sessionId, toolName, matcher } = params;
+		let set = sessionAllowList.get(sessionId);
+		if (!set) { set = new Set(); sessionAllowList.set(sessionId, set); }
+		set.add(`${toolName}:${matcher}`);
+		return { ok: true };
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		configs = loadConfigs(ctx.cwd);
 		configSources = loadConfigSources(ctx.cwd);
+		const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager;
+		currentSessionId = sm?.getSessionId?.()
+			?? (((ctx as unknown) as Record<string, unknown>).variables as Record<string, unknown> | undefined)?.session_id as string | undefined;
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -121,6 +135,12 @@ export default function (pi: ExtensionAPI) {
 		event: { toolName: string; input: Record<string, unknown>; toolCallId?: string; toolOutput?: string },
 		ctx: { cwd: string; hasUI: boolean },
 	): Promise<{ block: boolean; reason: string } | undefined> {
+		if (!currentSessionId) {
+			const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager;
+			const fromSm = sm?.getSessionId?.();
+			if (fromSm) currentSessionId = fromSm;
+		}
+
 		const groups = configs.get(hookEventName) ?? [];
 		if (groups.length === 0) return undefined;
 
@@ -137,6 +157,10 @@ export default function (pi: ExtensionAPI) {
 
 		for (const group of groups) {
 			if (!matchesMatcher(group.matcher, event.toolName)) continue;
+
+			const allowKey = `${event.toolName}:${group.matcher ?? "*"}`;
+			const isInAllowList = currentSessionId ? (sessionAllowList.get(currentSessionId)?.has(allowKey) ?? false) : false;
+			if (currentSessionId && sessionAllowList.get(currentSessionId)?.has(allowKey)) continue;
 
 			for (let i = 0; i < group.hooks.length; i++) {
 				const handler = group.hooks[i];
@@ -190,9 +214,8 @@ export default function (pi: ExtensionAPI) {
 									display: true,
 								});
 							}
-						} catch (e) {
-							const msg = e instanceof Error ? e.message : String(e);
-							if (!/stale/i.test(msg)) console.debug("[hooks-compat] async handler failed:", msg);
+					} catch {
+						// async handler failed (stale session is expected)
 						}
 					});
 					continue;
@@ -227,10 +250,33 @@ export default function (pi: ExtensionAPI) {
 				if (result.shouldBlock) {
 					if (output.exitCode === 3) {
 						const question = result.reason || "Confirm this operation?";
-						const uiCtx = ((ctx as Record<string, unknown>).ui) as { confirm?: (title: string, message: string) => Promise<boolean> } | undefined;
+						const uiCtx = ((ctx as Record<string, unknown>).ui) as {
+							confirm?: (title: string, message: string, opts?: Record<string, unknown>) => Promise<unknown>;
+						} | undefined;
 						if (uiCtx?.confirm) {
-							const confirmed = await uiCtx.confirm("Hook Confirmation", question);
-							if (confirmed) {
+							const toolLabel = formatToolLabel(event.toolName);
+							const command = extractCommand(event.input);
+							const confirmResult = await uiCtx.confirm(
+								`${toolLabel} 确认`,
+								question,
+								{
+									toolCallId: event.toolCallId,
+									hookMeta: {
+										toolName: event.toolName,
+										matcher: group.matcher ?? "*",
+										command,
+										reason: question,
+									},
+								},
+							) as { confirmed: boolean; alwaysAllow: boolean } | boolean;
+							const confirmed = typeof confirmResult === "object" ? confirmResult.confirmed : !!confirmResult;
+						const alwaysAllow = typeof confirmResult === "object" ? confirmResult.alwaysAllow : false;
+						if (confirmed) {
+							if (alwaysAllow && currentSessionId) {
+								let set = sessionAllowList.get(currentSessionId);
+								if (!set) { set = new Set(); sessionAllowList.set(currentSessionId, set); }
+								set.add(allowKey);
+							}
 								entry.decision = "allow";
 								return undefined;
 							}
@@ -315,4 +361,27 @@ function getCallLLM(pi: ExtensionAPI) {
 				signal?: AbortSignal;
 		  }) => Promise<string>)
 		| undefined;
+}
+
+function extractCommand(input: Record<string, unknown>): string | undefined {
+	if (typeof input.command === "string") return input.command;
+	if (typeof input.filePath === "string") return input.filePath;
+	if (typeof input.path === "string") return input.path;
+	if (typeof input.pattern === "string") return input.pattern;
+	return undefined;
+}
+
+function formatToolLabel(toolName: string): string {
+	const labels: Record<string, string> = {
+		bash: "Bash 命令",
+		read: "文件读取",
+		write: "文件写入",
+		edit: "文件编辑",
+		grep: "内容搜索",
+		find: "文件搜索",
+		ls: "目录列表",
+		mcp: "MCP 工具",
+	};
+	if (labels[toolName]) return labels[toolName];
+	return toolName.charAt(0).toUpperCase() + toolName.slice(1);
 }
