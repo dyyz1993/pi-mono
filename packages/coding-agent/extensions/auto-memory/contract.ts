@@ -48,6 +48,42 @@ export interface MemoryUpdateFailedEvent {
 	reason: string;
 }
 
+export interface PrefetchHistoryEntry {
+	query: string;
+	selected: string[];
+	skipped: boolean;
+	skip_hits: string[];
+	guard_hits: string[];
+	timestamp: number;
+}
+
+export interface MemoryStatusResult {
+	skipRules: {
+		builtin: Array<{ pattern: string; mode: string }>;
+		custom: Array<{ pattern: string; mode: string }>;
+	};
+	guardRules: {
+		builtin: Array<{ pattern: string; mode: string }>;
+		custom: Array<{ pattern: string; mode: string }>;
+	};
+	excludeKeywords: string[];
+	recentQueries: PrefetchHistoryEntry[];
+	dream: {
+		lastRunAt: number | null;
+	};
+}
+
+export interface MemoryRemoveRuleParams {
+	rule?: { pattern: string; mode: string };
+	excludeKeyword?: string;
+}
+
+export interface MemoryAddRuleParams {
+	pattern: string;
+	mode: "exact" | "prefix" | "contains" | "regex";
+	action: "skip" | "guard";
+}
+
 export interface MemoryChannelContract extends ChannelContract {
 	methods: {
 		"memory.list": {
@@ -60,6 +96,18 @@ export interface MemoryChannelContract extends ChannelContract {
 		};
 		"memory.markIrrelevant": {
 			params: MemoryMarkIrrelevantParams;
+			return: { ok: boolean };
+		};
+		"memory.getStatus": {
+			params: Record<string, never>;
+			return: MemoryStatusResult;
+		};
+		"memory.removeRule": {
+			params: MemoryRemoveRuleParams;
+			return: { ok: boolean };
+		};
+		"memory.addRule": {
+			params: MemoryAddRuleParams;
 			return: { ok: boolean };
 		};
 	};

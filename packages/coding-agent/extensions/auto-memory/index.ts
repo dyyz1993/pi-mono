@@ -23,6 +23,7 @@ import {
 	addHistoryEntry,
 	applyPurification,
 	evaluateRules,
+	getDefaultRules,
 	getGlobalMemoryDir,
 	type HistoryEntry,
 	loadSkipWordStore,
@@ -140,6 +141,10 @@ class MemoryPrefetch {
 
 	markDirty(): void {
 		this.dirtyFiles = true;
+	}
+
+	getStore(): SkipWordStore {
+		return this.ensureStore();
 	}
 
 	start(query: string, memoryDir: string, callLLM: CallLLMFn): void {
@@ -1179,6 +1184,82 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 			selectedFiles,
 		});
 
+		return { ok: true };
+	});
+
+	memoryChannel.handle("memory.getStatus", async () => {
+		const store = prefetch.getStore();
+		const defaultRules = getDefaultRules();
+		const builtinSkips = defaultRules.filter((r) => r.action === "skip").map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const builtinGuards = defaultRules.filter((r) => r.action === "guard").map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const customSkips = store.rules.filter((r) => r.action === "skip" && !r.builtin).map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const customGuards = store.rules.filter((r) => r.action === "guard" && !r.builtin).map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const recentQueries = store.history.slice(-10).map((h) => ({
+			query: h.query,
+			selected: h.selected,
+			skipped: h.skipped,
+			skip_hits: h.skip_hits,
+			guard_hits: h.guard_hits,
+			timestamp: h.timestamp,
+		}));
+
+		let lastDreamAt: number | null = null;
+		try {
+			const lockPath = join(memoryDir, ".consolidate-lock");
+			if (existsSync(lockPath)) {
+				const stat = await import("node:fs/promises").then((fs) => fs.stat(lockPath));
+				lastDreamAt = stat.mtimeMs;
+			}
+		} catch {}
+
+		return {
+			skipRules: { builtin: builtinSkips, custom: customSkips },
+			guardRules: { builtin: builtinGuards, custom: customGuards },
+			excludeKeywords: store.excludeKeywords,
+			recentQueries,
+			dream: { lastRunAt: lastDreamAt },
+		};
+	});
+
+	memoryChannel.handle("memory.removeRule", async (data) => {
+		const store = prefetch.getStore();
+		let modified = false;
+
+		if (data.rule) {
+			const idx = store.rules.findIndex(
+				(r) => r.pattern === data.rule!.pattern && r.mode === data.rule!.mode && !r.builtin,
+			);
+			if (idx !== -1) {
+				store.rules.splice(idx, 1);
+				modified = true;
+			}
+		}
+
+		if (data.excludeKeyword) {
+			const idx = store.excludeKeywords.indexOf(data.excludeKeyword!);
+			if (idx !== -1) {
+				store.excludeKeywords.splice(idx, 1);
+				modified = true;
+			}
+		}
+
+		if (modified) {
+			await saveSkipWordStore(getGlobalMemoryDir(), store);
+			prefetch.markDirty();
+		}
+
+		return { ok: modified };
+	});
+
+	memoryChannel.handle("memory.addRule", async (data) => {
+		const store = prefetch.getStore();
+		const exists = store.rules.some(
+			(r) => r.pattern === data.pattern && r.mode === data.mode && r.action === data.action,
+		);
+		if (!exists) {
+			store.rules.push({ pattern: data.pattern, mode: data.mode, action: data.action, builtin: false });
+			await saveSkipWordStore(getGlobalMemoryDir(), store);
+		}
 		return { ok: true };
 	});
 }
