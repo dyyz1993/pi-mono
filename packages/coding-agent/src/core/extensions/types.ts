@@ -94,6 +94,8 @@ export interface ExtensionUIDialogOptions {
 	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
 	timeout?: number;
 	multiple?: boolean;
+	/** Associated tool call ID for inline rendering in UI */
+	toolCallId?: string;
 }
 
 /** Placement for extension widgets. */
@@ -1328,6 +1330,12 @@ export interface ExtensionAPI {
 	/** Get available slash commands in the current session. */
 	getCommands(): SlashCommandInfo[];
 
+	/** Set a custom operations provider for built-in tools (bash, read, write, edit, grep, find, ls). */
+	setToolOperationsProvider(provider: import("../tools/index.js").ToolOperationsProvider | undefined): void;
+
+	/** Get the current tool operations provider, if any. */
+	getToolOperationsProvider(): import("../tools/index.js").ToolOperationsProvider | undefined;
+
 	// =========================================================================
 	// Model and Thinking Level
 	// =========================================================================
@@ -1567,6 +1575,10 @@ export type SetActiveToolsHandler = (toolNames: string[]) => void;
 
 export type RefreshToolsHandler = () => void;
 
+export type SetToolOperationsProviderHandler = (provider: import("../tools/index.js").ToolOperationsProvider | undefined) => void;
+
+export type GetToolOperationsProviderHandler = () => import("../tools/index.js").ToolOperationsProvider | undefined;
+
 export type SetModelHandler = (model: Model<any>) => Promise<boolean>;
 
 export type GetThinkingLevelHandler = () => ThinkingLevel;
@@ -1682,6 +1694,8 @@ export interface ExtensionActions {
 	getAllTools: GetAllToolsHandler;
 	setActiveTools: SetActiveToolsHandler;
 	refreshTools: RefreshToolsHandler;
+	setToolOperationsProvider: SetToolOperationsProviderHandler;
+	getToolOperationsProvider: GetToolOperationsProviderHandler;
 	getCommands: GetCommandsHandler;
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
@@ -1727,7 +1741,13 @@ export interface ExtensionCommandContextActions {
 	) => Promise<{ cancelled: boolean }>;
 	navigateTree: (
 		targetId: string,
-		options?: { summarize?: boolean; skipFiles?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
+		options?: {
+			summarize?: boolean;
+			skipFiles?: boolean;
+			customInstructions?: string;
+			replaceInstructions?: boolean;
+			label?: string;
+		},
 	) => Promise<{ cancelled: boolean }>;
 	switchSession: (
 		sessionPath: string,
