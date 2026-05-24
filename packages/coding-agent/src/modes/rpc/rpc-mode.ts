@@ -1182,6 +1182,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const files = fileSnapshotManager.getModifiedFiles({
 					fromEntryId: command.fromEntryId,
 					toEntryId: command.toEntryId,
+					toTurnIndex: command.toTurnIndex,
 				});
 				return success(id, "get_modified_files", { files });
 			}
