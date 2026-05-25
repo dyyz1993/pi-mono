@@ -644,7 +644,10 @@ export class RpcClient {
 		toEntryId?: string;
 		toTurnIndex?: number;
 		toUserMsgEntryId?: string;
-	}): Promise<Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>> {
+	}): Promise<{
+		files: Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>;
+		resolvedFromEntryId: string | null;
+	}> {
 		const response = await this.send({
 			type: "get_modified_files",
 			fromEntryId: options?.fromEntryId,
@@ -652,14 +655,19 @@ export class RpcClient {
 			toTurnIndex: options?.toTurnIndex,
 			toUserMsgEntryId: options?.toUserMsgEntryId,
 		});
-		return this.getData<{
+		const data = this.getData<{
 			files: Array<{
 				path: string;
 				status: "added" | "modified" | "deleted";
 				turnIndex: number;
 				entryId: string;
 			}>;
-		}>(response).files;
+			resolvedFromEntryId?: string | null;
+		}>(response);
+		return {
+			files: data.files,
+			resolvedFromEntryId: data.resolvedFromEntryId ?? null,
+		};
 	}
 
 	async getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): Promise<{
