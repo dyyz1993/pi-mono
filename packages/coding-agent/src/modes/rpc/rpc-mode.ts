@@ -1177,7 +1177,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_modified_files": {
 				const fileSnapshotManager = session.fileSnapshotManager;
 				if (!fileSnapshotManager) {
-					return success(id, "get_modified_files", { files: [] });
+					return success(id, "get_modified_files", { files: [], resolvedFromEntryId: null });
 				}
 
 				// Resolve fromEntryId directly from the user message entry's step-snapshot,
@@ -1203,7 +1203,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					toEntryId: command.toEntryId,
 					toTurnIndex: command.toTurnIndex,
 				});
-				return success(id, "get_modified_files", { files });
+				return success(id, "get_modified_files", { files, resolvedFromEntryId: fromEntryId ?? null });
 			}
 
 			case "get_file_diff": {
