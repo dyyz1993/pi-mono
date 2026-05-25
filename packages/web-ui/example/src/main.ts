@@ -160,6 +160,15 @@ const createAgent = async (initialState?: Partial<AgentState>) => {
 		agentUnsubscribe();
 	}
 
+	// Patch model baseUrl to use mock API if configured
+	const __mockBase = (globalThis as any).__MOCK_API_BASE as string | undefined;
+	const patchModel = (model: any) => {
+		if (__mockBase && model) {
+			return { ...model, baseUrl: __mockBase };
+		}
+		return model;
+	};
+
 	agent = new Agent({
 		initialState: initialState || {
 			systemPrompt: `You are a helpful AI assistant with access to various tools.
@@ -169,7 +178,7 @@ Available tools:
 - Artifacts: Create interactive HTML, SVG, Markdown, and text artifacts
 
 Feel free to use these tools when needed to provide accurate and helpful responses.`,
-			model: getModel("anthropic", "claude-sonnet-4-5-20250929"),
+			model: patchModel(getModel("anthropic", "claude-sonnet-4-5-20250929")),
 			thinkingLevel: "off",
 			messages: [],
 			tools: [],
@@ -229,7 +238,7 @@ const loadSession = async (sessionId: string): Promise<boolean> => {
 	currentTitle = metadata?.title || "";
 
 	await createAgent({
-		model: sessionData.model,
+		model: patchModel(sessionData.model),
 		thinkingLevel: sessionData.thinkingLevel,
 		messages: sessionData.messages,
 		tools: [],
