@@ -675,6 +675,24 @@ export function loadEntriesFromFile(filePath: string, options?: LoadEntriesOptio
 	return entries;
 }
 
+function readSessionHeader(filePath: string): SessionHeader | undefined {
+	try {
+		const fd = openSync(filePath, "r");
+		const buffer = Buffer.alloc(4096);
+		const bytesRead = readSync(fd, buffer, 0, 4096, 0);
+		closeSync(fd);
+		const firstLine = buffer.toString("utf8", 0, bytesRead).split("\n")[0];
+		if (!firstLine) return undefined;
+		const header = JSON.parse(firstLine);
+		if (header.type === "session" && typeof header.id === "string") {
+			return header as SessionHeader;
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function isValidSessionFile(filePath: string): boolean {
 	try {
 		const fd = openSync(filePath, "r");
@@ -1702,10 +1720,11 @@ export class SessionManager {
 	 * @param cwdOverride Optional cwd override instead of the session header cwd.
 	 */
 	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
-		// Extract cwd from session header if possible, otherwise use process.cwd()
-		const entries = loadEntriesFromFile(path);
-		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
-		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
+		let cwd = cwdOverride;
+		if (!cwd) {
+			const header = readSessionHeader(path);
+			cwd = header?.cwd ?? process.cwd();
+		}
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ?? resolve(path, "..");
 		return new SessionManager(cwd, dir, path, true);

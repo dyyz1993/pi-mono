@@ -140,7 +140,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
+	pi.on("session_start", async (event: unknown, ctx: ExtensionContext) => {
 		const mgr = ctx.fileSnapshotManager;
 		if (!mgr) return;
 		await mgr.initialize(ctx.cwd);
