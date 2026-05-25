@@ -204,7 +204,10 @@ export interface RpcClientAPI {
 		fromEntryId?: string;
 		toEntryId?: string;
 		toUserMsgEntryId?: string;
-	}): Promise<Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>>;
+	}): Promise<{
+		files: Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>;
+		resolvedFromEntryId: string | null;
+	}>;
 	getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): Promise<{
 		path: string;
 		oldContent: string | null;
