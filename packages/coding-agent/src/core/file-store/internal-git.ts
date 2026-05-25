@@ -34,6 +34,16 @@ export interface GCResult {
 
 const METADATA_DIR = "metadata";
 
+const SCAN_MAX_TOTAL_SIZE = 50 * 1024 * 1024;
+const SCAN_MAX_FILE_COUNT = 5000;
+const SCAN_MAX_DEPTH_NO_GIT = 3;
+
+interface ScanContext {
+	totalSize: number;
+	fileCount: number;
+	limitReached: boolean;
+}
+
 const DEFAULT_IGNORE_PATTERNS = [
 	"node_modules/",
 	".git/",
@@ -217,11 +227,23 @@ export class InternalGit {
 			} catch {}
 		}
 		const result = new Map<string, string>();
-		this.scanDir(cwd, cwd, ig, result);
+		const hasGit = existsSync(join(cwd, ".git"));
+		const maxDepth = hasGit ? Infinity : SCAN_MAX_DEPTH_NO_GIT;
+		const ctx: ScanContext = { totalSize: 0, fileCount: 0, limitReached: false };
+		this.scanDir(cwd, cwd, ig, result, 0, maxDepth, ctx);
 		return result;
 	}
 
-	private scanDir(dir: string, root: string, ig: ReturnType<typeof ignore>, result: Map<string, string>): void {
+	private scanDir(
+		dir: string,
+		root: string,
+		ig: ReturnType<typeof ignore>,
+		result: Map<string, string>,
+		depth: number,
+		maxDepth: number,
+		ctx: ScanContext,
+	): void {
+		if (ctx.limitReached || depth > maxDepth) return;
 		let entries: import("node:fs").Dirent[];
 		try {
 			entries = readdirSync(dir, { withFileTypes: true });
@@ -230,20 +252,30 @@ export class InternalGit {
 		}
 
 		for (const entry of entries) {
+			if (ctx.limitReached) return;
 			const fullPath = join(dir, entry.name.toString());
 			const relPath = relative(root, fullPath);
 
 			if (entry.isDirectory()) {
 				if (ig.ignores(`${relPath}/`)) continue;
-				this.scanDir(fullPath, root, ig, result);
+				this.scanDir(fullPath, root, ig, result, depth + 1, maxDepth, ctx);
 			} else if (entry.isFile()) {
 				if (ig.ignores(relPath)) continue;
+				if (ctx.fileCount >= SCAN_MAX_FILE_COUNT) {
+					ctx.limitReached = true;
+					return;
+				}
 				try {
-					// Pre-read size check: skip files > 1MB to prevent OOM
 					const stat = statSync(fullPath);
 					if (stat.size > 1_000_000) continue;
+					if (ctx.totalSize + stat.size > SCAN_MAX_TOTAL_SIZE) {
+						ctx.limitReached = true;
+						return;
+					}
 					const content = readFileSync(fullPath, "utf-8");
 					result.set(relPath, content);
+					ctx.totalSize += stat.size;
+					ctx.fileCount++;
 				} catch {}
 			}
 		}

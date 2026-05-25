@@ -271,7 +271,7 @@ function migrateExtensionSystem(cwd: string): string[] {
 }
 
 /**
- * Print deprecation warnings and wait for keypress.
+ * Print deprecation warnings.
  */
 export async function showDeprecationWarnings(warnings: string[]): Promise<void> {
 	if (warnings.length === 0) return;
@@ -279,20 +279,9 @@ export async function showDeprecationWarnings(warnings: string[]): Promise<void>
 	for (const warning of warnings) {
 		console.log(chalk.yellow(`Warning: ${warning}`));
 	}
-	console.log(chalk.yellow(`\nMove your extensions to the extensions/ directory.`));
+	console.log(chalk.yellow(`Move your extensions to the extensions/ directory.`));
 	console.log(chalk.yellow(`Migration guide: ${MIGRATION_GUIDE_URL}`));
 	console.log(chalk.yellow(`Documentation: ${EXTENSIONS_DOC_URL}`));
-	console.log(chalk.dim(`\nPress any key to continue...`));
-
-	await new Promise<void>((resolve) => {
-		process.stdin.setRawMode?.(true);
-		process.stdin.resume();
-		process.stdin.once("data", () => {
-			process.stdin.setRawMode?.(false);
-			process.stdin.pause();
-			resolve();
-		});
-	});
 	console.log();
 }
 
