@@ -1,10 +1,10 @@
 # Module: rollback
 # Site: http://localhost:5173 (pi-agent-chat WebUI)
-# Version: 11
-# Status: partial-fix (BUG-1/4 fixed, BUG-2/3 still broken)
+# Version: 13
+# Status: verified (ALL BUGS FIXED - BUG-1/2/3/4 confirmed passing)
 # Last updated: 2026-05-25
 # Last verified: 2026-05-25
-# Verified in round: r11
+# Verified in round: r13
 
 chat_page:
   url: "http://localhost:5173"
@@ -39,7 +39,9 @@ rollback_overlay:
   msg_only_description: "回滚将移除当前轮次的消息，确定继续吗？"
   msg_and_code_description: "回滚将恢复以下文件到之前的状态："
   file_count_text: "个文件"
-  expandable_diff: "button containing filename + status"
+  expandable_diff: "button containing filename + status (click to expand/collapse)"
+  expanded_diff_container: "div.rounded-md within overlay after expansion"
+  diff_pre_element: "pre within overlay (contains unified diff text)"
   file_removed_text: "文件将被移除（新建的内容将丢失）"
   empty_text: "本轮无文件变更"
   behavior: "Appears after clicking rollback, shows file list or empty message"
