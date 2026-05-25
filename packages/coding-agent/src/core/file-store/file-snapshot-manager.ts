@@ -160,6 +160,10 @@ export class FileSnapshotManager {
 	}
 
 	async initialize(cwd: string): Promise<void> {
+		if (this.snapshotIndex.size > 0) {
+			return;
+		}
+
 		this.sessionStartTreeHash = null;
 		this.lastCommittedTreeHash = null;
 		this.turnIndex = 0;
