@@ -41,43 +41,6 @@ export interface LiveChange {
 
 const FILE_SIZE_LIMIT = 1024 * 1024;
 
-function findCanonicalGitRoot(cwd: string): string | null {
-	let dir: string;
-	try {
-		dir = realpathSync(cwd);
-	} catch {
-		return null;
-	}
-	for (;;) {
-		const gitPath = join(dir, ".git");
-		if (!existsSync(gitPath)) {
-			const parent = dirname(dir);
-			if (parent === dir) return null;
-			dir = parent;
-			continue;
-		}
-		const stat = lstatSync(gitPath);
-		if (stat.isDirectory()) return dir;
-		if (stat.isFile()) {
-			const content = readFileSync(gitPath, "utf-8").trim();
-			const match = content.match(/^gitdir:\s*(.+)/);
-			if (!match) return null;
-			const gitdir = match[1]!.trim();
-			if (gitdir.includes("/worktrees/")) {
-				const commonPrefix = gitdir.replace(/\/worktrees\/[^/]+\/?$/, "");
-				let rootDir = commonPrefix;
-				if (rootDir.endsWith("/.git")) rootDir = rootDir.slice(0, -4);
-				if (!existsSync(join(rootDir, ".git"))) return null;
-				return realpathSync(rootDir);
-			}
-			const parent = dirname(gitdir);
-			if (!existsSync(parent)) return null;
-			return parent;
-		}
-		return null;
-	}
-}
-
 function readFilteredWorkingDir(git: InternalGit, cwd: string): Map<string, string> {
 	const all = git.scanWorkingDir(cwd);
 	const filtered = new Map<string, string>();
