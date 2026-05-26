@@ -4,6 +4,12 @@ import { ConsoleRuntimeProvider } from "./sandbox/ConsoleRuntimeProvider.js";
 import { RuntimeMessageBridge } from "./sandbox/RuntimeMessageBridge.js";
 import { type MessageConsumer, RUNTIME_MESSAGE_ROUTER } from "./sandbox/RuntimeMessageRouter.js";
 import type { SandboxRuntimeProvider } from "./sandbox/SandboxRuntimeProvider.js";
+import type {
+	ExecutionCompleteMessage,
+	ExecutionErrorMessage,
+	FileReturnedMessage,
+	RuntimeMessage,
+} from "./sandbox/sandbox-types.js";
 
 export interface SandboxFile {
 	fileName: string;
@@ -16,7 +22,7 @@ export interface SandboxResult {
 	console: Array<{ type: string; text: string }>;
 	files?: SandboxFile[];
 	error?: { message: string; stack: string };
-	returnValue?: any;
+	returnValue?: unknown;
 }
 
 /**
@@ -150,9 +156,11 @@ export class SandboxIframe extends LitElement {
 		const externalUrlHandler = (e: MessageEvent) => {
 			if (e.data.type === "open-external-url" && e.source === this.iframe?.contentWindow) {
 				// Use chrome.tabs API to open in new tab
-				const chromeAPI = (globalThis as any).chrome;
-				if (chromeAPI?.tabs) {
-					chromeAPI.tabs.create({ url: e.data.url });
+				const chromeAPI = globalThis as unknown as {
+					chrome?: { tabs?: { create: (opts: { url: string }) => void } };
+				};
+				if (chromeAPI?.chrome?.tabs) {
+					chromeAPI.chrome.tabs.create({ url: e.data.url });
 				} else {
 					// Fallback for non-extension context
 					window.open(e.data.url, "_blank");
@@ -265,26 +273,29 @@ export class SandboxIframe extends LitElement {
 		return new Promise((resolve, reject) => {
 			// 4. Create execution consumer for lifecycle messages
 			const executionConsumer: MessageConsumer = {
-				async handleMessage(message: any): Promise<void> {
+				async handleMessage(message: RuntimeMessage): Promise<void> {
 					if (message.type === "file-returned") {
+						const fm = message as FileReturnedMessage;
 						files.push({
-							fileName: message.fileName,
-							content: message.content,
-							mimeType: message.mimeType,
+							fileName: fm.fileName,
+							content: fm.content,
+							mimeType: fm.mimeType,
 						});
 					} else if (message.type === "execution-complete") {
+						const em = message as ExecutionCompleteMessage;
 						completed = true;
 						cleanup();
 						resolve({
 							success: true,
 							console: consoleProvider.getLogs(),
 							files,
-							returnValue: message.returnValue,
+							returnValue: em.returnValue,
 						});
 					} else if (message.type === "execution-error") {
+						const em = message as ExecutionErrorMessage;
 						completed = true;
 						cleanup();
-						resolve({ success: false, console: consoleProvider.getLogs(), error: message.error, files });
+						resolve({ success: false, console: consoleProvider.getLogs(), error: em.error, files });
 					}
 				},
 			};
@@ -424,8 +435,8 @@ export class SandboxIframe extends LitElement {
 			}
 
 			return null;
-		} catch (error: any) {
-			return error.message || "Unknown validation error";
+		} catch (error: unknown) {
+			return error instanceof Error ? error.message : "Unknown validation error";
 		}
 	}
 
@@ -533,7 +544,7 @@ export class SandboxIframe extends LitElement {
 		isStandalone: boolean = false,
 	): string {
 		// Collect all data from providers
-		const allData: Record<string, any> = {};
+		const allData: Record<string, unknown> = {};
 		for (const provider of providers) {
 			Object.assign(allData, provider.getData());
 		}

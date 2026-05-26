@@ -1,4 +1,5 @@
 import type { SandboxRuntimeProvider } from "./SandboxRuntimeProvider.js";
+import { type ConsoleMessage, getSandboxWindow, type RuntimeMessage, type RuntimeResponse } from "./sandbox-types.js";
 
 export interface ConsoleLog {
 	type: "log" | "warn" | "error" | "info";
@@ -18,7 +19,7 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 	private completionError: { message: string; stack: string } | null = null;
 	private completed = false;
 
-	getData(): Record<string, any> {
+	getData(): Record<string, unknown> {
 		// No data needed
 		return {};
 	}
@@ -29,10 +30,12 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 
 	getRuntime(): (sandboxId: string) => void {
 		return (_sandboxId: string) => {
+			const sw = getSandboxWindow();
+
 			// Store truly original console methods on first wrap only
 			// This prevents accumulation of wrapper functions across multiple executions
-			if (!(window as any).__originalConsole) {
-				(window as any).__originalConsole = {
+			if (!sw.__originalConsole) {
+				sw.__originalConsole = {
 					log: console.log.bind(console),
 					error: console.error.bind(console),
 					warn: console.warn.bind(console),
@@ -41,13 +44,14 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 			}
 
 			// Always use the truly original console, not the current (possibly wrapped) one
-			const originalConsole = (window as any).__originalConsole;
+			const originalConsole = sw.__originalConsole;
 
 			// Track pending send promises to wait for them in onCompleted
-			const pendingSends: Promise<any>[] = [];
+			const pendingSends: Promise<void>[] = [];
 
-			["log", "error", "warn", "info"].forEach((method) => {
-				(console as any)[method] = (...args: any[]) => {
+			const consoleMethods = ["log", "error", "warn", "info"] as const;
+			for (const method of consoleMethods) {
+				console[method] = (...args: unknown[]) => {
 					const text = args
 						.map((arg) => {
 							try {
@@ -59,11 +63,11 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 						.join(" ");
 
 					// Always log locally too (using truly original console)
-					(originalConsole as any)[method].apply(console, args);
+					originalConsole[method](...args);
 
 					// Send immediately and track the promise (only in extension context)
-					if ((window as any).sendRuntimeMessage) {
-						const sendPromise = (window as any)
+					if (sw.sendRuntimeMessage) {
+						const sendPromise = sw
 							.sendRuntimeMessage({
 								type: "console",
 								method,
@@ -71,14 +75,14 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 								args,
 							})
 							.catch(() => {});
-						pendingSends.push(sendPromise);
+						pendingSends.push(sendPromise as Promise<void>);
 					}
 				};
-			});
+			}
 
 			// Register completion callback to wait for all pending sends
-			if ((window as any).onCompleted) {
-				(window as any).onCompleted(async (_success: boolean) => {
+			if (sw.onCompleted) {
+				sw.onCompleted(async (_success: boolean) => {
 					// Wait for all pending console sends to complete
 					if (pendingSends.length > 0) {
 						await Promise.all(pendingSends);
@@ -111,20 +115,20 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 
 			// Expose complete() method for user code to call
 			let completionSent = false;
-			(window as any).complete = async (error?: { message: string; stack: string }, returnValue?: any) => {
+			sw.complete = async (error?: { message: string; stack: string }, returnValue?: unknown) => {
 				if (completionSent) return;
 				completionSent = true;
 
 				const finalError = error || lastError;
 
-				if ((window as any).sendRuntimeMessage) {
+				if (sw.sendRuntimeMessage) {
 					if (finalError) {
-						await (window as any).sendRuntimeMessage({
+						await sw.sendRuntimeMessage({
 							type: "execution-error",
 							error: finalError,
 						});
 					} else {
-						await (window as any).sendRuntimeMessage({
+						await sw.sendRuntimeMessage({
 							type: "execution-complete",
 							returnValue,
 						});
@@ -134,20 +138,21 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 		};
 	}
 
-	async handleMessage(message: any, respond: (response: any) => void): Promise<void> {
+	async handleMessage(message: RuntimeMessage, respond: (response: RuntimeResponse) => void): Promise<void> {
 		if (message.type === "console") {
+			const consoleMsg = message as ConsoleMessage;
 			// Collect console output
 			this.logs.push({
 				type:
-					message.method === "error"
+					consoleMsg.method === "error"
 						? "error"
-						: message.method === "warn"
+						: consoleMsg.method === "warn"
 							? "warn"
-							: message.method === "info"
+							: consoleMsg.method === "info"
 								? "info"
 								: "log",
-				text: message.text,
-				args: message.args,
+				text: consoleMsg.text,
+				args: consoleMsg.args,
 			});
 			// Acknowledge receipt
 			respond({ success: true });

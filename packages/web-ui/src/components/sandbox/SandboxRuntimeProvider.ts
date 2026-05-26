@@ -2,12 +2,14 @@
  * Interface for providing runtime capabilities to sandboxed iframes.
  * Each provider injects data and runtime functions into the sandbox context.
  */
+import type { RuntimeMessage, RuntimeResponse } from "./sandbox-types.js";
+
 export interface SandboxRuntimeProvider {
 	/**
 	 * Returns data to inject into window scope.
 	 * Keys become window properties (e.g., { attachments: [...] } -> window.attachments)
 	 */
-	getData(): Record<string, any>;
+	getData(): Record<string, unknown>;
 
 	/**
 	 * Returns a runtime function that will be stringified and executed in the sandbox.
@@ -25,7 +27,7 @@ export interface SandboxRuntimeProvider {
 	 * @param message - The message from the sandbox
 	 * @param respond - Function to send a response back to the sandbox
 	 */
-	handleMessage?(message: any, respond: (response: any) => void): Promise<void>;
+	handleMessage?(message: RuntimeMessage, respond: (response: RuntimeResponse) => void): Promise<void>;
 
 	/**
 	 * Optional documentation describing what globals/functions this provider injects.
