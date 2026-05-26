@@ -4,12 +4,18 @@ import {
 	ARTIFACTS_RUNTIME_PROVIDER_DESCRIPTION_RW,
 } from "../../prompts/prompts.js";
 import type { SandboxRuntimeProvider } from "./SandboxRuntimeProvider.js";
+import {
+	type ArtifactOperationMessage,
+	getSandboxWindow,
+	type RuntimeMessage,
+	type RuntimeResponse,
+} from "./sandbox-types.js";
 
 // Define minimal interface for ArtifactsPanel to avoid circular dependencies
 interface ArtifactsPanelLike {
 	artifacts: Map<string, { content: string }>;
 	tool: {
-		execute(toolCallId: string, args: { command: string; filename: string; content?: string }): Promise<any>;
+		execute(toolCallId: string, args: { command: string; filename: string; content?: string }): Promise<unknown>;
 	};
 }
 
@@ -31,7 +37,7 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 		private readWrite: boolean = true,
 	) {}
 
-	getData(): Record<string, any> {
+	getData(): Record<string, unknown> {
 		// Inject artifact snapshot for offline mode
 		const snapshot: Record<string, string> = {};
 		this.artifactsPanel.artifacts.forEach((artifact, filename) => {
@@ -46,41 +52,43 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 			// Auto-parse/stringify for .json files
 			const isJsonFile = (filename: string) => filename.endsWith(".json");
 
-			(window as any).listArtifacts = async (): Promise<string[]> => {
+			const sw = getSandboxWindow();
+
+			sw.listArtifacts = async (): Promise<string[]> => {
 				// Online: ask extension
-				if ((window as any).sendRuntimeMessage) {
-					const response = await (window as any).sendRuntimeMessage({
+				if (sw.sendRuntimeMessage) {
+					const response = await sw.sendRuntimeMessage({
 						type: "artifact-operation",
 						action: "list",
 					});
 					if (!response.success) throw new Error(response.error);
-					return response.result;
+					return response.result as string[];
 				}
 				// Offline: return snapshot keys
 				else {
-					return Object.keys((window as any).artifacts || {});
+					return Object.keys(sw.artifacts || {});
 				}
 			};
 
-			(window as any).getArtifact = async (filename: string): Promise<any> => {
+			sw.getArtifact = async (filename: string): Promise<unknown> => {
 				let content: string;
 
 				// Online: ask extension
-				if ((window as any).sendRuntimeMessage) {
-					const response = await (window as any).sendRuntimeMessage({
+				if (sw.sendRuntimeMessage) {
+					const response = await sw.sendRuntimeMessage({
 						type: "artifact-operation",
 						action: "get",
 						filename,
 					});
 					if (!response.success) throw new Error(response.error);
-					content = response.result;
+					content = response.result as string;
 				}
 				// Offline: read snapshot
 				else {
-					if (!(window as any).artifacts?.[filename]) {
+					if (!sw.artifacts?.[filename]) {
 						throw new Error(`Artifact not found (offline mode): ${filename}`);
 					}
-					content = (window as any).artifacts[filename];
+					content = sw.artifacts[filename];
 				}
 
 				// Auto-parse .json files
@@ -94,16 +102,12 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				return content;
 			};
 
-			(window as any).createOrUpdateArtifact = async (
-				filename: string,
-				content: any,
-				mimeType?: string,
-			): Promise<void> => {
-				if (!(window as any).sendRuntimeMessage) {
+			sw.createOrUpdateArtifact = async (filename: string, content: unknown, mimeType?: string): Promise<void> => {
+				if (!sw.sendRuntimeMessage) {
 					throw new Error("Cannot create/update artifacts in offline mode (read-only)");
 				}
 
-				let finalContent = content;
+				let finalContent: unknown = content;
 				// Auto-stringify .json files
 				if (isJsonFile(filename) && typeof content !== "string") {
 					finalContent = JSON.stringify(content, null, 2);
@@ -111,22 +115,22 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 					finalContent = JSON.stringify(content, null, 2);
 				}
 
-				const response = await (window as any).sendRuntimeMessage({
+				const response = await sw.sendRuntimeMessage({
 					type: "artifact-operation",
 					action: "createOrUpdate",
 					filename,
-					content: finalContent,
+					content: finalContent as string,
 					mimeType,
 				});
 				if (!response.success) throw new Error(response.error);
 			};
 
-			(window as any).deleteArtifact = async (filename: string): Promise<void> => {
-				if (!(window as any).sendRuntimeMessage) {
+			sw.deleteArtifact = async (filename: string): Promise<void> => {
+				if (!sw.sendRuntimeMessage) {
 					throw new Error("Cannot delete artifacts in offline mode (read-only)");
 				}
 
-				const response = await (window as any).sendRuntimeMessage({
+				const response = await sw.sendRuntimeMessage({
 					type: "artifact-operation",
 					action: "delete",
 					filename,
@@ -136,12 +140,14 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 		};
 	}
 
-	async handleMessage(message: any, respond: (response: any) => void): Promise<void> {
+	async handleMessage(message: RuntimeMessage, respond: (response: RuntimeResponse) => void): Promise<void> {
 		if (message.type !== "artifact-operation") {
 			return;
 		}
 
-		const { action, filename, content } = message;
+		const action = (message as ArtifactOperationMessage).action;
+		const filename = (message as ArtifactOperationMessage).filename;
+		const content = (message as ArtifactOperationMessage).content;
 
 		try {
 			switch (action) {
@@ -152,7 +158,7 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				}
 
 				case "get": {
-					const artifact = this.artifactsPanel.artifacts.get(filename);
+					const artifact = this.artifactsPanel.artifacts.get(filename!);
 					if (!artifact) {
 						respond({ success: false, error: `Artifact not found: ${filename}` });
 					} else {
@@ -163,26 +169,26 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 
 				case "createOrUpdate": {
 					try {
-						const exists = this.artifactsPanel.artifacts.has(filename);
+						const exists = this.artifactsPanel.artifacts.has(filename!);
 						const command = exists ? "rewrite" : "create";
-						const action = exists ? "update" : "create";
+						const artifactAction = exists ? "update" : "create";
 
 						await this.artifactsPanel.tool.execute("", {
 							command,
-							filename,
+							filename: filename!,
 							content,
 						});
 						this.agent?.state.messages.push({
 							role: "artifact",
-							action,
-							filename,
+							action: artifactAction,
+							filename: filename!,
 							content,
-							...(action === "create" && { title: filename }),
+							...(artifactAction === "create" && { title: filename }),
 							timestamp: new Date().toISOString(),
 						});
 						respond({ success: true });
-					} catch (err: any) {
-						respond({ success: false, error: err.message });
+					} catch (err: unknown) {
+						respond({ success: false, error: err instanceof Error ? err.message : String(err) });
 					}
 					break;
 				}
@@ -191,17 +197,17 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 					try {
 						await this.artifactsPanel.tool.execute("", {
 							command: "delete",
-							filename,
+							filename: filename!,
 						});
 						this.agent?.state.messages.push({
 							role: "artifact",
 							action: "delete",
-							filename,
+							filename: filename!,
 							timestamp: new Date().toISOString(),
 						});
 						respond({ success: true });
-					} catch (err: any) {
-						respond({ success: false, error: err.message });
+					} catch (err: unknown) {
+						respond({ success: false, error: err instanceof Error ? err.message : String(err) });
 					}
 					break;
 				}
@@ -209,8 +215,8 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				default:
 					respond({ success: false, error: `Unknown artifact action: ${action}` });
 			}
-		} catch (error: any) {
-			respond({ success: false, error: error.message });
+		} catch (error: unknown) {
+			respond({ success: false, error: error instanceof Error ? error.message : String(error) });
 		}
 	}
 

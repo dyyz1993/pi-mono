@@ -1,7 +1,26 @@
 import type { SandboxRuntimeProvider } from "./SandboxRuntimeProvider.js";
+import type { RuntimeMessage, RuntimeResponse } from "./sandbox-types.js";
 
-// Type declaration for chrome extension API (when available)
-declare const chrome: any;
+/** Minimal chrome extension API surface needed */
+interface ChromeRuntime {
+	runtime?: {
+		onUserScriptMessage?: {
+			addListener(
+				listener: (
+					message: RuntimeMessage,
+					sender: unknown,
+					sendResponse: (response: RuntimeResponse) => void,
+				) => boolean,
+			): void;
+			removeListener(listener: unknown): void;
+		};
+	};
+	tabs?: {
+		create(options: { url: string }): void;
+	};
+}
+
+declare const chrome: ChromeRuntime | undefined;
 
 /**
  * Message consumer interface - components that want to receive messages from sandboxes
@@ -11,7 +30,7 @@ export interface MessageConsumer {
 	 * Handle a message from a sandbox.
 	 * All consumers receive all messages - decide internally what to handle.
 	 */
-	handleMessage(message: any): Promise<void>;
+	handleMessage(message: RuntimeMessage): Promise<void>;
 }
 
 /**
@@ -42,7 +61,7 @@ export class RuntimeMessageRouter {
 	private sandboxes = new Map<string, SandboxContext>();
 	private messageListener: ((e: MessageEvent) => void) | null = null;
 	private userScriptMessageListener:
-		| ((message: any, sender: any, sendResponse: (response: any) => void) => boolean)
+		| ((message: RuntimeMessage, sender: unknown, sendResponse: (response: RuntimeResponse) => void) => boolean)
 		| null = null;
 
 	/**
@@ -133,7 +152,7 @@ export class RuntimeMessageRouter {
 				}
 
 				// Create respond() function for bidirectional communication
-				const respond = (response: any) => {
+				const respond = (response: RuntimeResponse) => {
 					context.iframe?.contentWindow?.postMessage(
 						{
 							type: "runtime-response",
@@ -170,14 +189,18 @@ export class RuntimeMessageRouter {
 				return;
 			}
 
-			this.userScriptMessageListener = (message: any, _sender: any, sendResponse: (response: any) => void) => {
-				const { sandboxId } = message;
+			this.userScriptMessageListener = (
+				message: RuntimeMessage,
+				_sender: unknown,
+				sendResponse: (response: RuntimeResponse) => void,
+			) => {
+				const { sandboxId } = message as RuntimeMessage & { sandboxId?: string };
 				if (!sandboxId) return false;
 
 				const context = this.sandboxes.get(sandboxId);
 				if (!context) return false;
 
-				const respond = (response: any) => {
+				const respond = (response: RuntimeResponse) => {
 					sendResponse({
 						...response,
 						sandboxId,

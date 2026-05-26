@@ -1,4 +1,10 @@
 import type { SandboxRuntimeProvider } from "./SandboxRuntimeProvider.js";
+import {
+	type FileReturnedMessage,
+	getSandboxWindow,
+	type RuntimeMessage,
+	type RuntimeResponse,
+} from "./sandbox-types.js";
 
 export interface DownloadableFile {
 	fileName: string;
@@ -17,15 +23,17 @@ export interface DownloadableFile {
 export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 	private files: DownloadableFile[] = [];
 
-	getData(): Record<string, any> {
+	getData(): Record<string, unknown> {
 		// No data needed
 		return {};
 	}
 
 	getRuntime(): (sandboxId: string) => void {
 		return (_sandboxId: string) => {
-			(window as any).returnDownloadableFile = async (fileName: string, content: any, mimeType?: string) => {
-				let finalContent: any, finalMimeType: string;
+			const sw = getSandboxWindow();
+
+			sw.returnDownloadableFile = async (fileName: string, content: unknown, mimeType?: string) => {
+				let finalContent: string | Uint8Array, finalMimeType: string;
 
 				if (content instanceof Blob) {
 					const arrayBuffer = await content.arrayBuffer();
@@ -53,8 +61,8 @@ export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 				}
 
 				// Send to extension if in extension context (online mode)
-				if ((window as any).sendRuntimeMessage) {
-					const response = await (window as any).sendRuntimeMessage({
+				if (sw.sendRuntimeMessage) {
+					const response = await sw.sendRuntimeMessage({
 						type: "file-returned",
 						fileName,
 						content: finalContent,
@@ -63,9 +71,12 @@ export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 					if (response.error) throw new Error(response.error);
 				} else {
 					// Offline mode: trigger browser download directly
-					const blob = new Blob([finalContent instanceof Uint8Array ? finalContent : finalContent], {
-						type: finalMimeType,
-					});
+					const blob = new Blob(
+						[finalContent instanceof Uint8Array ? (finalContent as unknown as BlobPart) : finalContent],
+						{
+							type: finalMimeType,
+						},
+					);
 					const url = URL.createObjectURL(blob);
 					const a = document.createElement("a");
 					a.href = url;
@@ -77,13 +88,14 @@ export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 		};
 	}
 
-	async handleMessage(message: any, respond: (response: any) => void): Promise<void> {
+	async handleMessage(message: RuntimeMessage, respond: (response: RuntimeResponse) => void): Promise<void> {
 		if (message.type === "file-returned") {
+			const fileMsg = message as FileReturnedMessage;
 			// Collect file for caller
 			this.files.push({
-				fileName: message.fileName,
-				content: message.content,
-				mimeType: message.mimeType,
+				fileName: fileMsg.fileName,
+				content: fileMsg.content,
+				mimeType: fileMsg.mimeType,
 			});
 
 			respond({ success: true });
