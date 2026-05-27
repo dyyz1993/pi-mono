@@ -156,11 +156,11 @@ export function createCoordinatorHandler(
     try {
       result = await pm.delegate(task, projectPath);
     } catch (err) {
-      return { __error: err instanceof Error ? err.message : String(err) };
+      return { error: err instanceof Error ? err.message : String(err) };
     }
 
     if (!result.sessionId) {
-      return { __error: "[coordinator] delegate failed: no sessionId returned" };
+      return { error: "[coordinator] delegate failed: no sessionId returned" };
     }
 
     getStore().add({
@@ -291,11 +291,11 @@ export function createCoordinatorHandler(
     try {
       result = await pm.delegate_fork(sessionId, task, title, projectPath);
     } catch (err) {
-      return { __error: err instanceof Error ? err.message : String(err) };
+      return { error: err instanceof Error ? err.message : String(err) };
     }
 
     if (!result.sessionId) {
-      return { __error: "[coordinator] fork failed: no sessionId returned" };
+      return { error: "[coordinator] fork failed: no sessionId returned" };
     }
 
     getStore().add({

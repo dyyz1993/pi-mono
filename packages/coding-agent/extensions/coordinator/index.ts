@@ -91,7 +91,7 @@ export function createServerProxy(client: { call: (method: string, params: Recor
 
     async delegate_fork(sessionId, task, title, projectPath) {
       const result = await client.call("session_delegate_fork", { sessionId, task, title, projectPath }) as Record<string, unknown>;
-      const errMsg = (result.__error ?? result.error) as string | undefined;
+      const errMsg = result.error as string | undefined;
       if (errMsg) {
         throw new Error(errMsg);
       }
