@@ -40,20 +40,9 @@ const DelegateSyncParams = Type.Object({
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
 });
 
-export default function coordinatorExtension(pi: ExtensionAPI) {
-  const rawChannel = pi.registerChannel(COORDINATOR_CHANNEL_NAME);
-
-  const { server: serverChannel, client } = createTypedChannel<CoordinatorChannelContract>(rawChannel);
-
-  let currentSessionId = "";
-  let store: TaskStore | null = null;
-
-  pi.on("session_start", (_event, ctx) => {
-    currentSessionId = ctx.sessionManager.getSessionId();
-    store = new TaskStore(ctx.sessionManager.getSessionDir());
-  });
-
-  const serverProxy: ProcessManagerApi = {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createServerProxy(client: { call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => Promise<any> }): ProcessManagerApi {
+  return {
     async delegate(task, projectPath) {
       return client.call("session_delegate", { task, projectPath });
     },
@@ -67,8 +56,13 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_status(sessionId) {
       try {
-        const result = await client.call("session_delegate_status", { sessionId });
-        return result.task ? { status: result.task.status as SessionStatus } : { status: "stopped" as const };
+        const result = await client.call("session_delegate_status", { sessionId }) as { task: { status: SessionStatus } | null; status?: string };
+        if (result.task) {
+          return { status: result.task.status as SessionStatus };
+        }
+        // Handler may return status: "not_found" | "stopped" when task is null
+        const rawStatus = (result as Record<string, unknown>).status as string | undefined;
+        return { status: (rawStatus ?? "stopped") as SessionStatus };
       } catch (err) {
         console.debug("[coordinator] delegate_status failed:", err instanceof Error ? err.message : err);
         return { status: "stopped" as const };
@@ -77,8 +71,8 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_list() {
       try {
-        const result = await client.call("session_delegate_list", {});
-        return result.tasks;
+        const result = await client.call("session_delegate_list", {}) as { tasks: unknown };
+        return result.tasks as Array<{ sessionId: string; status: SessionStatus; projectPath: string }>;
       } catch (err) {
         console.debug("[coordinator] delegate_list failed:", err instanceof Error ? err.message : err);
         return [];
@@ -87,7 +81,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_stop(sessionId) {
       try {
-        const result = await client.call("session_delegate_stop", { sessionId });
+        const result = await client.call("session_delegate_stop", { sessionId }) as { ok: boolean };
         return result.ok;
       } catch (err) {
         console.debug("[coordinator] delegate_stop failed:", err instanceof Error ? err.message : err);
@@ -96,12 +90,16 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     },
 
     async delegate_fork(sessionId, task, title, projectPath) {
-      return client.call("session_delegate_fork", { sessionId, task, title, projectPath });
+      const result = await client.call("session_delegate_fork", { sessionId, task, title, projectPath }) as Record<string, unknown>;
+      if (result.__error) {
+        throw new Error(result.__error as string);
+      }
+      return result as unknown as { sessionId: string; status: "started" | "already_running" };
     },
 
     async delegate_compact_status(sessionId: string) {
       try {
-        const result = await client.call("session_delegate_status", { sessionId });
+        const result = await client.call("session_delegate_status", { sessionId }) as { task: { isCompacting?: boolean; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } } | null };
         return {
           isCompacting: result.task?.isCompacting ?? false,
           contextUsage: result.task?.contextUsage ?? { tokens: null as number | null, contextWindow: 0, percent: null as number | null },
@@ -114,7 +112,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_remove(sessionId: string) {
       try {
-        const result = await client.call("session_delegate_remove", { sessionId });
+        const result = await client.call("session_delegate_remove", { sessionId }) as { ok: boolean };
         return result.ok;
       } catch (err) {
         console.debug("[coordinator] delegate_remove failed:", err instanceof Error ? err.message : err);
@@ -124,7 +122,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     async delegate_clear_stopped() {
       try {
-        const result = await client.call("session_delegate_clear_stopped", {});
+        const result = await client.call("session_delegate_clear_stopped", {}) as { removed: number };
         return result.removed;
       } catch (err) {
         console.debug("[coordinator] delegate_clear_stopped failed:", err instanceof Error ? err.message : err);
@@ -139,7 +137,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
           { task, title: agent ? `${agent}: ${task.slice(0, 40)}` : undefined, agent, timeoutMs, projectPath },
           timeoutMs + 30_000,
         );
-        return result;
+        return result as { sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string };
       } catch (err) {
         return {
           sessionId: "",
@@ -151,6 +149,22 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       }
     },
   };
+}
+
+export default function coordinatorExtension(pi: ExtensionAPI) {
+  const rawChannel = pi.registerChannel(COORDINATOR_CHANNEL_NAME);
+
+  const { server: serverChannel, client } = createTypedChannel<CoordinatorChannelContract>(rawChannel);
+
+  let currentSessionId = "";
+  let store: TaskStore | null = null;
+
+  pi.on("session_start", (_event, ctx) => {
+    currentSessionId = ctx.sessionManager.getSessionId();
+    store = new TaskStore(ctx.sessionManager.getSessionDir());
+  });
+
+  const serverProxy = createServerProxy(client as never);
 
   createCoordinatorHandler(
     serverChannel,

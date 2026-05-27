@@ -204,8 +204,12 @@ export function createCoordinatorHandler(
     const store = getStore();
     const task = store.get(sessionId);
     if (!task) {
-      try { await pm.delegate_status(sessionId); } catch { /* not found */ }
-      return { task: null };
+      try {
+        const remote = await pm.delegate_status(sessionId);
+        return { task: null, status: remote.status };
+      } catch {
+        return { task: null };
+      }
     }
     try {
       const remote = await pm.delegate_status(sessionId);
