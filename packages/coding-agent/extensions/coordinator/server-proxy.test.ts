@@ -103,25 +103,14 @@ describe("serverProxy delegate_fork — non-existent target sessionId", () => {
     proxy = createServerProxy(client as never);
   });
 
-  it("throws when handler returns { __error: '...' } (extension handler path)", async () => {
-    // Extension handler.ts returns { __error: "..." }
+  it("throws when response contains { error: '...' }", async () => {
+    // pi-agent-chat dispatch catch returns { error: "..." }, handler.ts also uses { error: "..." }
     client.mockCall("session_delegate_fork", () => ({
-      __error: "Session not found: sess_ghost_fork_99999",
+      error: "Session not found: sess_ghost_fork_99999",
     }));
 
     await expect(
       proxy.delegate_fork("sess_ghost_fork_99999", "do something", "title", "/fake"),
-    ).rejects.toThrow(/not found/i);
-  });
-
-  it("throws when dispatch returns { error: '...' } (pi-agent-chat dispatch path)", async () => {
-    // pi-agent-chat handleCoordinatorCall catch block returns { error: "..." }
-    client.mockCall("session_delegate_fork", () => ({
-      error: "Session not found: sess_ghost_dispatch_88888",
-    }));
-
-    await expect(
-      proxy.delegate_fork("sess_ghost_dispatch_88888", "do something", "title", "/fake"),
     ).rejects.toThrow(/not found/i);
   });
 
