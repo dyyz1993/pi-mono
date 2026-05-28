@@ -292,7 +292,12 @@ export class FileSnapshotManager {
 		};
 	}
 
-	getModifiedFiles(options?: { fromEntryId?: string; toEntryId?: string; toTurnIndex?: number; fromTurnIndex?: number }): ModifiedFileInfo[] {
+	getModifiedFiles(options?: {
+		fromEntryId?: string;
+		toEntryId?: string;
+		toTurnIndex?: number;
+		fromTurnIndex?: number;
+	}): ModifiedFileInfo[] {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
 		if (snapshots.length === 0) return [];
 
@@ -353,7 +358,7 @@ export class FileSnapshotManager {
 	getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): FileDiffInfo | null {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
 
-		let fromHash = options.fromEntryId
+		const fromHash = options.fromEntryId
 			? (snapshots.find((s) => s.entryId === options.fromEntryId)?.snapshotTreeHash ?? null)
 			: this.sessionStartTreeHash;
 		const toHash = options.toEntryId
@@ -362,7 +367,7 @@ export class FileSnapshotManager {
 
 		if (!fromHash && !toHash) return null;
 
-		let fromFiles = fromHash ? this.git.readTree(fromHash) : new Map<string, string>();
+		const fromFiles = fromHash ? this.git.readTree(fromHash) : new Map<string, string>();
 		const toFiles = toHash ? this.git.readTree(toHash) : new Map<string, string>();
 
 		let oldContent = fromFiles.get(options.filePath) ?? null;
@@ -373,9 +378,7 @@ export class FileSnapshotManager {
 		// the fromEntryId to find the last snapshot where the file existed, so we
 		// can show what content was lost.
 		if (oldContent === null && newContent === null) {
-			const fromIdx = options.fromEntryId
-				? snapshots.findIndex((s) => s.entryId === options.fromEntryId)
-				: 0;
+			const fromIdx = options.fromEntryId ? snapshots.findIndex((s) => s.entryId === options.fromEntryId) : 0;
 			const toIdx = options.toEntryId
 				? snapshots.findIndex((s) => s.entryId === options.toEntryId)
 				: snapshots.length - 1;

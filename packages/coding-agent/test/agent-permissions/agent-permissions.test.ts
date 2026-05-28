@@ -171,4 +171,28 @@ describe("PermissionMode middleware", () => {
 			expect(handler2?.({ toolName: "bash", input: {} })?.block).toBe(true);
 		});
 	});
+
+	// Bug 1 regression: always-deny mode must block bash too (no backdoor)
+	describe("always-deny mode blocks bash (Bug 1 fix)", () => {
+		it("blocks bash in always-deny mode", () => {
+			const handler = createPermissionHandler(makeConfig("always-deny"));
+			const result = handler?.({ toolName: "bash", input: { command: "ls -la" } });
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("always-deny");
+		});
+
+		it("blocks bash in always-deny mode even with disallowedTools containing bash", () => {
+			const handler = createPermissionHandler(makeConfig("always-deny", ["write", "bash"]));
+			const result = handler?.({ toolName: "bash", input: { command: "ls -la" } });
+			expect(result?.block).toBe(true);
+		});
+
+		it("blocks all other tools in always-deny mode", () => {
+			const handler = createPermissionHandler(makeConfig("always-deny"));
+			expect(handler?.({ toolName: "read", input: {} })?.block).toBe(true);
+			expect(handler?.({ toolName: "edit", input: {} })?.block).toBe(true);
+			expect(handler?.({ toolName: "write", input: {} })?.block).toBe(true);
+			expect(handler?.({ toolName: "grep", input: {} })?.block).toBe(true);
+		});
+	});
 });
