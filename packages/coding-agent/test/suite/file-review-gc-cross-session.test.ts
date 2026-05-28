@@ -23,7 +23,7 @@ function makeDir(): string {
 	return d;
 }
 
-function createManager(cwd: string, storeDir: string): { mgr: FileSnapshotManager; git: InternalGit } {
+function createManager(_cwd: string, storeDir: string): { mgr: FileSnapshotManager; git: InternalGit } {
 	const git = new InternalGit(storeDir);
 	return { mgr: new FileSnapshotManager(git), git };
 }
@@ -160,10 +160,10 @@ describe("GC cross-session: verify real-world scenarios", () => {
 		const baselineHash = "def67890";
 		writeFileSync(
 			mainSessionFile,
-			JSON.stringify({
+			`${JSON.stringify({
 				customType: "step-snapshot",
 				data: { snapshotTreeHash: treeHash, baselineTreeHash: baselineHash },
-			}) + "\n",
+			})}\n`,
 			"utf-8",
 		);
 
@@ -172,10 +172,10 @@ describe("GC cross-session: verify real-world scenarios", () => {
 		const subTreeHash = "sub11111";
 		writeFileSync(
 			subSessionFile,
-			JSON.stringify({
+			`${JSON.stringify({
 				customType: "step-snapshot",
 				data: { snapshotTreeHash: subTreeHash, baselineTreeHash: treeHash },
-			}) + "\n",
+			})}\n`,
 			"utf-8",
 		);
 
@@ -200,7 +200,7 @@ describe("GC cross-session: verify real-world scenarios", () => {
 		writeFileSync(join(cwd, "main-file.txt"), "main-content", "utf-8");
 		main.mgr.onTurnEnd(cwd, 0, (type, data) => {
 			// Simulate persisting to JSONL
-			writeFileSync(join(sessionDir, "main.jsonl"), JSON.stringify({ customType: type, data }) + "\n", {
+			writeFileSync(join(sessionDir, "main.jsonl"), `${JSON.stringify({ customType: type, data })}\n`, {
 				flag: "a",
 			});
 			return "main_e0";
@@ -211,7 +211,7 @@ describe("GC cross-session: verify real-world scenarios", () => {
 		await sub.mgr.initialize(cwd);
 		writeFileSync(join(cwd, "sub-file.txt"), "sub-content", "utf-8");
 		sub.mgr.onTurnEnd(cwd, 0, (type, data) => {
-			writeFileSync(join(sessionDir, "sub.jsonl"), JSON.stringify({ customType: type, data }) + "\n", { flag: "a" });
+			writeFileSync(join(sessionDir, "sub.jsonl"), `${JSON.stringify({ customType: type, data })}\n`, { flag: "a" });
 			return "sub_e0";
 		});
 

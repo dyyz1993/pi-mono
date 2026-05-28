@@ -155,19 +155,18 @@ const updateUrl = (sessionId: string) => {
 	window.history.replaceState({}, "", url);
 };
 
+const patchModel = (model: any) => {
+	const __mockBase = (globalThis as any).__MOCK_API_BASE as string | undefined;
+	if (__mockBase && model) {
+		return { ...model, baseUrl: __mockBase };
+	}
+	return model;
+};
+
 const createAgent = async (initialState?: Partial<AgentState>) => {
 	if (agentUnsubscribe) {
 		agentUnsubscribe();
 	}
-
-	// Patch model baseUrl to use mock API if configured
-	const __mockBase = (globalThis as any).__MOCK_API_BASE as string | undefined;
-	const patchModel = (model: any) => {
-		if (__mockBase && model) {
-			return { ...model, baseUrl: __mockBase };
-		}
-		return model;
-	};
 
 	agent = new Agent({
 		initialState: initialState || {

@@ -26,7 +26,7 @@ function makeDir(): string {
 	return d;
 }
 
-function createManager(cwd: string, storeDir?: string): { mgr: FileSnapshotManager; git: InternalGit } {
+function createManager(_cwd: string, storeDir?: string): { mgr: FileSnapshotManager; git: InternalGit } {
 	const sDir = storeDir ?? makeDir();
 	allDirs.push(sDir);
 	const git = new InternalGit(sDir);
