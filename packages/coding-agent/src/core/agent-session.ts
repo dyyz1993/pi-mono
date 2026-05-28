@@ -3651,6 +3651,7 @@ export class AgentSession {
 			const doCall = () => complete(model, context, completeOpts);
 
 			let response;
+			let retryAttempt = 0;
 			try {
 				response = options.retry
 					? await withRetry(doCall, {
@@ -3658,6 +3659,7 @@ export class AgentSession {
 							baseDelayMs: options.retry.baseDelayMs ?? 5000,
 							signal: options.signal,
 							onRetry: (info) => {
+								retryAttempt = info.attempt;
 								this._emit({
 									type: "auto_retry_start",
 									attempt: info.attempt,
@@ -3673,11 +3675,10 @@ export class AgentSession {
 				if (isRetryableError(err)) {
 					this._emit({ type: "extension_llm_error", error: errMsg });
 				}
-				throw err;
-			} finally {
 				if (options.retry) {
-					this._emit({ type: "auto_retry_end", success: false, attempt: 0 });
+					this._emit({ type: "auto_retry_end", success: false, attempt: retryAttempt, finalError: errMsg });
 				}
+				throw err;
 			}
 			return response.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -3715,6 +3716,7 @@ export class AgentSession {
 			const doCall = () => complete(model, context, completeOpts);
 
 			let response;
+			let retryAttempt = 0;
 			try {
 				response = options.retry
 					? await withRetry(doCall, {
@@ -3722,6 +3724,7 @@ export class AgentSession {
 							baseDelayMs: options.retry.baseDelayMs ?? 5000,
 							signal: options.signal,
 							onRetry: (info) => {
+								retryAttempt = info.attempt;
 								this._emit({
 									type: "auto_retry_start",
 									attempt: info.attempt,
@@ -3737,11 +3740,10 @@ export class AgentSession {
 				if (isRetryableError(err)) {
 					this._emit({ type: "extension_llm_error", error: errMsg });
 				}
-				throw err;
-			} finally {
 				if (options.retry) {
-					this._emit({ type: "auto_retry_end", success: false, attempt: 0 });
+					this._emit({ type: "auto_retry_end", success: false, attempt: retryAttempt, finalError: errMsg });
 				}
+				throw err;
 			}
 			return response.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
