@@ -3650,7 +3650,7 @@ export class AgentSession {
 
 			const doCall = () => complete(model, context, completeOpts);
 
-			let response;
+			let response: AssistantMessage;
 			let retryAttempt = 0;
 			try {
 				response = options.retry
@@ -3715,7 +3715,7 @@ export class AgentSession {
 
 			const doCall = () => complete(model, context, completeOpts);
 
-			let response;
+			let response: AssistantMessage;
 			let retryAttempt = 0;
 			try {
 				response = options.retry

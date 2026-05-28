@@ -106,7 +106,7 @@ function cmdList(projectDir: string, mods: LoadedModules): boolean {
 			for (const hook of group.hooks) {
 				const ifLabel = hook.if ? ` if="${hook.if}"` : "";
 				const cmd = hook.command ?? hook.url ?? hook.prompt ?? "(no command)";
-				const truncated = cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
+				const truncated = cmd.length > 80 ? `${cmd.slice(0, 77)}...` : cmd;
 				console.log(`    → ${hook.type}${ifLabel}: ${truncated}`);
 			}
 		}
