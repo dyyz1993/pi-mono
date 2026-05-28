@@ -61,3 +61,4 @@ collect.sh
 .codenomad/
 packages/coding-agent/dyyz1993-pi-coding-agent-0.74.25.tgz
 .pi/
+packages/ai/test/image-flow-demo.test.ts
