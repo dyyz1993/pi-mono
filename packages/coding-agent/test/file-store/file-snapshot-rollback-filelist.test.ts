@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.js";
+import { describe, expect, it, vi } from "vitest";
 import type { StepSnapshotData } from "../../src/core/file-store/file-snapshot-manager.js";
+import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.js";
 
 function createManagerWithSnapshots(
 	snapshots: Array<{ turnIndex: number; added?: string[]; modified?: string[]; deleted?: string[] }>,
@@ -258,9 +258,7 @@ describe("getModifiedFiles rollback — delete and multi-turn cases", () => {
 	 * Case 8: Single turn — rollback shows that turn's files
 	 */
 	it("Case 8: Single turn — rollback shows all files from that turn", () => {
-		const manager = createManagerWithSnapshots([
-			{ turnIndex: 0, added: ["A", "B", "C"] },
-		]);
+		const manager = createManagerWithSnapshots([{ turnIndex: 0, added: ["A", "B", "C"] }]);
 
 		const files = manager.getModifiedFiles({ toTurnIndex: 0 });
 		expect(files.map((f) => f.path).sort()).toEqual(["A", "B", "C"]);
@@ -406,17 +404,77 @@ describe("rebuildIndex with leafId branch filtering", () => {
 		//     └── e6 → snap-B0(turn=0, added:C) → e8 → snap-B1(turn=2, added:D) → e10 → snap-B2(turn=3, added:E) → e12 (leafId)
 		const entries = [
 			{ type: "message", id: "e1", parentId: null, timestamp: "t0" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-A0", parentId: "e1", timestamp: "t1", data: { baselineTreeHash: "b", snapshotTreeHash: "h0", diff: { added: ["A"], modified: [], deleted: [] }, turnIndex: 0 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-A0",
+				parentId: "e1",
+				timestamp: "t1",
+				data: {
+					baselineTreeHash: "b",
+					snapshotTreeHash: "h0",
+					diff: { added: ["A"], modified: [], deleted: [] },
+					turnIndex: 0,
+				},
+			},
 			{ type: "message", id: "e3", parentId: "snap-A0", timestamp: "t2" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-A1", parentId: "e3", timestamp: "t3", data: { baselineTreeHash: "h0", snapshotTreeHash: "h1", diff: { added: ["B"], modified: [], deleted: [] }, turnIndex: 2 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-A1",
+				parentId: "e3",
+				timestamp: "t3",
+				data: {
+					baselineTreeHash: "h0",
+					snapshotTreeHash: "h1",
+					diff: { added: ["B"], modified: [], deleted: [] },
+					turnIndex: 2,
+				},
+			},
 			{ type: "message", id: "e5", parentId: "snap-A1", timestamp: "t4" },
 			// Branch B: rollback to e1
 			{ type: "message", id: "e6", parentId: "e1", timestamp: "t5" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-B0", parentId: "e6", timestamp: "t6", data: { baselineTreeHash: "b", snapshotTreeHash: "h2", diff: { added: ["C"], modified: [], deleted: [] }, turnIndex: 0 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-B0",
+				parentId: "e6",
+				timestamp: "t6",
+				data: {
+					baselineTreeHash: "b",
+					snapshotTreeHash: "h2",
+					diff: { added: ["C"], modified: [], deleted: [] },
+					turnIndex: 0,
+				},
+			},
 			{ type: "message", id: "e8", parentId: "snap-B0", timestamp: "t7" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-B1", parentId: "e8", timestamp: "t8", data: { baselineTreeHash: "h2", snapshotTreeHash: "h3", diff: { added: ["D"], modified: [], deleted: [] }, turnIndex: 2 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-B1",
+				parentId: "e8",
+				timestamp: "t8",
+				data: {
+					baselineTreeHash: "h2",
+					snapshotTreeHash: "h3",
+					diff: { added: ["D"], modified: [], deleted: [] },
+					turnIndex: 2,
+				},
+			},
 			{ type: "message", id: "e10", parentId: "snap-B1", timestamp: "t9" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-B2", parentId: "e10", timestamp: "t10", data: { baselineTreeHash: "h3", snapshotTreeHash: "h4", diff: { added: ["E"], modified: [], deleted: [] }, turnIndex: 3 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-B2",
+				parentId: "e10",
+				timestamp: "t10",
+				data: {
+					baselineTreeHash: "h3",
+					snapshotTreeHash: "h4",
+					diff: { added: ["E"], modified: [], deleted: [] },
+					turnIndex: 3,
+				},
+			},
 			{ type: "message", id: "e12", parentId: "snap-B2", timestamp: "t11" },
 		] as any;
 
@@ -455,16 +513,76 @@ describe("rebuildIndex with leafId branch filtering", () => {
 
 		const entries = [
 			{ type: "message", id: "e1", parentId: null, timestamp: "t0" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-A0", parentId: "e1", timestamp: "t1", data: { baselineTreeHash: "b", snapshotTreeHash: "h0", diff: { added: ["A"], modified: [], deleted: [] }, turnIndex: 0 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-A0",
+				parentId: "e1",
+				timestamp: "t1",
+				data: {
+					baselineTreeHash: "b",
+					snapshotTreeHash: "h0",
+					diff: { added: ["A"], modified: [], deleted: [] },
+					turnIndex: 0,
+				},
+			},
 			{ type: "message", id: "e3", parentId: "snap-A0", timestamp: "t2" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-A1", parentId: "e3", timestamp: "t3", data: { baselineTreeHash: "h0", snapshotTreeHash: "h1", diff: { added: ["B"], modified: [], deleted: [] }, turnIndex: 2 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-A1",
+				parentId: "e3",
+				timestamp: "t3",
+				data: {
+					baselineTreeHash: "h0",
+					snapshotTreeHash: "h1",
+					diff: { added: ["B"], modified: [], deleted: [] },
+					turnIndex: 2,
+				},
+			},
 			{ type: "message", id: "e5", parentId: "snap-A1", timestamp: "t4" },
 			{ type: "message", id: "e6", parentId: "e1", timestamp: "t5" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-B0", parentId: "e6", timestamp: "t6", data: { baselineTreeHash: "b", snapshotTreeHash: "h2", diff: { added: ["C"], modified: [], deleted: [] }, turnIndex: 0 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-B0",
+				parentId: "e6",
+				timestamp: "t6",
+				data: {
+					baselineTreeHash: "b",
+					snapshotTreeHash: "h2",
+					diff: { added: ["C"], modified: [], deleted: [] },
+					turnIndex: 0,
+				},
+			},
 			{ type: "message", id: "e8", parentId: "snap-B0", timestamp: "t7" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-B1", parentId: "e8", timestamp: "t8", data: { baselineTreeHash: "h2", snapshotTreeHash: "h3", diff: { added: ["D"], modified: [], deleted: [] }, turnIndex: 2 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-B1",
+				parentId: "e8",
+				timestamp: "t8",
+				data: {
+					baselineTreeHash: "h2",
+					snapshotTreeHash: "h3",
+					diff: { added: ["D"], modified: [], deleted: [] },
+					turnIndex: 2,
+				},
+			},
 			{ type: "message", id: "e10", parentId: "snap-B1", timestamp: "t9" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-B2", parentId: "e10", timestamp: "t10", data: { baselineTreeHash: "h3", snapshotTreeHash: "h4", diff: { added: ["E"], modified: [], deleted: [] }, turnIndex: 3 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-B2",
+				parentId: "e10",
+				timestamp: "t10",
+				data: {
+					baselineTreeHash: "h3",
+					snapshotTreeHash: "h4",
+					diff: { added: ["E"], modified: [], deleted: [] },
+					turnIndex: 3,
+				},
+			},
 			{ type: "message", id: "e12", parentId: "snap-B2", timestamp: "t11" },
 		] as any;
 
@@ -498,8 +616,32 @@ describe("rebuildIndex with leafId branch filtering", () => {
 
 		const entries = [
 			{ type: "message", id: "e1", parentId: null, timestamp: "t0" },
-			{ type: "custom", customType: "step-snapshot", id: "snap-A0", parentId: "e1", timestamp: "t1", data: { baselineTreeHash: "b", snapshotTreeHash: "h0", diff: { added: ["A"], modified: [], deleted: [] }, turnIndex: 0 } },
-			{ type: "custom", customType: "step-snapshot", id: "snap-B0", parentId: "e6", timestamp: "t2", data: { baselineTreeHash: "b", snapshotTreeHash: "h2", diff: { added: ["C"], modified: [], deleted: [] }, turnIndex: 0 } },
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-A0",
+				parentId: "e1",
+				timestamp: "t1",
+				data: {
+					baselineTreeHash: "b",
+					snapshotTreeHash: "h0",
+					diff: { added: ["A"], modified: [], deleted: [] },
+					turnIndex: 0,
+				},
+			},
+			{
+				type: "custom",
+				customType: "step-snapshot",
+				id: "snap-B0",
+				parentId: "e6",
+				timestamp: "t2",
+				data: {
+					baselineTreeHash: "b",
+					snapshotTreeHash: "h2",
+					diff: { added: ["C"], modified: [], deleted: [] },
+					turnIndex: 0,
+				},
+			},
 		] as any;
 
 		// No leafId = no branch filtering

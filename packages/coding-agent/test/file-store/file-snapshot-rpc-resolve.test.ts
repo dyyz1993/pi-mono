@@ -73,9 +73,7 @@ describe("File snapshot RPC resolution — real entries from harness", () => {
 
 		const entries = harness.sessionManager.getEntries();
 		const mgr = (harness.session as any).fileSnapshotManager;
-		const userEntries = entries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		expect(userEntries.length).toBe(2);
 
 		const userEntryB = userEntries[1]!;
@@ -147,9 +145,7 @@ describe("File snapshot RPC resolution — real entries from harness", () => {
 		mgr.rebuildIndex(entries, leafId);
 
 		// rebuildIndex 后验证：
-		const userEntries = entries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		const userEntryB = userEntries[1]!;
 		const userEntryA = userEntries[0]!;
 

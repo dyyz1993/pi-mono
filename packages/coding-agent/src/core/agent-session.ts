@@ -120,7 +120,7 @@ import {
 } from "./storage.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
-import { createAllToolDefinitions, createTool, toolsOptionsFromProvider, type ToolName } from "./tools/index.js";
+import { createAllToolDefinitions, createTool, type ToolName, toolsOptionsFromProvider } from "./tools/index.js";
 import { stripMarkdownCodeBlock } from "./tools/strip-markdown.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 
@@ -471,7 +471,10 @@ export class AgentSession {
 			this._fileSnapshotManager.rebuildIndex(entries, leafId);
 			this._extensionRunner.setFileSnapshotManager(this._fileSnapshotManager);
 		} catch (err) {
-			console.warn("[initFileSnapshotManager] failed, file snapshots disabled:", err instanceof Error ? err.message : String(err));
+			console.warn(
+				"[initFileSnapshotManager] failed, file snapshots disabled:",
+				err instanceof Error ? err.message : String(err),
+			);
 			this._fileSnapshotManager = null;
 			this._extensionRunner.setFileSnapshotManager(null);
 		}
@@ -2579,7 +2582,9 @@ export class AgentSession {
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
 				refreshTools: () => this._refreshToolRegistry(),
-				setToolOperationsProvider: (provider) => { this.toolOperationsProvider = provider; },
+				setToolOperationsProvider: (provider) => {
+					this.toolOperationsProvider = provider;
+				},
 				getToolOperationsProvider: () => this.toolOperationsProvider,
 				getCommands,
 				setModel: async (model) => {

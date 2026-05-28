@@ -1,5 +1,5 @@
-import path from "node:path";
 import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti/static";
 
@@ -15,9 +15,9 @@ interface LoadedModules {
 
 async function loadModules(): Promise<LoadedModules> {
 	const jiti = createJiti(import.meta.url, { interopDefault: true });
-	const configLoader = await jiti.import(path.join(extBase, "config-loader.ts")) as Record<string, unknown>;
-	const matcher = await jiti.import(path.join(extBase, "matcher.ts")) as Record<string, unknown>;
-	const ifParser = await jiti.import(path.join(extBase, "if-parser.ts")) as Record<string, unknown>;
+	const configLoader = (await jiti.import(path.join(extBase, "config-loader.ts"))) as Record<string, unknown>;
+	const matcher = (await jiti.import(path.join(extBase, "matcher.ts"))) as Record<string, unknown>;
+	const ifParser = (await jiti.import(path.join(extBase, "if-parser.ts"))) as Record<string, unknown>;
 	return {
 		loadConfigs: configLoader.loadConfigs as LoadedModules["loadConfigs"],
 		loadConfigSources: configLoader.loadConfigSources as LoadedModules["loadConfigSources"],
@@ -80,10 +80,7 @@ export async function handleHooksCommand(args: string[]): Promise<boolean> {
 	}
 }
 
-function cmdList(
-	projectDir: string,
-	mods: LoadedModules,
-): boolean {
+function cmdList(projectDir: string, mods: LoadedModules): boolean {
 	const configs = mods.loadConfigs(projectDir);
 	const sources = mods.loadConfigSources(projectDir);
 
@@ -119,11 +116,7 @@ function cmdList(
 	return true;
 }
 
-function cmdTest(
-	projectDir: string,
-	args: string[],
-	mods: LoadedModules,
-): boolean {
+function cmdTest(projectDir: string, args: string[], mods: LoadedModules): boolean {
 	let toolName = "";
 	let toolInput: Record<string, unknown> = {};
 
@@ -169,7 +162,9 @@ function cmdTest(
 					const sourceLabel = group.__source__ ?? "unknown";
 					const ifLabel = hook.if ? ` (if: ${hook.if})` : "";
 					console.log(`  ✅ MATCH  [${event}] matcher="${group.matcher ?? "*"}"${ifLabel}`);
-					console.log(`           → ${hook.type}: ${(hook.command ?? hook.url ?? hook.prompt ?? "").slice(0, 100)}`);
+					console.log(
+						`           → ${hook.type}: ${(hook.command ?? hook.url ?? hook.prompt ?? "").slice(0, 100)}`,
+					);
 					if (hook.if) {
 						console.log(`           if clause: ${hook.if} → matches tool input`);
 					}
@@ -186,10 +181,7 @@ function cmdTest(
 	return true;
 }
 
-function cmdSources(
-	projectDir: string,
-	mods: LoadedModules,
-): boolean {
+function cmdSources(projectDir: string, mods: LoadedModules): boolean {
 	const sources = mods.loadConfigSources(projectDir);
 
 	console.log(`\nHook config sources (project: ${projectDir})\n`);

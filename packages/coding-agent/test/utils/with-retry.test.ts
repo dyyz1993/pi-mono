@@ -73,10 +73,7 @@ describe("withRetry", () => {
 	});
 
 	it("retries on retryable error and succeeds on second attempt", async () => {
-		const fn = vi
-			.fn()
-			.mockRejectedValueOnce(new Error("503 service unavailable"))
-			.mockResolvedValueOnce("recovered");
+		const fn = vi.fn().mockRejectedValueOnce(new Error("503 service unavailable")).mockResolvedValueOnce("recovered");
 
 		const promise = withRetry(fn, { maxRetries: 3, baseDelayMs: 100 });
 		await vi.advanceTimersByTimeAsync(100);
@@ -123,10 +120,7 @@ describe("withRetry", () => {
 	it("calls onRetry with correct info", async () => {
 		const onRetry = vi.fn();
 		const error = new Error("503");
-		const fn = vi
-			.fn()
-			.mockRejectedValueOnce(error)
-			.mockResolvedValueOnce("ok");
+		const fn = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce("ok");
 
 		const promise = withRetry(fn, { maxRetries: 3, baseDelayMs: 200, onRetry });
 		await vi.advanceTimersByTimeAsync(200);
@@ -146,18 +140,13 @@ describe("withRetry", () => {
 		controller.abort();
 		const fn = vi.fn().mockResolvedValue("ok");
 
-		await expect(withRetry(fn, { maxRetries: 3, signal: controller.signal })).rejects.toThrow(
-			"Aborted",
-		);
+		await expect(withRetry(fn, { maxRetries: 3, signal: controller.signal })).rejects.toThrow("Aborted");
 		expect(fn).not.toHaveBeenCalled();
 	});
 
 	it("throws when signal is aborted during sleep", async () => {
 		const controller = new AbortController();
-		const fn = vi
-			.fn()
-			.mockRejectedValueOnce(new Error("503"))
-			.mockResolvedValueOnce("ok");
+		const fn = vi.fn().mockRejectedValueOnce(new Error("503")).mockResolvedValueOnce("ok");
 
 		const promise = withRetry(fn, { maxRetries: 3, baseDelayMs: 5000, signal: controller.signal });
 		controller.abort();
@@ -166,33 +155,23 @@ describe("withRetry", () => {
 
 	it("uses default baseDelayMs of 5000", async () => {
 		const onRetry = vi.fn();
-		const fn = vi
-			.fn()
-			.mockRejectedValueOnce(new Error("503"))
-			.mockResolvedValueOnce("ok");
+		const fn = vi.fn().mockRejectedValueOnce(new Error("503")).mockResolvedValueOnce("ok");
 
 		const promise = withRetry(fn, { maxRetries: 2, onRetry });
 		await vi.advanceTimersByTimeAsync(5000);
 		await promise;
 
-		expect(onRetry).toHaveBeenCalledWith(
-			expect.objectContaining({ delayMs: 5000 }),
-		);
+		expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({ delayMs: 5000 }));
 	});
 
 	it("uses custom baseDelayMs", async () => {
 		const onRetry = vi.fn();
-		const fn = vi
-			.fn()
-			.mockRejectedValueOnce(new Error("503"))
-			.mockResolvedValueOnce("ok");
+		const fn = vi.fn().mockRejectedValueOnce(new Error("503")).mockResolvedValueOnce("ok");
 
 		const promise = withRetry(fn, { maxRetries: 2, baseDelayMs: 250, onRetry });
 		await vi.advanceTimersByTimeAsync(250);
 		await promise;
 
-		expect(onRetry).toHaveBeenCalledWith(
-			expect.objectContaining({ delayMs: 250 }),
-		);
+		expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({ delayMs: 250 }));
 	});
 });
