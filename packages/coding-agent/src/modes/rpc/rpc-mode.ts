@@ -139,7 +139,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				},
 				reject,
 			});
-			output({ type: "extension_ui_request", id, ...request, toolCallId: opts?.toolCallId } as RpcExtensionUIRequest);
+			output({
+				type: "extension_ui_request",
+				id,
+				...request,
+				toolCallId: opts?.toolCallId,
+			} as RpcExtensionUIRequest);
 		});
 	}
 
@@ -156,8 +161,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			),
 
 		confirm: (title, message, opts) =>
-			createDialogPromise(opts, false, { method: "confirm", title, message, timeout: opts?.timeout, hookMeta: opts?.hookMeta }, (r) =>
-				"cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false,
+			createDialogPromise(
+				opts,
+				false,
+				{ method: "confirm", title, message, timeout: opts?.timeout, hookMeta: opts?.hookMeta },
+				(r) => ("cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
 			) as unknown as Promise<boolean>,
 
 		input: (title, placeholder, opts) =>

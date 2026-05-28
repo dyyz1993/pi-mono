@@ -290,9 +290,7 @@ describe("Rollback complex scenarios", () => {
 		await harness.session.prompt("create fileA");
 
 		// Turn B: no file changes (just text)
-		harness.setResponses([
-			fauxAssistantMessage("Just text, no files"),
-		]);
+		harness.setResponses([fauxAssistantMessage("Just text, no files")]);
 		await harness.session.prompt("tell me something");
 
 		// Turn C: create fileC
@@ -310,9 +308,7 @@ describe("Rollback complex scenarios", () => {
 		expect(userEntries.length).toBe(3);
 
 		// There should be only 2 step-snapshots (A and C), not 3 (B had no changes)
-		const stepSnapshots = entries.filter(
-			(e) => e.type === "custom" && (e as any).customType === "step-snapshot",
-		);
+		const stepSnapshots = entries.filter((e) => e.type === "custom" && (e as any).customType === "step-snapshot");
 		expect(stepSnapshots.length).toBe(2);
 
 		const snapC = findSnapshotAfterUserEntry(entries, userEntries[2].id)!;
@@ -356,7 +352,7 @@ describe("Rollback complex scenarios", () => {
 
 		// Rollback Turn B
 		let entries = harness.sessionManager.getEntries();
-		let userEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
+		const userEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		await harness.session.navigateTree(userEntries[1].id, { summarize: false });
 
 		// Turn C: create fileC (after rollback)
@@ -375,9 +371,7 @@ describe("Rollback complex scenarios", () => {
 		mgr.rebuildIndex(entries, leafId);
 
 		// After restart, get all step-snapshots and verify
-		const snapEntries = entries.filter(
-			(e) => e.type === "custom" && (e as any).customType === "step-snapshot",
-		);
+		const snapEntries = entries.filter((e) => e.type === "custom" && (e as any).customType === "step-snapshot");
 		// 3 snapshots created (A, B, C) but B is excluded by isOnPathTo
 		// The index should have exactly 2: snap-A and snap-C
 

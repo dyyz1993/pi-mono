@@ -95,12 +95,12 @@ export interface ToolsOptions {
 }
 
 import type { BashOperations } from "./bash.js";
+import type { EditOperations } from "./edit.js";
+import type { FindOperations } from "./find.js";
+import type { GrepOperations } from "./grep.js";
+import type { LsOperations } from "./ls.js";
 import type { ReadOperations } from "./read.js";
 import type { WriteOperations } from "./write.js";
-import type { EditOperations } from "./edit.js";
-import type { GrepOperations } from "./grep.js";
-import type { FindOperations } from "./find.js";
-import type { LsOperations } from "./ls.js";
 
 export interface ToolOperationsProvider {
 	bash?: BashOperations;

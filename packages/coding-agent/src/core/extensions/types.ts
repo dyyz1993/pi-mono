@@ -1585,7 +1585,9 @@ export type SetActiveToolsHandler = (toolNames: string[]) => void;
 
 export type RefreshToolsHandler = () => void;
 
-export type SetToolOperationsProviderHandler = (provider: import("../tools/index.js").ToolOperationsProvider | undefined) => void;
+export type SetToolOperationsProviderHandler = (
+	provider: import("../tools/index.js").ToolOperationsProvider | undefined,
+) => void;
 
 export type GetToolOperationsProviderHandler = () => import("../tools/index.js").ToolOperationsProvider | undefined;
 

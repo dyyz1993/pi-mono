@@ -200,11 +200,7 @@ export interface RpcClientAPI {
 	getTreeWithLeaf(): Promise<TreeWithLeaf>;
 
 	// File snapshots & diffs
-	getModifiedFiles(options?: {
-		fromEntryId?: string;
-		toEntryId?: string;
-		toUserMsgEntryId?: string;
-	}): Promise<{
+	getModifiedFiles(options?: { fromEntryId?: string; toEntryId?: string; toUserMsgEntryId?: string }): Promise<{
 		files: Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>;
 		resolvedFromEntryId: string | null;
 	}>;

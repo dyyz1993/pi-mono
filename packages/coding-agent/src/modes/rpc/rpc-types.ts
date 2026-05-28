@@ -727,7 +727,7 @@ export type RpcExtensionUIRequest =
 			timeout?: number;
 			toolCallId?: string;
 			hookMeta?: { toolName: string; matcher: string; command?: string; reason: string };
-		}
+	  }
 	| {
 			type: "extension_ui_request";
 			id: string;
@@ -737,7 +737,14 @@ export type RpcExtensionUIRequest =
 			timeout?: number;
 			toolCallId?: string;
 	  }
-	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string; toolCallId?: string }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "editor";
+			title: string;
+			prefill?: string;
+			toolCallId?: string;
+	  }
 	| {
 			type: "extension_ui_request";
 			id: string;

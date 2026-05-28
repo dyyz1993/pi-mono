@@ -94,9 +94,7 @@ describe("Rollback file restore — real file-snapshot extension", () => {
 		expect(readFile(harness.tempDir, "fileB.txt")).toBe("B-v1");
 
 		const entriesAfterB = harness.sessionManager.getEntries();
-		const userEntries = entriesAfterB.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entriesAfterB.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		expect(userEntries.length).toBe(2);
 		const userEntryB = userEntries[1]!;
 
@@ -164,9 +162,7 @@ describe("Rollback file restore — real file-snapshot extension", () => {
 
 		// --- Read path: getModifiedFiles ---
 		const entriesAfterB = harness.sessionManager.getEntries();
-		const userEntries = entriesAfterB.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entriesAfterB.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		const userEntryB = userEntries[1]!;
 		const snapB = findSnapshotAfterUserEntry(entriesAfterB, userEntryB.id);
 
@@ -325,9 +321,7 @@ describe("Rollback file restore — real file-snapshot extension", () => {
 
 		// Get entry IDs for rollback
 		const entriesAfterB = harness.sessionManager.getEntries();
-		const userEntries = entriesAfterB.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entriesAfterB.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		const userEntryB = userEntries[1]!;
 
 		// Cycle 1: Rollback Turn B → fileB deleted, fileA preserved
