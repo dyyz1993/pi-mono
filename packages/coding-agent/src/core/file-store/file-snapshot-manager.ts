@@ -355,7 +355,12 @@ export class FileSnapshotManager {
 		return [...fileMap.values()].sort((a, b) => a.path.localeCompare(b.path));
 	}
 
-	getFileDiff(options: { filePath: string; fromEntryId?: string; toEntryId?: string }): FileDiffInfo | null {
+	getFileDiff(options: {
+		filePath: string;
+		fromEntryId?: string;
+		toEntryId?: string;
+		cwd?: string;
+	}): FileDiffInfo | null {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
 
 		const fromHash = options.fromEntryId
@@ -367,8 +372,9 @@ export class FileSnapshotManager {
 
 		if (!fromHash && !toHash) return null;
 
-		const fromFiles = fromHash ? this.git.readTree(fromHash) : new Map<string, string>();
-		const toFiles = toHash ? this.git.readTree(toHash) : new Map<string, string>();
+		const emptyMap = new Map<string, string>();
+		const fromFiles = fromHash ? (this.git.readTree(fromHash) ?? emptyMap) : emptyMap;
+		const toFiles = toHash ? (this.git.readTree(toHash) ?? emptyMap) : emptyMap;
 
 		let oldContent = fromFiles.get(options.filePath) ?? null;
 		const newContent = toFiles.get(options.filePath) ?? null;
@@ -387,6 +393,7 @@ export class FileSnapshotManager {
 				const snap = snapshots[i];
 				if (!snap?.snapshotTreeHash) continue;
 				const snapFiles = this.git.readTree(snap.snapshotTreeHash);
+				if (!snapFiles) continue;
 				const content = snapFiles.get(options.filePath);
 				if (content !== undefined) {
 					oldContent = content;
@@ -527,8 +534,9 @@ export class FileSnapshotManager {
 			return empty;
 		}
 
-		const targetFiles = targetTreeHash ? this.git.readTree(targetTreeHash) : new Map<string, string>();
-		const currentFiles = currentTreeHash ? this.git.readTree(currentTreeHash) : new Map<string, string>();
+		const emptyFiles = new Map<string, string>();
+		const targetFiles = targetTreeHash ? (this.git.readTree(targetTreeHash) ?? emptyFiles) : emptyFiles;
+		const currentFiles = currentTreeHash ? (this.git.readTree(currentTreeHash) ?? emptyFiles) : emptyFiles;
 
 		const toRestore: string[] = [];
 		for (const [path, content] of targetFiles) {
@@ -627,6 +635,7 @@ export class FileSnapshotManager {
 	}
 
 	private parseTreeEntriesFromHash(treeHash: string): Map<string, TreeEntry> {
+		if (!this.git.hasObject(treeHash)) return new Map<string, TreeEntry>();
 		const treeData = this.git.readObject(treeHash);
 		const entries = new Map<string, TreeEntry>();
 		for (const line of treeData.split("\n")) {
@@ -700,8 +709,10 @@ export class FileSnapshotManager {
 		}
 
 		for (const path of stepDiff.modified) {
-			const oldFiles = baselineHash ? this.git.readTree(baselineHash) : new Map<string, string>();
-			const oldContent = oldFiles.get(path) ?? null;
+			const baselineFiles = baselineHash
+				? (this.git.readTree(baselineHash) ?? new Map<string, string>())
+				: new Map<string, string>();
+			const oldContent = baselineFiles.get(path) ?? null;
 			const newContent = currentFiles.get(path) ?? null;
 			changes.push({
 				path,
@@ -718,8 +729,10 @@ export class FileSnapshotManager {
 		}
 
 		for (const path of stepDiff.deleted) {
-			const oldFiles = baselineHash ? this.git.readTree(baselineHash) : new Map<string, string>();
-			const oldContent = oldFiles.get(path) ?? null;
+			const baselineFiles = baselineHash
+				? (this.git.readTree(baselineHash) ?? new Map<string, string>())
+				: new Map<string, string>();
+			const oldContent = baselineFiles.get(path) ?? null;
 			changes.push({
 				path,
 				status: "deleted",

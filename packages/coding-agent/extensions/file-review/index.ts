@@ -151,8 +151,8 @@ export default function fileReview(pi: ExtensionAPI) {
 				for (const [path] of pathMeta) {
 					const approvedEntryId = approvedSnapshotEntry.get(path);
 					const diff = approvedEntryId
-						? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId })
-						: mgr.getFileDiff({ filePath: path });
+						? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId, cwd: ctx.cwd })
+						: mgr.getFileDiff({ filePath: path, cwd: ctx.cwd });
 					if (diff) {
 						diffMap.set(path, { oldContent: diff.oldContent, newContent: diff.newContent });
 					}
@@ -199,8 +199,8 @@ export default function fileReview(pi: ExtensionAPI) {
 		try {
 			const approvedEntryId = approvedSnapshotEntry.get(params.path);
 			const diff = approvedEntryId
-				? mgr.getFileDiff({ filePath: params.path, fromEntryId: approvedEntryId })
-				: mgr.getFileDiff({ filePath: params.path });
+				? mgr.getFileDiff({ filePath: params.path, fromEntryId: approvedEntryId, cwd: ctx.cwd })
+				: mgr.getFileDiff({ filePath: params.path, cwd: ctx.cwd });
 			if (diff) {
 				diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
 			}
@@ -286,8 +286,8 @@ export default function fileReview(pi: ExtensionAPI) {
 					try {
 						const approvedEntryId = approvedSnapshotEntry.get(path);
 						const diff = approvedEntryId
-							? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId })
-							: mgr.getFileDiff({ filePath: path });
+							? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId, cwd: ctx.cwd })
+							: mgr.getFileDiff({ filePath: path, cwd: ctx.cwd });
 						if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
 					} catch {}
 

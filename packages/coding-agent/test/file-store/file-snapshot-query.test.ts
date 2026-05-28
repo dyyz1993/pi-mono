@@ -175,8 +175,9 @@ class FileSnapshotQueryManager {
 
 		if (!fromHash && !toHash) return null;
 
-		const fromFiles = fromHash ? this.git.readTree(fromHash) : new Map<string, string>();
-		const toFiles = toHash ? this.git.readTree(toHash) : new Map<string, string>();
+		const emptyFiles = new Map<string, string>();
+		const fromFiles = fromHash ? (this.git.readTree(fromHash) ?? emptyFiles) : emptyFiles;
+		const toFiles = toHash ? (this.git.readTree(toHash) ?? emptyFiles) : emptyFiles;
 
 		const oldContent = fromFiles.get(options.filePath) ?? null;
 		const newContent = toFiles.get(options.filePath) ?? null;

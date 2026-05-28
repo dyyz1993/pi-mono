@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- `InternalGit.gc()` now auto-discovers all tree objects in the store as protection roots, preventing cross-session GC from deleting blobs still referenced by other sessions.
+- `InternalGit.pruneOldObjects()` now protects all tree objects and their referenced blobs, consistent with `gc()`.
+- `readTree()` returns `null` instead of throwing `ENOENT` when a tree object is missing (e.g., after GC or filesystem corruption).
+- `parseTreeEntriesFromHash()` returns empty map instead of throwing when tree object is missing.
+- `getFileDiff()`, `getFilesToRestore()`, and rollback handler gracefully handle `readTree()` returning `null`.
+- `file-review` extension passes `cwd` to `getFileDiff()` calls for proper context.
+
 ## [0.74.53] - 2026-05-22
 
 ### Added
