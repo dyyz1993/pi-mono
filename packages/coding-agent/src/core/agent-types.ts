@@ -153,29 +153,67 @@ function coerceField(key: string, raw: unknown): unknown {
 	return raw;
 }
 
+function parseHookEntry(obj: Record<string, unknown>): AgentHookEntry | undefined {
+	if (obj.type === "command" && typeof obj.command === "string") {
+		return {
+			type: "command",
+			command: obj.command,
+			if: typeof obj.if === "string" ? obj.if : undefined,
+			async: obj.async === true,
+			once: obj.once === true,
+			timeout: typeof obj.timeout === "number" ? obj.timeout : undefined,
+		};
+	}
+	if (obj.type === "prompt" && typeof obj.prompt === "string") {
+		return {
+			type: "prompt",
+			prompt: obj.prompt,
+			if: typeof obj.if === "string" ? obj.if : undefined,
+			once: obj.once === true,
+		};
+	}
+	if (obj.type === "http" && typeof obj.url === "string") {
+		return {
+			type: "http",
+			url: obj.url,
+			headers: obj.headers && typeof obj.headers === "object" ? (obj.headers as Record<string, string>) : undefined,
+			allowedEnvVars: Array.isArray(obj.allowedEnvVars) ? (obj.allowedEnvVars as string[]) : undefined,
+			if: typeof obj.if === "string" ? obj.if : undefined,
+			once: obj.once === true,
+			timeout: typeof obj.timeout === "number" ? obj.timeout : undefined,
+		};
+	}
+	return undefined;
+}
+
 function parseHooks(raw: unknown): AgentHooks | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const hooks: AgentHooks = {};
 	for (const [event, handlers] of Object.entries(raw as Record<string, unknown>)) {
 		if (!Array.isArray(handlers)) continue;
-		const parsed: AgentHook[] = [];
+		const parsed: AgentHookEntry[] = [];
 		for (const h of handlers) {
 			if (!h || typeof h !== "object") continue;
 			const obj = h as Record<string, unknown>;
-			if (obj.type === "command" && typeof obj.command === "string") {
-				parsed.push({
-					type: "command",
-					command: obj.command,
-					if: typeof obj.if === "string" ? obj.if : undefined,
-					async: obj.async === true,
-				});
-			} else if (obj.type === "prompt" && typeof obj.prompt === "string") {
-				parsed.push({
-					type: "prompt",
-					prompt: obj.prompt,
-					if: typeof obj.if === "string" ? obj.if : undefined,
-				});
+			// HookGroup: { matcher: string, hooks: AgentHook[] }
+			if (Array.isArray(obj.hooks)) {
+				const groupHooks: AgentHook[] = [];
+				for (const gh of obj.hooks) {
+					if (!gh || typeof gh !== "object") continue;
+					const entry = parseHookEntry(gh as Record<string, unknown>);
+					if (entry) groupHooks.push(entry as AgentHook);
+				}
+				if (groupHooks.length > 0) {
+					parsed.push({
+						matcher: typeof obj.matcher === "string" ? obj.matcher : undefined,
+						hooks: groupHooks,
+					});
+				}
+				continue;
 			}
+			// Flat hook
+			const entry = parseHookEntry(obj);
+			if (entry) parsed.push(entry);
 		}
 		if (parsed.length > 0) hooks[event] = parsed;
 	}

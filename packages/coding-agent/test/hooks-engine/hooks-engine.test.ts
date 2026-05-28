@@ -140,6 +140,28 @@ describe("hooks-engine", () => {
 		it("should return false for invalid regex", () => {
 			expect(matchesCondition("[invalid", { toolName: "Bash" })).toBe(false);
 		});
+
+		// Bug 2 fix: toolName == 'xxx' expression syntax support
+		it("should match toolName == 'xxx' expression syntax", () => {
+			expect(matchesCondition("toolName == 'Bash'", { toolName: "Bash" })).toBe(true);
+			expect(matchesCondition("toolName == 'Bash'", { toolName: "Edit" })).toBe(false);
+		});
+
+		it("should match toolName === 'xxx' expression syntax", () => {
+			expect(matchesCondition("toolName === 'Write'", { toolName: "Write" })).toBe(true);
+			expect(matchesCondition("toolName === 'Write'", { toolName: "Read" })).toBe(false);
+		});
+
+		it("should handle expression syntax case-insensitively", () => {
+			expect(matchesCondition("toolName == 'bash'", { toolName: "Bash" })).toBe(true);
+			expect(matchesCondition("toolName == 'BASH'", { toolName: "bash" })).toBe(true);
+		});
+
+		it("should not confuse expression syntax with regex", () => {
+			// This was the original bug: toolName == 'write' was treated as regex
+			expect(matchesCondition("toolName == 'write'", { toolName: "write" })).toBe(true);
+			expect(matchesCondition("toolName == 'write'", { toolName: "toolName" })).toBe(false);
+		});
 	});
 
 	describe("executeCommand", () => {
@@ -850,10 +872,10 @@ describe("hooksEngine (default function)", () => {
 			},
 			{},
 		); // no ui.confirm
-		expect(result).toEqual({
-			block: true,
-			reason: "[hook] Confirmation required (no UI available): Confirm this operation?",
-		});
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain('Confirmation required for "Bash"');
+		expect(result?.reason).toContain("does not support interactive prompts");
+		expect(result?.reason).toContain("Confirm this operation?");
 	});
 
 	it("should include custom question in reason when exit 3 without UI", async () => {
