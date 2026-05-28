@@ -95,9 +95,10 @@ describe("InternalGit", () => {
 			const { treeHash } = git.writeTree(files);
 
 			const restored = git.readTree(treeHash);
-			expect(restored.get("foo.ts")).toBe("hello foo");
-			expect(restored.get("bar.ts")).toBe("hello bar");
-			expect(restored.size).toBe(2);
+			expect(restored).not.toBeNull();
+			expect(restored!.get("foo.ts")).toBe("hello foo");
+			expect(restored!.get("bar.ts")).toBe("hello bar");
+			expect(restored!.size).toBe(2);
 		});
 
 		it("produces deterministic tree hash for same content", () => {
@@ -126,7 +127,8 @@ describe("InternalGit", () => {
 
 			expect(entries.size).toBe(0);
 			const restored = git.readTree(treeHash);
-			expect(restored.size).toBe(0);
+			expect(restored).not.toBeNull();
+			expect(restored!.size).toBe(0);
 		});
 
 		it("tree objects are stored as objects", () => {
@@ -314,8 +316,9 @@ describe("InternalGit", () => {
 			expect(diff.deleted).toEqual([]);
 
 			const restored = git.readTree(baselineHash);
-			expect(restored.get("foo.ts")).toBe("v1");
-			expect(restored.has("bar.ts")).toBe(false);
+			expect(restored).not.toBeNull();
+			expect(restored!.get("foo.ts")).toBe("v1");
+			expect(restored!.has("bar.ts")).toBe(false);
 		});
 
 		it("tracks progressive changes across turns", () => {
@@ -332,14 +335,14 @@ describe("InternalGit", () => {
 			const snap2 = git.scanWorkingDir(workDir);
 			const { treeHash: h2 } = git.writeTree(snap2);
 
-			expect(git.readTree(h0).get("foo.ts")).toBe("v1");
-			expect(git.readTree(h0).has("bar.ts")).toBe(false);
+			expect(git.readTree(h0)!.get("foo.ts")).toBe("v1");
+			expect(git.readTree(h0)!.has("bar.ts")).toBe(false);
 
-			expect(git.readTree(h1).get("foo.ts")).toBe("v2");
-			expect(git.readTree(h1).get("bar.ts")).toBe("b1");
+			expect(git.readTree(h1)!.get("foo.ts")).toBe("v2");
+			expect(git.readTree(h1)!.get("bar.ts")).toBe("b1");
 
-			expect(git.readTree(h2).get("foo.ts")).toBe("v2");
-			expect(git.readTree(h2).has("bar.ts")).toBe(true);
+			expect(git.readTree(h2)!.get("foo.ts")).toBe("v2");
+			expect(git.readTree(h2)!.has("bar.ts")).toBe(true);
 		});
 	});
 
@@ -403,6 +406,99 @@ describe("InternalGit", () => {
 			expect(git.hasObject(git.hashContent("v1"))).toBe(true);
 			expect(git.hasObject(git.hashContent("v2"))).toBe(true);
 			expect(git.hasObject(git.hashContent("v3"))).toBe(true);
+		});
+	});
+
+	describe("gc - garbage collection", () => {
+		it("gc with EMPTY activeHashes still protects all tree objects and their referenced blobs", async () => {
+			// Create tree1: { "a.ts": "content-a" }
+			const files1 = new Map<string, string>([["a.ts", "content-a"]]);
+			const { treeHash: tree1 } = git.writeTree(files1);
+
+			// Create tree2: { "b.ts": "content-b" }
+			const files2 = new Map<string, string>([["b.ts", "content-b"]]);
+			const { treeHash: tree2 } = git.writeTree(files2);
+
+			// Write an orphan blob (not referenced by any tree)
+			const orphanHash = git.writeObject("orphan-content");
+
+			// Verify everything exists
+			expect(git.hasObject(tree1)).toBe(true);
+			expect(git.hasObject(tree2)).toBe(true);
+			expect(git.hasObject(git.hashContent("content-a"))).toBe(true);
+			expect(git.hasObject(git.hashContent("content-b"))).toBe(true);
+			expect(git.hasObject(orphanHash)).toBe(true);
+
+			// GC with EMPTY activeHashes — should protect trees and their blobs,
+			// only delete the orphan
+			const result = await git.gc(new Set<string>());
+
+			// Trees should survive (they are the root reference points)
+			expect(git.hasObject(tree1)).toBe(true);
+			expect(git.hasObject(tree2)).toBe(true);
+
+			// Blobs referenced by trees should survive
+			expect(git.hasObject(git.hashContent("content-a"))).toBe(true);
+			expect(git.hasObject(git.hashContent("content-b"))).toBe(true);
+
+			// Orphan blob should be deleted
+			expect(git.hasObject(orphanHash)).toBe(false);
+			expect(result.deletedObjects).toBeGreaterThanOrEqual(1);
+		});
+
+		it("gc protects blobs referenced by ANY tree, even without activeHashes", async () => {
+			// Simulate: main session creates a file, subagent GC runs
+			// with empty activeHashes — the file blob should survive
+			const workDir = join(tempDir, "work");
+			mkdirSync(workDir, { recursive: true });
+			writeFileSync(join(workDir, "main.ts"), "// main file", "utf-8");
+
+			const files = git.scanWorkingDir(workDir);
+			const { treeHash } = git.writeTree(files);
+
+			// Verify blob exists
+			const mainBlobHash = git.hashContent("// main file");
+			expect(git.hasObject(mainBlobHash)).toBe(true);
+
+			// GC with no active hashes — blob should STILL survive because
+			// the tree references it
+			await git.gc(new Set<string>());
+
+			expect(git.hasObject(treeHash)).toBe(true);
+			expect(git.hasObject(mainBlobHash)).toBe(true);
+		});
+
+		it("gc only deletes blobs not referenced by any tree", async () => {
+			// Create tree1 with file a.ts
+			const files1 = new Map<string, string>([["a.ts", "v1"]]);
+			const { treeHash: tree1 } = git.writeTree(files1);
+
+			// Update tree2 — a.ts changed to v2
+			const files2 = new Map<string, string>([["a.ts", "v2"]]);
+			const { treeHash: tree2 } = git.writeTree(files2);
+
+			// Both v1 and v2 blobs exist, referenced by tree1 and tree2 respectively
+			const v1Hash = git.hashContent("v1");
+			const v2Hash = git.hashContent("v2");
+			expect(git.hasObject(v1Hash)).toBe(true);
+			expect(git.hasObject(v2Hash)).toBe(true);
+
+			// Write an orphan blob
+			const orphanHash = git.writeObject("nobody-references-me");
+
+			// GC with empty set — should protect trees + their blobs, delete orphan
+			const result = await git.gc(new Set<string>());
+
+			// Both trees survive
+			expect(git.hasObject(tree1)).toBe(true);
+			expect(git.hasObject(tree2)).toBe(true);
+
+			// Both v1 and v2 survive (each referenced by a tree)
+			expect(git.hasObject(v1Hash)).toBe(true);
+			expect(git.hasObject(v2Hash)).toBe(true);
+
+			// Only orphan is deleted
+			expect(git.hasObject(orphanHash)).toBe(false);
 		});
 	});
 });

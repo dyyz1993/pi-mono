@@ -234,11 +234,13 @@ export default function fileSnapshot(pi: ExtensionAPI) {
         const git = (mgr as any).git;
         if (git && typeof git.readTree === "function") {
           const currentFiles = git.readTree(compareTo);
-          for (const filePath of currentFiles.keys()) {
-            try {
-              rmSync(joinPath(ctx.cwd, filePath));
-            } catch {
-              // File may already be deleted
+          if (currentFiles) {
+            for (const filePath of currentFiles.keys()) {
+              try {
+                rmSync(joinPath(ctx.cwd, filePath));
+              } catch {
+                // File may already be deleted
+              }
             }
           }
         }

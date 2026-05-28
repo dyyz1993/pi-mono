@@ -293,7 +293,8 @@ export class InternalGit {
 		return { treeHash, entries };
 	}
 
-	readTree(treeHash: string): Map<string, string> {
+	readTree(treeHash: string): Map<string, string> | null {
+		if (!this.hasObject(treeHash)) return null;
 		const treeData = this.readObject(treeHash);
 		const files = new Map<string, string>();
 		for (const line of treeData.split("\n")) {
@@ -360,7 +361,13 @@ export class InternalGit {
 	}
 
 	/**
-	 * Garbage collection: remove objects that are not referenced by any active tree
+	 * Garbage collection: remove objects that are not referenced by any tree.
+	 *
+	 * Automatically discovers ALL tree objects in the store and protects them
+	 * (plus all blobs they reference). Only truly orphan objects (not reachable
+	 * from any tree) are deleted. The activeTreeHashes parameter is kept for
+	 * backward compatibility but is no longer required for correctness — even
+	 * an empty set will safely preserve all trees and their referenced blobs.
 	 */
 	async gc(activeTreeHashes: Set<string>): Promise<GCResult> {
 		const result: GCResult = {
@@ -369,15 +376,25 @@ export class InternalGit {
 			deletedHashes: [],
 		};
 
-		// Collect all referenced objects (files and trees)
-		const referencedHashes = new Set<string>(activeTreeHashes);
-		const toScan = [...activeTreeHashes];
+		// Step 1: Find ALL tree objects in the store — these are the protection roots
+		const allObjects = this.scanAllObjects();
+		const allTreeHashes = new Set<string>();
+		for (const obj of allObjects) {
+			if (obj.type === "tree") {
+				allTreeHashes.add(obj.hash);
+			}
+		}
+
+		// Step 2: Collect all referenced objects by traversing from every tree
+		// Also include any caller-specified active hashes for backward compat
+		const referencedHashes = new Set<string>([...allTreeHashes, ...activeTreeHashes]);
+		const toScan = [...referencedHashes];
 
 		while (toScan.length > 0) {
 			const treeHash = toScan.shift()!;
+			if (!this.hasObject(treeHash)) continue;
 			const treeData = this.readObject(treeHash);
 
-			// Parse tree to find referenced file objects
 			for (const line of treeData.split("\n")) {
 				if (!line) continue;
 				const sep = line.indexOf("\0");
@@ -385,7 +402,6 @@ export class InternalGit {
 				const hash = line.slice(sep + 1);
 				if (!referencedHashes.has(hash) && this.hasObject(hash)) {
 					referencedHashes.add(hash);
-					// If it's a tree (not a file), scan it too
 					const meta = this.loadMetadata(hash);
 					if (meta?.type === "tree") {
 						toScan.push(hash);
@@ -394,8 +410,7 @@ export class InternalGit {
 			}
 		}
 
-		// Scan all objects and delete unreferenced ones
-		const allObjects = this.scanAllObjects();
+		// Step 3: Delete only unreferenced objects
 		for (const obj of allObjects) {
 			if (!referencedHashes.has(obj.hash)) {
 				this.deleteObject(obj.hash);
@@ -440,7 +455,8 @@ export class InternalGit {
 	}
 
 	/**
-	 * Prune objects older than maxAge that are not referenced
+	 * Prune objects older than maxAge that are not tree objects and not referenced
+	 * by activeTreeHashes. Tree objects are always preserved as protection roots.
 	 */
 	async pruneOldObjects(
 		maxAgeMs: number = 30 * 24 * 60 * 60 * 1000,
@@ -453,10 +469,35 @@ export class InternalGit {
 			deletedHashes: [],
 		};
 
+		// Build a set of all hashes that are protected:
+		// - All tree objects (protection roots)
+		// - All blobs referenced by any tree
+		// - Caller-specified active hashes
 		const allObjects = this.scanAllObjects();
+		const protectedHashes = new Set<string>(activeTreeHashes);
 		for (const obj of allObjects) {
-			// Skip if referenced by active trees
-			if (activeTreeHashes.has(obj.hash)) continue;
+			if (obj.type === "tree") {
+				protectedHashes.add(obj.hash);
+			}
+		}
+
+		// Also protect blobs referenced by any tree
+		for (const obj of allObjects) {
+			if (obj.type === "tree") {
+				try {
+					const treeData = this.readObject(obj.hash);
+					for (const line of treeData.split("\n")) {
+						if (!line) continue;
+						const sep = line.indexOf("\0");
+						if (sep === -1) continue;
+						protectedHashes.add(line.slice(sep + 1));
+					}
+				} catch {}
+			}
+		}
+
+		for (const obj of allObjects) {
+			if (protectedHashes.has(obj.hash)) continue;
 
 			if (obj.createdAt < cutoff) {
 				this.deleteObject(obj.hash);
