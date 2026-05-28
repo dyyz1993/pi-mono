@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.55] - 2026-05-28
 
 ### Fixed
 - `InternalGit.gc()` now auto-discovers all tree objects in the store as protection roots, preventing cross-session GC from deleting blobs still referenced by other sessions.
