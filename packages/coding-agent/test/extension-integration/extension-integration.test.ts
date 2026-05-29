@@ -231,10 +231,10 @@ describe("extension-integration", () => {
 		it("should short-circuit on second block: agent-permissions allows, file-time-guard blocks, hooks-engine never runs", async () => {
 			await emitSessionEvent(setup, "session_start");
 
-			// auto mode allows bash, but write to unread file is blocked by file-time-guard
+			// auto mode allows bash, but edit to unread file is blocked by file-time-guard
 			// Hooks would also block, but should never run
 			const result = await emitToolCall(setup, {
-				toolName: "write",
+				toolName: "edit",
 				input: { path: "src/never-read.ts" },
 				variables: {
 					permissionMode: "auto",
@@ -519,9 +519,9 @@ describe("extension-integration", () => {
 			});
 			expect(resultA).toBeUndefined();
 
-			// Write in session B should be blocked (file NOT read in B)
+			// Edit in session B should be blocked (file NOT read in B)
 			const resultB = await emitToolCall(setupB, {
-				toolName: "write",
+				toolName: "edit",
 				input: { path: "src/shared.ts" },
 				variables: { permissionMode: "auto", agentName: "subagent" },
 			});
@@ -529,12 +529,12 @@ describe("extension-integration", () => {
 			expect(resultB?.reason).toContain("文件未读取过");
 		});
 
-		it("should block writes to unread files in subagent context", async () => {
+		it("should block edits to unread files in subagent context", async () => {
 			await emitSessionEvent(setup, "session_start");
 
-			// Subagent tries to write without reading first
+			// Subagent tries to edit without reading first
 			const result = await emitToolCall(setup, {
-				toolName: "write",
+				toolName: "edit",
 				input: { path: "src/subagent-unread.ts" },
 				variables: {
 					permissionMode: "auto",
@@ -551,7 +551,7 @@ describe("extension-integration", () => {
 			// acceptEdits allows edit/write at permission level,
 			// but file-time-guard still blocks unread files
 			const result = await emitToolCall(setup, {
-				toolName: "write",
+				toolName: "edit",
 				input: { path: "src/accept-edits-unread.ts" },
 				variables: {
 					permissionMode: "acceptEdits",
@@ -603,6 +603,23 @@ describe("extension-integration", () => {
 					agentName: "subagent-writer",
 				},
 			});
+			expect(result).toBeUndefined();
+		});
+
+		it("should NOT block write on unread file (write is for creating new files)", async () => {
+			await emitSessionEvent(setup, "session_start");
+
+			// write tool on unread file: file-time-guard should NOT block
+			// (write creates new files, only edit modifies existing ones)
+			const result = await emitToolCall(setup, {
+				toolName: "write",
+				input: { path: "src/new-file.ts" },
+				variables: {
+					permissionMode: "auto",
+					agentName: "writer",
+				},
+			});
+			// write to unread file should be allowed (not blocked by file-time-guard)
 			expect(result).toBeUndefined();
 		});
 	});
@@ -775,10 +792,10 @@ describe("extension-integration", () => {
 		it("should initialize file-time-guard state on session_start across all extensions", async () => {
 			await emitSessionEvent(setup, "session_start");
 
-			// After session_start, write to unread file should be blocked by file-time-guard
+			// After session_start, edit to unread file should be blocked by file-time-guard
 			// (proving it initialized properly)
 			const result = await emitToolCall(setup, {
-				toolName: "write",
+				toolName: "edit",
 				input: { path: "src/after-start.ts" },
 				variables: { permissionMode: "auto", agentName: "test" },
 			});
@@ -821,7 +838,7 @@ describe("extension-integration", () => {
 			// Cycle 2: should NOT remember file A from cycle 1
 			await emitSessionEvent(setup, "session_start");
 			const result = await emitToolCall(setup, {
-				toolName: "write",
+				toolName: "edit",
 				input: { path: "src/cycle-a.ts" },
 				variables: { permissionMode: "auto", agentName: "test" },
 			});
@@ -853,6 +870,122 @@ describe("extension-integration", () => {
 				variables: { permissionMode: "auto", agentName: "test" },
 			});
 			expect(result).toBeUndefined();
+		});
+	});
+
+	// =========================================================================
+	// Group 6: bash in-place editing file-time-guard integration
+	// =========================================================================
+
+	describe("Group 6: bash in-place editing (sed, perl, awk)", () => {
+		beforeEach(async () => {
+			await emitSessionEvent(setup, "session_start");
+		});
+
+		it("should block bash with sed -i on unread file", async () => {
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "sed -i 's/old/new/g' src/unread.ts" },
+				variables: { permissionMode: "auto", agentName: "editor" },
+			});
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("未读取过");
+		});
+
+		it("should allow bash with sed -i after reading the file", async () => {
+			// Read file first
+			await emitToolCall(setup, {
+				toolName: "read",
+				input: { path: "src/for-sed.ts" },
+				variables: { permissionMode: "auto", agentName: "reader" },
+			});
+
+			// Now sed -i should be allowed
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "sed -i 's/x/y/g' src/for-sed.ts" },
+				variables: { permissionMode: "auto", agentName: "editor" },
+			});
+			expect(result).toBeUndefined();
+		});
+
+		it("should NOT block bash without in-place editing (cat, echo, etc.)", async () => {
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "cat src/unread.ts" },
+				variables: { permissionMode: "auto", agentName: "reader" },
+			});
+			// cat doesn't modify files, so file-time-guard should not block
+			expect(result).toBeUndefined();
+		});
+
+		it("should NOT block unknown bash commands", async () => {
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "tsc --noEmit" },
+				variables: { permissionMode: "auto", agentName: "builder" },
+			});
+			// tsc is not a known in-place editor, no file-level check
+			expect(result).toBeUndefined();
+		});
+
+		it("should block bash with perl -pi on unread file", async () => {
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "perl -pi -e 's/old/new/g' src/unread-perl.ts" },
+				variables: { permissionMode: "auto", agentName: "editor" },
+			});
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("未读取过");
+		});
+
+		it("should block bash with awk -i inplace on unread file", async () => {
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "awk -i inplace '{gsub(/old/,\"new\")}1' src/unread-awk.csv" },
+				variables: { permissionMode: "auto", agentName: "editor" },
+			});
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("未读取过");
+		});
+
+		it("should handle multiple files in sed -i: block if any file unread", async () => {
+			// Read one file
+			await emitToolCall(setup, {
+				toolName: "read",
+				input: { path: "src/read-file.ts" },
+				variables: { permissionMode: "auto", agentName: "reader" },
+			});
+
+			// sed -i on both files: one read, one not → should still block
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "sed -i 's/x/y/' src/read-file.ts src/unread-file.ts" },
+				variables: { permissionMode: "auto", agentName: "editor" },
+			});
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("未读取过");
+		});
+
+		it("should handle sed -i with redirect (should not extract > /dev/null as file)", async () => {
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "sed -i 's/x/y/' src/blocked.ts > /dev/null 2>&1" },
+				variables: { permissionMode: "auto", agentName: "editor" },
+			});
+			// Should block src/blocked.ts specifically (not /dev/null)
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("src/blocked.ts");
+		});
+
+		it("should handle sed -i with -e flag", async () => {
+			const result = await emitToolCall(setup, {
+				toolName: "bash",
+				input: { command: "sed -i -e 's/x/y/' -e 's/a/b/' src/unread-e.ts" },
+				variables: { permissionMode: "auto", agentName: "editor" },
+			});
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("未读取过");
 		});
 	});
 });
