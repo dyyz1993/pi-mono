@@ -293,11 +293,11 @@ export function createCoordinatorHandler(
       result = await pm.delegate_fork(sessionId, task, title, projectPath);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: msg };
+      return { sessionId: `error-${Date.now()}`, status: "error" as const, error: msg };
     }
 
     if (!result.sessionId) {
-      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: "[coordinator] fork failed: no sessionId returned" };
+      return { sessionId: `error-${Date.now()}`, status: "error" as const, error: "[coordinator] fork failed: no sessionId returned" };
     }
 
     getStore().add({

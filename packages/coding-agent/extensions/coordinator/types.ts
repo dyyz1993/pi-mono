@@ -19,7 +19,7 @@ export interface DelegatedTask {
 
 export interface DelegateCreateResult {
   sessionId: string;
-  status: "started" | "already_running";
+  status: "started" | "already_running" | "error";
   error?: string;
 }
 

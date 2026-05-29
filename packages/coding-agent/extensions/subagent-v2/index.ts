@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { StringEnum } from "@dyyz1993/pi-ai";
 import {
 	type AgentScope,
@@ -47,6 +50,33 @@ const SubagentResumeParams = Type.Object({
 	background: Type.Optional(Type.Boolean({ description: "Run in background mode. Default: false.", default: false })),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds. Default: 300.", default: 300 })),
 });
+
+export function resolveSessionPath(sessionId: string, sessionsBase?: string): string | null {
+	const base = sessionsBase ?? join(homedir(), ".pi", "agent", "sessions");
+	if (!existsSync(base)) return null;
+
+	function scanDir(dir: string): string | null {
+		try {
+			for (const entry of readdirSync(dir)) {
+				const full = join(dir, entry);
+				const stat = statSync(full);
+				if (stat.isDirectory()) {
+					const candidate = join(full, `${sessionId}.jsonl`);
+					if (existsSync(candidate)) return candidate;
+					const nested = scanDir(full);
+					if (nested) return nested;
+				} else if (entry === `${sessionId}.jsonl`) {
+					return full;
+				}
+			}
+		} catch {
+			// ignore permission errors etc
+		}
+		return null;
+	}
+
+	return scanDir(base);
+}
 
 export default function (pi: ExtensionAPI) {
 	const rawChannel = pi.registerChannel("subagent");
@@ -201,10 +231,19 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentResumeParams,
 
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			const sPath = params.sessionPath;
+			let sPath = params.sessionPath;
+			if (!sPath && params.sessionId) {
+				sPath = resolveSessionPath(params.sessionId) ?? undefined;
+			}
 			if (!sPath) {
+				if (params.sessionId) {
+					return {
+						content: [{ type: "text", text: `Session file not found for sessionId: ${params.sessionId}` }],
+						details: { agentScope: "user" as AgentScope, projectAgentsDir: null, result: null },
+					};
+				}
 				return {
-					content: [{ type: "text", text: "sessionPath is required." }],
+					content: [{ type: "text", text: "Either sessionId or sessionPath is required." }],
 					details: { agentScope: "user" as AgentScope, projectAgentsDir: null, result: null },
 				};
 			}

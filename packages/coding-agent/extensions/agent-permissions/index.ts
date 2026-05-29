@@ -203,7 +203,7 @@ export function createPermissionHandler(agentConfig: AgentConfig) {
     if (disallowedTools.length > 0 && matchesDisallowedTool(event.toolName, event.input, disallowedTools)) {
       return {
         block: true,
-        reason: `[disallowedTools] Tool "${event.toolName}" is explicitly disallowed.`,
+        reason: `[agent:${agentConfig.name}] Tool "${event.toolName}" is explicitly disallowed.`,
       };
     }
 
@@ -221,30 +221,39 @@ export default function agentPermissions(pi: ExtensionAPI, ctx: ExtensionContext
       ? vars?.["disallowedTools"]?.split(",").filter(Boolean) ?? []
       : vars?.["disallowedTools"]?.split(",").filter(Boolean);
 
-    // Always check whitelist/blacklist regardless of permissionMode
-    if (allowedTools && allowedTools.length > 0) {
-      const isAllowed = allowedTools.some((pattern) =>
-        matchesToolPattern(event.toolName, event.input as Record<string, unknown>, pattern),
-      );
-      if (!isAllowed) {
-        return {
-          block: true,
-          reason: `[agent:${agentName}] Tool "${event.toolName}" not in agent's tool whitelist. Allowed: ${allowedTools.join(", ")}`,
-        };
-      }
-    }
-
-    if (disallowedTools && disallowedTools.length > 0) {
-      if (matchesDisallowedTool(event.toolName, event.input as Record<string, unknown>, disallowedTools)) {
-        return {
-          block: true,
-          reason: `[agent:${agentName}] Tool "${event.toolName}" is explicitly disallowed.`,
-        };
-      }
-    }
-
     // Permission mode-based rules (only for non-auto modes)
-    if (!mode || mode === "auto" || mode === "dontAsk" || mode === "always-allow") return undefined;
+    if (!mode || mode === "auto" || mode === "dontAsk" || mode === "always-allow") {
+      // Still check allowedTools/disallowedTools even in auto mode
+      if (allowedTools && allowedTools.length > 0) {
+        const handler = createPermissionHandler({
+          name: agentName,
+          description: "",
+          permissionMode: "auto",
+          disallowedTools,
+          tools: allowedTools,
+        } as AgentConfig);
+        if (handler) {
+          const result = handler({ toolName: event.toolName, input: event.input });
+          if (result?.block) {
+            return { block: true, reason: result.reason };
+          }
+        }
+      } else if (disallowedTools && disallowedTools.length > 0) {
+        const handler = createPermissionHandler({
+          name: agentName,
+          description: "",
+          permissionMode: "auto",
+          disallowedTools,
+        } as AgentConfig);
+        if (handler) {
+          const result = handler({ toolName: event.toolName, input: event.input });
+          if (result?.block) {
+            return { block: true, reason: result.reason };
+          }
+        }
+      }
+      return undefined;
+    }
 
     const handler = createPermissionHandler({
       name: agentName,
