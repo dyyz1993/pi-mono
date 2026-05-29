@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ServerChannel } from "@dyyz1993/pi-coding-agent";
-import type { CoordinatorChannelContract, DelegatedTask, SessionStatus } from "./types.js";
+import type { CoordinatorChannelContract, DelegatedTask, DelegateCreateResult, SessionStatus } from "./types.js";
 
 export interface ProcessManagerApi {
   delegate(task: string, projectPath: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
@@ -152,15 +152,16 @@ export function createCoordinatorHandler(
     const { task, title, projectPath: rawProjectPath } = params;
     const projectPath = rawProjectPath || process.cwd();
 
-    let result: { sessionId: string; status: "started" | "already_running" };
+    let result: DelegateCreateResult;
     try {
       result = await pm.delegate(task, projectPath);
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      const msg = err instanceof Error ? err.message : String(err);
+      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: msg };
     }
 
     if (!result.sessionId) {
-      return { error: "[coordinator] delegate failed: no sessionId returned" };
+      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: "[coordinator] delegate failed: no sessionId returned" };
     }
 
     getStore().add({
@@ -287,15 +288,16 @@ export function createCoordinatorHandler(
     const { sessionId, task, title, projectPath: rawProjectPath } = params;
     const projectPath = rawProjectPath || process.cwd();
 
-    let result: { sessionId: string; status: "started" | "already_running" };
+    let result: DelegateCreateResult;
     try {
       result = await pm.delegate_fork(sessionId, task, title, projectPath);
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      const msg = err instanceof Error ? err.message : String(err);
+      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: msg };
     }
 
     if (!result.sessionId) {
-      return { error: "[coordinator] fork failed: no sessionId returned" };
+      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: "[coordinator] fork failed: no sessionId returned" };
     }
 
     getStore().add({

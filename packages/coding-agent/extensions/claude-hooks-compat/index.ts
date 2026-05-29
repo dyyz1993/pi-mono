@@ -183,7 +183,7 @@ export default function (pi: ExtensionAPI) {
 								decision,
 								reason: result.reason ?? "",
 								exitCode: output.exitCode,
-								source: group.__source__ ?? "unknown",
+								source: (group.__source__ ?? "unknown") as "global" | "local" | "policy" | "project" | "unknown",
 								snippet: extractSnippet(event.input),
 							};
 							logBuffer.push(entry);
@@ -229,7 +229,7 @@ export default function (pi: ExtensionAPI) {
 					decision,
 					reason: result.reason ?? "",
 					exitCode: output.exitCode,
-					source: group.__source__ ?? "unknown",
+					source: (group.__source__ ?? "unknown") as "global" | "local" | "policy" | "project" | "unknown",
 					snippet: extractSnippet(event.input),
 				};
 				logBuffer.push(entry);

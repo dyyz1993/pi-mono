@@ -99,5 +99,10 @@ export interface LspChannelContract extends ChannelContract {
 			timestamp: number;
 			servers: LspServerStatusEntry[];
 		};
+		server_unloaded: {
+			event: "server_unloaded";
+			timestamp: number;
+			serverName: string;
+		};
 	};
 }

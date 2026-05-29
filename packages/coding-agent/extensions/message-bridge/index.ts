@@ -27,7 +27,8 @@
  *   MESSAGE_BRIDGE_SESSION_ID   - 可选 session 过滤
  */
 
-import type { ExtensionAPI, ExtensionContext, UIEvent, UIEventResult, AgentEndEvent, AgentMessage } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, UIEvent, UIEventResult, AgentEndEvent } from "@dyyz1993/pi-coding-agent";
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 
 const BRIDGE_URL = process.env.MESSAGE_BRIDGE_URL || "https://message-bridge.docker.19930810.xyz:8443";
 
@@ -166,7 +167,7 @@ export default function messageBridgeExtension(pi: ExtensionAPI) {
 					try {
 						if (multiple) {
 							const values = parseMultiSelectAnswer(answer, options);
-							ctx.respondUI(event.id, { action: "responded", value: values });
+							ctx.respondUI(event.id, { action: "responded", value: values.join(", ") });
 						} else {
 							const value = parseSelectAnswer(answer);
 							ctx.respondUI(event.id, { action: "responded", value });

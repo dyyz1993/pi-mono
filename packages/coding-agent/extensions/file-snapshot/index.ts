@@ -1,6 +1,30 @@
-import type { ExtensionAPI, ExtensionContext, SessionTreeEvent, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionTreeEvent, TurnEndEvent, GCResult } from "@dyyz1993/pi-coding-agent";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+interface GitApi {
+  gc: (hashes: Set<string>) => Promise<GCResult>;
+  pruneOldObjects: (age: number, hashes: Set<string>) => Promise<GCResult>;
+  getStats: () => { totalObjects: number; totalBytes: number; treeObjects: number; fileObjects: number };
+  enforceLimit: (limit: number, hashes: Set<string>) => Promise<GCResult>;
+  readTree: (hash: string) => Map<string, string>;
+}
+
+interface FileSnapshotManagerInternal {
+  git: GitApi;
+  sessionStartTreeHash: string | null;
+  lastCommittedTreeHash: string | null;
+}
+
+type DynamicEventEmitter = { on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => void };
+
+function getGitApi(mgr: { git: GitApi }): GitApi {
+  return mgr.git;
+}
+
+function getInternal(mgr: unknown): FileSnapshotManagerInternal {
+  return mgr as FileSnapshotManagerInternal;
+}
 
 /**
  * Scan all JSONL files in a session directory for step-snapshot hashes.
@@ -56,8 +80,9 @@ const DEFAULT_GC_CONFIG = {
 export default function fileSnapshot(pi: ExtensionAPI) {
   const channel = pi.registerChannel("file-snapshot");
 
-  channel.onReceive(async (msg) => {
-    const ctx = msg.context as ExtensionContext | undefined;
+  channel.onReceive(async (rawMsg: unknown) => {
+    const msg = rawMsg as { method: string; params?: Record<string, unknown>; context?: ExtensionContext };
+    const ctx = (msg.context ?? (rawMsg as Record<string, unknown>).context) as ExtensionContext | undefined;
     if (!ctx) {
       return { error: "Extension context not available in channel message. This operation is not supported via RPC client channel calls." };
     }
@@ -72,12 +97,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
         return snapshots;
       }
       case "snapshot.rollback": {
-        // WARNING: This only restores files without moving the message pointer.
-        // For a complete rollback (messages + files), use navigate_tree instead.
-        // This channel method exists for internal use (e.g., unrevert) and
-        // selective file restoration. Using it standalone will desynchronize
-        // the message context from the disk state.
-        const { snapshotId, files } = msg.params as {
+        const { snapshotId, files } = (msg.params ?? {}) as {
           sessionId: string;
           snapshotId: string;
           files?: string[];
@@ -97,7 +117,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
         };
       }
       case "snapshot.unrevert": {
-        const { snapshotId } = msg.params as {
+        const { snapshotId } = (msg.params ?? {}) as {
           sessionId: string;
           snapshotId: string;
         };
@@ -122,7 +142,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
         return { ok: false, error: "Unrevert point not found" };
       }
       case "snapshot.get": {
-        const { snapshotId } = msg.params as { sessionId: string; snapshotId: string };
+        const { snapshotId } = (msg.params ?? {}) as { sessionId: string; snapshotId: string };
         const data = mgr.getSnapshotAtEntry(snapshotId);
         if (!data) return null;
         const diff = data.diff ?? { added: [], modified: [], deleted: [] };
@@ -140,7 +160,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
         };
       }
       case "snapshot.restoreByHash": {
-        const { snapshotTreeHash, files } = msg.params as {
+        const { snapshotTreeHash, files } = (msg.params ?? {}) as {
           snapshotTreeHash: string;
           files?: string[];
         };
@@ -158,26 +178,22 @@ export default function fileSnapshot(pi: ExtensionAPI) {
       }
       case "snapshot.gc": {
         const activeHashes = mgr.getActiveTreeHashes();
-        const result = await (mgr as any).git.gc(activeHashes);
-        return result;
+        return getGitApi(getInternal(mgr)).gc(activeHashes);
       }
       case "snapshot.prune": {
-        const { maxAgeMs } = msg.params as { maxAgeMs?: number };
+        const { maxAgeMs } = (msg.params ?? {}) as { maxAgeMs?: number };
         const activeHashes = mgr.getActiveTreeHashes();
         const age = maxAgeMs ?? DEFAULT_GC_CONFIG.pruneAgeMs;
-        const result = await (mgr as any).git.pruneOldObjects(age, activeHashes);
-        return result;
+        return getGitApi(getInternal(mgr)).pruneOldObjects(age, activeHashes);
       }
       case "snapshot.stats": {
-        const stats = (mgr as any).git.getStats();
-        return stats;
+        return getGitApi(getInternal(mgr)).getStats();
       }
       case "snapshot.enforceLimit": {
-        const { maxBytes } = msg.params as { maxBytes?: number };
+        const { maxBytes } = (msg.params ?? {}) as { maxBytes?: number };
         const activeHashes = mgr.getActiveTreeHashes();
         const limit = maxBytes ?? DEFAULT_GC_CONFIG.maxStoreSizeBytes;
-        const result = await (mgr as any).git.enforceLimit(limit, activeHashes);
-        return result;
+        return getGitApi(getInternal(mgr)).enforceLimit(limit, activeHashes);
       }
       default:
         return { error: `Unknown method: ${msg.method}` };
@@ -198,21 +214,18 @@ export default function fileSnapshot(pi: ExtensionAPI) {
     });
   });
 
-  pi.on("session_tree", async (event: SessionTreeEvent, ctx: ExtensionContext) => {
-    if (event.skipFiles) return;
+  (pi as unknown as DynamicEventEmitter).on("session_tree", async (event: unknown, ctx: ExtensionContext) => {
+    const e = event as SessionTreeEvent;
+    if (e.skipFiles) return;
     const mgr = ctx.fileSnapshotManager;
     if (!mgr) return;
 
-    // When newLeafId is null (rolled back to root), targetEntryId should be undefined
-    // so restoreFiles falls back to sessionStartTreeHash.
-    // If sessionStartTreeHash is null (empty dir at session start), we need to
-    // delete all files manually since the null guard in restoreFiles may block this.
-    const targetEntryId = event.newLeafId ?? undefined;
+    const targetEntryId = e.newLeafId ?? undefined;
 
     const result = await mgr.restoreFiles(ctx.cwd, {
       targetEntryId,
-      preview: event.preview,
-      currentLeafId: event.oldLeafId,
+      preview: e.preview,
+      currentLeafId: e.oldLeafId,
       entries: ctx.sessionManager.getEntries() as import("@dyyz1993/pi-coding-agent").SessionEntry[],
       appendEntry: (type: string, data: unknown) => {
         return pi.appendEntry(type, data) ?? undefined;
@@ -221,17 +234,17 @@ export default function fileSnapshot(pi: ExtensionAPI) {
 
     // If restoreFiles returned empty but target is null (rollback to root with empty start),
     // we need to handle this case by reading current files and deleting them.
-    if (!event.preview && targetEntryId === undefined && result.deleted.length === 0 && result.restored.length === 0) {
+    if (!e.preview && targetEntryId === undefined && result.deleted.length === 0 && result.restored.length === 0) {
       // Check if sessionStartTreeHash is null (empty dir at start)
-      const sessionStartHash = (mgr as any).sessionStartTreeHash as string | null;
-      const lastCommittedHash = (mgr as any).lastCommittedTreeHash as string | null;
+      const internal = getInternal(mgr);
+      const sessionStartHash = internal.sessionStartTreeHash;
+      const lastCommittedHash = internal.lastCommittedTreeHash;
       const compareTo = lastCommittedHash ?? sessionStartHash;
 
       if (sessionStartHash === null && compareTo !== null) {
-        // Session started with empty dir, now has files. Delete all tracked files.
         const { readdirSync, rmSync } = await import("node:fs");
         const { join: joinPath } = await import("node:path");
-        const git = (mgr as any).git;
+        const git = getGitApi(internal);
         if (git && typeof git.readTree === "function") {
           const currentFiles = git.readTree(compareTo);
           if (currentFiles) {
@@ -269,7 +282,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
       const sessionDir = ctx.sessionManager.getSessionDir();
       collectSnapshotHashesFromDir(sessionDir, activeHashes);
 
-      const git = (mgr as Record<string, unknown>).git;
+      const git = getGitApi(getInternal(mgr));
 
       // Run GC to clean up unreferenced objects
       const gcResult = await git.gc(activeHashes);

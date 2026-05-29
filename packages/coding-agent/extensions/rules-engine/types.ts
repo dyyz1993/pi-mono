@@ -146,6 +146,7 @@ export interface InjectedPayload {
 	type: "injected";
 	ruleNames: string[];
 	systemPromptLength: number;
+	deduplicated?: boolean;
 }
 
 export interface ReloadedPayload {

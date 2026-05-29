@@ -251,7 +251,7 @@ export function loadMergedSettingsHooks(projectDir: string): AgentHooks {
   const merged: AgentHooks = { ...(globalHooks ?? {}) };
   for (const [eventKey, entries] of Object.entries(projectHooks ?? {})) {
     const existing = merged[eventKey] ?? [];
-    merged[eventKey] = [...existing, ...entries];
+    merged[eventKey] = [...existing, ...(entries ?? [])] as AgentHookEntry[];
   }
   return merged;
 }
@@ -384,6 +384,8 @@ async function executeHookEntries(
 // Extension entry point
 // ---------------------------------------------------------------------------
 
+type DynamicEventEmitter = { on: (event: string, handler: (event: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>) => void };
+
 export default function hooksEngine(pi: ExtensionAPI): void {
   const onceSet = new Set<string>();
 
@@ -394,13 +396,13 @@ export default function hooksEngine(pi: ExtensionAPI): void {
     const hookKey = EVENT_MAP[eventName];
     if (!hookKey) return;
 
-    pi.on(eventName, async (event: Record<string, unknown>, ctx: ExtensionContext) => {
+    (pi as unknown as DynamicEventEmitter).on(eventName, async (event: Record<string, unknown>, ctx: ExtensionContext) => {
       // For session_start: refresh settings hooks cache first
       if (eventName === "session_start") {
         const cwd = ctx?.cwd;
         if (cwd) {
           cachedSettingsHooks = loadMergedSettingsHooks(cwd);
-          const hookCount = Object.values(cachedSettingsHooks).reduce((sum, arr) => sum + arr.length, 0);
+          const hookCount = Object.values(cachedSettingsHooks).reduce((sum, arr) => sum + (arr?.length ?? 0), 0);
           if (hookCount > 0) {
             console.log(`[hooks-engine] Loaded ${hookCount} settings hooks for ${Object.keys(cachedSettingsHooks).join(", ")}`);
           }

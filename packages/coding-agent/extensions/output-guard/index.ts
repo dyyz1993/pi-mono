@@ -43,6 +43,7 @@ import { mkdirSync, existsSync, writeFileSync as fsWriteFileSync } from "node:fs
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve as nodePathResolve } from "node:path";
+import { createRequire } from "node:module";
 import { Type } from "typebox";
 import type {
 	ExtensionAPI,
@@ -328,6 +329,7 @@ export default function outputGuard(pi: ExtensionAPI) {
 	// ------------------------------------------------------------------
 	pi.registerTool({
 		name: "pdf_read",
+		label: "pdf_read",
 		description:
 			"Read and extract text content from a PDF file. " +
 			"Returns the text content of the PDF with metadata. " +
@@ -339,19 +341,22 @@ export default function outputGuard(pi: ExtensionAPI) {
 			),
 		}),
 		execute: async (
+			toolCallId: string,
 			args: { path: string; maxPages?: number },
-			ctx: ExtensionContext,
+			_signal?: AbortSignal,
+			_onUpdate?: unknown,
+			ctx?: ExtensionContext,
 		) => {
-			const absolutePath = nodePathResolve(ctx.cwd, args.path);
+			const absolutePath = nodePathResolve(ctx?.cwd ?? process.cwd(), args.path);
 
 			// Check file exists
 			try {
 				const stat = await fsStat(absolutePath);
 				if (!stat.isFile()) {
-					return { content: [{ type: "text" as const, text: `Error: ${args.path} is not a file` }], isError: true };
+					return { content: [{ type: "text" as const, text: `Error: ${args.path} is not a file` }], isError: true, details: {} };
 				}
 			} catch {
-				return { content: [{ type: "text" as const, text: `Error: File not found: ${args.path}` }], isError: true };
+				return { content: [{ type: "text" as const, text: `Error: File not found: ${args.path}` }], isError: true, details: {} };
 			}
 
 			// Read PDF
@@ -361,27 +366,30 @@ export default function outputGuard(pi: ExtensionAPI) {
 				console.debug(`[output-guard] pdf_read: ${args.path} (${buffer.length} bytes, pages: ${args.maxPages ?? "all"})`);
 
 				// Dynamic import of pdf-parse (optional dependency)
-				let pdfParse: typeof import("pdf-parse") | undefined;
+				let pdfParse: ((buffer: Buffer) => Promise<{ text: string; numpages: number; info?: { Title?: string; Author?: string } }>) | undefined;
 				try {
-					pdfParse = (await import("pdf-parse")).default;
+					const req = createRequire(import.meta.url);
+					const raw = req("pdf-parse");
+					pdfParse = (typeof raw === "function" ? raw : raw.default) as typeof pdfParse;
 				} catch {
 					console.debug("[output-guard] pdf_read failed: pdf-parse not installed");
 					pi.appendEntry("output_guard_pdf_error", {
 						path: args.path,
 						error: "pdf-parse not installed",
 					});
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: "Error: pdf-parse is not installed. Install it with: npm install pdf-parse",
-							},
-						],
-						isError: true,
-					};
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "Error: pdf-parse is not installed. Install it with: npm install pdf-parse",
+						},
+					],
+					isError: true,
+					details: {},
+				};
 				}
 
-				const data = await pdfParse(buffer);
+				const data = await pdfParse!(buffer);
 				let text = data.text;
 
 				console.debug(`[output-guard] pdf_read success: ${args.path} (${data.numpages} pages, ${text.length} chars extracted)`);
@@ -405,26 +413,30 @@ export default function outputGuard(pi: ExtensionAPI) {
 					.join("\n");
 
 				// Truncate if needed
-				const config = loadConfig(ctx);
+				const config = ctx ? loadConfig(ctx) : { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES, findLimit: DEFAULT_FIND_LIMIT, lsLimit: DEFAULT_LS_LIMIT, saveToFile: true };
 				const totalBytes = Buffer.byteLength(text, "utf-8");
 				const totalLines = text.split("\n").length;
 
 				if (totalLines > config.maxLines || totalBytes > config.maxBytes) {
-					const truncResult = truncateOutput(text, config, ctx);
-					text = truncResult.content;
-					if (truncResult.truncated) {
-						text += "\n\n" + buildTruncationNotice(truncResult, config);
+					const truncResult = ctx ? truncateOutput(text, config, ctx) : null;
+					if (truncResult) {
+						text = truncResult.content;
+						if (truncResult.truncated) {
+							text += "\n\n" + buildTruncationNotice(truncResult, config);
+						}
 					}
 				}
 
 				return {
 					content: [{ type: "text" as const, text: header + "\n" + text }],
+					details: {},
 				};
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return {
 					content: [{ type: "text" as const, text: `Error reading PDF: ${message}` }],
 					isError: true,
+					details: {},
 				};
 			}
 		},

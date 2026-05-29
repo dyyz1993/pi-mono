@@ -79,7 +79,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     channel.handle("getStatus", async () => getStatus());
     channel.handle("requestPause", async (params) => {
         if (!schedulerInstance) {
-            return { error: "Supervisor not initialized yet (waiting for session_start)" };
+            return { scheduled: false } as const;
         }
         const delayMs = params.delayMs ?? config.defaultDelayMs;
         const result = schedulerInstance.scheduleContinue(

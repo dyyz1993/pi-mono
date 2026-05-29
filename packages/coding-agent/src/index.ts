@@ -20,6 +20,9 @@ export {
 	type AgentDiscoveryResult,
 	type AgentHook,
 	type AgentHookCommand,
+	type AgentHookEntry,
+	type AgentHookGroup,
+	type AgentHookHttp,
 	type AgentHookPrompt,
 	type AgentHooks,
 	type AgentScope,
@@ -148,9 +151,12 @@ export type {
 	ToolInfo,
 	ToolRenderResultOptions,
 	ToolResultEvent,
+	ToolResultEventResult,
 	TurnEndEvent,
 	TurnStartEvent,
 	TypedChannel,
+	UIEvent,
+	UIEventResult,
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,
@@ -178,6 +184,7 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.js";
+export type { GCResult } from "./core/file-store/internal-git.js";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.js";
 export { convertToLlm } from "./core/messages.js";

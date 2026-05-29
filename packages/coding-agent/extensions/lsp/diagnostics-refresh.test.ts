@@ -128,9 +128,20 @@ describe("writethrough diagnostics refresh", () => {
 			requestAll: vi.fn(async () => []),
 			getPublishedDiagnostics: vi.fn(() => []),
 			clearPublishedDiagnostics: vi.fn(),
-			getStatusForPath: vi.fn(() => ({ state: "ready" })),
+			getStatusForPath: vi.fn(() => ({
+				state: "ready" as const,
+				reason: "",
+				configuredCommand: undefined,
+				activeCommand: undefined,
+				transport: undefined,
+				lspmuxAvailable: false,
+				fallbackReason: undefined,
+				pid: undefined,
+				diagnosticsCount: 0,
+			})),
 			getStatus: vi.fn(() => ({
-				state: "ready",
+				state: "ready" as const,
+				reason: "",
 				servers: [],
 				configuredServers: 0,
 				activeServers: 0,
@@ -138,6 +149,12 @@ describe("writethrough diagnostics refresh", () => {
 			start: vi.fn(async () => {}),
 			stop: vi.fn(async () => {}),
 			reload: vi.fn(async () => {}),
+			startSingle: vi.fn(async () => {}),
+			stopSingle: vi.fn(async () => {}),
+			touchAccess: vi.fn(),
+			getIdleServers: vi.fn(() => []),
+			setPrimary: vi.fn(),
+			getEntryMeta: vi.fn(() => undefined),
 		};
 	}
 

@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent, CustomEntry } from "@dyyz1993/pi-coding-agent";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -47,7 +47,7 @@ export default function fileReview(pi: ExtensionAPI) {
 			if (mgr && ctx) {
 				const entries = ctx.sessionManager.getEntries();
 				for (let i = entries.length - 1; i >= 0; i--) {
-					if (entries[i].type === "custom" && (entries[i] as Record<string, unknown>).customType === "step-snapshot") {
+    			if (entries[i].type === "custom" && (entries[i] as CustomEntry).customType === "step-snapshot") {
 						approvedSnapshotEntry.set(path, entries[i].id);
 						break;
 					}

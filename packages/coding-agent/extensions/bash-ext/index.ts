@@ -198,7 +198,7 @@ export default function(pi: ExtensionAPI) {
     });
 
     channel?.handle("kill", ({ toolCallId }) => {
-      if (!toolCallId) return { ok: false, reason: "not_found" };
+      if (!toolCallId) return;
       const m = managed.get(toolCallId);
       if (!m) {
         // Process already exited — emit terminated event so frontend can sync state
@@ -209,7 +209,7 @@ export default function(pi: ExtensionAPI) {
           processes: Array.from(managed.values()).map((x) => x.proc),
           timestamp: Date.now(),
         });
-        return { ok: true, alreadyExited: true };
+        return;
       }
       if (m.proc.pid) {
         killProcessTree(m.proc.pid);
@@ -246,11 +246,10 @@ export default function(pi: ExtensionAPI) {
           },
         },
       });
-      return { ok: true };
     });
 
     channel?.handle("background", ({ toolCallId }) => {
-      if (!toolCallId) return { ok: false, reason: "not_found" };
+      if (!toolCallId) return;
       const m = managed.get(toolCallId);
       if (!m) {
         // Process already exited — emit terminated event so frontend can sync state
@@ -261,7 +260,7 @@ export default function(pi: ExtensionAPI) {
           processes: Array.from(managed.values()).map((x) => x.proc),
           timestamp: Date.now(),
         });
-        return { ok: true, alreadyExited: true };
+        return;
       }
       m.proc.status = "background";
       m.resolved = true;
@@ -296,7 +295,6 @@ export default function(pi: ExtensionAPI) {
           },
         },
       });
-      return { ok: true };
     });
 
     channel?.handle("subscribe_output", ({ toolCallId }) => {

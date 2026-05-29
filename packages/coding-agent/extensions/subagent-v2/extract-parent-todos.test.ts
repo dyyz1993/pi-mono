@@ -129,7 +129,7 @@ describe("extractParentTodos", () => {
 		const branch: Entry[] = [
 			{
 				type: "message",
-				message: { role: "toolResult", toolName: "bash", details: { exitCode: 0 } },
+				message: { role: "toolResult", toolName: "bash", details: { todos: [] as unknown[] } },
 			},
 		];
 		expect(extractParentTodos(branch)).toEqual([]);
