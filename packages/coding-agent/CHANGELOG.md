@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.74.57] - 2026-05-29
 
 ### Fixed
 - **hooks-engine**: HTTP hook network failure (ECONNREFUSED, timeout, DNS error) now returns deny instead of silently allowing the operation through.
