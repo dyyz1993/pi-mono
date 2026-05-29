@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+- **hooks-engine**: HTTP hook network failure (ECONNREFUSED, timeout, DNS error) now returns deny instead of silently allowing the operation through.
+- **hooks-engine**: Exit code 3 (ask user) with no UI available defaults to allow instead of blocking, enabling subagents to proceed safely in non-interactive contexts.
+- **coordinator**: `delegate_fork` errors now return `status: "error"` instead of misleading `status: "already_running"`.
+- **agent-permissions**: Removed duplicate `allowedTools` whitelist check; now uses `createPermissionHandler()` consistently for all permission modes.
+- **subagent-v2**: `subagent_resume` supports `sessionId` parameter with automatic recursive directory scan to resolve the session file path.
+
+### Added
+- 89 new extension tests covering all 5 bug fixes plus cross-extension integration scenarios.
+
 ## [0.74.55] - 2026-05-28
 
 ### Fixed
