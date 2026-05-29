@@ -294,6 +294,96 @@ interface ToolDefinitionEntry {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
+// Helper function to wrap tools with path checking for forkAgent
+async function wrapToolWithPathChecking(
+	tool: AgentTool<any>,
+	paths: { write?: string[]; read?: string[]; bash?: string[] },
+): Promise<AgentTool<any>> {
+	const { minimatch } = await import("minimatch");
+
+	const normalizeFilePath = (filePath: string): string => {
+		let normalized = filePath;
+		if (normalized.startsWith("file://")) {
+			normalized = normalized.slice("file://".length);
+		}
+		const parts = normalized.split("/");
+		const resolved: string[] = [];
+		for (const part of parts) {
+			if (part === "..") {
+				if (resolved.length > 0 && resolved[resolved.length - 1] !== "") {
+					resolved.pop();
+				}
+			} else if (part !== "." && part !== "") {
+				resolved.push(part);
+			} else if (part === "" && resolved.length === 0) {
+				resolved.push("");
+			}
+		}
+		if (normalized.startsWith("/")) {
+			return `/${resolved.filter((p) => p !== "").join("/")}`;
+		}
+		return resolved.join("/") || ".";
+	};
+
+	const matchPathGlob = (filePath: string, pattern: string): boolean => {
+		if (pattern === "**") return true;
+		const normalized = normalizeFilePath(filePath);
+		const parts = normalized.split("/");
+		for (let i = 0; i < parts.length; i++) {
+			const subpath = parts.slice(i).join("/");
+			if (minimatch(subpath, pattern, { dot: true })) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	const matchesAnyPattern = (filePath: string, patterns: string[] | undefined): boolean => {
+		if (!patterns) return false;
+		for (const pattern of patterns) {
+			if (matchPathGlob(filePath, pattern)) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	return {
+		...tool,
+		async execute(args, signal) {
+			const toolName = tool.name;
+
+			// Check write paths
+			if (
+				paths.write &&
+				(toolName === "edit" || toolName === "write" || toolName === "multiedit" || toolName === "patch")
+			) {
+				const rawPath = (args as any).file_path ?? (args as any).filePath ?? (args as any).path;
+				if (rawPath) {
+					const normalized = normalizeFilePath(rawPath);
+					if (!matchesAnyPattern(normalized, paths.write)) {
+						throw new Error(`Path ${normalized} is not in the allowed write paths: ${paths.write.join(", ")}`);
+					}
+				}
+			}
+
+			// Check read paths
+			if (paths.read && toolName === "read") {
+				const rawPath = (args as any).file_path ?? (args as any).filePath ?? (args as any).path;
+				if (rawPath) {
+					const normalized = normalizeFilePath(rawPath);
+					if (!matchesAnyPattern(normalized, paths.read)) {
+						throw new Error(`Path ${normalized} is not in the allowed read paths: ${paths.read.join(", ")}`);
+					}
+				}
+			}
+
+			// Execute original tool
+			return tool.execute(args, signal);
+		},
+	};
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -370,10 +460,21 @@ export class AgentSession {
 	private _toolOperationsProvider?: import("./tools/index.js").ToolOperationsProvider;
 	private _currentAgentName: string = "build";
 	private _currentAgentVariables: Record<string, string> = {};
+	private _toolCallVariablesOverride: Record<string, string> | undefined;
 
 	/** Read-only access to current agent variables (for session lifecycle events). */
 	get currentAgentVariables(): Readonly<Record<string, string>> {
 		return this._currentAgentVariables;
+	}
+
+	/** Set variables for tool_call event propagation (used by tests) */
+	set toolCallVariables(vars: Record<string, string>) {
+		this._toolCallVariablesOverride = vars;
+	}
+
+	/** Get the effective variables to emit on tool_call/tool_result events */
+	private get _effectiveToolCallVariables(): Record<string, string> | undefined {
+		return this._toolCallVariablesOverride ?? (Object.keys(this._currentAgentVariables).length > 0 ? this._currentAgentVariables : undefined);
 	}
 
 	private _tierModels: Record<string, string> = {};
@@ -586,7 +687,7 @@ export class AgentSession {
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
 					input: args as Record<string, unknown>,
-					variables: this._currentAgentVariables,
+					variables: this._effectiveToolCallVariables,
 				} as any);
 			} catch (err) {
 				if (err instanceof Error) {
@@ -610,7 +711,7 @@ export class AgentSession {
 				content: result.content,
 				details: result.details,
 				isError,
-				variables: this._currentAgentVariables,
+				variables: this._effectiveToolCallVariables,
 			} as any);
 
 			if (!hookResult) {
@@ -1157,6 +1258,9 @@ export class AgentSession {
 		if (agent.hooks && Object.keys(agent.hooks).length > 0) {
 			this._currentAgentVariables["agentHooks"] = JSON.stringify(agent.hooks);
 		}
+		if (agent.paths && (agent.paths.write || agent.paths.read || agent.paths.bash)) {
+			this._currentAgentVariables["paths"] = JSON.stringify(agent.paths);
+		}
 
 		if (agent.thinkingLevel) {
 			this.setThinkingLevel(agent.thinkingLevel as import("@dyyz1993/pi-ai").ThinkingLevel);
@@ -1167,8 +1271,16 @@ export class AgentSession {
 		}
 
 		if (agent.systemPrompt) {
+			// Inject path restriction notice into system prompt
+			let enhancedPrompt = agent.systemPrompt;
+			if (agent.paths) {
+				const pathNotice = AgentSession.buildPathRestrictionNotice(agent.paths);
+				if (pathNotice) {
+					enhancedPrompt = `${pathNotice}\n\n${enhancedPrompt}`;
+				}
+			}
 			// Rebuild prompt with agent system prompt inserted between base and tools
-			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames(), agent.systemPrompt);
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames(), enhancedPrompt);
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 
@@ -1180,6 +1292,7 @@ export class AgentSession {
 			tier: agent.tier,
 			thinkingLevel: agent.thinkingLevel,
 			model: agent.model,
+			paths: agent.paths,
 		});
 	}
 
@@ -1263,6 +1376,22 @@ export class AgentSession {
 			}
 		}
 		return Array.from(unique);
+	}
+
+	private static buildPathRestrictionNotice(paths: import("./agent-types.js").PathConfig): string | undefined {
+		const lines: string[] = ["## Path Restrictions", "", "You are operating under path-level restrictions. You MUST only access files within the allowed paths:"];
+		if (paths.write && paths.write.length > 0) {
+			lines.push(`- **Write paths** (edit, write, patch): ${paths.write.join(", ")}`);
+		}
+		if (paths.read && paths.read.length > 0) {
+			lines.push(`- **Read paths** (read): ${paths.read.join(", ")}`);
+		}
+		if (paths.bash && paths.bash.length > 0) {
+			lines.push(`- **Bash paths**: ${paths.bash.join(", ")}`);
+		}
+		lines.push("");
+		lines.push("Do NOT attempt to access files outside these paths. If you need to access a restricted path, explain why and ask the user.");
+		return lines.join("\n");
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[], agentSystemPrompt?: string): string {
@@ -3878,21 +4007,42 @@ export class AgentSession {
 
 		const opts = options ?? {};
 
+		// Determine effective paths: use provided paths or inherit from parent
+		let effectivePaths: { write?: string[]; read?: string[]; bash?: string[] } = opts.paths ?? {};
+		if (!opts.paths) {
+			// Inherit parent's paths
+			const parentPathsJson = this.currentAgentVariables["paths"];
+			if (parentPathsJson) {
+				try {
+					effectivePaths = JSON.parse(parentPathsJson) as { write?: string[]; read?: string[]; bash?: string[] };
+				} catch (e) {
+					// If parsing fails, use empty paths
+					effectivePaths = {};
+				}
+			}
+		}
+
 		let toolNames = opts.tools ?? ["read", "grep", "find", "ls"];
 		if (opts.bash === "deny") {
 			toolNames = toolNames.filter((t) => t !== "bash");
 		}
-		const toolInstances = toolNames
-			.map((name) => {
+		const toolInstancesResults = await Promise.all(
+			toolNames.map(async (name) => {
 				try {
 					const registered = this._toolRegistry.get(name);
 					if (registered) return registered;
-					return createTool(name as ToolName, this._cwd);
+					const tool = createTool(name as ToolName, this._cwd);
+					// Wrap tool with path checking if paths are configured
+					if (effectivePaths.write || effectivePaths.read) {
+						return wrapToolWithPathChecking(tool, effectivePaths);
+					}
+					return tool;
 				} catch {
 					return undefined;
 				}
-			})
-			.filter((t): t is AgentTool<any> => t !== undefined);
+			}),
+		);
+		const toolInstances = toolInstancesResults.filter((t): t is AgentTool<any, any> => t !== undefined);
 
 		const effectiveSystemPrompt = opts.inheritSystemPrompt
 			? (this.agent.state.systemPrompt ?? opts.systemPrompt ?? "")

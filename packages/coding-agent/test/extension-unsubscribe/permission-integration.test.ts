@@ -84,9 +84,9 @@ describe("Permission mode extension integration", () => {
 			extensionFactories: [
 				(pi) => {
 					pi.on("tool_call", async (event) => {
-						if (event.variables?.permissionMode === "plan") {
+						if (event.variables?.permissionMode === "always-deny") {
 							blocked = true;
-							return { block: true, reason: "Plan mode: execution not allowed" };
+							return { block: true, reason: "Always-deny mode: execution not allowed" };
 						}
 					});
 				},
@@ -94,7 +94,7 @@ describe("Permission mode extension integration", () => {
 		});
 		harnesses.push(harness);
 
-		harness.session.toolCallVariables = { permissionMode: "plan" };
+		harness.session.toolCallVariables = { permissionMode: "always-deny" };
 
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("bash", { command: "echo hello", description: "echo greeting" }), {

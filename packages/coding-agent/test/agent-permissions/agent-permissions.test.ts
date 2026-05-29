@@ -39,17 +39,17 @@ describe("PermissionMode middleware", () => {
 		});
 	});
 
-	describe("plan mode", () => {
-		it("allows read tools", () => {
-			const handler = createPermissionHandler(makeConfig("plan"));
+	describe("disallowedTools blocks edit/write/bash", () => {
+		it("allows read tools with disallowedTools for edit/write/bash", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["edit", "write", "bash"]));
 			expect(handler?.({ toolName: "read", input: {} })).toBeNull();
 			expect(handler?.({ toolName: "grep", input: {} })).toBeNull();
 			expect(handler?.({ toolName: "find", input: {} })).toBeNull();
 			expect(handler?.({ toolName: "ls", input: {} })).toBeNull();
 		});
 
-		it("blocks edit and write tools", () => {
-			const handler = createPermissionHandler(makeConfig("plan"));
+		it("blocks edit and write tools via disallowedTools", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["edit", "write"]));
 			const editResult = handler?.({ toolName: "edit", input: {} });
 			expect(editResult?.block).toBe(true);
 
@@ -57,8 +57,8 @@ describe("PermissionMode middleware", () => {
 			expect(writeResult?.block).toBe(true);
 		});
 
-		it("blocks bash entirely", () => {
-			const handler = createPermissionHandler(makeConfig("plan"));
+		it("blocks bash via disallowedTools", () => {
+			const handler = createPermissionHandler(makeConfig("auto", ["bash"]));
 			const result = handler?.({ toolName: "bash", input: { command: "ls" } });
 			expect(result?.block).toBe(true);
 		});

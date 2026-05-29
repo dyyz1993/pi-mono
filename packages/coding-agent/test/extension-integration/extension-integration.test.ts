@@ -208,17 +208,16 @@ describe("extension-integration", () => {
 			expect(result).toBeUndefined();
 		});
 
-		it("should short-circuit on first block: agent-permissions blocks, file-time-guard and hooks-engine never run", async () => {
+		it("should short-circuit on first block: agent-permissions blocks via disallowedTools, file-time-guard and hooks-engine never run", async () => {
 			await emitSessionEvent(setup, "session_start");
 
-			// plan mode blocks bash at agent-permissions level
-			// Even though a hook would also block, it should never run
 			const result = await emitToolCall(setup, {
 				toolName: "bash",
 				input: { command: "echo hello" },
 				variables: {
-					permissionMode: "plan",
+					permissionMode: "auto",
 					agentName: "planner",
+					disallowedTools: "bash",
 					agentHooks: JSON.stringify({
 						on_tool_start: [{ type: "command", command: "echo 'hook ran'; exit 2" }],
 					}),
@@ -226,8 +225,7 @@ describe("extension-integration", () => {
 			});
 
 			expect(result?.block).toBe(true);
-			expect(result?.reason).toContain("plan mode");
-			// The hook's "hook ran" message should NOT appear because hooks never executed
+			expect(result?.reason).toContain("disallowed");
 		});
 
 		it("should short-circuit on second block: agent-permissions allows, file-time-guard blocks, hooks-engine never runs", async () => {
@@ -355,14 +353,14 @@ describe("extension-integration", () => {
 			await emitSessionEvent(setup, "session_start");
 		});
 
-		it("should apply plan mode from variables: write tool blocked by agent-permissions", async () => {
+		it("should apply disallowedTools from variables: write tool blocked by agent-permissions", async () => {
 			const result = await emitToolCall(setup, {
 				toolName: "write",
 				input: { path: "src/plan-block.ts" },
-				variables: { permissionMode: "plan", agentName: "planner" },
+				variables: { permissionMode: "auto", agentName: "planner", disallowedTools: "write" },
 			});
 			expect(result?.block).toBe(true);
-			expect(result?.reason).toContain("plan mode");
+			expect(result?.reason).toContain("disallowed");
 		});
 
 		it("should apply allowedTools from variables: subagent with allowedTools=read, write blocked", async () => {
@@ -393,14 +391,12 @@ describe("extension-integration", () => {
 			expect(result?.reason).toContain("disallowed");
 		});
 
-		it("should combine permissionMode + allowedTools: plan mode but explicit allowedTools overrides", async () => {
-			// allowedTools restricts to read only, even though plan mode would also block bash
-			// The whitelist check happens first, so bash is blocked by whitelist, not plan mode
+		it("should combine permissionMode + allowedTools: auto mode but explicit allowedTools overrides", async () => {
 			const bashResult = await emitToolCall(setup, {
 				toolName: "bash",
 				input: { command: "echo test" },
 				variables: {
-					permissionMode: "plan",
+					permissionMode: "auto",
 					agentName: "restricted",
 					allowedTools: "read",
 				},
@@ -408,12 +404,11 @@ describe("extension-integration", () => {
 			expect(bashResult?.block).toBe(true);
 			expect(bashResult?.reason).toContain("whitelist");
 
-			// Read is in whitelist, but plan mode would also allow read
 			const readResult = await emitToolCall(setup, {
 				toolName: "read",
 				input: { path: "src/test-read.ts" },
 				variables: {
-					permissionMode: "plan",
+					permissionMode: "auto",
 					agentName: "restricted",
 					allowedTools: "read",
 				},
@@ -446,21 +441,20 @@ describe("extension-integration", () => {
 		});
 
 		it("should apply both agent-permissions AND hooks from subagent variables", async () => {
-			// Plan mode blocks write at agent-permissions level
-			// Hooks would also block it, but permissions short-circuit first
 			const result = await emitToolCall(setup, {
 				toolName: "write",
 				input: { path: "src/double-block.ts" },
 				variables: {
-					permissionMode: "plan",
+					permissionMode: "auto",
 					agentName: "double-agent",
+					disallowedTools: "write",
 					agentHooks: JSON.stringify({
 						on_tool_start: [{ type: "command", command: "echo 'hook deny'; exit 2" }],
 					}),
 				},
 			});
 			expect(result?.block).toBe(true);
-			expect(result?.reason).toContain("plan mode");
+			expect(result?.reason).toContain("disallowed");
 		});
 
 		it("should allow tool when agent-permissions allows and hooks-engine hook exits 0", async () => {
@@ -622,15 +616,14 @@ describe("extension-integration", () => {
 			await emitSessionEvent(setup, "session_start");
 		});
 
-		it("should block all tools except read in plan mode with hooks active", async () => {
-			// plan mode: only read allowed
-			// Even if hooks would allow, permissions block first
+		it("should block write via disallowedTools even with hooks active", async () => {
 			const writeResult = await emitToolCall(setup, {
 				toolName: "write",
 				input: { path: "src/plan.ts" },
 				variables: {
-					permissionMode: "plan",
+					permissionMode: "auto",
 					agentName: "planner",
+					disallowedTools: "write",
 					agentHooks: JSON.stringify({
 						on_tool_start: [{ type: "command", command: "exit 0" }],
 					}),
@@ -638,12 +631,11 @@ describe("extension-integration", () => {
 			});
 			expect(writeResult?.block).toBe(true);
 
-			// Read should be allowed in plan mode
 			const readResult = await emitToolCall(setup, {
 				toolName: "read",
 				input: { path: "src/plan-read.ts" },
 				variables: {
-					permissionMode: "plan",
+					permissionMode: "auto",
 					agentName: "planner",
 					agentHooks: JSON.stringify({
 						on_tool_start: [{ type: "command", command: "exit 0" }],

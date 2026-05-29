@@ -12,7 +12,7 @@ import { parseFrontmatter } from "../utils/frontmatter.js";
 
 export type AgentScope = "user" | "project" | "both";
 
-export type PermissionMode = "auto" | "acceptEdits" | "plan" | "dontAsk" | "always-allow" | "always-deny";
+export type PermissionMode = "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
 
 export type AgentColor = "red" | "blue" | "green" | "yellow" | "purple" | "orange";
 
@@ -58,6 +58,20 @@ export type AgentHookEntry = AgentHook | AgentHookGroup;
 
 export type AgentHooks = Partial<Record<string, AgentHookEntry[]>>;
 
+/**
+ * Path-level permission configuration for agents.
+ * Restricts which file paths each tool category can access.
+ * Glob patterns are relative to the project root.
+ */
+export interface PathConfig {
+	/** Glob patterns for write-accessible paths (edit, write, multiedit, patch tools) */
+	write?: string[];
+	/** Glob patterns for read-accessible paths (read tool only; grep/glob/ls are unchecked) */
+	read?: string[];
+	/** Glob patterns for bash command working directories (reserved for future use) */
+	bash?: string[];
+}
+
 export interface AgentConfig {
 	name: string;
 	description: string;
@@ -84,6 +98,9 @@ export interface AgentConfig {
 	thinkingLevel?: string;
 	mode?: AgentMode;
 	hidden?: boolean;
+
+	/** Path-level restrictions for file operations */
+	paths?: PathConfig;
 }
 
 export type AgentSource = "builtin" | "plugin" | "user" | "project" | "flag" | "policy";
@@ -260,6 +277,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			frontmatter.variables && typeof frontmatter.variables === "object"
 				? (frontmatter.variables as Record<string, string>)
 				: undefined;
+		const paths = parsePathConfig(frontmatter.paths);
 
 		agents.push({
 			name: coerceField("name", frontmatter.name) as string,
@@ -285,6 +303,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			thinkingLevel: coerceField("thinkingLevel", frontmatter.thinkingLevel) as string | undefined,
 			mode: coerceField("mode", frontmatter.mode) as AgentMode | undefined,
 			hidden: coerceField("hidden", frontmatter.hidden) as boolean | undefined,
+			paths: paths && hasPathRestrictions(paths) ? paths : undefined,
 		});
 	}
 
@@ -297,6 +316,38 @@ function isDirectory(p: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/** Parse a PathConfig from raw frontmatter value */
+function sanitizePatternArray(arr: unknown[]): string[] {
+	return arr
+		.filter((v) => v != null && String(v).trim() !== "")
+		.map(String);
+}
+
+function parsePathConfig(raw: unknown): PathConfig | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const obj = raw as Record<string, unknown>;
+	const paths: PathConfig = {};
+	if (Array.isArray(obj.write)) {
+		paths.write = sanitizePatternArray(obj.write);
+	}
+	if (Array.isArray(obj.read)) {
+		paths.read = sanitizePatternArray(obj.read);
+	}
+	if (Array.isArray(obj.bash)) {
+		paths.bash = sanitizePatternArray(obj.bash);
+	}
+	return paths;
+}
+
+/** Check if a PathConfig has any actual restrictions */
+function hasPathRestrictions(paths: PathConfig): boolean {
+	return (
+		(paths.write !== undefined && paths.write.length > 0) ||
+		(paths.read !== undefined && paths.read.length > 0) ||
+		(paths.bash !== undefined && paths.bash.length > 0)
+	);
 }
 
 function findNearestProjectAgentsDir(cwd: string): string | null {
@@ -349,7 +400,6 @@ export function getBuiltinAgents(): AgentConfig[] {
 			description: "Planning mode, output analysis and specs only",
 			tools: ["read", "grep", "find", "ls", "glob"],
 			disallowedTools: ["edit", "write", "bash"],
-			permissionMode: "plan",
 			systemPrompt:
 				"You are a planning specialist. You only output analysis reports and implementation plans (spec), you cannot edit any code files.\n\nOutput format:\n### Requirements Analysis\nUnderstanding and clarification of requirements\n\n### Technical Solution\nSolution choice and rationale\n\n### Implementation Steps\n1. Specific steps...\n\n### File Change List\n- path/to/file — change description\n\n### Risks and Considerations\nPotential issues and mitigation strategies",
 			source: "builtin",

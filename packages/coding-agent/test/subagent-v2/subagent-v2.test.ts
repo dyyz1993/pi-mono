@@ -87,7 +87,13 @@ function createMockPi() {
 			name: "subagent",
 			send: channelSend,
 			onReceive: vi.fn(() => () => {}),
-			invoke: vi.fn(),
+			invoke: vi.fn(async () => ({})),
+			call: vi.fn(async () => ({
+				sessionId: "test-session-id",
+				status: "completed",
+				exitCode: 0,
+				finalText: "mock result",
+			})),
 			emit: vi.fn(),
 		})),
 		registerTool: vi.fn((tool: { name: string }) => {
@@ -245,8 +251,8 @@ describe("subagent-v2 extension", () => {
 		});
 	});
 
-	describe("background mode", () => {
-		it("returns immediately with background task ID", async () => {
+	describe("foreground execution", () => {
+		it("returns mock result from coordinator call", async () => {
 			const mock = createMockPi();
 			subagentV2Extension(mock.pi);
 			const tool = mock.registeredTools.get("subagent") as {
@@ -260,8 +266,8 @@ describe("subagent-v2 extension", () => {
 			};
 
 			const result = (await tool.execute(
-				"tc_bg_1",
-				{ agent: "code", task: "background task", background: true },
+				"tc_1",
+				{ agent: "code", task: "foreground task" },
 				undefined,
 				undefined,
 				testCtx(),
@@ -269,8 +275,7 @@ describe("subagent-v2 extension", () => {
 				content: Array<{ type: string; text: string }>;
 			};
 
-			expect(result.content[0].text).toContain("Started background task");
-			expect(result.content[0].text).toContain("bg-");
+			expect(result.content[0].text).toBe("mock result");
 		});
 	});
 
@@ -380,7 +385,7 @@ describe("subagent-v2 extension", () => {
 			expect(result.text).toContain("code");
 		});
 
-		it("renders background indicator when background is true", () => {
+		it("renders without background indicator when background is false", () => {
 			const mock = createMockPi();
 			subagentV2Extension(mock.pi);
 			const tool = mock.registeredTools.get("subagent") as {
@@ -397,8 +402,8 @@ describe("subagent-v2 extension", () => {
 				toolTitle: (t: string) => t,
 			};
 
-			const result = tool.renderCall({ agent: "code", task: "do stuff", background: true }, theme, {});
-			expect(result.text).toContain("[bg]");
+			const result = tool.renderCall({ agent: "code", task: "do stuff" }, theme, {});
+			expect(result.text).not.toContain("[bg]");
 		});
 	});
 });

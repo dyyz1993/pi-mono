@@ -68,9 +68,9 @@ describe("agent-permissions-extended", () => {
 		vi.restoreAllMocks();
 	});
 
-	describe("plan mode via extension handler", () => {
-		it("should allow all read tools in plan mode", async () => {
-			const vars = { permissionMode: "plan", agentName: "planner" };
+	describe("disallowedTools via extension handler", () => {
+		it("should allow read tools when edit/write/bash are disallowed", async () => {
+			const vars = { permissionMode: "auto", agentName: "planner", disallowedTools: "edit,write,bash" };
 			for (const tool of ["read", "grep", "find", "ls", "glob"]) {
 				const result = await fireToolCall(mock, {
 					toolName: tool,
@@ -81,8 +81,8 @@ describe("agent-permissions-extended", () => {
 			}
 		});
 
-		it("should block edit, write, and bash in plan mode", async () => {
-			const vars = { permissionMode: "plan", agentName: "planner" };
+		it("should block edit, write, and bash via disallowedTools", async () => {
+			const vars = { permissionMode: "auto", agentName: "planner", disallowedTools: "edit,write,bash" };
 			for (const tool of ["edit", "write", "bash"]) {
 				const result = await fireToolCall(mock, {
 					toolName: tool,
@@ -93,14 +93,14 @@ describe("agent-permissions-extended", () => {
 			}
 		});
 
-		it("should block even safe bash in plan mode", async () => {
+		it("should block bash via disallowedTools even for safe commands", async () => {
 			const result = await fireToolCall(mock, {
 				toolName: "bash",
 				input: { command: "echo hello" },
-				variables: { permissionMode: "plan", agentName: "planner" },
+				variables: { permissionMode: "auto", agentName: "planner", disallowedTools: "bash" },
 			});
 			expect(result?.block).toBe(true);
-			expect(result?.reason).toContain("plan mode");
+			expect(result?.reason).toContain("disallowed");
 		});
 	});
 
@@ -209,11 +209,12 @@ describe("agent-permissions-extended", () => {
 			expect(editResult?.reason).toContain("whitelist");
 		});
 
-		it("should apply whitelist even in plan mode", async () => {
+		it("should apply whitelist to restrict tools beyond disallowedTools", async () => {
 			const vars = {
-				permissionMode: "plan",
+				permissionMode: "auto",
 				agentName: "reader",
 				allowedTools: "read",
+				disallowedTools: "edit,write,bash",
 			};
 			const grepResult = await fireToolCall(mock, {
 				toolName: "grep",

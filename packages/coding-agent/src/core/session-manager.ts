@@ -88,6 +88,11 @@ export interface AgentChangeEntry extends SessionEntryBase {
 		tier?: string;
 		thinkingLevel?: string;
 		model?: string;
+		paths?: {
+			write?: string[];
+			read?: string[];
+			bash?: string[];
+		};
 	};
 }
 

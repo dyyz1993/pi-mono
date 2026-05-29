@@ -292,11 +292,20 @@ function createExtensionAPI(extension: Extension, slot: RuntimeSlot, cwd: string
 	const getRuntime = () => slot.current;
 	const api = {
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): void {
+		on(event: string, handler: HandlerFn): () => void {
 			getRuntime().assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
+			return () => {
+				const handlers = extension.handlers.get(event);
+				if (handlers) {
+					const idx = handlers.indexOf(handler);
+					if (idx !== -1) {
+						handlers.splice(idx, 1);
+					}
+				}
+			};
 		},
 
 		registerTool(tool: ToolDefinition): void {

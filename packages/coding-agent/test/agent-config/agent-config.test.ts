@@ -39,7 +39,7 @@ description: Full featured agent
 tools: read, grep, find, ls, bash
 disallowedTools: Bash(rm *)
 model: glm-4.7
-permissionMode: plan
+permissionMode: auto
 maxTurns: 25
 effort: high
 color: red
@@ -58,7 +58,7 @@ initialPrompt: Start by reading the README`,
 		expect(a.tools).toEqual(["read", "grep", "find", "ls", "bash"]);
 		expect(a.disallowedTools).toEqual(["Bash(rm *)"]);
 		expect(a.model).toBe("glm-4.7");
-		expect(a.permissionMode).toBe("plan");
+		expect(a.permissionMode).toBe("auto");
 		expect(a.maxTurns).toBe(25);
 		expect(a.effort).toBe("high");
 		expect(a.color).toBe("red");
@@ -91,11 +91,14 @@ hooks:
 			command: "echo tool_called",
 			if: "bash",
 			async: false,
+			once: false,
+			timeout: undefined,
 		});
 		expect(agents[0].hooks?.tool_call?.[1]).toEqual({
 			type: "prompt",
 			prompt: "Be careful",
 			if: undefined,
+			once: false,
 		});
 	});
 
@@ -140,12 +143,12 @@ variables:
 	});
 
 	it("handles all permission modes", () => {
-		const modes = ["auto", "acceptEdits", "plan", "dontAsk", "always-allow", "always-deny"];
+		const modes = ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"];
 		for (const mode of modes) {
 			writeAgent(`${mode}.md`, `name: ${mode}-agent\ndescription: ${mode} mode\npermissionMode: ${mode}`);
 		}
 		const agents = loadAgentsFromDir(testDir, "user");
-		expect(agents).toHaveLength(6);
+		expect(agents).toHaveLength(5);
 		for (let i = 0; i < modes.length; i++) {
 			expect(agents.find((a) => a.name === `${modes[i]}-agent`)?.permissionMode).toBe(modes[i]);
 		}

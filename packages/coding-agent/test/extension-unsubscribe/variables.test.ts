@@ -25,7 +25,7 @@ describe("ToolCallEvent.variables propagation", () => {
 		});
 		harnesses.push(harness);
 
-		harness.session.toolCallVariables = { agentName: "test-agent", permissionMode: "plan" };
+		harness.session.toolCallVariables = { agentName: "test-agent", permissionMode: "auto" };
 
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("bash", { command: "ls", description: "list files" }), {
@@ -37,7 +37,7 @@ describe("ToolCallEvent.variables propagation", () => {
 
 		expect(receivedVariables).toBeDefined();
 		expect(receivedVariables!.agentName).toBe("test-agent");
-		expect(receivedVariables!.permissionMode).toBe("plan");
+		expect(receivedVariables!.permissionMode).toBe("auto");
 	});
 
 	it("tool_call event gets undefined variables when not set", async () => {

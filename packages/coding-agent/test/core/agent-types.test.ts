@@ -48,7 +48,7 @@ describe("loadAgentsFromDir (coerceField + parseHooks integration)", () => {
 			`name: str-agent
 description: "desc"
 model: glm-4.7
-permissionMode: plan
+permissionMode: auto
 effort: high
 color: red
 memory: project
@@ -57,7 +57,7 @@ initialPrompt: Hello`,
 		);
 		const [agent] = loadAgentsFromDir(testDir, "user");
 		expect(agent.model).toBe("glm-4.7");
-		expect(agent.permissionMode).toBe("plan");
+		expect(agent.permissionMode).toBe("auto");
 		expect(agent.effort).toBe("high");
 		expect(agent.color).toBe("red");
 		expect(agent.memory).toBe("project");
@@ -127,6 +127,7 @@ hooks:
 			type: "prompt",
 			prompt: "Be careful",
 			if: undefined,
+			once: false,
 		});
 		expect(agent.hooks?.on_start).toHaveLength(1);
 	});
@@ -320,24 +321,37 @@ describe("discoverAgents", () => {
 	it("returns empty agents when no agent dirs exist", () => {
 		const { agents, projectAgentsDir } = discoverAgents("/nonexistent/path", "both");
 		expect(projectAgentsDir).toBeNull();
-		expect(agents).toEqual([]);
+		expect(agents.length).toBeGreaterThanOrEqual(3);
+		const names = agents.map((a) => a.name);
+		expect(names).toContain("build");
+		expect(names).toContain("explore");
+		expect(names).toContain("plan");
+		for (const a of agents) {
+			expect(a.source).toBe("builtin");
+		}
 	});
 
 	it("passes overrideAgents as flagAgents", () => {
 		const override = makeAgent({ name: "override", source: "flag" });
 		const { agents } = discoverAgents("/nonexistent/path", "both", [override]);
-		expect(agents).toHaveLength(1);
-		expect(agents[0].name).toBe("override");
+		const names = agents.map((a) => a.name);
+		expect(names).toContain("override");
+		expect(names).toContain("build");
+		expect(agents.length).toBeGreaterThanOrEqual(4);
 	});
 
 	it("scope=user skips project agents", () => {
 		const { agents } = discoverAgents("/nonexistent/path", "user");
-		expect(agents).toEqual([]);
+		expect(agents.length).toBeGreaterThanOrEqual(3);
+		const names = agents.map((a) => a.name);
+		expect(names).toContain("build");
 	});
 
 	it("scope=project skips user agents", () => {
 		const { agents } = discoverAgents("/nonexistent/path", "project");
-		expect(agents).toEqual([]);
+		expect(agents.length).toBeGreaterThanOrEqual(3);
+		const names = agents.map((a) => a.name);
+		expect(names).toContain("build");
 	});
 
 	it("discovers project agents when .pi/agents exists", () => {

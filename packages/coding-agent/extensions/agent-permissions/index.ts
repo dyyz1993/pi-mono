@@ -7,13 +7,13 @@
  * Modes:
  *   auto         — default behavior, all tools allowed
  *   acceptEdits  — auto-allow edit/write, block dangerous bash
- *   plan         — read-only: block edit/write/bash
  *   dontAsk      — auto-allow everything (no blocking)
  *   always-allow — same as dontAsk
  *   always-deny  — block everything
  */
 
 import type { AgentConfig, ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
+import { createPathPermissionHandler, type PathConfig } from "./path-checker.js";
 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls", "glob"]);
 const EDIT_TOOLS = new Set(["edit", "write"]);
@@ -46,12 +46,6 @@ const RULES: Record<string, PermissionRule> = {
     allowedTools: null,
     blockedTools: null,
     blockBashPatterns: DANGEROUS_BASH_PATTERNS,
-  },
-  plan: {
-    mode: "plan",
-    allowedTools: READ_TOOLS,
-    blockedTools: EDIT_TOOLS,
-    blockBashPatterns: null,
   },
   dontAsk: {
     mode: "dontAsk",
@@ -179,13 +173,6 @@ export function createPermissionHandler(agentConfig: AgentConfig) {
       };
     }
 
-    if (event.toolName === "bash" && rule.mode === "plan") {
-      return {
-        block: true,
-        reason: `[plan mode] Bash is not allowed in plan mode.`,
-      };
-    }
-
     if (event.toolName === "bash" && rule.blockBashPatterns) {
       const command = event.input?.command;
       if (typeof command === "string") {
@@ -220,6 +207,23 @@ export default function agentPermissions(pi: ExtensionAPI, ctx: ExtensionContext
     const disallowedTools = vars?.["allowedTools"] !== undefined
       ? vars?.["disallowedTools"]?.split(",").filter(Boolean) ?? []
       : vars?.["disallowedTools"]?.split(",").filter(Boolean);
+
+    // Path-level permission check (runs before tool-level checks)
+    const pathsJson = vars?.["paths"];
+    if (pathsJson) {
+      try {
+        const paths = JSON.parse(pathsJson) as PathConfig;
+        const pathHandler = createPathPermissionHandler(paths);
+        if (pathHandler) {
+          const pathResult = pathHandler({ toolName: event.toolName, input: event.input });
+          if (pathResult?.block) {
+            return { block: true, reason: pathResult.reason };
+          }
+        }
+      } catch {
+        // If path parsing fails, continue with normal permission checks
+      }
+    }
 
     // Permission mode-based rules (only for non-auto modes)
     if (!mode || mode === "auto" || mode === "dontAsk" || mode === "always-allow") {
