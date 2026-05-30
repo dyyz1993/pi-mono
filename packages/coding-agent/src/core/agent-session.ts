@@ -428,6 +428,9 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
+	private _maxTurns: number | undefined = undefined;
+	private _effort: string | undefined = undefined;
+	private _activeSkillNames: Set<string> | undefined = undefined;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -991,6 +994,10 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 			this._turnIndex++;
+			// Enforce maxTurns limit for main session loop
+			if (this._maxTurns !== undefined && this._turnIndex >= this._maxTurns) {
+				this.agent.abort();
+			}
 		} else if (event.type === "message_start") {
 			const extensionEvent: MessageStartEvent = {
 				type: "message_start",
@@ -1266,6 +1273,30 @@ export class AgentSession {
 			this.setThinkingLevel(agent.thinkingLevel as import("@dyyz1993/pi-ai").ThinkingLevel);
 		}
 
+		// Apply maxTurns limit for main session loop
+		if (agent.maxTurns !== undefined && agent.maxTurns > 0) {
+			this._maxTurns = agent.maxTurns;
+			this._currentAgentVariables["maxTurns"] = String(agent.maxTurns);
+		} else {
+			this._maxTurns = undefined;
+		}
+
+		// Apply effort level (injected into system prompt as guidance)
+		if (agent.effort) {
+			this._effort = agent.effort;
+			this._currentAgentVariables["effort"] = agent.effort;
+		} else {
+			this._effort = undefined;
+		}
+
+		// Apply skills filter (restricts which skills appear in system prompt)
+		if (agent.skills && agent.skills.length > 0) {
+			this._activeSkillNames = new Set(agent.skills);
+			this._currentAgentVariables["skills"] = agent.skills.join(",");
+		} else {
+			this._activeSkillNames = undefined;
+		}
+
 		if (agent.tools && agent.tools.length > 0) {
 			this.setActiveToolsByName(agent.tools);
 		} else {
@@ -1289,12 +1320,23 @@ export class AgentSession {
 					enhancedPrompt = `${pathNotice}\n\n${enhancedPrompt}`;
 				}
 			}
+			// Inject effort guidance
+			if (this._effort) {
+				enhancedPrompt = `${enhancedPrompt}\n\n${AgentSession.buildEffortNotice(this._effort)}`;
+			}
 			// Rebuild prompt with agent system prompt inserted between base and tools
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames(), enhancedPrompt);
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		} else {
 			// No custom system prompt — rebuild with default (no agent section)
-			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+			let effortSuffix = "";
+			if (this._effort) {
+				effortSuffix = AgentSession.buildEffortNotice(this._effort);
+			}
+			this._baseSystemPrompt = this._rebuildSystemPrompt(
+				this.getActiveToolNames(),
+				effortSuffix || undefined,
+			);
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 
@@ -1307,6 +1349,8 @@ export class AgentSession {
 			thinkingLevel: agent.thinkingLevel,
 			model: agent.model,
 			paths: agent.paths,
+			maxTurns: agent.maxTurns,
+			effort: agent.effort,
 		});
 	}
 
@@ -1408,6 +1452,17 @@ export class AgentSession {
 		return lines.join("\n");
 	}
 
+	private static readonly EFFORT_NOTICES: Record<string, string> = {
+		low: "## Effort Level: Low\n\nProvide brief, concise answers. Focus on the most essential information. Skip detailed explanations. Use short code snippets over long blocks. Limit yourself to 1-2 paragraphs unless more is absolutely necessary.",
+		medium: "## Effort Level: Medium\n\nProvide balanced answers with enough detail to be useful. Include relevant context and examples where appropriate. Be thorough but avoid unnecessary verbosity.",
+		high: "## Effort Level: High\n\nProvide comprehensive, detailed analysis. Consider multiple approaches. Include edge cases and error handling. Write thorough code with complete implementations. Document your reasoning. When in doubt, explain more rather than less.",
+	};
+
+	private static buildEffortNotice(effort: string): string {
+		const normalized = effort.toLowerCase().trim();
+		return AgentSession.EFFORT_NOTICES[normalized] ?? `## Effort Level: ${effort}\n\nAdjust your response effort level accordingly.`;
+	}
+
 	private _rebuildSystemPrompt(toolNames: string[], agentSystemPrompt?: string): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
@@ -1429,11 +1484,14 @@ export class AgentSession {
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const activeSkills = this._activeSkillNames
+			? loadedSkills.filter((s) => this._activeSkillNames!.has(s.name))
+			: loadedSkills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
-			skills: loadedSkills,
+			skills: activeSkills,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
