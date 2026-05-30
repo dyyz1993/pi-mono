@@ -1273,6 +1273,13 @@ export class AgentSession {
 			this.setActiveToolsByName([...this._toolRegistry.keys()]);
 		}
 
+		// Remove explicitly disallowed tools from the active set
+		if (agent.disallowedTools && agent.disallowedTools.length > 0) {
+			const disallowed = new Set(agent.disallowedTools);
+			const filtered = this.getActiveToolNames().filter((n) => !disallowed.has(n));
+			this.setActiveToolsByName(filtered);
+		}
+
 		if (agent.systemPrompt) {
 			// Inject path restriction notice into system prompt
 			let enhancedPrompt = agent.systemPrompt;
