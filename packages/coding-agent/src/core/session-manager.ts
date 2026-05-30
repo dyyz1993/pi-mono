@@ -194,13 +194,19 @@ export type SessionEntry =
 	| LabelEntry
 	| SessionInfoEntry
 	| DeletionEntry
-	| SegmentSummaryEntry;
+	| SegmentSummaryEntry
+	| LeafPointerEntry;
 
 export interface FoldEntry extends SessionEntryBase {
 	type: "fold";
 	targetId: string;
 	summary: string;
 	originalTokens: number;
+}
+
+export interface LeafPointerEntry extends SessionEntryBase {
+	type: "leaf_pointer";
+	leafId: string | null;
 }
 
 /** Raw file entry (includes header) */
@@ -1035,6 +1041,69 @@ export class SessionManager {
 			}
 		}
 
+		// Phase 1.5: honor persisted leaf_pointer entries.
+		// If a leaf_pointer entry exists (written by a previous branch() call),
+		// use its leafId as the branch root, then find the deepest terminal
+		// among entries appended AFTER the leaf_pointer. This ensures both the
+		// branch position and subsequent messages survive session reload/restart.
+		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
+			const entry = this.fileEntries[i];
+			if (entry.type === "leaf_pointer") {
+				const targetId = entry.leafId;
+				if (targetId === null) {
+					let bestLeafId: string | null = null;
+					let bestDepth = -1;
+					for (let j = i + 1; j < this.fileEntries.length; j++) {
+						const e = this.fileEntries[j];
+						if (e.type === "session" || e.type === "leaf_pointer") continue;
+						if (parentIds.has(e.id)) continue;
+						let depth = 0;
+						let cur: string | null = e.parentId;
+						const visited = new Set<string>();
+						while (cur !== null && this.byId.has(cur) && !visited.has(cur)) {
+							visited.add(cur);
+							depth++;
+							cur = this.byId.get(cur)!.parentId;
+						}
+						if (depth > bestDepth) {
+							bestDepth = depth;
+							bestLeafId = e.id;
+						}
+					}
+					this.leafId = bestLeafId;
+					return;
+				}
+				if (this.byId.has(targetId)) {
+					let bestLeafId: string = targetId;
+					let bestDepth = 0;
+					for (let j = i + 1; j < this.fileEntries.length; j++) {
+						const e = this.fileEntries[j];
+						if (e.type === "session" || e.type === "leaf_pointer") continue;
+						if (parentIds.has(e.id)) continue;
+						let cur: string | null = e.parentId;
+						let depth = 1;
+						let isDescendant = false;
+						const visited = new Set<string>();
+						while (cur !== null && this.byId.has(cur) && !visited.has(cur)) {
+							if (cur === targetId) {
+								isDescendant = true;
+								break;
+							}
+							visited.add(cur);
+							depth++;
+							cur = this.byId.get(cur)!.parentId;
+						}
+						if (isDescendant && depth > bestDepth) {
+							bestDepth = depth;
+							bestLeafId = e.id;
+						}
+					}
+					this.leafId = bestLeafId;
+					return;
+				}
+			}
+		}
+
 		// Phase 2: resolve leaf by finding the deepest terminal node.
 		// A terminal node is one whose id never appears as someone else's parentId.
 		// Among all terminals, the one with the greatest depth from root is the
@@ -1111,6 +1180,39 @@ export class SessionManager {
 			this.writeBuffer.push(JSON.stringify(entry));
 		}
 		this._scheduleFlush();
+	}
+
+	/**
+	 * Persist a leaf_pointer entry to save the current branch position.
+	 * Called from branch() — uses the existing persist mechanism so the entry
+	 * is durably written alongside other session entries.
+	 */
+	private async _persistLeafPointer(leafId: string | null): Promise<void> {
+		if (!this.persist || !this.sessionFile) return;
+
+		const entry: LeafPointerEntry = {
+			type: "leaf_pointer",
+			id: generateId(this.byId),
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			leafId,
+		};
+		this.fileEntries.push(entry);
+		this.byId.set(entry.id, entry);
+
+		if (this.flushed) {
+			// File is already active — append via the async buffer
+			this.writeBuffer.push(JSON.stringify(entry));
+			this._scheduleFlush();
+		} else {
+			// File hasn't been fully flushed yet — direct append so the
+			// leaf_pointer is durably written even if the buffer flush fails
+			try {
+				await appendFile(this.sessionFile, "\n" + JSON.stringify(entry) + "\n", "utf-8");
+			} catch {
+				// Best-effort: leaf_pointer is advisory, not critical
+			}
+		}
 	}
 
 	/** Schedule an async flush on the next event loop iteration */
@@ -1417,6 +1519,28 @@ export class SessionManager {
 		return count;
 	}
 
+	/**
+	 * Find the appropriate branch point above an entry by skipping consecutive
+	 * custom-type ancestors. Used by navigateTree when rolling back user messages
+	 * or custom_message entries, so that auto-memory custom entries inserted
+	 * between the user message and the previous assistant message are excluded.
+	 *
+	 * Walks from the entry's parent upward, skipping any `type: "custom"` entries,
+	 * and returns the first non-custom ancestor (or null if all ancestors are custom).
+	 */
+	findBranchPointAbove(entryId: string): string | null {
+		const entry = this.byId.get(entryId);
+		if (!entry) return null;
+		let ancestorId: string | null | undefined = entry.parentId;
+		while (ancestorId) {
+			const ancestor = this.byId.get(ancestorId);
+			if (!ancestor) break;
+			if (ancestor.type !== "custom") break;
+			ancestorId = ancestor.parentId;
+		}
+		return ancestorId ?? null;
+	}
+
 	getLeafEntry(): SessionEntry | undefined {
 		return this.leafId ? this.byId.get(this.leafId) : undefined;
 	}
@@ -1569,11 +1693,15 @@ export class SessionManager {
 	 * will create a child of that entry, forming a new branch. Existing entries
 	 * are not modified or deleted.
 	 */
-	branch(branchFromId: string): void {
+	async branch(branchFromId: string): Promise<void> {
 		if (!this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
 		this.leafId = branchFromId;
+		// Persist a leaf_pointer entry so the branch position survives reload/restart.
+		// Must bypass _appendEntry because that sets leafId = entry.id (the leaf_pointer
+		// entry itself), but we want leafId to remain branchFromId.
+		await this._persistLeafPointer(branchFromId);
 	}
 
 	/**
@@ -1581,8 +1709,10 @@ export class SessionManager {
 	 * The next appendXXX() call will create a new root entry (parentId = null).
 	 * Use this when navigating to re-edit the first user message.
 	 */
-	resetLeaf(): void {
+	async resetLeaf(): Promise<void> {
 		this.leafId = null;
+		// Persist a leaf_pointer with null leafId so the branch position survives reload/restart.
+		await this._persistLeafPointer(null);
 	}
 
 	/**

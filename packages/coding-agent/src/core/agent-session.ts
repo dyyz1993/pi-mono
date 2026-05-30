@@ -3411,12 +3411,12 @@ export class AgentSession {
 			let editorText: string | undefined;
 
 			if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-				// User message: leaf = parent (null if root), text goes to editor
-				newLeafId = targetEntry.parentId;
+				// User message: skip custom ancestors (e.g. memory_prefetch) then leaf = first non-custom ancestor
+				newLeafId = this.sessionManager.findBranchPointAbove(targetId);
 				editorText = this._extractUserMessageText(targetEntry.message.content);
 			} else if (targetEntry.type === "custom_message") {
-				// Custom message: leaf = parent (null if root), text goes to editor
-				newLeafId = targetEntry.parentId;
+				// Custom message: skip custom ancestors then leaf = first non-custom ancestor
+				newLeafId = this.sessionManager.findBranchPointAbove(targetId);
 				editorText =
 					typeof targetEntry.content === "string"
 						? targetEntry.content
@@ -3452,10 +3452,10 @@ export class AgentSession {
 				}
 			} else if (newLeafId === null) {
 				// No summary, navigating to root - reset leaf
-				this.sessionManager.resetLeaf();
+				await this.sessionManager.resetLeaf();
 			} else {
 				// No summary, navigating to non-root
-				this.sessionManager.branch(newLeafId);
+				await this.sessionManager.branch(newLeafId);
 			}
 
 			// Attach label to target entry when not summarizing (no summary entry to label)
