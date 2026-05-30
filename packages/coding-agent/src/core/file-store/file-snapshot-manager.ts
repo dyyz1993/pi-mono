@@ -522,6 +522,9 @@ export class FileSnapshotManager {
 			} else {
 				const pathSnap = this.getLatestSnapshotOnPath(options.entries, options.targetEntryId);
 				targetTreeHash = pathSnap?.snapshotTreeHash ?? null;
+				if (targetTreeHash === null && this.sessionStartTreeHash === null) {
+					targetIsEmpty = true;
+				}
 			}
 		} else {
 			// Rolling back to session start (no targetEntryId).
