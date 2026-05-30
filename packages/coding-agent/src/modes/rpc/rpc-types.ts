@@ -102,7 +102,7 @@ export type RpcCommand =
 			toTurnIndex?: number;
 			toUserMsgEntryId?: string;
 	  }
-	| { id?: string; type: "get_file_diff"; filePath: string; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_file_diff"; filePath: string; fromEntryId?: string; toEntryId?: string; useBaselineHash?: boolean }
 	| { id?: string; type: "get_batch_diffs"; fromEntryId?: string; toEntryId?: string }
 	| { id?: string; type: "get_file_history"; filePath: string }
 

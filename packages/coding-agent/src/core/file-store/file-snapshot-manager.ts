@@ -374,11 +374,21 @@ export class FileSnapshotManager {
 		fromEntryId?: string;
 		toEntryId?: string;
 		cwd?: string;
+		useBaselineHash?: boolean;
 	}): FileDiffInfo | null {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
 
+		const fromSnap = options.fromEntryId
+			? snapshots.find((s) => s.entryId === options.fromEntryId)
+			: undefined;
+		// When useBaselineHash is true (rollback preview), use the snapshot's
+		// baselineTreeHash (state BEFORE the turn's changes) so the diff shows
+		// what will change when rolling back. Otherwise (generic diff query),
+		// use snapshotTreeHash (state AFTER the turn's changes).
 		const fromHash = options.fromEntryId
-			? (snapshots.find((s) => s.entryId === options.fromEntryId)?.snapshotTreeHash ?? null)
+			? (options.useBaselineHash
+				? (fromSnap?.baselineTreeHash ?? this.sessionStartTreeHash)
+				: (fromSnap?.snapshotTreeHash ?? null))
 			: this.sessionStartTreeHash;
 		const toHash = options.toEntryId
 			? (snapshots.find((s) => s.entryId === options.toEntryId)?.snapshotTreeHash ?? null)

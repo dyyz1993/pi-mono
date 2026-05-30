@@ -25,7 +25,13 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.js";
+import { createFoldSummaryMessage } from "../../core/messages.js";
 import { resolveModelAlias } from "../../core/model-resolver.js";
+import type {
+	DeletionEntry,
+	FoldEntry,
+	SegmentSummaryEntry,
+} from "../../core/session-manager.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
@@ -775,17 +781,148 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const branchEntries = session.sessionManager.getBranch();
 				const branchIds = new Set(branchEntries.map((e) => e.id));
 				const messageEntries = allEntries.filter((e) => e.type === "message" && branchIds.has(e.id));
-				const persistedMessages: (AgentMessage & { entryId: string })[] = messageEntries.map((e) => ({
-					...(e as { message: AgentMessage }).message,
-					entryId: e.id,
-				}));
-				const persistedSet = new Set(messageEntries.map((e) => (e as { message: AgentMessage }).message));
+
+				// Apply the same filtering logic as buildSessionContext:
+				// 1. Collect folds
+				const folds = new Map<string, FoldEntry>();
+				for (const entry of branchEntries) {
+					if (entry.type === "fold") {
+						folds.set((entry as FoldEntry).targetId, entry as FoldEntry);
+					}
+				}
+
+				// 2. Collect deleted IDs
+				const deletedIds = new Set<string>();
+				for (const entry of branchEntries) {
+					if (entry.type === "deletion") {
+						for (const targetId of (entry as DeletionEntry).targetIds) {
+							deletedIds.add(targetId);
+						}
+					}
+				}
+				// Also delete toolResult entries whose toolCall was in a deleted message
+				const deletedToolCallIds = new Set<string>();
+				for (const entry of messageEntries) {
+					if (deletedIds.has(entry.id)) {
+						const msg = (entry as { message: AgentMessage }).message;
+						if (msg.role === "assistant" && Array.isArray(msg.content)) {
+							for (const part of msg.content as Array<{ type: string; id?: string }>) {
+								if (part.type === "toolCall" && part.id) {
+									deletedToolCallIds.add(part.id);
+								}
+							}
+						}
+					}
+				}
+				for (const entry of messageEntries) {
+					const msg = (entry as { message: AgentMessage }).message;
+					if (msg.role === "toolResult" && deletedToolCallIds.has(msg.toolCallId)) {
+						deletedIds.add(entry.id);
+					}
+				}
+
+				// 3. Collect segment summaries
+				const segmentTargets = new Map<string, { summary: string; isFirst: boolean; timestamp: string }>();
+				for (const entry of branchEntries) {
+					if (entry.type === "segment_summary") {
+						const seg = entry as SegmentSummaryEntry;
+						if (seg.targetIds.length === 0) continue;
+						for (let i = 0; i < seg.targetIds.length; i++) {
+							const targetId = seg.targetIds[i];
+							if (deletedIds.has(targetId)) continue;
+							if (segmentTargets.has(targetId)) continue;
+							segmentTargets.set(targetId, {
+								summary: seg.summary,
+								isFirst: i === 0,
+								timestamp: entry.timestamp,
+							});
+						}
+					}
+				}
+
+				// 4. Build persisted messages with filtering applied
+				const persistedMessages: (AgentMessage & { entryId?: string })[] = [];
+				for (const entry of messageEntries) {
+					if (deletedIds.has(entry.id)) continue;
+
+					// Segment summary: replace original messages with summary
+					const segInfo = segmentTargets.get(entry.id);
+					if (segInfo) {
+						if (segInfo.isFirst) {
+							persistedMessages.push({
+								role: "segmentSummary",
+								summary: segInfo.summary,
+								timestamp: new Date(segInfo.timestamp).getTime(),
+								entryId: entry.id,
+							} as AgentMessage & { entryId: string });
+						}
+						continue;
+					}
+
+					// Fold: replace original message with foldSummary
+					const fold = folds.get(entry.id);
+					if (fold) {
+						persistedMessages.push({
+							...createFoldSummaryMessage(fold.summary, fold.originalTokens, entry.timestamp),
+							entryId: entry.id,
+						});
+					} else {
+						// Strip toolCalls from deleted tool results
+						let msg = (entry as { message: AgentMessage }).message;
+						if (msg.role === "assistant" && Array.isArray(msg.content) && deletedToolCallIds.size > 0) {
+							const content = msg.content;
+							const needsStrip = content.some(
+								(part: { type: string; id?: string }) =>
+									part.type === "toolCall" && part.id !== undefined && deletedToolCallIds.has(part.id),
+							);
+							if (needsStrip) {
+								const filteredContent = content.filter(
+									(part: { type: string; id?: string }) =>
+										!(part.type === "toolCall" && part.id !== undefined && deletedToolCallIds.has(part.id)),
+								);
+								msg = { ...msg, content: filteredContent as typeof msg.content };
+							}
+						}
+						persistedMessages.push({ ...msg, entryId: entry.id });
+					}
+				}
+				// Build a set of "signatures" for persisted messages to detect
+				// unpersisted tail. Standard messages use object identity;
+				// synthetic messages (foldSummary, segmentSummary) use content-based keys.
+				const persistedMsgObjects = new Set<AgentMessage>();
+				const persistedKeys = new Set<string>();
+				for (const entry of messageEntries) {
+					if (deletedIds.has(entry.id)) continue;
+					if (segmentTargets.has(entry.id)) {
+						const segInfo = segmentTargets.get(entry.id);
+						if (segInfo?.isFirst) {
+							persistedKeys.add(`segmentSummary:${segInfo.summary}`);
+						}
+						continue;
+					}
+					if (folds.has(entry.id)) {
+						const f = folds.get(entry.id)!;
+						persistedKeys.add(`foldSummary:${f.summary}:${f.originalTokens}`);
+						continue;
+					}
+					persistedMsgObjects.add((entry as { message: AgentMessage }).message);
+				}
 
 				const memoryMessages = session.messages;
 				const unPersisted: (AgentMessage & { entryId?: string })[] = [];
 				for (let i = memoryMessages.length - 1; i >= 0; i--) {
 					const msg = memoryMessages[i];
-					if (persistedSet.has(msg)) break;
+					// Check if this message is already in persisted entries.
+					if (persistedMsgObjects.has(msg)) break;
+					// Check synthetic messages by content key
+					if (msg.role === "foldSummary") {
+						const key = `foldSummary:${(msg as any).summary}:${(msg as any).originalTokens}`;
+						if (persistedKeys.has(key)) break;
+					}
+					if (msg.role === "segmentSummary") {
+						const key = `segmentSummary:${(msg as any).summary}`;
+						if (persistedKeys.has(key)) break;
+					}
 					if (msg.role === "compactionSummary") continue;
 					unPersisted.unshift(msg);
 				}
@@ -1223,6 +1360,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					filePath: command.filePath,
 					fromEntryId: command.fromEntryId,
 					toEntryId: command.toEntryId,
+					useBaselineHash: command.useBaselineHash ?? true,
 				});
 				if (!diff) {
 					return success(id, "get_file_diff", null);
