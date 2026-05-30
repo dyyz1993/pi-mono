@@ -330,7 +330,7 @@ describe("G3: Rollback behavior", () => {
 		});
 
 		// 5. Rollback to state from step 2
-		sessionManager.branch(beforePathsId!);
+		await sessionManager.branch(beforePathsId!);
 
 		// 6. Verify no path restrictions on the new branch
 		const branch = sessionManager.getBranch();
@@ -379,7 +379,7 @@ describe("G3: Rollback behavior", () => {
 		});
 
 		// 5. Rollback to state from step 3
-		sessionManager.branch(afterPathsId!);
+		await sessionManager.branch(afterPathsId!);
 
 		// 6. Verify paths still enforced
 		const branch = sessionManager.getBranch();
@@ -427,7 +427,7 @@ describe("G3: Rollback behavior", () => {
 		await session.applyAgentConfig(agentB!);
 
 		// 4. Rollback to after agent A
-		sessionManager.branch(afterAgentA!);
+		await sessionManager.branch(afterAgentA!);
 
 		// 5. Verify agent A's paths are active
 		const branch = sessionManager.getBranch();

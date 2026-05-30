@@ -109,13 +109,13 @@ describe("SessionManager appendDeletion", () => {
 			expect(ctx.messages[1].role).toBe("user");
 		});
 
-		it("deletion after branching only affects active path", () => {
+		it("deletion after branching only affects active path", async () => {
 			const session = SessionManager.inMemory();
 			session.appendMessage(userMsg("start"));
 			const id2 = session.appendMessage(assistantMsg("r1"));
 			session.appendMessage(userMsg("branch A"));
 
-			session.branch(id2);
+			await session.branch(id2);
 			session.appendMessage(userMsg("branch B"));
 			session.appendDeletion([id2]);
 
@@ -501,7 +501,7 @@ describe("convertToLlm for SegmentSummaryMessage", () => {
 });
 
 describe("Branching with deletion/segment_summary", () => {
-	it("branching after deletion preserves deletion on the original branch", () => {
+	it("branching after deletion preserves deletion on the original branch", async () => {
 		const session = SessionManager.inMemory();
 		const _id1 = session.appendMessage(userMsg("start"));
 		const id2 = session.appendMessage(assistantMsg("r1"));
@@ -511,7 +511,7 @@ describe("Branching with deletion/segment_summary", () => {
 		const ctxBeforeBranch = session.buildSessionContext();
 		expect(ctxBeforeBranch.messages).toHaveLength(2);
 
-		session.branch(id2);
+		await session.branch(id2);
 		session.appendMessage(userMsg("branched from r1"));
 
 		const ctxAfterBranch = session.buildSessionContext();
@@ -521,7 +521,7 @@ describe("Branching with deletion/segment_summary", () => {
 		expect(ctxAfterBranch.messages[2].role).toBe("user");
 	});
 
-	it("branching around segment_summary preserves it on original path only", () => {
+	it("branching around segment_summary preserves it on original path only", async () => {
 		const session = SessionManager.inMemory();
 		session.appendMessage(userMsg("start"));
 		const id2 = session.appendMessage(assistantMsg("r1"));
@@ -529,19 +529,19 @@ describe("Branching with deletion/segment_summary", () => {
 		session.appendSegmentSummary([id2], "Summary of r1");
 		const id5 = session.getLeafId()!;
 
-		session.branch(id2);
+		await session.branch(id2);
 		session.appendMessage(userMsg("took different path"));
 
 		const ctxBranch = session.buildSessionContext();
 		expect(ctxBranch.messages).toHaveLength(3);
 		expect(ctxBranch.messages[1].role).toBe("assistant");
 
-		session.branch(id5);
+		await session.branch(id5);
 		const ctxOriginal = session.buildSessionContext();
 		expect(ctxOriginal.messages.some((m: any) => m.role === "segmentSummary")).toBe(true);
 	});
 
-	it("deletion on branch B does not affect branch A when navigated back", () => {
+	it("deletion on branch B does not affect branch A when navigated back", async () => {
 		// Path A: 1 -> 2 -> 3
 		// Path B: 1 -> 2 -> 4 -> del[2]
 		// ctxA should be intact (3 messages)
@@ -553,7 +553,7 @@ describe("Branching with deletion/segment_summary", () => {
 		const id2 = session.appendMessage(assistantMsg("r1"));
 		const branchPoint = session.appendMessage(userMsg("path A"));
 
-		session.branch(id2);
+		await session.branch(id2);
 		session.appendMessage(userMsg("path B"));
 		session.appendDeletion([id2]);
 
@@ -562,7 +562,7 @@ describe("Branching with deletion/segment_summary", () => {
 		expect(ctxB.messages[0].role).toBe("user");
 		expect(ctxB.messages[1].role).toBe("user");
 
-		session.branch(branchPoint);
+		await session.branch(branchPoint);
 		const ctxA = session.buildSessionContext();
 		expect(ctxA.messages).toHaveLength(3);
 		expect(ctxA.messages[1].role).toBe("assistant");

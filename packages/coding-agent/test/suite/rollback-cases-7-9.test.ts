@@ -163,7 +163,7 @@ describe("rollback cases 7-9", () => {
 			const originalBranch = sm.getBranch();
 			expect(originalBranch.filter((e) => e.type === "message").length).toBe(4);
 
-			sm.branch(turn1LeafId);
+			await sm.branch(turn1LeafId);
 
 			sm.appendMessage({
 				role: "user",
@@ -189,7 +189,7 @@ describe("rollback cases 7-9", () => {
 				});
 			expect(forkUserMsgs).toEqual(["turn 1", "fork turn"]);
 
-			sm.branch(turn1LeafId);
+			await sm.branch(turn1LeafId);
 			const rolledBackBranch = sm.getBranch();
 			const rolledBackUserMsgs = rolledBackBranch
 				.filter((e) => e.type === "message" && e.message.role === "user")
@@ -235,7 +235,7 @@ describe("rollback cases 7-9", () => {
 			const originalMessages = harness.session.messages.length;
 			const originalLeafId = harness.sessionManager.getLeafId();
 
-			harness.sessionManager.branch(turn1LeafId);
+			await harness.sessionManager.branch(turn1LeafId);
 
 			harness.setResponses([
 				fauxAssistantMessage(fauxToolCall("write", { path: "fork.ts", content: "fork-work" }), {
@@ -247,7 +247,7 @@ describe("rollback cases 7-9", () => {
 
 			expect(readFile(harness.tempDir, "fork.ts")).toBe("fork-work");
 
-			harness.sessionManager.branch(turn1LeafId);
+			await harness.sessionManager.branch(turn1LeafId);
 
 			const context = harness.sessionManager.buildSessionContext();
 			expect(context.messages.length).toBeLessThan(originalMessages + 2);
@@ -293,7 +293,7 @@ describe("rollback cases 7-9", () => {
 
 			const originalEntries = harness.sessionManager.getEntries().length;
 
-			harness.sessionManager.branch(fork1LeafId);
+			await harness.sessionManager.branch(fork1LeafId);
 
 			harness.setResponses([
 				fauxAssistantMessage(fauxToolCall("write", { path: "nested.ts", content: "nested" }), {
@@ -305,13 +305,13 @@ describe("rollback cases 7-9", () => {
 
 			expect(readFile(harness.tempDir, "nested.ts")).toBe("nested");
 
-			harness.sessionManager.branch(rootLeafId);
+			await harness.sessionManager.branch(rootLeafId);
 
 			const rootBranch = harness.sessionManager.getBranch();
 			const rootBranchUserMsgs = rootBranch.filter((e) => e.type === "message" && e.message.role === "user");
 			expect(rootBranchUserMsgs.length).toBe(1);
 
-			harness.sessionManager.branch(fork1LeafId);
+			await harness.sessionManager.branch(fork1LeafId);
 			const fork1Branch = harness.sessionManager.getBranch();
 			const fork1UserMsgs = fork1Branch.filter((e) => e.type === "message" && e.message.role === "user");
 			expect(fork1UserMsgs.length).toBe(2);

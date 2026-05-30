@@ -475,7 +475,7 @@ describe("fork file isolation", () => {
 		);
 		expect(readFile(h.tempDir, "shared.ts")).toBe("original-mod");
 
-		h.sessionManager.branch(t1);
+		await h.sessionManager.branch(t1);
 
 		await doTurn(h, "fork-T2", [{ tool: "write", input: { path: "shared.ts", content: "fork-mod" } }], "done");
 		expect(readFile(h.tempDir, "shared.ts")).toBe("fork-mod");
@@ -488,7 +488,7 @@ describe("fork file isolation", () => {
 		);
 		expect(readFile(h.tempDir, "fork-only.ts")).toBe("fork-exclusive");
 
-		h.sessionManager.branch(t1);
+		await h.sessionManager.branch(t1);
 		const branchAfterReturn = h.sessionManager.getBranch();
 		const branchUserTexts = branchAfterReturn
 			.filter((e) => e.type === "message" && e.message.role === "user")
@@ -520,7 +520,7 @@ describe("fork file isolation", () => {
 		const t2 = await doTurn(h, "T2", [{ tool: "write", input: { path: "f.ts", content: "v2" } }], "done");
 		const t3 = await doTurn(h, "T3", [{ tool: "write", input: { path: "f.ts", content: "v3" } }], "done");
 
-		h.sessionManager.branch(t1);
+		await h.sessionManager.branch(t1);
 
 		await doTurn(h, "fork-A", [{ tool: "write", input: { path: "f.ts", content: "fork-A-v" } }], "done");
 		expect(readFile(h.tempDir, "f.ts")).toBe("fork-A-v");
@@ -532,13 +532,13 @@ describe("fork file isolation", () => {
 		await doTurn(h, "fork-B", [{ tool: "write", input: { path: "f.ts", content: "fork-B-v" } }], "done");
 		expect(readFile(h.tempDir, "f.ts")).toBe("fork-B-v");
 
-		h.sessionManager.branch(t2);
+		await h.sessionManager.branch(t2);
 		expect(readFile(h.tempDir, "f.ts")).toBe("fork-B-v");
 
 		await doTurn(h, "from-t2-continue", [{ tool: "write", input: { path: "f.ts", content: "from-t2-new" } }], "done");
 		expect(readFile(h.tempDir, "f.ts")).toBe("from-t2-new");
 
-		h.sessionManager.branch(forkALeaf);
+		await h.sessionManager.branch(forkALeaf);
 		const branchEntries = h.sessionManager.getBranch();
 		const branchUserTexts = branchEntries
 			.filter((e) => e.type === "message" && e.message.role === "user")
@@ -568,7 +568,7 @@ describe("fork file isolation", () => {
 			"done",
 		);
 
-		h.sessionManager.branch(t1);
+		await h.sessionManager.branch(t1);
 
 		const forkT3 = await doTurn(
 			h,
@@ -598,7 +598,7 @@ describe("fork file isolation", () => {
 		expect(readFile(h.tempDir, "base.ts")).toBe("fork-another-v4");
 		expect(readFile(h.tempDir, "another.ts")).toBe("another-v1");
 
-		h.sessionManager.branch(t2);
+		await h.sessionManager.branch(t2);
 		expect(readFile(h.tempDir, "base.ts")).toBe("fork-another-v4");
 		expect(fileExists(h.tempDir, "extra.ts")).toBe(true);
 		expect(fileExists(h.tempDir, "fork-new.ts")).toBe(false);

@@ -189,7 +189,7 @@ describe("SessionManager append and tree traversal", () => {
 			expect(root.children[0].children[0].children).toHaveLength(0);
 		});
 
-		it("returns tree with branches after branch", () => {
+		it("returns tree with branches after branch", async () => {
 			const session = SessionManager.inMemory();
 
 			// Build: 1 -> 2 -> 3
@@ -198,7 +198,7 @@ describe("SessionManager append and tree traversal", () => {
 			const id3 = session.appendMessage(userMsg("3"));
 
 			// Branch from id2, add new path: 2 -> 4
-			session.branch(id2);
+			await session.branch(id2);
 			const id4 = session.appendMessage(userMsg("4-branch"));
 
 			const tree = session.getTree();
@@ -216,22 +216,22 @@ describe("SessionManager append and tree traversal", () => {
 			expect(childIds).toEqual([id3, id4].sort());
 		});
 
-		it("handles multiple branches at same point", () => {
+		it("handles multiple branches at same point", async () => {
 			const session = SessionManager.inMemory();
 
 			const _id1 = session.appendMessage(userMsg("root"));
 			const id2 = session.appendMessage(assistantMsg("response"));
 
 			// Branch A
-			session.branch(id2);
+			await session.branch(id2);
 			const idA = session.appendMessage(userMsg("branch-A"));
 
 			// Branch B
-			session.branch(id2);
+			await session.branch(id2);
 			const idB = session.appendMessage(userMsg("branch-B"));
 
 			// Branch C
-			session.branch(id2);
+			await session.branch(id2);
 			const idC = session.appendMessage(userMsg("branch-C"));
 
 			const tree = session.getTree();
@@ -243,7 +243,7 @@ describe("SessionManager append and tree traversal", () => {
 			expect(branchIds).toEqual([idA, idB, idC].sort());
 		});
 
-		it("handles deep branching", () => {
+		it("handles deep branching", async () => {
 			const session = SessionManager.inMemory();
 
 			// Main path: 1 -> 2 -> 3 -> 4
@@ -253,12 +253,12 @@ describe("SessionManager append and tree traversal", () => {
 			const _id4 = session.appendMessage(assistantMsg("4"));
 
 			// Branch from 2: 2 -> 5 -> 6
-			session.branch(id2);
+			await session.branch(id2);
 			const id5 = session.appendMessage(userMsg("5"));
 			const _id6 = session.appendMessage(assistantMsg("6"));
 
 			// Branch from 5: 5 -> 7
-			session.branch(id5);
+			await session.branch(id5);
 			const _id7 = session.appendMessage(userMsg("7"));
 
 			const tree = session.getTree();
@@ -276,7 +276,7 @@ describe("SessionManager append and tree traversal", () => {
 	});
 
 	describe("branch", () => {
-		it("moves leaf pointer to specified entry", () => {
+		it("moves leaf pointer to specified entry", async () => {
 			const session = SessionManager.inMemory();
 
 			const id1 = session.appendMessage(userMsg("1"));
@@ -285,24 +285,24 @@ describe("SessionManager append and tree traversal", () => {
 
 			expect(session.getLeafId()).toBe(id3);
 
-			session.branch(id1);
+			await session.branch(id1);
 			expect(session.getLeafId()).toBe(id1);
 		});
 
-		it("throws for non-existent entry", () => {
+		it("throws for non-existent entry", async () => {
 			const session = SessionManager.inMemory();
 			session.appendMessage(userMsg("hello"));
 
-			expect(() => session.branch("nonexistent")).toThrow("Entry nonexistent not found");
+			await expect(session.branch("nonexistent")).rejects.toThrow("Entry nonexistent not found");
 		});
 
-		it("new appends become children of branch point", () => {
+		it("new appends become children of branch point", async () => {
 			const session = SessionManager.inMemory();
 
 			const id1 = session.appendMessage(userMsg("1"));
 			const _id2 = session.appendMessage(assistantMsg("2"));
 
-			session.branch(id1);
+			await session.branch(id1);
 			const id3 = session.appendMessage(userMsg("branched"));
 
 			const entries = session.getEntries();
@@ -386,7 +386,7 @@ describe("SessionManager append and tree traversal", () => {
 	});
 
 	describe("buildSessionContext with branches", () => {
-		it("returns messages from current branch only", () => {
+		it("returns messages from current branch only", async () => {
 			const session = SessionManager.inMemory();
 
 			// Main: 1 -> 2 -> 3
@@ -395,7 +395,7 @@ describe("SessionManager append and tree traversal", () => {
 			session.appendMessage(userMsg("msg3"));
 
 			// Branch from 2: 2 -> 4
-			session.branch(id2);
+			await session.branch(id2);
 			session.appendMessage(assistantMsg("msg4-branch"));
 
 			const ctx = session.buildSessionContext();
@@ -416,7 +416,7 @@ describe("createBranchedSession", () => {
 		expect(() => session.createBranchedSession("nonexistent")).toThrow("Entry nonexistent not found");
 	});
 
-	it("creates new session with path to specified leaf (in-memory)", () => {
+	it("creates new session with path to specified leaf (in-memory)", async () => {
 		const session = SessionManager.inMemory();
 
 		// Build: 1 -> 2 -> 3 -> 4
@@ -426,7 +426,7 @@ describe("createBranchedSession", () => {
 		session.appendMessage(assistantMsg("4"));
 
 		// Branch from 3: 3 -> 5
-		session.branch(id3);
+		await session.branch(id3);
 		const _id5 = session.appendMessage(userMsg("5"));
 
 		// Create branched session from id2 (should only have 1 -> 2)
@@ -440,7 +440,7 @@ describe("createBranchedSession", () => {
 		expect(entries[1].id).toBe(id2);
 	});
 
-	it("extracts correct path from branched tree", () => {
+	it("extracts correct path from branched tree", async () => {
 		const session = SessionManager.inMemory();
 
 		// Build: 1 -> 2 -> 3
@@ -449,7 +449,7 @@ describe("createBranchedSession", () => {
 		session.appendMessage(userMsg("3"));
 
 		// Branch from 2: 2 -> 4 -> 5
-		session.branch(id2);
+		await session.branch(id2);
 		const id4 = session.appendMessage(userMsg("4"));
 		const id5 = session.appendMessage(assistantMsg("5"));
 

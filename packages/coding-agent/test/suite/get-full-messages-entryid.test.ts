@@ -71,7 +71,7 @@ describe("get_full_messages entryId", () => {
 		const msgEntriesBeforeBranch = allBeforeBranch.filter((e) => e.type === "message");
 		expect(msgEntriesBeforeBranch.length).toBe(4);
 
-		harness.sessionManager.branch(turn1Leaf);
+		await harness.sessionManager.branch(turn1Leaf);
 		harness.setResponses([fauxAssistantMessage("A2b")]);
 		await harness.session.prompt("U2b");
 

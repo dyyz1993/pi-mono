@@ -288,7 +288,7 @@ export function createTestSession(options: TestSessionOptions = {}): TestSession
  * u4 -> a4              (another root)
  * ```
  */
-export function buildTestTree(
+export async function buildTestTree(
 	session: SessionManager,
 	structure: {
 		messages: Array<{ role: "user" | "assistant"; text: string; branchFrom?: string }>;
@@ -302,7 +302,7 @@ export function buildTestTree(
 			if (!branchFromId) {
 				throw new Error(`Cannot branch from unknown entry: ${msg.branchFrom}`);
 			}
-			session.branch(branchFromId);
+			await session.branch(branchFromId);
 		}
 
 		const id =
