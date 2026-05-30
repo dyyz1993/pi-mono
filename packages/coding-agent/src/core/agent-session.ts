@@ -1268,6 +1268,9 @@ export class AgentSession {
 
 		if (agent.tools && agent.tools.length > 0) {
 			this.setActiveToolsByName(agent.tools);
+		} else {
+			// No tool restriction — restore ALL tools from registry (e.g. Build agent)
+			this.setActiveToolsByName([...this._toolRegistry.keys()]);
 		}
 
 		if (agent.systemPrompt) {
@@ -1281,6 +1284,10 @@ export class AgentSession {
 			}
 			// Rebuild prompt with agent system prompt inserted between base and tools
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames(), enhancedPrompt);
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
+		} else {
+			// No custom system prompt — rebuild with default (no agent section)
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 

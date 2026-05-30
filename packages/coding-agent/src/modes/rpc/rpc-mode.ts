@@ -1273,7 +1273,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				await session.applyAgentConfig(agent);
 				return success(id, "switch_agent", {
 					agentName: agent.name,
-					tools: agent.tools ?? [],
+					tools: session.getActiveToolNames(),
 					tier: agent.tier,
 					thinkingLevel: agent.thinkingLevel,
 				});
