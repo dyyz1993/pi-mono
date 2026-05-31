@@ -107,6 +107,7 @@ interface ManagedBash {
   child: ChildProcess;
   resolved: boolean;
   backgrounded: boolean;
+  backgroundTrigger?: "auto" | "manual";
   killedByUser?: boolean;
   logStream: ReturnType<typeof createWriteStream> | undefined;
   outputSubscribed: boolean;
@@ -265,6 +266,7 @@ export default function(pi: ExtensionAPI) {
       m.proc.status = "background";
       m.resolved = true;
       m.backgrounded = true;
+      m.backgroundTrigger = "manual";
       m.outputSubscribed = false;
       createLogStream(m);
       const durationMs = Date.now() - m.proc.startedAt;
@@ -281,7 +283,7 @@ export default function(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `${outputPreview}\n\n[Moved to background after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Use get_background_process with <bashId>${m.proc.bashId}</bashId> to check progress.]`,
+            text: `${outputPreview}\n\n[Moved to background by user after ${formatDuration(durationMs)}, PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Do NOT poll — the system will automatically send you the exit result when the process finishes. You can continue with other tasks.]`,
           },
         ],
         details: {
@@ -345,7 +347,7 @@ export default function(pi: ExtensionAPI) {
       "Rules:",
       "- ALWAYS provide a description (5-10 words explaining what the command does).",
       "- Use cwd to run commands in a specific directory instead of cd.",
-      "- When a command is moved to background, the result includes a <bashId>. Use get_background_process with that ID to poll progress before running dependent commands.",
+      "- When a command is moved to background, the result includes a <bashId>. Do NOT poll — the system will automatically notify you when it finishes. Continue with other tasks. Only use get_background_process to check progress mid-execution.",
     ].join("\n"),
     promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
     parameters: bashSchema,
@@ -479,6 +481,7 @@ export default function(pi: ExtensionAPI) {
             m.proc.status = "background";
             m.resolved = true;
             m.backgrounded = true;
+            m.backgroundTrigger = "auto";
             m.outputSubscribed = false;
             createLogStream(m);
             const durationMs = Date.now() - m.proc.startedAt;
@@ -495,7 +498,7 @@ export default function(pi: ExtensionAPI) {
               content: [
                 {
                   type: "text",
-                  text: `${outputPreview}\n\n[Automatically moved to background after ${formatDuration(durationMs)} (backgroundAfter=${effectiveBackgroundAfter}s), PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Use get_background_process with <bashId>${m.proc.bashId}</bashId> to check progress.]`,
+                  text: `${outputPreview}\n\n[Automatically moved to background after ${formatDuration(durationMs)} (backgroundAfter=${effectiveBackgroundAfter}s), PID: ${m.proc.pid ?? "unknown"}. <bashId>${m.proc.bashId}</bashId>. Log: ${m.proc.logPath}. Do NOT poll — the system will automatically send you the exit result when the process finishes. You can continue with other tasks. Use get_background_process with <bashId>${m.proc.bashId}</bashId> only if you need to check progress mid-execution.]`,
                 },
               ],
               details: {
@@ -538,8 +541,9 @@ export default function(pi: ExtensionAPI) {
                 const suffix = m.killedByUser
                   ? "was killed by user"
                   : `exited with code ${code ?? "unknown"}`;
+                const origin = m.backgroundTrigger === "manual" ? " (user-initiated background)" : " (auto background)";
                 pi.sendUserMessage(
-                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) ${suffix} after ${formatDuration((proc.endedAt ?? Date.now()) - proc.startedAt)}.${proc.logPath ? ` Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
+                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"})${origin} ${suffix} after ${formatDuration((proc.endedAt ?? Date.now()) - proc.startedAt)}.${proc.logPath ? ` Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
                   deliverAs ? { deliverAs } : undefined,
                 );
               } catch (err) {
@@ -702,8 +706,9 @@ export default function(pi: ExtensionAPI) {
                 const suffix = m.killedByUser
                   ? "was killed by user"
                   : `crashed: ${err.message}`;
+                const origin = m.backgroundTrigger === "manual" ? " (user-initiated background)" : " (auto background)";
                 pi.sendUserMessage(
-                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"}) ${suffix}${proc.logPath ? `. Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
+                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"})${origin} ${suffix}${proc.logPath ? `. Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
                   deliverAs ? { deliverAs } : undefined,
                 );
               } catch (innerErr) {
@@ -832,7 +837,11 @@ export default function(pi: ExtensionAPI) {
     description: [
       "Query the status and output of a backgrounded bash process by its bashId.",
       "",
-      "When a bash command is moved to background (manually or via backgroundAfter), it returns a <bashId>. Use this tool to:",
+      "When a bash command is moved to background (manually or via backgroundAfter), it returns a <bashId>.",
+      "IMPORTANT: You do NOT need to poll. The system automatically delivers the exit result when the process finishes.",
+      "Use this tool ONLY when you want to inspect output mid-execution (e.g. to check build progress).",
+      "",
+      "This tool can:",
       "- Check if the process is still running, finished, or errored",
       "- Get the accumulated output (filtered if needed)",
       "- Get the exit code (if finished)",
@@ -844,9 +853,9 @@ export default function(pi: ExtensionAPI) {
       "",
       "Typical flow:",
       "1. Start long command: bash({ command: 'npm install', backgroundAfter: 60 })",
-      "2. Do other work while it runs",
-      "3. Poll: get_background_process({ bashId: 'bash-abc123' })",
-      "4. If status='done', proceed. If status='running', poll again later.",
+      "2. Do other work while it runs — do NOT poll, wait for the system notification",
+      "3. If you need to check progress mid-execution: get_background_process({ bashId: 'bash-abc123' })",
+      "4. Otherwise, just wait for the automatic exit notification",
     ].join("\n"),
     promptSnippet: "Check status of a backgrounded bash command",
     parameters: bashStatusSchema,
