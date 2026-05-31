@@ -138,6 +138,8 @@ function createMockSession() {
 				summary: { totalFiles: 0, added: 0, modified: 0, deleted: 0 },
 			}),
 			getFileHistory: vi.fn().mockReturnValue([]),
+			getRollbackPreviewFiles: vi.fn().mockReturnValue([]),
+			resolveSnapshotEntryIdForTarget: vi.fn().mockReturnValue(null),
 		},
 	};
 }
@@ -962,97 +964,94 @@ describe("RPC mode command handling", () => {
 			expect(resp.data.files).toEqual([]);
 		});
 
-		it("resolves toUserMsgEntryId to fromEntryId via session entries", async () => {
-			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
-
-			session.sessionManager.getEntries.mockReturnValueOnce([
+		it("resolves toUserMsgEntryId via getRollbackPreviewFiles and resolveSnapshotEntryIdForTarget", async () => {
+			const entries = [
 				{ id: "user-msg-1", type: "message", message: { role: "user" } },
 				{ id: "snap-1", type: "custom", customType: "step-snapshot", data: { turnIndex: 5 } },
-			]);
+			];
+			session.sessionManager.getEntries.mockReturnValueOnce(entries);
+			(session as any).fileSnapshotManager.getRollbackPreviewFiles.mockReturnValueOnce(["a.ts"]);
+			(session as any).fileSnapshotManager.resolveSnapshotEntryIdForTarget.mockReturnValueOnce("snap-1");
 
-			await sendCommand({
+			const resp = await sendCommand({
 				type: "get_modified_files",
 				id: "gmf-tuid1",
 				toUserMsgEntryId: "user-msg-1",
 			});
 
-			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: "snap-1",
-				toEntryId: undefined,
-				toTurnIndex: undefined,
+			expect((session as any).fileSnapshotManager.getRollbackPreviewFiles).toHaveBeenCalledWith({
+				targetEntryId: "user-msg-1",
+				entries,
 			});
+			expect((session as any).fileSnapshotManager.resolveSnapshotEntryIdForTarget).toHaveBeenCalledWith(
+				"user-msg-1",
+				entries,
+			);
+			expect(resp.success).toBe(true);
+			expect(resp.data.files).toEqual(["a.ts"]);
+			expect(resp.data.resolvedFromEntryId).toBe("snap-1");
 		});
 
 		it("skips entries before userMsg when resolving toUserMsgEntryId", async () => {
-			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
-
-			session.sessionManager.getEntries.mockReturnValueOnce([
+			const entries = [
 				{ id: "snap-0", type: "custom", customType: "step-snapshot", data: { turnIndex: 0 } },
 				{ id: "user-msg-2", type: "message", message: { role: "user" } },
 				{ id: "snap-1", type: "custom", customType: "step-snapshot", data: { turnIndex: 3 } },
-			]);
+			];
+			session.sessionManager.getEntries.mockReturnValueOnce(entries);
+			(session as any).fileSnapshotManager.getRollbackPreviewFiles.mockReturnValueOnce(["b.ts"]);
+			(session as any).fileSnapshotManager.resolveSnapshotEntryIdForTarget.mockReturnValueOnce("snap-1");
 
-			await sendCommand({
+			const resp = await sendCommand({
 				type: "get_modified_files",
 				id: "gmf-tuid2",
 				toUserMsgEntryId: "user-msg-2",
 			});
 
-			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: "snap-1",
-				toEntryId: undefined,
-				toTurnIndex: undefined,
-			});
+			expect((session as any).fileSnapshotManager.resolveSnapshotEntryIdForTarget).toHaveBeenCalledWith(
+				"user-msg-2",
+				entries,
+			);
+			expect(resp.data.resolvedFromEntryId).toBe("snap-1");
 		});
 
-		it("falls back when toUserMsgEntryId not found", async () => {
-			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
-
-			session.sessionManager.getEntries.mockReturnValueOnce([
+		it("falls back to toUserMsgEntryId when resolveSnapshotEntryIdForTarget returns null", async () => {
+			const entries = [
 				{ id: "snap-0", type: "custom", customType: "step-snapshot", data: { turnIndex: 0 } },
-			]);
+			];
+			session.sessionManager.getEntries.mockReturnValueOnce(entries);
+			(session as any).fileSnapshotManager.getRollbackPreviewFiles.mockReturnValueOnce([]);
+			(session as any).fileSnapshotManager.resolveSnapshotEntryIdForTarget.mockReturnValueOnce(null);
 
-			await sendCommand({
+			const resp = await sendCommand({
 				type: "get_modified_files",
 				id: "gmf-tuid3",
 				toUserMsgEntryId: "nonexistent",
 			});
 
-			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: undefined,
-				toEntryId: undefined,
-				toTurnIndex: undefined,
-			});
+			expect(resp.data.resolvedFromEntryId).toBe("nonexistent");
 		});
 
-		it("falls back when no step-snapshot after userMsg", async () => {
-			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
-
-			session.sessionManager.getEntries.mockReturnValueOnce([
+		it("falls back to toUserMsgEntryId when no snapshot resolved for target", async () => {
+			const entries = [
 				{ id: "user-msg-3", type: "message", message: { role: "user" } },
 				{ id: "other", type: "custom", customType: "other-type", data: { foo: "bar" } },
-			]);
+			];
+			session.sessionManager.getEntries.mockReturnValueOnce(entries);
+			(session as any).fileSnapshotManager.getRollbackPreviewFiles.mockReturnValueOnce([]);
+			(session as any).fileSnapshotManager.resolveSnapshotEntryIdForTarget.mockReturnValueOnce(null);
 
-			await sendCommand({
+			const resp = await sendCommand({
 				type: "get_modified_files",
 				id: "gmf-tuid4",
 				toUserMsgEntryId: "user-msg-3",
 			});
 
-			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: undefined,
-				toEntryId: undefined,
-				toTurnIndex: undefined,
-			});
+			expect(resp.data.resolvedFromEntryId).toBe("user-msg-3");
 		});
 
-		it("resolves toUserMsgEntryId even when explicit toTurnIndex is also present", async () => {
-			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce([]);
-
-			session.sessionManager.getEntries.mockReturnValueOnce([
-				{ id: "user-msg-4", type: "message", message: { role: "user" } },
-				{ id: "snap-1", type: "custom", customType: "step-snapshot", data: { turnIndex: 5 } },
-			]);
+		it("uses getModifiedFiles directly when toTurnIndex is present even with toUserMsgEntryId", async () => {
+			(session as any).fileSnapshotManager.getModifiedFiles.mockReturnValueOnce(["c.ts"]);
 
 			await sendCommand({
 				type: "get_modified_files",
@@ -1061,13 +1060,13 @@ describe("RPC mode command handling", () => {
 				toUserMsgEntryId: "user-msg-4",
 			});
 
-			// Both fromEntryId (from toUserMsgEntryId) and toTurnIndex are passed;
-			// fromEntryId takes precedence in getModifiedFiles
 			expect((session as any).fileSnapshotManager.getModifiedFiles).toHaveBeenCalledWith({
-				fromEntryId: "snap-1",
+				fromEntryId: undefined,
 				toEntryId: undefined,
 				toTurnIndex: 2,
+				fromTurnIndex: undefined,
 			});
+			expect((session as any).fileSnapshotManager.getRollbackPreviewFiles).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1123,6 +1122,44 @@ describe("RPC mode command handling", () => {
 				filePath: "src/foo.ts",
 				fromEntryId: "a",
 				toEntryId: "b",
+				useBaselineHash: false,
+			});
+		});
+
+		it("defaults useBaselineHash to false", async () => {
+			(session as any).fileSnapshotManager.getFileDiff.mockReturnValueOnce(null);
+
+			await sendCommand({
+				type: "get_file_diff",
+				id: "gfd-bh1",
+				filePath: "src/foo.ts",
+				fromEntryId: "snap-1",
+			});
+
+			expect((session as any).fileSnapshotManager.getFileDiff).toHaveBeenCalledWith({
+				filePath: "src/foo.ts",
+				fromEntryId: "snap-1",
+				toEntryId: undefined,
+				useBaselineHash: false,
+			});
+		});
+
+		it("passes explicit useBaselineHash true", async () => {
+			(session as any).fileSnapshotManager.getFileDiff.mockReturnValueOnce(null);
+
+			await sendCommand({
+				type: "get_file_diff",
+				id: "gfd-bh2",
+				filePath: "src/foo.ts",
+				fromEntryId: "snap-1",
+				useBaselineHash: true,
+			});
+
+			expect((session as any).fileSnapshotManager.getFileDiff).toHaveBeenCalledWith({
+				filePath: "src/foo.ts",
+				fromEntryId: "snap-1",
+				toEntryId: undefined,
+				useBaselineHash: true,
 			});
 		});
 

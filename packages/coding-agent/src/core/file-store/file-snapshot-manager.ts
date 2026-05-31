@@ -233,9 +233,12 @@ export class FileSnapshotManager {
 			if (leafId && byId && !isOnPathTo(byId, leafId, entry.id)) continue;
 
 			// The first snapshot's baselineTreeHash is the session start state.
-			// Restore it so rollback-to-root can find the correct target.
-			if (this.sessionStartTreeHash === null && data.baselineTreeHash !== null) {
-				this.sessionStartTreeHash = data.baselineTreeHash;
+			// A null baselineTreeHash means the session started from an empty tree.
+			// We must set sessionStartTreeHash on the FIRST snapshot regardless of
+			// whether baselineTreeHash is null or not, to prevent a later snapshot's
+			// baselineTreeHash (which represents a mid-session state) from being used.
+			if (this.sessionStartTreeHash === null && this.lastCommittedTreeHash === null) {
+				this.sessionStartTreeHash = data.baselineTreeHash ?? "";
 			}
 
 			this.snapshotIndex.set(entry.id, {
@@ -304,6 +307,87 @@ export class FileSnapshotManager {
 			diff: snap.diff,
 			turnIndex: snap.turnIndex,
 		};
+	}
+
+	resolveSnapshotEntryIdForTarget(targetEntryId: string, entries: SessionEntry[]): string | null {
+		const snap = this.snapshotIndex.get(targetEntryId);
+		if (snap) return targetEntryId;
+
+		const pathSnap = this.getLatestSnapshotOnPath(entries, targetEntryId);
+		if (pathSnap) {
+			const found = [...this.snapshotIndex.entries()].find(
+				([, v]) => v.snapshotTreeHash === pathSnap.snapshotTreeHash,
+			);
+			if (found) return found[0];
+		}
+
+		const children: Array<{ entryId: string; data: StepSnapshotData }> = [];
+		for (const entry of entries) {
+			if (entry.type !== "custom") continue;
+			const custom = entry as CustomEntry;
+			if (custom.customType !== "step-snapshot") continue;
+			if (entry.parentId !== targetEntryId) continue;
+			children.push({ entryId: entry.id, data: custom.data as StepSnapshotData });
+		}
+		if (children.length > 0) {
+			return children[children.length - 1].entryId;
+		}
+
+		return null;
+	}
+
+	getRollbackPreviewFiles(options: {
+		targetEntryId: string;
+		entries: SessionEntry[];
+	}): ModifiedFileInfo[] {
+		const targetTreeHash = this.resolveTargetTreeHash(options.targetEntryId, options.entries);
+		const currentTreeHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash ?? null;
+
+		if (targetTreeHash === currentTreeHash) return [];
+
+		const emptyFiles = new Map<string, string>();
+		const targetIsEmpty = targetTreeHash === null || targetTreeHash === "";
+		const targetFiles = targetIsEmpty ? emptyFiles : (this.git.readTree(targetTreeHash) ?? emptyFiles);
+		const currentFiles = currentTreeHash && currentTreeHash !== "" ? (this.git.readTree(currentTreeHash) ?? emptyFiles) : emptyFiles;
+
+		const files: ModifiedFileInfo[] = [];
+
+		for (const [path, content] of currentFiles) {
+			const targetContent = targetFiles.get(path);
+			if (targetContent === undefined) {
+				files.push({ path, status: "added", turnIndex: -1, entryId: "" });
+			} else if (targetContent !== content) {
+				files.push({ path, status: "modified", turnIndex: -1, entryId: "" });
+			}
+		}
+
+		for (const path of targetFiles.keys()) {
+			if (!currentFiles.has(path)) {
+				files.push({ path, status: "deleted", turnIndex: -1, entryId: "" });
+			}
+		}
+
+		return files.sort((a, b) => a.path.localeCompare(b.path));
+	}
+
+	private resolveTargetTreeHash(targetEntryId: string, entries: SessionEntry[]): string | null {
+		const snap = this.snapshotIndex.get(targetEntryId);
+		if (snap) return snap.snapshotTreeHash;
+
+		const pathSnap = this.getLatestSnapshotOnPath(entries, targetEntryId);
+		if (pathSnap) return pathSnap.snapshotTreeHash;
+
+		const children: StepSnapshotData[] = [];
+		for (const entry of entries) {
+			if (entry.type !== "custom") continue;
+			const custom = entry as CustomEntry;
+			if (custom.customType !== "step-snapshot") continue;
+			if (entry.parentId !== targetEntryId) continue;
+			children.push(custom.data as StepSnapshotData);
+		}
+		if (children.length > 0) return children[children.length - 1].snapshotTreeHash;
+
+		return this.sessionStartTreeHash ?? null;
 	}
 
 	getModifiedFiles(options?: {
@@ -532,7 +616,7 @@ export class FileSnapshotManager {
 			} else {
 				const pathSnap = this.getLatestSnapshotOnPath(options.entries, options.targetEntryId);
 				targetTreeHash = pathSnap?.snapshotTreeHash ?? null;
-				if (targetTreeHash === null && this.sessionStartTreeHash === null) {
+				if (targetTreeHash === null && !this.sessionStartTreeHash) {
 					targetIsEmpty = true;
 				}
 			}
@@ -540,8 +624,8 @@ export class FileSnapshotManager {
 			// Rolling back to session start (no targetEntryId).
 			// If sessionStartTreeHash is null, it means the working dir was empty at session start.
 			// This is a valid target state ("no files"), not a missing snapshot.
-			targetTreeHash = this.sessionStartTreeHash ?? null;
-			targetIsEmpty = targetTreeHash === null;
+			targetTreeHash = this.sessionStartTreeHash || null;
+			targetIsEmpty = !targetTreeHash;
 		}
 
 		let currentTreeHash: string | null;

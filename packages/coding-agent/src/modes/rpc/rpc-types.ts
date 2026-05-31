@@ -93,12 +93,13 @@ export type RpcCommand =
 	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
 	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
 
-	// Rollback
+ 	// Rollback
 	| {
 			id?: string;
 			type: "get_modified_files";
 			fromEntryId?: string;
 			toEntryId?: string;
+			fromTurnIndex?: number;
 			toTurnIndex?: number;
 			toUserMsgEntryId?: string;
 	  }

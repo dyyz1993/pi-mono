@@ -1325,30 +1325,31 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return success(id, "get_modified_files", { files: [], resolvedFromEntryId: null });
 				}
 
-				// Resolve fromEntryId directly from the user message entry's step-snapshot,
-				// avoiding a round-trip through turnIndex which breaks when multiple snapshots
-				// share the same turnIndex (e.g. after rollback + continue chatting).
-				let fromEntryId = command.fromEntryId;
-				if (!fromEntryId && command.toUserMsgEntryId) {
-					const entries = session.sessionManager.getEntries();
-					const userEntryIdx = entries.findIndex((e) => e.id === command.toUserMsgEntryId);
-					if (userEntryIdx !== -1) {
-						for (let i = userEntryIdx; i < entries.length; i++) {
-							const entry = entries[i];
-							if (entry.type === "custom" && (entry as any).customType === "step-snapshot") {
-								fromEntryId = entry.id;
-								break;
-							}
-						}
-					}
+				if (command.fromEntryId || command.toEntryId || command.toTurnIndex || command.fromTurnIndex) {
+					const files = fileSnapshotManager.getModifiedFiles({
+						fromEntryId: command.fromEntryId,
+						toEntryId: command.toEntryId,
+						toTurnIndex: command.toTurnIndex,
+						fromTurnIndex: command.fromTurnIndex,
+					});
+					return success(id, "get_modified_files", { files, resolvedFromEntryId: command.fromEntryId ?? null });
 				}
 
-				const files = fileSnapshotManager.getModifiedFiles({
-					fromEntryId,
-					toEntryId: command.toEntryId,
-					toTurnIndex: command.toTurnIndex,
+			if (command.toUserMsgEntryId) {
+				const entries = session.sessionManager.getEntries();
+				const files = fileSnapshotManager.getRollbackPreviewFiles({
+					targetEntryId: command.toUserMsgEntryId,
+					entries,
 				});
-				return success(id, "get_modified_files", { files, resolvedFromEntryId: fromEntryId ?? null });
+				const resolvedSnapshotEntryId = fileSnapshotManager.resolveSnapshotEntryIdForTarget(
+					command.toUserMsgEntryId,
+					entries,
+				);
+				return success(id, "get_modified_files", { files, resolvedFromEntryId: resolvedSnapshotEntryId ?? command.toUserMsgEntryId });
+			}
+
+				const files = fileSnapshotManager.getModifiedFiles();
+				return success(id, "get_modified_files", { files, resolvedFromEntryId: null });
 			}
 
 			case "get_file_diff": {
@@ -1360,7 +1361,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					filePath: command.filePath,
 					fromEntryId: command.fromEntryId,
 					toEntryId: command.toEntryId,
-					useBaselineHash: command.useBaselineHash ?? true,
+					useBaselineHash: command.useBaselineHash ?? false,
 				});
 				if (!diff) {
 					return success(id, "get_file_diff", null);
