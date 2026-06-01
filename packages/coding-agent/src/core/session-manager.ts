@@ -66,6 +66,11 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	modelId: string;
 }
 
+export interface TierModelsChangeEntry extends SessionEntryBase {
+	type: "tier_models_change";
+	tierModels: Record<string, string>;
+}
+
 export interface AgentChangeEntry extends SessionEntryBase {
 	type: "agent_change";
 	agentName: string;
@@ -162,6 +167,7 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
+	| TierModelsChangeEntry
 	| AgentChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
@@ -1003,6 +1009,19 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			provider,
 			modelId,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a tier model mapping change as child of current leaf, then advance leaf. Returns entry id. */
+	appendTierModelsChange(tierModels: Record<string, string>): string {
+		const entry: TierModelsChangeEntry = {
+			type: "tier_models_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			tierModels,
 		};
 		this._appendEntry(entry);
 		return entry.id;

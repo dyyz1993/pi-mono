@@ -533,6 +533,29 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_available_models", { models });
 			}
 
+			case "get_tier_models": {
+				return success(id, "get_tier_models", { models: session.getTierModels() });
+			}
+
+			case "set_tier_models": {
+				const validTiers = new Set(["fast", "pro", "max"]);
+				for (const tierName of Object.keys(command.models)) {
+					if (!validTiers.has(tierName)) {
+						return error(
+							id,
+							"set_tier_models",
+							`Invalid tier name: "${tierName}". Valid tiers are: fast, pro, max`,
+						);
+					}
+				}
+				const mapping: Record<string, string> = {};
+				if (command.models.fast !== undefined) mapping.fast = command.models.fast;
+				if (command.models.pro !== undefined) mapping.pro = command.models.pro;
+				if (command.models.max !== undefined) mapping.max = command.models.max;
+				session.setTierModels(mapping);
+				return success(id, "set_tier_models");
+			}
+
 			// =================================================================
 			// Thinking
 			// =================================================================

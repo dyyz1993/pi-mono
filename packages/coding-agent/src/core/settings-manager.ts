@@ -4,6 +4,7 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { DEFAULT_TIER_ALIASES } from "./defaults.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
 export interface CompactionSettings {
@@ -113,6 +114,7 @@ export interface Settings {
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
+	tierModels?: Record<string, string>;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -1109,6 +1111,16 @@ export class SettingsManager {
 	setWarnings(warnings: WarningSettings): void {
 		this.globalSettings.warnings = { ...warnings };
 		this.markModified("warnings");
+		this.save();
+	}
+
+	getTierModels(): Record<string, string> {
+		return { ...DEFAULT_TIER_ALIASES, ...(this.settings.tierModels ?? {}) };
+	}
+
+	setTierModels(models: Record<string, string>): void {
+		this.globalSettings.tierModels = { ...models };
+		this.markModified("tierModels");
 		this.save();
 	}
 }

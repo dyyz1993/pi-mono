@@ -4190,7 +4190,11 @@ export class InteractiveMode {
 			// Fall back to settings
 			const patterns = this.settingsManager.getEnabledModels();
 			if (patterns !== undefined && patterns.length > 0) {
-				const scopedModels = await resolveModelScope(patterns, this.session.modelRegistry);
+				const scopedModels = await resolveModelScope(
+					patterns,
+					this.session.modelRegistry,
+					this.settingsManager.getTierModels(),
+				);
 				currentEnabledIds = scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
 			}
 		}
@@ -4199,7 +4203,11 @@ export class InteractiveMode {
 		const updateSessionModels = async (enabledIds: string[] | null) => {
 			currentEnabledIds = enabledIds === null ? null : [...enabledIds];
 			if (enabledIds && enabledIds.length > 0 && enabledIds.length < allModels.length) {
-				const newScopedModels = await resolveModelScope(enabledIds, this.session.modelRegistry);
+				const newScopedModels = await resolveModelScope(
+					enabledIds,
+					this.session.modelRegistry,
+					this.settingsManager.getTierModels(),
+				);
 				this.session.setScopedModels(
 					newScopedModels.map((sm) => ({
 						model: sm.model,

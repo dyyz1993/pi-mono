@@ -358,6 +358,7 @@ function buildSessionOptions(
 			cliProvider: parsed.provider,
 			cliModel: parsed.model,
 			modelRegistry,
+			tierModels: settingsManager.getTierModels(),
 		});
 		if (resolved.warning) {
 			diagnostics.push({ type: "warning", message: resolved.warning });
@@ -624,7 +625,9 @@ export async function main(args: string[], options?: MainOptions) {
 
 		const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
 		const scopedModels =
-			modelPatterns && modelPatterns.length > 0 ? await resolveModelScope(modelPatterns, modelRegistry) : [];
+			modelPatterns && modelPatterns.length > 0
+				? await resolveModelScope(modelPatterns, modelRegistry, settingsManager.getTierModels())
+				: [];
 		const {
 			options: sessionOptions,
 			cliThinkingFromModel,

@@ -7,7 +7,7 @@ import { type Api, type KnownProvider, type Model, modelsAreEqual } from "@earen
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
-import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { DEFAULT_THINKING_LEVEL, DEFAULT_TIER_ALIASES } from "./defaults.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 
 /** Default model IDs for each known provider */
@@ -50,6 +50,15 @@ export interface ScopedModel {
 	model: Model<Api>;
 	/** Thinking level if explicitly specified in pattern (e.g., "model:high"), undefined otherwise */
 	thinkingLevel?: ThinkingLevel;
+}
+
+export function resolveModelAlias(input: string, tierModels?: Record<string, string>): string | undefined {
+	const merged = { ...DEFAULT_TIER_ALIASES, ...tierModels };
+	const target = merged[input.toLowerCase()];
+	if (target && target.toLowerCase() !== input.toLowerCase()) {
+		return target;
+	}
+	return undefined;
 }
 
 /**
@@ -252,11 +261,20 @@ export function parseModelPattern(
  * The algorithm tries to match the full pattern first, then progressively
  * strips colon-suffixes to find a match.
  */
-export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
+export async function resolveModelScope(
+	patterns: string[],
+	modelRegistry: ModelRegistry,
+	tierModels?: Record<string, string>,
+): Promise<ScopedModel[]> {
 	const availableModels = await modelRegistry.getAvailable();
 	const scopedModels: ScopedModel[] = [];
 
-	for (const pattern of patterns) {
+	for (let pattern of patterns) {
+		const aliasTarget = resolveModelAlias(pattern, tierModels);
+		if (aliasTarget) {
+			pattern = aliasTarget;
+		}
+
 		// Check if pattern contains glob characters
 		if (pattern.includes("*") || pattern.includes("?") || pattern.includes("[")) {
 			// Extract optional thinking level suffix (e.g., "provider/*:high")
@@ -338,8 +356,9 @@ export function resolveCliModel(options: {
 	cliProvider?: string;
 	cliModel?: string;
 	modelRegistry: ModelRegistry;
+	tierModels?: Record<string, string>;
 }): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRegistry } = options;
+	const { cliProvider, cliModel, modelRegistry, tierModels } = options;
 
 	if (!cliModel) {
 		return { model: undefined, warning: undefined, error: undefined };
@@ -376,7 +395,8 @@ export function resolveCliModel(options: {
 	// interpretation over matching models whose IDs literally contain slashes
 	// (e.g. "zai/glm-5" should resolve to provider=zai, model=glm-5, not to a
 	// vercel-ai-gateway model with id "zai/glm-5").
-	let pattern = cliModel;
+	const aliasTarget = resolveModelAlias(cliModel, tierModels);
+	let pattern = aliasTarget ?? cliModel;
 	let inferredProvider = false;
 
 	if (!provider) {
@@ -489,6 +509,7 @@ export async function findInitialModel(options: {
 	defaultModelId?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	modelRegistry: ModelRegistry;
+	tierModels?: Record<string, string>;
 }): Promise<InitialModelResult> {
 	const {
 		cliProvider,
@@ -499,6 +520,7 @@ export async function findInitialModel(options: {
 		defaultModelId,
 		defaultThinkingLevel,
 		modelRegistry,
+		tierModels,
 	} = options;
 
 	let model: Model<Api> | undefined;
@@ -510,6 +532,7 @@ export async function findInitialModel(options: {
 			cliProvider,
 			cliModel,
 			modelRegistry,
+			tierModels,
 		});
 		if (resolved.error) {
 			console.error(chalk.red(resolved.error));
@@ -531,7 +554,10 @@ export async function findInitialModel(options: {
 
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
-		const found = modelRegistry.find(defaultProvider, defaultModelId);
+		const aliasResolved = resolveModelAlias(defaultModelId, tierModels);
+		const found = aliasResolved
+			? findExactModelReferenceMatch(aliasResolved, modelRegistry.getAll())
+			: modelRegistry.find(defaultProvider, defaultModelId);
 		if (found) {
 			model = found;
 			if (defaultThinkingLevel) {

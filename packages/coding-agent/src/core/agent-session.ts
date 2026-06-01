@@ -346,6 +346,7 @@ export class AgentSession {
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
+	private _tierModels: Record<string, string>;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -364,6 +365,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
+		this._tierModels = this.settingsManager.getTierModels();
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -783,6 +785,16 @@ export class AgentSession {
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model<any> | undefined {
 		return this.agent.state.model;
+	}
+
+	getTierModels(): Record<string, string> {
+		return { ...this._tierModels };
+	}
+
+	setTierModels(mapping: Record<string, string>): void {
+		this._tierModels = { ...mapping };
+		this.sessionManager.appendTierModelsChange(mapping);
+		this.settingsManager.setTierModels(mapping);
 	}
 
 	/** Current thinking level */
