@@ -374,6 +374,38 @@ export class AgentSessionRuntime {
 		return { cancelled: false };
 	}
 
+	async setCwd(cwd: string): Promise<{ cancelled: boolean }> {
+		const resolvedCwd = resolvePath(cwd);
+		if (!existsSync(resolvedCwd)) {
+			throw new Error(`Working directory does not exist: ${resolvedCwd}`);
+		}
+		if (resolvedCwd === this.cwd) {
+			return { cancelled: false };
+		}
+
+		const previousSessionFile = this.session.sessionFile;
+		const sessionManager =
+			this.session.sessionManager.isPersisted() && previousSessionFile
+				? SessionManager.forkFrom(previousSessionFile, resolvedCwd)
+				: SessionManager.create(resolvedCwd);
+		const beforeResult = await this.emitBeforeSwitch("resume", sessionManager.getSessionFile());
+		if (beforeResult.cancelled) {
+			return beforeResult;
+		}
+
+		await this.teardownCurrent("resume", sessionManager.getSessionFile());
+		this.apply(
+			await this.createRuntime({
+				cwd: resolvedCwd,
+				agentDir: this.services.agentDir,
+				sessionManager,
+				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+			}),
+		);
+		await this.finishSessionReplacement();
+		return { cancelled: false };
+	}
+
 	async dispose(): Promise<void> {
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",

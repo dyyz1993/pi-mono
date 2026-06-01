@@ -1127,6 +1127,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "reload");
 			}
 
+			case "set_cwd": {
+				const result = await runtimeHost.setCwd(command.cwd);
+				if (!result.cancelled) {
+					await rebindSession();
+				}
+				return success(id, "set_cwd", result);
+			}
+
 			case "get_agents_files": {
 				const result = session.resourceLoader.getAgentsFiles();
 				return success(id, "get_agents_files", { agentsFiles: result.agentsFiles });
