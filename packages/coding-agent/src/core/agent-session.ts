@@ -237,6 +237,8 @@ export interface SessionStats {
 	contextUsage?: ContextUsage;
 }
 
+export type PermissionMode = "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
@@ -317,6 +319,7 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
+	private _permissionMode: PermissionMode = "auto";
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -813,6 +816,14 @@ export class AgentSession {
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
 		this.agent.state.systemPrompt = this._baseSystemPrompt;
+	}
+
+	get permissionMode(): PermissionMode {
+		return this._permissionMode;
+	}
+
+	setPermissionMode(mode: PermissionMode): void {
+		this._permissionMode = mode;
 	}
 
 	/** Whether compaction or branch summarization is currently running */

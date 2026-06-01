@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import type { PermissionMode } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
 	ExtensionUIContext,
@@ -45,6 +46,12 @@ export type {
 	RpcResponse,
 	RpcSessionState,
 } from "./rpc-types.ts";
+
+const PERMISSION_MODES = ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"] as const;
+
+function isPermissionMode(mode: string): mode is PermissionMode {
+	return (PERMISSION_MODES as readonly string[]).includes(mode);
+}
 
 /**
  * Run in RPC mode.
@@ -664,6 +671,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 
 				return success(id, "get_commands", { commands });
+			}
+
+			case "set_permission_mode": {
+				if (!isPermissionMode(command.mode)) {
+					return error(
+						id,
+						"set_permission_mode",
+						`Invalid permission mode: "${command.mode}". Valid modes: ${PERMISSION_MODES.join(", ")}`,
+					);
+				}
+				session.setPermissionMode(command.mode);
+				return success(id, "set_permission_mode", { mode: command.mode });
 			}
 
 			default: {
