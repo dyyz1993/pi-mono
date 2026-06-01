@@ -918,6 +918,22 @@ async function listSessionsFromDir(
  * handles compaction summaries and follows the path from root to current leaf.
  */
 export class SessionManager {
+
+	private static readonly _SKIP_TYPES = new Set([
+		"custom",
+		"agent_change",
+		"model_change",
+		"thinking_level_change",
+		"tier_models_change",
+		"custom_message",
+		"session_info",
+		"segment_summary",
+		"deletion",
+		"label",
+		"leaf_pointer",
+		"fold",
+	]);
+
 	private sessionId: string = "";
 	private sessionFile: string | undefined;
 	private sessionDir: string;
@@ -1200,13 +1216,11 @@ export class SessionManager {
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
 
-		if (this.flushed) {
-			// File is already active — append via the async buffer
-			this.writeBuffer.push(JSON.stringify(entry));
-			this._scheduleFlush();
-		} else {
-			// File hasn't been fully flushed yet — direct append so the
-			// leaf_pointer is durably written even if the buffer flush fails
+		{
+			// Always write leaf_pointer directly to ensure durability before returning.
+			// The buffered flush path (_scheduleFlush) is too late — navigateTree
+			// returns before the flush fires, causing getFullMessages to read a
+			// stale leaf_pointer from JSONL.
 			try {
 				await appendFile(this.sessionFile, `\n${JSON.stringify(entry)}\n`, "utf-8");
 			} catch {
@@ -1302,6 +1316,11 @@ export class SessionManager {
 			message,
 		};
 		this._appendEntry(entry);
+		// Persist leaf_pointer on user message write so the position survives
+		// even if the process is killed before agent_end.
+		if (message.role === "user") {
+			this._persistLeafPointer(entry.id).catch(() => {});
+		}
 		return entry.id;
 	}
 
@@ -1535,7 +1554,10 @@ export class SessionManager {
 		while (ancestorId) {
 			const ancestor = this.byId.get(ancestorId);
 			if (!ancestor) break;
-			if (ancestor.type !== "custom") break;
+			const skipTypes = SessionManager._SKIP_TYPES;
+			if (!skipTypes.has(ancestor.type)) {
+				break;
+			}
 			ancestorId = ancestor.parentId;
 		}
 		return ancestorId ?? null;
@@ -1702,6 +1724,15 @@ export class SessionManager {
 		// Must bypass _appendEntry because that sets leafId = entry.id (the leaf_pointer
 		// entry itself), but we want leafId to remain branchFromId.
 		await this._persistLeafPointer(branchFromId);
+	}
+
+	/**
+	 * Persist the current in-memory leafId as a leaf_pointer entry.
+	 * Called after agent_end to ensure the leaf position survives reload/restart,
+	 * even when the process exits before the next branch() call.
+	 */
+	async persistCurrentLeaf(): Promise<void> {
+		await this._persistLeafPointer(this.leafId);
 	}
 
 	/**

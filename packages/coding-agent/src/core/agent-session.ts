@@ -922,6 +922,10 @@ export class AgentSession {
 
 			this._resolveRetry();
 			await this._checkCompaction(msg);
+
+			// Persist the current leaf position so it survives reload/restart.
+			// Must be after compaction (which may create new entries and advance leafId).
+			await this.sessionManager.persistCurrentLeaf().catch(() => {});
 		}
 	}
 
