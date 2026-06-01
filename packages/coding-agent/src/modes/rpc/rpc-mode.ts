@@ -14,6 +14,7 @@
 import * as crypto from "node:crypto";
 import type { PermissionMode } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { discoverAgents } from "../../core/agent-types.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -30,12 +31,19 @@ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
+	RpcAgentSummary,
+	RpcAllTool,
 	RpcCommand,
+	RpcContextUsage,
+	RpcExtension,
+	RpcExtensionFlag,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
+	RpcSkill,
 	RpcSlashCommand,
+	RpcTool,
 } from "./rpc-types.ts";
 
 // Re-export types for consumers
@@ -671,6 +679,210 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 
 				return success(id, "get_commands", { commands });
+			}
+
+			// =================================================================
+			// Resources (skills, extensions, tools)
+			// =================================================================
+
+			case "get_skills": {
+				const { skills } = session.resourceLoader.getSkills();
+				const rpcSkills: RpcSkill[] = skills.map((skill) => ({
+					name: skill.name,
+					description: skill.description,
+					filePath: skill.filePath,
+					baseDir: skill.baseDir,
+					sourceInfo: skill.sourceInfo,
+					disableModelInvocation: skill.disableModelInvocation,
+				}));
+				return success(id, "get_skills", { skills: rpcSkills });
+			}
+
+			case "get_extensions": {
+				const { extensions } = session.resourceLoader.getExtensions();
+				const rpcExtensions: RpcExtension[] = extensions.map((extension) => ({
+					path: extension.path,
+					resolvedPath: extension.resolvedPath,
+					sourceInfo: extension.sourceInfo,
+					toolNames: Array.from(extension.tools.keys()),
+					commandNames: Array.from(extension.commands.keys()),
+				}));
+				return success(id, "get_extensions", { extensions: rpcExtensions });
+			}
+
+			case "get_tools": {
+				const tools: RpcTool[] = session.extensionRunner.getAllRegisteredTools().map((tool) => ({
+					name: tool.definition.name,
+					label: tool.definition.label,
+					description: tool.definition.description,
+					sourceInfo: tool.sourceInfo,
+				}));
+				return success(id, "get_tools", { tools });
+			}
+
+			// =================================================================
+			// Settings
+			// =================================================================
+
+			case "get_settings": {
+				const settings =
+					command.scope === "project"
+						? session.settingsManager.getProjectSettings()
+						: session.settingsManager.getGlobalSettings();
+				return success(id, "get_settings", settings);
+			}
+
+			case "set_settings": {
+				session.settingsManager.applyOverrides(command.settings, command.scope ?? "global");
+				return success(id, "set_settings");
+			}
+
+			// =================================================================
+			// Context, tools, queue, flags
+			// =================================================================
+
+			case "get_context_usage": {
+				const usage = session.getContextUsage();
+				const data: RpcContextUsage = usage ?? {
+					tokens: null,
+					contextWindow: session.model?.contextWindow ?? 0,
+					percent: null,
+				};
+				return success(id, "get_context_usage", data);
+			}
+
+			case "get_system_prompt": {
+				const systemPrompt = session.agent.state.systemPrompt || session.systemPrompt || "";
+				const appendSystemPrompt = session.resourceLoader.getAppendSystemPrompt();
+				return success(id, "get_system_prompt", { systemPrompt, appendSystemPrompt });
+			}
+
+			case "get_active_tools": {
+				return success(id, "get_active_tools", { toolNames: session.getActiveToolNames() });
+			}
+
+			case "set_active_tools": {
+				session.setActiveToolsByName(command.toolNames);
+				return success(id, "set_active_tools");
+			}
+
+			case "get_queue": {
+				return success(id, "get_queue", {
+					steering: [...session.getSteeringMessages()],
+					followUp: [...session.getFollowUpMessages()],
+				});
+			}
+
+			case "clear_queue": {
+				return success(id, "clear_queue", session.clearQueue());
+			}
+
+			case "get_flags": {
+				const flags: RpcExtensionFlag[] = Array.from(session.extensionRunner.getFlags().entries()).map(
+					([name, flag]) => ({
+						name,
+						description: flag.description,
+						type: flag.type,
+						default: flag.default,
+						extensionPath: flag.extensionPath,
+					}),
+				);
+				return success(id, "get_flags", { flags });
+			}
+
+			case "get_flag_values": {
+				const values: Record<string, boolean | string> = {};
+				for (const [name, value] of session.extensionRunner.getFlagValues()) {
+					values[name] = value;
+				}
+				return success(id, "get_flag_values", { values });
+			}
+
+			case "set_flag": {
+				session.extensionRunner.setFlagValue(command.name, command.value);
+				return success(id, "set_flag");
+			}
+
+			case "reload": {
+				await session.reload();
+				await rebindSession();
+				return success(id, "reload");
+			}
+
+			case "get_agents_files": {
+				const result = session.resourceLoader.getAgentsFiles();
+				return success(id, "get_agents_files", { agentsFiles: result.agentsFiles });
+			}
+
+			// =================================================================
+			// Agent switching
+			// =================================================================
+
+			case "get_agents": {
+				const discovery = discoverAgents(runtimeHost.cwd, "both");
+				const agents: RpcAgentSummary[] = discovery.agents.map((agent) => ({
+					name: agent.name,
+					description: agent.description,
+					tier: agent.tier,
+					tools: agent.tools,
+					disallowedTools: agent.disallowedTools,
+					permissionMode: agent.permissionMode,
+					source: agent.source,
+					filePath: agent.filePath,
+				}));
+				return success(id, "get_agents", { agents });
+			}
+
+			case "switch_agent": {
+				const discovery = discoverAgents(runtimeHost.cwd, "both");
+				const agent = discovery.agents.find((candidate) => candidate.name === command.agentName);
+				if (!agent) {
+					return error(id, "switch_agent", `Agent "${command.agentName}" not found`);
+				}
+				session.applyAgentConfig(agent);
+				return success(id, "switch_agent", {
+					agentName: agent.name,
+					tools: session.getActiveToolNames(),
+					tier: agent.tier,
+					thinkingLevel: agent.thinkingLevel,
+				});
+			}
+
+			case "get_current_agent": {
+				return success(id, "get_current_agent", { agentName: session.getCurrentAgent() });
+			}
+
+			case "get_latest_agent_change": {
+				const entries = session.sessionManager.getEntries();
+				for (let index = entries.length - 1; index >= 0; index--) {
+					const entry = entries[index];
+					if (entry.type === "agent_change") {
+						return success(id, "get_latest_agent_change", {
+							agentName: entry.agentName,
+							agentConfig: entry.agentConfig,
+							timestamp: entry.timestamp,
+						});
+					}
+				}
+				return success(id, "get_latest_agent_change", null);
+			}
+
+			case "get_agent_detail": {
+				const discovery = discoverAgents(runtimeHost.cwd, "both");
+				const agent = discovery.agents.find((candidate) => candidate.name === command.agentName);
+				if (!agent) {
+					return error(id, "get_agent_detail", `Agent "${command.agentName}" not found`);
+				}
+				return success(id, "get_agent_detail", { agent });
+			}
+
+			case "get_all_tools": {
+				const tools: RpcAllTool[] = session.getAllTools().map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+					sourceInfo: tool.sourceInfo,
+				}));
+				return success(id, "get_all_tools", { tools });
 			}
 
 			case "set_permission_mode": {

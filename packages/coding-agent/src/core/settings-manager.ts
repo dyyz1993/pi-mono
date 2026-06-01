@@ -444,9 +444,32 @@ export class SettingsManager {
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 	}
 
-	/** Apply additional overrides on top of current settings */
-	applyOverrides(overrides: Partial<Settings>): void {
+	/** Apply additional overrides on top of current settings and persist to disk */
+	applyOverrides(overrides: Partial<Settings>, scope: SettingsScope = "global"): void {
 		this.settings = deepMergeSettings(this.settings, overrides);
+
+		if (scope === "global") {
+			this.globalSettings = deepMergeSettings(this.globalSettings, overrides);
+		} else {
+			this.projectSettings = deepMergeSettings(this.projectSettings, overrides);
+		}
+
+		for (const key of Object.keys(overrides) as (keyof Settings)[]) {
+			if (overrides[key] === undefined) {
+				continue;
+			}
+			if (scope === "global") {
+				this.markModified(key);
+			} else {
+				this.markProjectModified(key);
+			}
+		}
+
+		if (scope === "global") {
+			this.save();
+		} else {
+			this.saveProjectSettings(this.projectSettings);
+		}
 	}
 
 	/** Mark a global field as modified during this session */

@@ -8,8 +8,11 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { PermissionMode, SessionStats } from "../../core/agent-session.ts";
+import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { AgentChangeEntry } from "../../core/session-manager.ts";
+import type { Settings } from "../../core/settings-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
 // ============================================================================
@@ -68,6 +71,48 @@ export type RpcCommand =
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
 
+	// Resources
+	| { id?: string; type: "get_skills" }
+	| { id?: string; type: "get_extensions" }
+	| { id?: string; type: "get_tools" }
+
+	// Settings
+	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
+	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
+
+	// Context usage
+	| { id?: string; type: "get_context_usage" }
+
+	// System prompt
+	| { id?: string; type: "get_system_prompt" }
+
+	// Active tools
+	| { id?: string; type: "get_active_tools" }
+	| { id?: string; type: "set_active_tools"; toolNames: string[] }
+
+	// Queue
+	| { id?: string; type: "get_queue" }
+	| { id?: string; type: "clear_queue" }
+
+	// Flags
+	| { id?: string; type: "get_flags" }
+	| { id?: string; type: "get_flag_values" }
+	| { id?: string; type: "set_flag"; name: string; value: boolean | string }
+
+	// Reload
+	| { id?: string; type: "reload" }
+
+	// Agents files
+	| { id?: string; type: "get_agents_files" }
+
+	// Agent switching
+	| { id?: string; type: "get_agents" }
+	| { id?: string; type: "switch_agent"; agentName: string }
+	| { id?: string; type: "get_current_agent" }
+	| { id?: string; type: "get_latest_agent_change" }
+	| { id?: string; type: "get_agent_detail"; agentName: string }
+	| { id?: string; type: "get_all_tools" }
+
 	// Permission mode
 	| { id?: string; type: "set_permission_mode"; mode: PermissionMode };
 
@@ -84,6 +129,64 @@ export interface RpcSlashCommand {
 	/** What kind of command this is */
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
+	sourceInfo: SourceInfo;
+}
+
+/** A loaded skill */
+export interface RpcSkill {
+	name: string;
+	description: string;
+	filePath: string;
+	baseDir: string;
+	sourceInfo: SourceInfo;
+	disableModelInvocation: boolean;
+}
+
+/** A loaded extension */
+export interface RpcExtension {
+	path: string;
+	resolvedPath: string;
+	sourceInfo: SourceInfo;
+	toolNames: string[];
+	commandNames: string[];
+}
+
+/** A registered extension tool */
+export interface RpcTool {
+	name: string;
+	label: string;
+	description: string;
+	sourceInfo: SourceInfo;
+}
+
+export interface RpcContextUsage {
+	tokens: number | null;
+	contextWindow: number;
+	percent: number | null;
+}
+
+export interface RpcExtensionFlag {
+	name: string;
+	description?: string;
+	type: "boolean" | "string";
+	default?: boolean | string;
+	extensionPath: string;
+}
+
+export interface RpcAgentSummary {
+	name: string;
+	description: string;
+	tier?: string;
+	tools?: string[];
+	disallowedTools?: string[];
+	permissionMode?: string;
+	source: string;
+	filePath: string;
+}
+
+export interface RpcAllTool {
+	name: string;
+	description: string;
 	sourceInfo: SourceInfo;
 }
 
@@ -205,6 +308,96 @@ export type RpcResponse =
 			success: true;
 			data: { commands: RpcSlashCommand[] };
 	  }
+
+	// Resources
+	| { id?: string; type: "response"; command: "get_skills"; success: true; data: { skills: RpcSkill[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_extensions";
+			success: true;
+			data: { extensions: RpcExtension[] };
+	  }
+	| { id?: string; type: "response"; command: "get_tools"; success: true; data: { tools: RpcTool[] } }
+
+	// Settings
+	| { id?: string; type: "response"; command: "get_settings"; success: true; data: Settings }
+	| { id?: string; type: "response"; command: "set_settings"; success: true }
+
+	// Context usage
+	| { id?: string; type: "response"; command: "get_context_usage"; success: true; data: RpcContextUsage }
+
+	// System prompt
+	| {
+			id?: string;
+			type: "response";
+			command: "get_system_prompt";
+			success: true;
+			data: { systemPrompt: string; appendSystemPrompt: string[] };
+	  }
+
+	// Active tools
+	| { id?: string; type: "response"; command: "get_active_tools"; success: true; data: { toolNames: string[] } }
+	| { id?: string; type: "response"; command: "set_active_tools"; success: true }
+
+	// Queue
+	| {
+			id?: string;
+			type: "response";
+			command: "get_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "clear_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+
+	// Flags
+	| { id?: string; type: "response"; command: "get_flags"; success: true; data: { flags: RpcExtensionFlag[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_flag_values";
+			success: true;
+			data: { values: Record<string, boolean | string> };
+	  }
+	| { id?: string; type: "response"; command: "set_flag"; success: true }
+
+	// Reload
+	| { id?: string; type: "response"; command: "reload"; success: true }
+
+	// Agents files
+	| {
+			id?: string;
+			type: "response";
+			command: "get_agents_files";
+			success: true;
+			data: { agentsFiles: Array<{ path: string; content: string }> };
+	  }
+
+	// Agent switching
+	| { id?: string; type: "response"; command: "get_agents"; success: true; data: { agents: RpcAgentSummary[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "switch_agent";
+			success: true;
+			data: { agentName: string; tools: string[]; tier?: string; thinkingLevel?: string };
+	  }
+	| { id?: string; type: "response"; command: "get_current_agent"; success: true; data: { agentName: string } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_latest_agent_change";
+			success: true;
+			data: { agentName: string; agentConfig?: AgentChangeEntry["agentConfig"]; timestamp: string } | null;
+	  }
+	| { id?: string; type: "response"; command: "get_agent_detail"; success: true; data: { agent: AgentConfig } }
+	| { id?: string; type: "response"; command: "get_all_tools"; success: true; data: { tools: RpcAllTool[] } }
 
 	// Permission mode
 	| { id?: string; type: "response"; command: "set_permission_mode"; success: true; data: { mode: PermissionMode } }

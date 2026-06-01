@@ -37,6 +37,7 @@ import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
+import type { AgentConfig } from "./agent-types.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -251,6 +252,38 @@ interface ToolDefinitionEntry {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
+function isThinkingLevel(level: string): level is ThinkingLevel {
+	return (THINKING_LEVELS as readonly string[]).includes(level);
+}
+
+function isPermissionMode(mode: string): mode is PermissionMode {
+	return ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"].includes(mode);
+}
+
+function buildAgentSystemPrompt(agent: AgentConfig): string | undefined {
+	const sections: string[] = [];
+	if (agent.paths) {
+		const pathLines = ["## Path Guidance", "", "This agent is configured with path-level guidance:"];
+		if (agent.paths.write && agent.paths.write.length > 0) {
+			pathLines.push(`- Write paths: ${agent.paths.write.join(", ")}`);
+		}
+		if (agent.paths.read && agent.paths.read.length > 0) {
+			pathLines.push(`- Read paths: ${agent.paths.read.join(", ")}`);
+		}
+		if (agent.paths.bash && agent.paths.bash.length > 0) {
+			pathLines.push(`- Bash paths: ${agent.paths.bash.join(", ")}`);
+		}
+		sections.push(pathLines.join("\n"));
+	}
+	if (agent.effort) {
+		sections.push(`## Effort Level\n\n${agent.effort}`);
+	}
+	if (agent.systemPrompt.trim()) {
+		sections.push(agent.systemPrompt.trim());
+	}
+	return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -320,6 +353,8 @@ export class AgentSession {
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 	private _permissionMode: PermissionMode = "auto";
+	private _currentAgentName = "build";
+	private _agentSystemPromptOverride: string | undefined;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -826,6 +861,46 @@ export class AgentSession {
 		this._permissionMode = mode;
 	}
 
+	getCurrentAgent(): string {
+		return this._currentAgentName;
+	}
+
+	applyAgentConfig(agent: AgentConfig): void {
+		this._currentAgentName = agent.name;
+
+		if (agent.permissionMode && isPermissionMode(agent.permissionMode)) {
+			this.setPermissionMode(agent.permissionMode);
+		}
+
+		if (agent.thinkingLevel && isThinkingLevel(agent.thinkingLevel)) {
+			this.setThinkingLevel(agent.thinkingLevel);
+		}
+
+		if (agent.tools && agent.tools.length > 0) {
+			this.setActiveToolsByName(agent.tools);
+		} else if (agent.disallowedTools && agent.disallowedTools.length > 0) {
+			const disallowedTools = new Set(agent.disallowedTools);
+			this.setActiveToolsByName(this.getActiveToolNames().filter((toolName) => !disallowedTools.has(toolName)));
+		}
+
+		this._agentSystemPromptOverride = buildAgentSystemPrompt(agent);
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._baseSystemPrompt;
+
+		this.sessionManager.appendAgentChange(agent.name, {
+			description: agent.description,
+			tools: agent.tools,
+			disallowedTools: agent.disallowedTools,
+			permissionMode: agent.permissionMode,
+			tier: agent.tier,
+			thinkingLevel: agent.thinkingLevel,
+			model: agent.model,
+			paths: agent.paths,
+			maxTurns: agent.maxTurns,
+			effort: agent.effort,
+		});
+	}
+
 	/** Whether compaction or branch summarization is currently running */
 	get isCompacting(): boolean {
 		return (
@@ -920,7 +995,7 @@ export class AgentSession {
 			}
 		}
 
-		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
+		const loaderSystemPrompt = this._agentSystemPromptOverride ?? this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;

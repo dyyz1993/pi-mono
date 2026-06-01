@@ -66,6 +66,27 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	modelId: string;
 }
 
+export interface AgentChangeEntry extends SessionEntryBase {
+	type: "agent_change";
+	agentName: string;
+	agentConfig?: {
+		description?: string;
+		tools?: string[];
+		disallowedTools?: string[];
+		permissionMode?: string;
+		tier?: string;
+		thinkingLevel?: string;
+		model?: string;
+		paths?: {
+			write?: string[];
+			read?: string[];
+			bash?: string[];
+		};
+		maxTurns?: number;
+		effort?: string;
+	};
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -141,6 +162,7 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
+	| AgentChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry
@@ -981,6 +1003,20 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			provider,
 			modelId,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append an agent change as child of current leaf, then advance leaf. Returns entry id. */
+	appendAgentChange(agentName: string, agentConfig?: AgentChangeEntry["agentConfig"]): string {
+		const entry: AgentChangeEntry = {
+			type: "agent_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			agentName,
+			agentConfig,
 		};
 		this._appendEntry(entry);
 		return entry.id;
