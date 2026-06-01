@@ -8,10 +8,25 @@ import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
+import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { Settings } from "../../core/settings-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type {
+	RpcAgentSummary,
+	RpcAllTool,
+	RpcCommand,
+	RpcContextUsage,
+	RpcExtension,
+	RpcExtensionFlag,
+	RpcResponse,
+	RpcSessionState,
+	RpcSkill,
+	RpcSlashCommand,
+	RpcTool,
+	TreeEntry,
+} from "./rpc-types.ts";
 
 // ============================================================================
 // Types
@@ -46,6 +61,51 @@ export interface ModelInfo {
 }
 
 export type RpcEventListener = (event: AgentEvent) => void;
+
+export interface TreeWithLeaf {
+	entries: TreeEntry[];
+	leafId: string | null;
+}
+
+export interface RollbackPreviewResult {
+	restored: string[];
+	deleted: string[];
+	skipped: string[];
+	dirty: string[];
+	forceRestored: string[];
+}
+
+export interface ModifiedFilesResult {
+	files: Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>;
+	resolvedFromEntryId: string | null;
+}
+
+export interface FileDiffResult {
+	path: string;
+	oldContent: string | null;
+	newContent: string | null;
+	unifiedDiff: string;
+}
+
+export interface BatchDiffResult {
+	files: Array<{
+		path: string;
+		status: "added" | "modified" | "deleted";
+		diff: FileDiffResult | null;
+	}>;
+	summary: { totalFiles: number; added: number; modified: number; deleted: number };
+}
+
+export interface FileHistoryResult {
+	history: Array<{
+		entryId: string;
+		turnIndex: number;
+		timestamp: string;
+		status: "added" | "modified" | "deleted";
+		snapshotHash: string;
+		previousHash: string | null;
+	}>;
+}
 
 // ============================================================================
 // RPC Client
@@ -264,6 +324,15 @@ export class RpcClient {
 		return this.getData<{ models: ModelInfo[] }>(response).models;
 	}
 
+	async getTierModels(): Promise<Record<string, string>> {
+		const response = await this.send({ type: "get_tier_models" });
+		return this.getData<{ models: Record<string, string> }>(response).models;
+	}
+
+	async setTierModels(models: { fast?: string; pro?: string; max?: string }): Promise<void> {
+		await this.send({ type: "set_tier_models", models });
+	}
+
 	/**
 	 * Set thinking level.
 	 */
@@ -366,8 +435,54 @@ export class RpcClient {
 	 * Fork from a specific message.
 	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
 	 */
-	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
-		const response = await this.send({ type: "fork", entryId });
+	async fork(
+		entryId: string,
+		options?: { position?: "before" | "at" },
+	): Promise<{ text: string; cancelled: boolean }> {
+		const response = await this.send({ type: "fork", entryId, position: options?.position });
+		return this.getData(response);
+	}
+
+	async navigateTree(
+		targetId: string,
+		options?: {
+			summarize?: boolean;
+			customInstructions?: string;
+			replaceInstructions?: boolean;
+			label?: string;
+		},
+	): Promise<{ cancelled: boolean; editorText?: string; newLeafId: string | null }> {
+		const response = await this.send({
+			type: "navigate_tree",
+			targetId,
+			summarize: options?.summarize,
+			customInstructions: options?.customInstructions,
+			replaceInstructions: options?.replaceInstructions,
+			label: options?.label,
+		});
+		return this.getData(response);
+	}
+
+	async previewRollback(targetId: string): Promise<RollbackPreviewResult> {
+		const response = await this.send({ type: "rollback_preview", targetId });
+		return this.getData(response);
+	}
+
+	async deleteEntries(targetIds: string[]): Promise<{ entryId: string }> {
+		const response = await this.send({ type: "delete_entries", targetIds });
+		return this.getData(response);
+	}
+
+	async summarizeEntries(
+		targetIds: string[],
+		options?: { summary?: string; model?: string },
+	): Promise<{ entryId: string }> {
+		const response = await this.send({
+			type: "summarize_entries",
+			targetIds,
+			summary: options?.summary,
+			model: options?.model,
+		});
 		return this.getData(response);
 	}
 
@@ -411,12 +526,217 @@ export class RpcClient {
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
 	}
 
+	async getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
+		messages: AgentMessage[];
+		hasMore: boolean;
+		totalCount: number;
+		nextCursor: string | null;
+		tree: { entries: TreeEntry[]; leafId: string | null };
+		customEntries: Array<{ id: string; customType: string; data: unknown; timestamp: number }>;
+		compactionEntries: Array<{ id: string; summary: string; tokensBefore: number | undefined; timestamp: number }>;
+	}> {
+		const response = await this.send({
+			type: "get_full_messages",
+			afterEntryId: options?.afterEntryId,
+			limit: options?.limit,
+		});
+		return this.getData(response);
+	}
+
+	async getTree(): Promise<{ entries: TreeEntry[] }> {
+		const response = await this.send({ type: "get_tree" });
+		return this.getData(response);
+	}
+
+	async getTreeWithLeaf(): Promise<TreeWithLeaf> {
+		const response = await this.send({ type: "get_tree_with_leaf" });
+		return this.getData(response);
+	}
+
+	async getModifiedFiles(options?: {
+		fromEntryId?: string;
+		toEntryId?: string;
+		toTurnIndex?: number;
+		fromTurnIndex?: number;
+		toUserMsgEntryId?: string;
+	}): Promise<ModifiedFilesResult> {
+		const response = await this.send({
+			type: "get_modified_files",
+			fromEntryId: options?.fromEntryId,
+			toEntryId: options?.toEntryId,
+			toTurnIndex: options?.toTurnIndex,
+			fromTurnIndex: options?.fromTurnIndex,
+			toUserMsgEntryId: options?.toUserMsgEntryId,
+		});
+		return this.getData(response);
+	}
+
+	async getFileDiff(options: {
+		filePath: string;
+		fromEntryId?: string;
+		toEntryId?: string;
+		useBaselineHash?: boolean;
+	}): Promise<FileDiffResult | null> {
+		const response = await this.send({
+			type: "get_file_diff",
+			filePath: options.filePath,
+			fromEntryId: options.fromEntryId,
+			toEntryId: options.toEntryId,
+			useBaselineHash: options.useBaselineHash,
+		});
+		return this.getData(response);
+	}
+
+	async getBatchDiffs(options?: { fromEntryId?: string; toEntryId?: string }): Promise<BatchDiffResult> {
+		const response = await this.send({
+			type: "get_batch_diffs",
+			fromEntryId: options?.fromEntryId,
+			toEntryId: options?.toEntryId,
+		});
+		return this.getData(response);
+	}
+
+	async getFileHistory(options: { filePath: string }): Promise<FileHistoryResult> {
+		const response = await this.send({
+			type: "get_file_history",
+			filePath: options.filePath,
+		});
+		return this.getData(response);
+	}
+
 	/**
 	 * Get available commands (extension commands, prompt templates, skills).
 	 */
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		const response = await this.send({ type: "get_commands" });
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
+	}
+
+	async getSkills(): Promise<RpcSkill[]> {
+		const response = await this.send({ type: "get_skills" });
+		return this.getData<{ skills: RpcSkill[] }>(response).skills;
+	}
+
+	async getExtensions(): Promise<RpcExtension[]> {
+		const response = await this.send({ type: "get_extensions" });
+		return this.getData<{ extensions: RpcExtension[] }>(response).extensions;
+	}
+
+	async getTools(): Promise<RpcTool[]> {
+		const response = await this.send({ type: "get_tools" });
+		return this.getData<{ tools: RpcTool[] }>(response).tools;
+	}
+
+	async getSettings(scope?: "global" | "project"): Promise<Settings> {
+		const response = await this.send({ type: "get_settings", scope });
+		return this.getData(response);
+	}
+
+	async setSettings(settings: Partial<Settings>, scope?: "global" | "project"): Promise<void> {
+		await this.send({ type: "set_settings", settings, scope });
+	}
+
+	async getContextUsage(): Promise<RpcContextUsage> {
+		const response = await this.send({ type: "get_context_usage" });
+		return this.getData(response);
+	}
+
+	async getSystemPrompt(): Promise<{ systemPrompt: string; appendSystemPrompt: string[] }> {
+		const response = await this.send({ type: "get_system_prompt" });
+		return this.getData(response);
+	}
+
+	async getActiveTools(): Promise<string[]> {
+		const response = await this.send({ type: "get_active_tools" });
+		return this.getData<{ toolNames: string[] }>(response).toolNames;
+	}
+
+	async setActiveTools(toolNames: string[]): Promise<void> {
+		await this.send({ type: "set_active_tools", toolNames });
+	}
+
+	async getQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		const response = await this.send({ type: "get_queue" });
+		return this.getData(response);
+	}
+
+	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+		const response = await this.send({ type: "clear_queue" });
+		return this.getData(response);
+	}
+
+	async getFlags(): Promise<RpcExtensionFlag[]> {
+		const response = await this.send({ type: "get_flags" });
+		return this.getData<{ flags: RpcExtensionFlag[] }>(response).flags;
+	}
+
+	async getFlagValues(): Promise<Record<string, boolean | string>> {
+		const response = await this.send({ type: "get_flag_values" });
+		return this.getData<{ values: Record<string, boolean | string> }>(response).values;
+	}
+
+	async setFlag(name: string, value: boolean | string): Promise<void> {
+		await this.send({ type: "set_flag", name, value });
+	}
+
+	async reload(): Promise<void> {
+		await this.send({ type: "reload" });
+	}
+
+	async setCwd(cwd: string): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "set_cwd", cwd });
+		return this.getData(response);
+	}
+
+	async getAgentsFiles(): Promise<Array<{ path: string; content: string }>> {
+		const response = await this.send({ type: "get_agents_files" });
+		return this.getData<{ agentsFiles: Array<{ path: string; content: string }> }>(response).agentsFiles;
+	}
+
+	async getAgents(): Promise<RpcAgentSummary[]> {
+		const response = await this.send({ type: "get_agents" });
+		return this.getData<{ agents: RpcAgentSummary[] }>(response).agents;
+	}
+
+	async switchAgent(agentName: string): Promise<{
+		agentName: string;
+		tools: string[];
+		tier?: string;
+		thinkingLevel?: string;
+	}> {
+		const response = await this.send({ type: "switch_agent", agentName });
+		return this.getData(response);
+	}
+
+	async getCurrentAgent(): Promise<{ agentName: string }> {
+		const response = await this.send({ type: "get_current_agent" });
+		return this.getData(response);
+	}
+
+	async getLatestAgentChange(): Promise<{
+		agentName: string;
+		agentConfig?: unknown;
+		timestamp: string;
+	} | null> {
+		const response = await this.send({ type: "get_latest_agent_change" });
+		return this.getData(response);
+	}
+
+	async getAgentDetail(agentName: string): Promise<AgentConfig> {
+		const response = await this.send({ type: "get_agent_detail", agentName });
+		return this.getData<{ agent: AgentConfig }>(response).agent;
+	}
+
+	async getAllTools(): Promise<RpcAllTool[]> {
+		const response = await this.send({ type: "get_all_tools" });
+		return this.getData<{ tools: RpcAllTool[] }>(response).tools;
+	}
+
+	async setPermissionMode(mode: "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny"): Promise<{
+		mode: "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+	}> {
+		const response = await this.send({ type: "set_permission_mode", mode });
+		return this.getData(response);
 	}
 
 	// =========================================================================
