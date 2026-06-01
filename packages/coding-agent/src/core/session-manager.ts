@@ -438,6 +438,25 @@ export function buildSessionContext(
 		}
 	}
 
+	// Collect toolCallIds from folded assistant messages so their toolResult
+	// children can be filtered out — otherwise the LLM receives orphaned
+	// tool results referencing tool_calls that no longer exist in context.
+	const foldedToolCallIds = new Set<string>();
+	for (const [targetId] of folds) {
+		const targetEntry = byId.get(targetId);
+		if (
+			targetEntry?.type === "message" &&
+			targetEntry.message.role === "assistant" &&
+			Array.isArray(targetEntry.message.content)
+		) {
+			for (const part of targetEntry.message.content as Array<{ type: string; id?: string }>) {
+				if (part.type === "toolCall" && part.id) {
+					foldedToolCallIds.add(part.id);
+				}
+			}
+		}
+	}
+
 	const deletedIds = new Set<string>();
 	for (const entry of path) {
 		if (entry.type === "deletion") {
@@ -498,6 +517,16 @@ export function buildSessionContext(
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
 			if (deletedIds.has(entry.id)) return;
+
+			// Skip toolResult messages whose toolCall was in a folded assistant.
+			// These are orphans — the assistant (with tool_calls) was replaced by
+			// a foldSummary (user role), so the toolResult has no matching tool_calls.
+			if (
+				entry.message.role === "toolResult" &&
+				foldedToolCallIds.has(entry.message.toolCallId)
+			) {
+				return;
+			}
 
 			const segInfo = segmentTargets.get(entry.id);
 			if (segInfo) {
