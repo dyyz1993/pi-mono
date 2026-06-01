@@ -59,7 +59,16 @@ export type RpcCommand =
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
-	| { id?: string; type: "fork"; entryId: string }
+	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
+	| {
+			id?: string;
+			type: "navigate_tree";
+			targetId: string;
+			summarize?: boolean;
+			customInstructions?: string;
+			replaceInstructions?: boolean;
+			label?: string;
+	  }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
@@ -67,6 +76,9 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
+	| { id?: string; type: "get_full_messages"; afterEntryId?: string; limit?: number }
+	| { id?: string; type: "get_tree" }
+	| { id?: string; type: "get_tree_with_leaf" }
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
@@ -190,6 +202,13 @@ export interface RpcAllTool {
 	sourceInfo: SourceInfo;
 }
 
+export interface TreeEntry {
+	id: string;
+	parentId: string | null;
+	type: string;
+	label?: string;
+}
+
 // ============================================================================
 // RPC State
 // ============================================================================
@@ -280,6 +299,13 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "fork"; success: true; data: { text: string; cancelled: boolean } }
+	| {
+			id?: string;
+			type: "response";
+			command: "navigate_tree";
+			success: true;
+			data: { cancelled: boolean; editorText?: string; newLeafId: string | null };
+	  }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
 	| {
 			id?: string;
@@ -299,6 +325,34 @@ export type RpcResponse =
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_full_messages";
+			success: true;
+			data: {
+				messages: AgentMessage[];
+				hasMore: boolean;
+				totalCount: number;
+				nextCursor: string | null;
+				tree: { entries: TreeEntry[]; leafId: string | null };
+				customEntries: Array<{ id: string; customType: string; data: unknown; timestamp: number }>;
+				compactionEntries: Array<{
+					id: string;
+					summary: string;
+					tokensBefore: number | undefined;
+					timestamp: number;
+				}>;
+			};
+	  }
+	| { id?: string; type: "response"; command: "get_tree"; success: true; data: { entries: TreeEntry[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_tree_with_leaf";
+			success: true;
+			data: { entries: TreeEntry[]; leafId: string | null };
+	  }
 
 	// Commands
 	| {

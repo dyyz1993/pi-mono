@@ -27,6 +27,7 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import type { CompactionEntry, CustomEntry, SessionEntry, SessionMessageEntry } from "../../core/session-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -44,6 +45,7 @@ import type {
 	RpcSkill,
 	RpcSlashCommand,
 	RpcTool,
+	TreeEntry,
 } from "./rpc-types.ts";
 
 // Re-export types for consumers
@@ -59,6 +61,37 @@ const PERMISSION_MODES = ["auto", "acceptEdits", "dontAsk", "always-allow", "alw
 
 function isPermissionMode(mode: string): mode is PermissionMode {
 	return (PERMISSION_MODES as readonly string[]).includes(mode);
+}
+
+function getTreeEntryLabel(entry: SessionEntry): string | undefined {
+	if ("message" in entry) {
+		return entry.message.role;
+	}
+	if ("customType" in entry) {
+		return entry.customType;
+	}
+	return undefined;
+}
+
+function toTreeEntry(entry: SessionEntry): TreeEntry {
+	return {
+		id: entry.id,
+		parentId: entry.parentId,
+		type: entry.type,
+		label: getTreeEntryLabel(entry),
+	};
+}
+
+function isSessionMessageEntry(entry: SessionEntry): entry is SessionMessageEntry {
+	return "message" in entry;
+}
+
+function isCustomEntry(entry: SessionEntry): entry is CustomEntry {
+	return entry.type === "custom" && "customType" in entry;
+}
+
+function isCompactionEntry(entry: SessionEntry): entry is CompactionEntry {
+	return entry.type === "compaction" && "summary" in entry;
 }
 
 /**
@@ -598,11 +631,25 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "fork": {
-				const result = await runtimeHost.fork(command.entryId);
+				const result = await runtimeHost.fork(command.entryId, { position: command.position });
 				if (!result.cancelled) {
 					await rebindSession();
 				}
 				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
+			}
+
+			case "navigate_tree": {
+				const result = await session.navigateTree(command.targetId, {
+					summarize: command.summarize,
+					customInstructions: command.customInstructions,
+					replaceInstructions: command.replaceInstructions,
+					label: command.label,
+				});
+				return success(id, "navigate_tree", {
+					cancelled: result.cancelled,
+					editorText: result.editorText,
+					newLeafId: session.sessionManager.getLeafId(),
+				});
 			}
 
 			case "clone": {
@@ -642,6 +689,68 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_messages": {
 				return success(id, "get_messages", { messages: session.messages });
+			}
+
+			case "get_full_messages": {
+				const allEntries = session.sessionManager.getEntries();
+				const branchEntries = session.sessionManager.getBranch();
+				const branchIds = new Set(branchEntries.map((entry) => entry.id));
+				const messageEntries = allEntries.filter(
+					(entry): entry is SessionMessageEntry => isSessionMessageEntry(entry) && branchIds.has(entry.id),
+				);
+				const messages = messageEntries.map((entry) => entry.message);
+				const totalCount = messages.length;
+				const treeEntries = allEntries.map(toTreeEntry);
+				const customEntries = allEntries.filter(isCustomEntry).map((entry) => ({
+					id: entry.id,
+					customType: entry.customType,
+					data: entry.data,
+					timestamp: new Date(entry.timestamp).getTime(),
+				}));
+				const compactionEntries = allEntries.filter(isCompactionEntry).map((entry) => ({
+					id: entry.id,
+					summary: entry.summary,
+					tokensBefore: entry.tokensBefore,
+					timestamp: new Date(entry.timestamp).getTime(),
+				}));
+
+				if (command.limit !== undefined) {
+					const startIndex = command.afterEntryId
+						? Math.max(0, messageEntries.findIndex((entry) => entry.id === command.afterEntryId) + 1)
+						: 0;
+					const page = messages.slice(startIndex, startIndex + command.limit);
+					const hasMore = startIndex + command.limit < totalCount;
+					const nextCursorEntry = hasMore ? messageEntries[startIndex + command.limit - 1] : undefined;
+					return success(id, "get_full_messages", {
+						messages: page,
+						hasMore,
+						totalCount,
+						nextCursor: nextCursorEntry?.id ?? null,
+						tree: { entries: treeEntries, leafId: session.sessionManager.getLeafId() },
+						customEntries,
+						compactionEntries,
+					});
+				}
+
+				return success(id, "get_full_messages", {
+					messages,
+					hasMore: false,
+					totalCount,
+					nextCursor: null,
+					tree: { entries: treeEntries, leafId: session.sessionManager.getLeafId() },
+					customEntries,
+					compactionEntries,
+				});
+			}
+
+			case "get_tree": {
+				const entries = session.sessionManager.getEntries().map(toTreeEntry);
+				return success(id, "get_tree", { entries });
+			}
+
+			case "get_tree_with_leaf": {
+				const entries = session.sessionManager.getEntries().map(toTreeEntry);
+				return success(id, "get_tree_with_leaf", { entries, leafId: session.sessionManager.getLeafId() });
 			}
 
 			// =================================================================
