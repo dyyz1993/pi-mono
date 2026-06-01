@@ -14,7 +14,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
@@ -33,6 +33,7 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai";
+import { getAgentDir } from "../config.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -80,6 +81,8 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { FileSnapshotManager } from "./file-store/file-snapshot-manager.ts";
+import { InternalGit } from "./file-store/internal-git.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -347,6 +350,7 @@ export class AgentSession {
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
 	private _tierModels: Record<string, string>;
+	private _fileSnapshotManager: FileSnapshotManager | null = null;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -392,6 +396,10 @@ export class AgentSession {
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
 		return this._modelRegistry;
+	}
+
+	get fileSnapshotManager(): FileSnapshotManager | null {
+		return this._fileSnapshotManager;
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -488,6 +496,22 @@ export class AgentSession {
 				isError: hookResult.isError ?? isError,
 			};
 		};
+	}
+
+	private _initFileSnapshotManager(): void {
+		try {
+			const git = InternalGit.createForProject(join(getAgentDir(), "file-store"), this._cwd);
+			const manager = new FileSnapshotManager(git);
+			manager.rebuildIndex(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
+			manager.initialize(this._cwd);
+			this._fileSnapshotManager = manager;
+		} catch (err) {
+			console.warn(
+				"[initFileSnapshotManager] failed, file snapshots disabled:",
+				err instanceof Error ? err.message : String(err),
+			);
+			this._fileSnapshotManager = null;
+		}
 	}
 
 	// =========================================================================
@@ -660,6 +684,9 @@ export class AgentSession {
 				toolResults: event.toolResults,
 			};
 			await this._extensionRunner.emit(extensionEvent);
+			this._fileSnapshotManager?.onTurnEnd(this._cwd, this._turnIndex, (type, data) =>
+				this.sessionManager.appendCustomEntry(type, data),
+			);
 			this._turnIndex++;
 		} else if (event.type === "message_start") {
 			const extensionEvent: MessageStartEvent = {
@@ -2512,6 +2539,7 @@ export class AgentSession {
 		}
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
+		this._initFileSnapshotManager();
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
@@ -2958,6 +2986,14 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 
+			if (this._fileSnapshotManager) {
+				await this._fileSnapshotManager.restoreFiles(this._cwd, {
+					targetEntryId: newLeafId ?? undefined,
+					currentLeafId: oldLeafId,
+					entries: this.sessionManager.getEntries(),
+				});
+			}
+
 			// Emit session_tree event
 			await this._extensionRunner.emit({
 				type: "session_tree",
@@ -3192,6 +3228,39 @@ export class AgentSession {
 		}
 
 		return text.trim() || undefined;
+	}
+
+	async previewRollback(targetId: string): Promise<{
+		restored: string[];
+		deleted: string[];
+		skipped: string[];
+		dirty: string[];
+		forceRestored: string[];
+	}> {
+		if (this.isStreaming) {
+			throw new Error("Cannot rollback while agent is streaming");
+		}
+		if (!this._fileSnapshotManager) {
+			return { restored: [], deleted: [], skipped: [], dirty: [], forceRestored: [] };
+		}
+
+		const targetEntry = this.sessionManager.getEntry(targetId);
+		if (!targetEntry) {
+			throw new Error(`Entry ${targetId} not found`);
+		}
+
+		const newLeafId =
+			(targetEntry.type === "message" && targetEntry.message.role === "user") ||
+			targetEntry.type === "custom_message"
+				? targetEntry.parentId
+				: targetId;
+
+		return this._fileSnapshotManager.restoreFiles(this._cwd, {
+			targetEntryId: newLeafId ?? undefined,
+			currentLeafId: this.sessionManager.getLeafId(),
+			entries: this.sessionManager.getEntries(),
+			preview: true,
+		});
 	}
 
 	// =========================================================================

@@ -679,6 +679,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				});
 			}
 
+			case "rollback_preview": {
+				const previewResult = await session.previewRollback(command.targetId);
+				return success(id, "rollback_preview", previewResult);
+			}
+
 			case "delete_entries": {
 				const entryId = session.sessionManager.appendDeletion(command.targetIds);
 				const sessionContext = session.sessionManager.buildSessionContext();
@@ -861,6 +866,100 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_tree_with_leaf": {
 				const entries = session.sessionManager.getEntries().map(toTreeEntry);
 				return success(id, "get_tree_with_leaf", { entries, leafId: session.sessionManager.getLeafId() });
+			}
+
+			case "get_modified_files": {
+				const fileSnapshotManager = session.fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_modified_files", { files: [], resolvedFromEntryId: null });
+				}
+
+				if (command.fromEntryId || command.toEntryId || command.toTurnIndex || command.fromTurnIndex) {
+					const files = fileSnapshotManager.getModifiedFiles({
+						fromEntryId: command.fromEntryId,
+						toEntryId: command.toEntryId,
+						toTurnIndex: command.toTurnIndex,
+						fromTurnIndex: command.fromTurnIndex,
+					});
+					return success(id, "get_modified_files", {
+						files,
+						resolvedFromEntryId: command.fromEntryId ?? null,
+					});
+				}
+
+				if (command.toUserMsgEntryId) {
+					const entries = session.sessionManager.getEntries();
+					const files = fileSnapshotManager.getRollbackPreviewFiles({
+						targetEntryId: command.toUserMsgEntryId,
+						entries,
+					});
+					const resolvedSnapshotEntryId = fileSnapshotManager.resolveSnapshotEntryIdForTarget(
+						command.toUserMsgEntryId,
+						entries,
+					);
+					return success(id, "get_modified_files", {
+						files,
+						resolvedFromEntryId: resolvedSnapshotEntryId ?? command.toUserMsgEntryId,
+					});
+				}
+
+				const files = fileSnapshotManager.getModifiedFiles();
+				return success(id, "get_modified_files", { files, resolvedFromEntryId: null });
+			}
+
+			case "get_file_diff": {
+				const fileSnapshotManager = session.fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_file_diff", null);
+				}
+
+				const diff = fileSnapshotManager.getFileDiff({
+					filePath: command.filePath,
+					fromEntryId: command.fromEntryId,
+					toEntryId: command.toEntryId,
+					useBaselineHash: command.useBaselineHash ?? false,
+				});
+
+				return success(
+					id,
+					"get_file_diff",
+					diff
+						? {
+								path: diff.path,
+								oldContent: diff.oldContent,
+								newContent: diff.newContent,
+								unifiedDiff: diff.unifiedDiff,
+							}
+						: null,
+				);
+			}
+
+			case "get_batch_diffs": {
+				const fileSnapshotManager = session.fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_batch_diffs", {
+						files: [],
+						summary: { totalFiles: 0, added: 0, modified: 0, deleted: 0 },
+					});
+				}
+				return success(
+					id,
+					"get_batch_diffs",
+					fileSnapshotManager.getBatchDiffs({
+						fromEntryId: command.fromEntryId,
+						toEntryId: command.toEntryId,
+					}),
+				);
+			}
+
+			case "get_file_history": {
+				const fileSnapshotManager = session.fileSnapshotManager;
+				if (!fileSnapshotManager) {
+					return success(id, "get_file_history", { history: [] });
+				}
+				return success(id, "get_file_history", {
+					history: fileSnapshotManager.getFileHistory({ filePath: command.filePath }),
+				});
 			}
 
 			// =================================================================

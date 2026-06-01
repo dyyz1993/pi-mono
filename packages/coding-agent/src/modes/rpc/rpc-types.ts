@@ -11,6 +11,7 @@ import type { PermissionMode, SessionStats } from "../../core/agent-session.ts";
 import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { BatchDiffResult, FileDiffInfo, FileHistoryEntry, ModifiedFileInfo } from "../../core/file-store/index.ts";
 import type { AgentChangeEntry } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
@@ -71,6 +72,7 @@ export type RpcCommand =
 			replaceInstructions?: boolean;
 			label?: string;
 	  }
+	| { id?: string; type: "rollback_preview"; targetId: string }
 	| { id?: string; type: "delete_entries"; targetIds: string[] }
 	| { id?: string; type: "summarize_entries"; targetIds: string[]; summary?: string; model?: string }
 	| { id?: string; type: "clone" }
@@ -83,6 +85,25 @@ export type RpcCommand =
 	| { id?: string; type: "get_full_messages"; afterEntryId?: string; limit?: number }
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_tree_with_leaf" }
+	| {
+			id?: string;
+			type: "get_modified_files";
+			fromEntryId?: string;
+			toEntryId?: string;
+			toTurnIndex?: number;
+			fromTurnIndex?: number;
+			toUserMsgEntryId?: string;
+	  }
+	| {
+			id?: string;
+			type: "get_file_diff";
+			filePath: string;
+			fromEntryId?: string;
+			toEntryId?: string;
+			useBaselineHash?: boolean;
+	  }
+	| { id?: string; type: "get_batch_diffs"; fromEntryId?: string; toEntryId?: string }
+	| { id?: string; type: "get_file_history"; filePath: string }
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
@@ -318,6 +339,13 @@ export type RpcResponse =
 			success: true;
 			data: { cancelled: boolean; editorText?: string; newLeafId: string | null };
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "rollback_preview";
+			success: true;
+			data: { restored: string[]; deleted: string[]; skipped: string[]; dirty: string[]; forceRestored: string[] };
+	  }
 	| { id?: string; type: "response"; command: "delete_entries"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "summarize_entries"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
@@ -366,6 +394,34 @@ export type RpcResponse =
 			command: "get_tree_with_leaf";
 			success: true;
 			data: { entries: TreeEntry[]; leafId: string | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_modified_files";
+			success: true;
+			data: { files: ModifiedFileInfo[]; resolvedFromEntryId: string | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_file_diff";
+			success: true;
+			data: Pick<FileDiffInfo, "path" | "oldContent" | "newContent" | "unifiedDiff"> | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_batch_diffs";
+			success: true;
+			data: BatchDiffResult;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_file_history";
+			success: true;
+			data: { history: FileHistoryEntry[] };
 	  }
 
 	// Commands
