@@ -1016,9 +1016,7 @@ describe("RPC mode command handling", () => {
 		});
 
 		it("falls back to toUserMsgEntryId when resolveSnapshotEntryIdForTarget returns null", async () => {
-			const entries = [
-				{ id: "snap-0", type: "custom", customType: "step-snapshot", data: { turnIndex: 0 } },
-			];
+			const entries = [{ id: "snap-0", type: "custom", customType: "step-snapshot", data: { turnIndex: 0 } }];
 			session.sessionManager.getEntries.mockReturnValueOnce(entries);
 			(session as any).fileSnapshotManager.getRollbackPreviewFiles.mockReturnValueOnce([]);
 			(session as any).fileSnapshotManager.resolveSnapshotEntryIdForTarget.mockReturnValueOnce(null);

@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@dyyz1993/pi-ai";
+import { afterEach, describe, expect, it } from "vitest";
 import agentPermissions from "../../extensions/agent-permissions/index.js";
 import type { ExtensionFactory } from "../../src/index.js";
 import { createHarness, type Harness } from "../suite/harness.js";
@@ -101,9 +101,7 @@ describe("Gap 5: Compaction preserves paths", () => {
 		const allText = harness.session.messages
 			.flatMap((m) => {
 				if (typeof m.content === "string") return [m.content];
-				return m.content
-					.filter((p): p is { type: "text"; text: string } => p.type === "text")
-					.map((p) => p.text);
+				return m.content.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text);
 			})
 			.join(" ");
 

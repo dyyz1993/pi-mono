@@ -10,17 +10,21 @@
  * - diagnostic-user-perspective.test.ts
  * - rollback-identity-duplication.test.ts
  */
-import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
+
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
-import type { FoldEntry, DeletionEntry, SegmentSummaryEntry } from "../../src/core/session-manager.js";
+import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
+import type { DeletionEntry, FoldEntry, SegmentSummaryEntry } from "../../src/core/session-manager.js";
 import { createHarness, type Harness } from "../harness.js";
 
 function getText(m: AgentMessage): string {
 	const c = m.content;
 	if (typeof c === "string") return c;
 	if (Array.isArray(c))
-		return c.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("");
+		return c
+			.filter((p): p is { type: "text"; text: string } => p.type === "text")
+			.map((p) => p.text)
+			.join("");
 	return "";
 }
 
@@ -57,7 +61,12 @@ function simulateGetFullMessages(h: Harness) {
 	for (const entry of branchEntries) {
 		if (entry.type === "fold") {
 			const fe = entry as FoldEntry;
-			folds.set(fe.targetId, { targetId: fe.targetId, summary: fe.summary, originalTokens: fe.originalTokens, timestamp: entry.timestamp });
+			folds.set(fe.targetId, {
+				targetId: fe.targetId,
+				summary: fe.summary,
+				originalTokens: fe.originalTokens,
+				timestamp: entry.timestamp,
+			});
 		}
 	}
 
@@ -247,9 +256,7 @@ describe("get_full_messages filtering", () => {
 				console.log(
 					"  ",
 					m.role,
-					m.role === "assistant" && Array.isArray(m.content)
-						? m.content.map((p: any) => p.type).join("+")
-						: "",
+					m.role === "assistant" && Array.isArray(m.content) ? m.content.map((p: any) => p.type).join("+") : "",
 				);
 			}
 
@@ -259,9 +266,7 @@ describe("get_full_messages filtering", () => {
 
 			// Find turn2's toolCall assistant
 			const entries = h.sessionManager.getEntries();
-			const messageEntries = entries.filter(
-				(e) => e.type === "message" && (e as any).message?.role === "assistant",
-			);
+			const messageEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "assistant");
 			const toolCallAssistant = messageEntries.find((e) => {
 				const msg = (e as any).message;
 				return (
@@ -292,16 +297,17 @@ describe("get_full_messages filtering", () => {
 				console.log(
 					"  ",
 					m.role,
-					m.role === "assistant" && Array.isArray(m.content)
-						? m.content.map((p: any) => p.type).join("+")
-						: "",
+					m.role === "assistant" && Array.isArray(m.content) ? m.content.map((p: any) => p.type).join("+") : "",
 				);
 			}
 
 			// Verify the toolCall message is gone from session.messages
 			expect(
 				memAfter.some(
-					(m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((p: any) => p.type === "toolCall"),
+					(m) =>
+						m.role === "assistant" &&
+						Array.isArray(m.content) &&
+						m.content.some((p: any) => p.type === "toolCall"),
 				),
 			).toBe(false);
 
@@ -469,9 +475,7 @@ describe("get_full_messages filtering", () => {
 				.filter((e) => e.type === "message" && (e as any).message?.role === "assistant")
 				.find((e) => {
 					const msg = (e as any).message;
-					return (
-						Array.isArray(msg.content) && msg.content.some((p: any) => p.type === "toolCall")
-					);
+					return Array.isArray(msg.content) && msg.content.some((p: any) => p.type === "toolCall");
 				});
 			h.sessionManager.appendDeletion([toolCallAssistant!.id]);
 
@@ -491,9 +495,7 @@ describe("get_full_messages filtering", () => {
 			// The assistant with tool call should be back in messages
 			const hasToolCall = full.allMessages.some(
 				(m) =>
-					m.role === "assistant" &&
-					Array.isArray(m.content) &&
-					m.content.some((p: any) => p.type === "toolCall"),
+					m.role === "assistant" && Array.isArray(m.content) && m.content.some((p: any) => p.type === "toolCall"),
 			);
 			console.log("After rollback: has toolCall message:", hasToolCall);
 			expect(hasToolCall).toBe(true);
@@ -518,7 +520,7 @@ describe("get_full_messages filtering", () => {
 				.filter((e) => e.type === "message" && (e as any).message?.role === "assistant")
 				.find((e) => getText((e as any).message) === "reply-B");
 			h.sessionManager.appendDeletion([bAssistant!.id]);
-			let ctx = h.sessionManager.buildSessionContext();
+			const ctx = h.sessionManager.buildSessionContext();
 			h.session["agent"].state.messages = ctx.messages;
 
 			console.log("\n=== Deletion + rollback: after deleting B ===");
@@ -558,7 +560,7 @@ describe("get_full_messages filtering", () => {
 				.filter((e) => e.type === "message" && (e as any).message?.role === "assistant")
 				.find((e) => getText((e as any).message) === "reply-D");
 			h.sessionManager.appendDeletion([dAssistant!.id]);
-			let ctx = h.sessionManager.buildSessionContext();
+			const ctx = h.sessionManager.buildSessionContext();
 			h.session["agent"].state.messages = ctx.messages;
 
 			console.log("=== Combo: after compaction + deletion ===");

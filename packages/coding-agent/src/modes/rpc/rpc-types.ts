@@ -93,7 +93,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_settings"; scope?: "global" | "project" }
 	| { id?: string; type: "set_settings"; settings: Partial<Settings>; scope?: "global" | "project" }
 
- 	// Rollback
+	// Rollback
 	| {
 			id?: string;
 			type: "get_modified_files";
@@ -103,7 +103,14 @@ export type RpcCommand =
 			toTurnIndex?: number;
 			toUserMsgEntryId?: string;
 	  }
-	| { id?: string; type: "get_file_diff"; filePath: string; fromEntryId?: string; toEntryId?: string; useBaselineHash?: boolean }
+	| {
+			id?: string;
+			type: "get_file_diff";
+			filePath: string;
+			fromEntryId?: string;
+			toEntryId?: string;
+			useBaselineHash?: boolean;
+	  }
 	| { id?: string; type: "get_batch_diffs"; fromEntryId?: string; toEntryId?: string }
 	| { id?: string; type: "get_file_history"; filePath: string }
 
@@ -371,7 +378,7 @@ export type RpcResponse =
 			type: "response";
 			command: "rollback_preview";
 			success: true;
-			data: { restored: string[]; deleted: string[]; skipped: string[] };
+			data: { restored: string[]; deleted: string[]; skipped: string[]; forceRestored: string[] };
 	  }
 	| { id?: string; type: "response"; command: "delete_entries"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "summarize_entries"; success: true; data: { entryId: string } }

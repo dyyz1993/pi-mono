@@ -27,12 +27,8 @@ import type {
 } from "../../core/extensions/index.js";
 import { createFoldSummaryMessage } from "../../core/messages.js";
 import { resolveModelAlias } from "../../core/model-resolver.js";
-import type {
-	DeletionEntry,
-	FoldEntry,
-	SegmentSummaryEntry,
-} from "../../core/session-manager.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
+import type { DeletionEntry, FoldEntry, SegmentSummaryEntry } from "../../core/session-manager.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
@@ -1335,18 +1331,21 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return success(id, "get_modified_files", { files, resolvedFromEntryId: command.fromEntryId ?? null });
 				}
 
-			if (command.toUserMsgEntryId) {
-				const entries = session.sessionManager.getEntries();
-				const files = fileSnapshotManager.getRollbackPreviewFiles({
-					targetEntryId: command.toUserMsgEntryId,
-					entries,
-				});
-				const resolvedSnapshotEntryId = fileSnapshotManager.resolveSnapshotEntryIdForTarget(
-					command.toUserMsgEntryId,
-					entries,
-				);
-				return success(id, "get_modified_files", { files, resolvedFromEntryId: resolvedSnapshotEntryId ?? command.toUserMsgEntryId });
-			}
+				if (command.toUserMsgEntryId) {
+					const entries = session.sessionManager.getEntries();
+					const files = fileSnapshotManager.getRollbackPreviewFiles({
+						targetEntryId: command.toUserMsgEntryId,
+						entries,
+					});
+					const resolvedSnapshotEntryId = fileSnapshotManager.resolveSnapshotEntryIdForTarget(
+						command.toUserMsgEntryId,
+						entries,
+					);
+					return success(id, "get_modified_files", {
+						files,
+						resolvedFromEntryId: resolvedSnapshotEntryId ?? command.toUserMsgEntryId,
+					});
+				}
 
 				const files = fileSnapshotManager.getModifiedFiles();
 				return success(id, "get_modified_files", { files, resolvedFromEntryId: null });

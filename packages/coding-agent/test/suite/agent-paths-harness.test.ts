@@ -10,8 +10,8 @@
 
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPathPermissionHandler } from "../../extensions/agent-permissions/path-checker.js";
 import agentPermissions from "../../extensions/agent-permissions/index.js";
+import { createPathPermissionHandler } from "../../extensions/agent-permissions/path-checker.js";
 import hooksEngine from "../../extensions/hooks-engine/index.js";
 import type { ExtensionFactory } from "../../src/index.js";
 import { createHarness, type Harness } from "./harness.js";
@@ -731,7 +731,7 @@ describe("Agent Paths: paths + hooks combination", () => {
 // ---------------------------------------------------------------------------
 
 describe("Agent Paths: paths + variables combination", () => {
-	let harnesses: Harness[] = [];
+	const harnesses: Harness[] = [];
 
 	afterEach(() => {
 		while (harnesses.length > 0) {
@@ -846,119 +846,119 @@ describe("Agent Paths: paths + variables combination", () => {
 		expect(vars.paths).toBe(JSON.stringify({ write: ["docs/**"] }));
 	});
 
-describe("Gap 9: System prompt dynamic path updates", () => {
-	const harnesses: Harness[] = [];
+	describe("Gap 9: System prompt dynamic path updates", () => {
+		const harnesses: Harness[] = [];
 
-	afterEach(() => {
-		while (harnesses.length > 0) {
-			harnesses.pop()?.cleanup();
-		}
+		afterEach(() => {
+			while (harnesses.length > 0) {
+				harnesses.pop()?.cleanup();
+			}
+		});
+
+		it("switching from agent with paths to agent without paths removes restriction notice", async () => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+
+			await harness.session.applyAgentConfig({
+				name: "docs-writer",
+				description: "Docs only",
+				systemPrompt: "Write docs",
+				source: "project",
+				filePath: ".pi/agents/docs-writer.md",
+				paths: { write: ["docs/**"] },
+			});
+			let sp = harness.session["agent"].state.systemPrompt;
+			expect(sp).toContain("Path Restrictions");
+
+			await harness.session.applyAgentConfig({
+				name: "full-access",
+				description: "Full access",
+				systemPrompt: "Full access agent",
+				source: "project",
+				filePath: ".pi/agents/full-access.md",
+			});
+			sp = harness.session["agent"].state.systemPrompt;
+			expect(sp).not.toContain("Path Restrictions");
+		});
+
+		it("switching from agent without paths to agent with paths adds restriction notice", async () => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+
+			await harness.session.applyAgentConfig({
+				name: "full-access",
+				description: "Full access",
+				systemPrompt: "Full access agent",
+				source: "project",
+				filePath: ".pi/agents/full-access.md",
+			});
+			let sp = harness.session["agent"].state.systemPrompt;
+			expect(sp).not.toContain("Path Restrictions");
+
+			await harness.session.applyAgentConfig({
+				name: "docs-writer",
+				description: "Docs only",
+				systemPrompt: "Write docs",
+				source: "project",
+				filePath: ".pi/agents/docs-writer.md",
+				paths: { write: ["docs/**"] },
+			});
+			sp = harness.session["agent"].state.systemPrompt;
+			expect(sp).toContain("Path Restrictions");
+		});
+
+		it("agent with paths but empty systemPrompt does NOT get restriction notice", async () => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+
+			await harness.session.applyAgentConfig({
+				name: "no-prompt",
+				description: "No prompt",
+				systemPrompt: "",
+				source: "project",
+				filePath: ".pi/agents/no-prompt.md",
+				paths: { write: ["docs/**"] },
+			});
+			const sp = harness.session["agent"].state.systemPrompt;
+			expect(sp).not.toContain("Path Restrictions");
+		});
+
+		it("path restriction notice includes correct tool categories", async () => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+
+			await harness.session.applyAgentConfig({
+				name: "multi-paths",
+				description: "Multi paths",
+				systemPrompt: "Test agent",
+				source: "project",
+				filePath: ".pi/agents/multi.md",
+				paths: { write: ["docs/**"], read: ["src/**"] },
+			});
+			const sp = harness.session["agent"].state.systemPrompt;
+			expect(sp).toContain("Write paths");
+			expect(sp).toContain("Read paths");
+			expect(sp).toContain("docs/**");
+			expect(sp).toContain("src/**");
+		});
+
+		it("buildPathRestrictionNotice produces correct format for write-only", async () => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+
+			await harness.session.applyAgentConfig({
+				name: "write-only",
+				description: "Write only",
+				systemPrompt: "Test",
+				source: "project",
+				filePath: ".pi/agents/write-only.md",
+				paths: { write: ["docs/**"] },
+			});
+			const sp = harness.session["agent"].state.systemPrompt;
+			expect(sp).toContain("Write paths");
+			expect(sp).not.toContain("Read paths");
+		});
 	});
-
-	it("switching from agent with paths to agent without paths removes restriction notice", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-
-		await harness.session.applyAgentConfig({
-			name: "docs-writer",
-			description: "Docs only",
-			systemPrompt: "Write docs",
-			source: "project",
-			filePath: ".pi/agents/docs-writer.md",
-			paths: { write: ["docs/**"] },
-		});
-		let sp = harness.session["agent"].state.systemPrompt;
-		expect(sp).toContain("Path Restrictions");
-
-		await harness.session.applyAgentConfig({
-			name: "full-access",
-			description: "Full access",
-			systemPrompt: "Full access agent",
-			source: "project",
-			filePath: ".pi/agents/full-access.md",
-		});
-		sp = harness.session["agent"].state.systemPrompt;
-		expect(sp).not.toContain("Path Restrictions");
-	});
-
-	it("switching from agent without paths to agent with paths adds restriction notice", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-
-		await harness.session.applyAgentConfig({
-			name: "full-access",
-			description: "Full access",
-			systemPrompt: "Full access agent",
-			source: "project",
-			filePath: ".pi/agents/full-access.md",
-		});
-		let sp = harness.session["agent"].state.systemPrompt;
-		expect(sp).not.toContain("Path Restrictions");
-
-		await harness.session.applyAgentConfig({
-			name: "docs-writer",
-			description: "Docs only",
-			systemPrompt: "Write docs",
-			source: "project",
-			filePath: ".pi/agents/docs-writer.md",
-			paths: { write: ["docs/**"] },
-		});
-		sp = harness.session["agent"].state.systemPrompt;
-		expect(sp).toContain("Path Restrictions");
-	});
-
-	it("agent with paths but empty systemPrompt does NOT get restriction notice", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-
-		await harness.session.applyAgentConfig({
-			name: "no-prompt",
-			description: "No prompt",
-			systemPrompt: "",
-			source: "project",
-			filePath: ".pi/agents/no-prompt.md",
-			paths: { write: ["docs/**"] },
-		});
-		const sp = harness.session["agent"].state.systemPrompt;
-		expect(sp).not.toContain("Path Restrictions");
-	});
-
-	it("path restriction notice includes correct tool categories", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-
-		await harness.session.applyAgentConfig({
-			name: "multi-paths",
-			description: "Multi paths",
-			systemPrompt: "Test agent",
-			source: "project",
-			filePath: ".pi/agents/multi.md",
-			paths: { write: ["docs/**"], read: ["src/**"] },
-		});
-		const sp = harness.session["agent"].state.systemPrompt;
-		expect(sp).toContain("Write paths");
-		expect(sp).toContain("Read paths");
-		expect(sp).toContain("docs/**");
-		expect(sp).toContain("src/**");
-	});
-
-	it("buildPathRestrictionNotice produces correct format for write-only", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-
-		await harness.session.applyAgentConfig({
-			name: "write-only",
-			description: "Write only",
-			systemPrompt: "Test",
-			source: "project",
-			filePath: ".pi/agents/write-only.md",
-			paths: { write: ["docs/**"] },
-		});
-		const sp = harness.session["agent"].state.systemPrompt;
-		expect(sp).toContain("Write paths");
-		expect(sp).not.toContain("Read paths");
-	});
-});
 
 	it("variables with 'paths' key name does not conflict with paths field", async () => {
 		const harness = await createHarness({

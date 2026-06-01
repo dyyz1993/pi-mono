@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.js";
 import type { StepSnapshotData } from "../../src/core/file-store/file-snapshot-manager.js";
+import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.js";
 
 type MockReadTreeFn = (hash: string) => Map<string, string> | null;
 
@@ -56,14 +56,8 @@ function snap(
 	};
 }
 
-function setupManager(
-	treeStore: Map<string, Map<string, string>>,
-	entries: any[],
-	sessionStartTreeHash?: string,
-) {
-	const manager = new FileSnapshotManager(
-		createMockGit((hash: string) => treeStore.get(hash) ?? null),
-	);
+function setupManager(treeStore: Map<string, Map<string, string>>, entries: any[], sessionStartTreeHash?: string) {
+	const manager = new FileSnapshotManager(createMockGit((hash: string) => treeStore.get(hash) ?? null));
 
 	manager.rebuildIndex(entries);
 
@@ -631,9 +625,7 @@ describe("getRollbackPreviewFiles", () => {
 		it("returns empty when sessionStartTreeHash is null and target resolves to null", () => {
 			const treeStore = new Map<string, Map<string, string>>();
 
-			const manager = new FileSnapshotManager(
-				createMockGit((hash: string) => treeStore.get(hash) ?? null),
-			);
+			const manager = new FileSnapshotManager(createMockGit((hash: string) => treeStore.get(hash) ?? null));
 			(manager as any).sessionStartTreeHash = null;
 			(manager as any).lastCommittedTreeHash = null;
 

@@ -68,6 +68,7 @@ export interface RollbackPreviewResult {
 	restored: string[];
 	deleted: string[];
 	skipped: string[];
+	forceRestored: string[];
 }
 
 /**

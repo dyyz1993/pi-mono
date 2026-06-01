@@ -477,7 +477,10 @@ export class AgentSession {
 
 	/** Get the effective variables to emit on tool_call/tool_result events */
 	private get _effectiveToolCallVariables(): Record<string, string> | undefined {
-		return this._toolCallVariablesOverride ?? (Object.keys(this._currentAgentVariables).length > 0 ? this._currentAgentVariables : undefined);
+		return (
+			this._toolCallVariablesOverride ??
+			(Object.keys(this._currentAgentVariables).length > 0 ? this._currentAgentVariables : undefined)
+		);
 	}
 
 	private _tierModels: Record<string, string> = {};
@@ -1333,10 +1336,7 @@ export class AgentSession {
 			if (this._effort) {
 				effortSuffix = AgentSession.buildEffortNotice(this._effort);
 			}
-			this._baseSystemPrompt = this._rebuildSystemPrompt(
-				this.getActiveToolNames(),
-				effortSuffix || undefined,
-			);
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames(), effortSuffix || undefined);
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 
@@ -1437,7 +1437,11 @@ export class AgentSession {
 	}
 
 	private static buildPathRestrictionNotice(paths: import("./agent-types.js").PathConfig): string | undefined {
-		const lines: string[] = ["## Path Restrictions", "", "You are operating under path-level restrictions. You MUST only access files within the allowed paths:"];
+		const lines: string[] = [
+			"## Path Restrictions",
+			"",
+			"You are operating under path-level restrictions. You MUST only access files within the allowed paths:",
+		];
 		if (paths.write && paths.write.length > 0) {
 			lines.push(`- **Write paths** (edit, write, patch): ${paths.write.join(", ")}`);
 		}
@@ -1448,19 +1452,25 @@ export class AgentSession {
 			lines.push(`- **Bash paths**: ${paths.bash.join(", ")}`);
 		}
 		lines.push("");
-		lines.push("Do NOT attempt to access files outside these paths. If you need to access a restricted path, explain why and ask the user.");
+		lines.push(
+			"Do NOT attempt to access files outside these paths. If you need to access a restricted path, explain why and ask the user.",
+		);
 		return lines.join("\n");
 	}
 
 	private static readonly EFFORT_NOTICES: Record<string, string> = {
 		low: "## Effort Level: Low\n\nProvide brief, concise answers. Focus on the most essential information. Skip detailed explanations. Use short code snippets over long blocks. Limit yourself to 1-2 paragraphs unless more is absolutely necessary.",
-		medium: "## Effort Level: Medium\n\nProvide balanced answers with enough detail to be useful. Include relevant context and examples where appropriate. Be thorough but avoid unnecessary verbosity.",
+		medium:
+			"## Effort Level: Medium\n\nProvide balanced answers with enough detail to be useful. Include relevant context and examples where appropriate. Be thorough but avoid unnecessary verbosity.",
 		high: "## Effort Level: High\n\nProvide comprehensive, detailed analysis. Consider multiple approaches. Include edge cases and error handling. Write thorough code with complete implementations. Document your reasoning. When in doubt, explain more rather than less.",
 	};
 
 	private static buildEffortNotice(effort: string): string {
 		const normalized = effort.toLowerCase().trim();
-		return AgentSession.EFFORT_NOTICES[normalized] ?? `## Effort Level: ${effort}\n\nAdjust your response effort level accordingly.`;
+		return (
+			AgentSession.EFFORT_NOTICES[normalized] ??
+			`## Effort Level: ${effort}\n\nAdjust your response effort level accordingly.`
+		);
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[], agentSystemPrompt?: string): string {
@@ -4211,7 +4221,9 @@ export class AgentSession {
 		return task;
 	}
 
-	async previewRollback(targetId: string): Promise<{ restored: string[]; deleted: string[] }> {
+	async previewRollback(
+		targetId: string,
+	): Promise<{ restored: string[]; deleted: string[]; forceRestored: string[] }> {
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		let newLeafId: string | null;
@@ -4235,6 +4247,6 @@ export class AgentSession {
 			preview: true,
 		} as import("./extensions/types.js").SessionTreeEvent);
 
-		return result ?? { restored: [], deleted: [] };
+		return result ?? { restored: [], deleted: [], forceRestored: [] };
 	}
 }

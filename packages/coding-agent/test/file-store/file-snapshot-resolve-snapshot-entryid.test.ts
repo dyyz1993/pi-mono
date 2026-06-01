@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.js";
 import type { StepSnapshotData } from "../../src/core/file-store/file-snapshot-manager.js";
+import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.js";
 
 type MockReadTreeFn = (hash: string) => Map<string, string> | null;
 
@@ -56,14 +56,8 @@ function snap(
 	};
 }
 
-function setupManager(
-	treeStore: Map<string, Map<string, string>>,
-	entries: any[],
-	sessionStartTreeHash?: string,
-) {
-	const manager = new FileSnapshotManager(
-		createMockGit((hash: string) => treeStore.get(hash) ?? null),
-	);
+function setupManager(treeStore: Map<string, Map<string, string>>, entries: any[], sessionStartTreeHash?: string) {
+	const manager = new FileSnapshotManager(createMockGit((hash: string) => treeStore.get(hash) ?? null));
 
 	manager.rebuildIndex(entries);
 
@@ -146,10 +140,7 @@ describe("resolveSnapshotEntryIdForTarget", () => {
 	it("returns null when target has no snapshot on path and no snapshot children", () => {
 		const treeStore = new Map<string, Map<string, string>>();
 
-		const entries = [
-			msg("u1", null, "user"),
-			msg("a1", "u1", "assistant"),
-		];
+		const entries = [msg("u1", null, "user"), msg("a1", "u1", "assistant")];
 
 		const manager = setupManager(treeStore, entries);
 		const result = manager.resolveSnapshotEntryIdForTarget("u1", entries);

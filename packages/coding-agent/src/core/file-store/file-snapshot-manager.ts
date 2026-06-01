@@ -31,6 +31,7 @@ export interface RestoreResult {
 	deleted: string[];
 	skipped: string[];
 	dirty: string[];
+	forceRestored: string[];
 }
 
 export interface LiveChange {
@@ -270,19 +271,30 @@ export class FileSnapshotManager {
 
 		if (snapshots.length > 0) return snapshots[snapshots.length - 1];
 
-		const leafEntry = byId.get(leafId);
-		if (!leafEntry) return null;
-
-		const children: StepSnapshotData[] = [];
-		for (const entry of entries) {
-			if (entry.type !== "custom") continue;
-			const custom = entry as CustomEntry;
-			if (custom.customType !== "step-snapshot") continue;
-			if (entry.parentId !== leafId) continue;
-			children.push(custom.data as StepSnapshotData);
+		// Fallback: look for snapshots that are descendants of leafId
+		// (e.g. step-snapshot is a grandchild of the turn's toolResult)
+		const descendantSnapshots: StepSnapshotData[] = [];
+		const descendantIds = new Set<string>();
+		const collectDescendants = (parentId: string, depth: number) => {
+			if (depth > 5) return;
+			for (const entry of entries) {
+				if (entry.parentId !== parentId) continue;
+				if (entry.type === "message") continue;
+				if (entry.type === "custom" && (entry as CustomEntry).customType === "step-snapshot") {
+					descendantSnapshots.push((entry as CustomEntry).data as StepSnapshotData);
+				}
+				if (!descendantIds.has(entry.id)) {
+					descendantIds.add(entry.id);
+					collectDescendants(entry.id, depth + 1);
+				}
+			}
+		};
+		collectDescendants(leafId, 0);
+		if (descendantSnapshots.length > 0) {
+			return descendantSnapshots[descendantSnapshots.length - 1];
 		}
 
-		return children.length > 0 ? children[children.length - 1] : null;
+		return null;
 	}
 
 	getSnapshotAtTurn(turnIndex: number): StepSnapshotData | null {
@@ -336,10 +348,7 @@ export class FileSnapshotManager {
 		return null;
 	}
 
-	getRollbackPreviewFiles(options: {
-		targetEntryId: string;
-		entries: SessionEntry[];
-	}): ModifiedFileInfo[] {
+	getRollbackPreviewFiles(options: { targetEntryId: string; entries: SessionEntry[] }): ModifiedFileInfo[] {
 		const targetTreeHash = this.resolveTargetTreeHash(options.targetEntryId, options.entries);
 		const currentTreeHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash ?? null;
 
@@ -348,7 +357,8 @@ export class FileSnapshotManager {
 		const emptyFiles = new Map<string, string>();
 		const targetIsEmpty = targetTreeHash === null || targetTreeHash === "";
 		const targetFiles = targetIsEmpty ? emptyFiles : (this.git.readTree(targetTreeHash) ?? emptyFiles);
-		const currentFiles = currentTreeHash && currentTreeHash !== "" ? (this.git.readTree(currentTreeHash) ?? emptyFiles) : emptyFiles;
+		const currentFiles =
+			currentTreeHash && currentTreeHash !== "" ? (this.git.readTree(currentTreeHash) ?? emptyFiles) : emptyFiles;
 
 		const files: ModifiedFileInfo[] = [];
 
@@ -462,17 +472,15 @@ export class FileSnapshotManager {
 	}): FileDiffInfo | null {
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
 
-		const fromSnap = options.fromEntryId
-			? snapshots.find((s) => s.entryId === options.fromEntryId)
-			: undefined;
+		const fromSnap = options.fromEntryId ? snapshots.find((s) => s.entryId === options.fromEntryId) : undefined;
 		// When useBaselineHash is true (rollback preview), use the snapshot's
 		// baselineTreeHash (state BEFORE the turn's changes) so the diff shows
 		// what will change when rolling back. Otherwise (generic diff query),
 		// use snapshotTreeHash (state AFTER the turn's changes).
 		const fromHash = options.fromEntryId
-			? (options.useBaselineHash
+			? options.useBaselineHash
 				? (fromSnap?.baselineTreeHash ?? this.sessionStartTreeHash)
-				: (fromSnap?.snapshotTreeHash ?? null))
+				: (fromSnap?.snapshotTreeHash ?? null)
 			: this.sessionStartTreeHash;
 		const toHash = options.toEntryId
 			? (snapshots.find((s) => s.entryId === options.toEntryId)?.snapshotTreeHash ?? null)
@@ -603,10 +611,10 @@ export class FileSnapshotManager {
 			appendEntry: (type: string, data: unknown) => void;
 		},
 	): Promise<RestoreResult> {
-		const empty: RestoreResult = { restored: [], deleted: [], skipped: [], dirty: [] };
+		const empty: RestoreResult = { restored: [], deleted: [], skipped: [], dirty: [], forceRestored: [] };
 
 		let targetTreeHash: string | null;
-		let targetIsEmpty = false; // true when target is intentionally "no files"
+		let targetIsEmpty = false;
 		if (options.snapshotHash) {
 			targetTreeHash = options.snapshotHash;
 		} else if (options.targetEntryId) {
@@ -639,11 +647,10 @@ export class FileSnapshotManager {
 			currentTreeHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
 		}
 
-		if (targetTreeHash === currentTreeHash) return empty;
+		if (targetTreeHash === currentTreeHash) {
+			return empty;
+		}
 
-		// Safety guard: if targetTreeHash is null and target is not intentionally empty,
-		// we cannot determine the target state. Treating null as "no files" would delete
-		// everything on disk — a data-loss bug.
 		if (targetTreeHash === null && !targetIsEmpty) {
 			return empty;
 		}
@@ -652,10 +659,12 @@ export class FileSnapshotManager {
 		const targetFiles = targetTreeHash ? (this.git.readTree(targetTreeHash) ?? emptyFiles) : emptyFiles;
 		const currentFiles = currentTreeHash ? (this.git.readTree(currentTreeHash) ?? emptyFiles) : emptyFiles;
 
+		const actualDiskFiles = readFilteredWorkingDir(this.git, cwd);
+
 		const toRestore: string[] = [];
 		for (const [path, content] of targetFiles) {
-			const current = currentFiles.get(path);
-			if (current !== content) {
+			const actual = actualDiskFiles.get(path);
+			if (actual !== content) {
 				toRestore.push(path);
 			}
 		}
@@ -707,23 +716,20 @@ export class FileSnapshotManager {
 				deleted: filteredDelete.sort(),
 				skipped: [],
 				dirty,
+				forceRestored: [],
 			};
 		}
 
 		const preRollbackFiles = readFilteredWorkingDir(this.git, cwd);
 		const preRollbackTreeHash = preRollbackFiles.size > 0 ? this.git.writeTree(preRollbackFiles).treeHash : null;
 
-		// Skip dirty files (externally modified) to avoid silent overwrite
-		const dirtySet = new Set(dirty);
-		const safeRestore = filteredRestore.filter((p) => !dirtySet.has(p));
-
 		options.appendEntry("unrevert-point", {
 			preRollbackTreeHash,
 			rolledBackToLeaf: options.targetEntryId ?? "",
-			restoredFiles: safeRestore,
+			restoredFiles: filteredRestore,
 		});
 
-		for (const path of safeRestore) {
+		for (const path of filteredRestore) {
 			const content = targetFiles.get(path);
 			if (content === undefined) continue;
 			const absPath = join(cwd, path);
@@ -741,10 +747,11 @@ export class FileSnapshotManager {
 		this.lastCommittedTreeHash = targetTreeHash;
 
 		return {
-			restored: safeRestore.sort(),
+			restored: filteredRestore.sort(),
 			deleted: filteredDelete.sort(),
-			skipped: dirty,
+			skipped: [],
 			dirty,
+			forceRestored: dirty,
 		};
 	}
 

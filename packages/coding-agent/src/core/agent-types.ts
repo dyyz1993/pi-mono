@@ -320,9 +320,7 @@ function isDirectory(p: string): boolean {
 
 /** Parse a PathConfig from raw frontmatter value */
 function sanitizePatternArray(arr: unknown[]): string[] {
-	return arr
-		.filter((v) => v != null && String(v).trim() !== "")
-		.map(String);
+	return arr.filter((v) => v != null && String(v).trim() !== "").map(String);
 }
 
 function parsePathConfig(raw: unknown): PathConfig | undefined {

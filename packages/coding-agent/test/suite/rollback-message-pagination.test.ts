@@ -8,8 +8,9 @@
  *   - Paginating through a rolled-back session only yields current-branch messages
  *   - Full traversal via pagination yields the same messages as non-paginated
  */
-import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
+
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
 
@@ -27,10 +28,7 @@ function getText(m: AgentMessage): string {
 /**
  * Simulates get_full_messages pagination from rpc-mode.ts.
  */
-function getFullMessagesPaginated(
-	h: Harness,
-	options?: { afterEntryId?: string; limit?: number },
-) {
+function getFullMessagesPaginated(h: Harness, options?: { afterEntryId?: string; limit?: number }) {
 	const allEntries = h.sessionManager.getEntries();
 	const branchEntries = h.sessionManager.getBranch();
 	const branchIds = new Set(branchEntries.map((e) => e.id));
@@ -59,12 +57,7 @@ function getFullMessagesPaginated(
 		id: e.id,
 		parentId: e.parentId,
 		type: e.type,
-		label:
-			e.type === "message"
-				? (e as any).message?.role
-				: e.type === "custom"
-					? (e as any).customType
-					: undefined,
+		label: e.type === "message" ? (e as any).message?.role : e.type === "custom" ? (e as any).customType : undefined,
 	}));
 
 	if (options?.limit !== undefined) {

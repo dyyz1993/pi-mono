@@ -19,10 +19,11 @@
  *   7. Multiple rollback-continue cycles → message sequence correct at each step
  *   8. get_full_messages tree.leafId matches sessionManager.getLeafId()
  */
+
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
-import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 
 /**
  * Simulates get_full_messages logic from rpc-mode.ts:
@@ -84,7 +85,7 @@ function getText(m: AgentMessage): string {
 
 function createSnapshotAndRestoreExtension() {
 	return (pi: import("../../src/core/extensions/types.js").ExtensionAPI) => {
-		pi.on("tool_result", async (event, ctx) => {
+		pi.on("tool_result", async (event, _ctx) => {
 			if (event.toolName === "write" || event.toolName === "edit") {
 				const path = event.input?.path as string | undefined;
 				if (path) {
@@ -281,9 +282,7 @@ describe("rollback message rendering (get_messages / get_full_messages simulatio
 
 		// Create a segment summary for turn2's assistant
 		const entries = h.sessionManager.getEntries();
-		const assistantEntries = entries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "assistant",
-		);
+		const assistantEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "assistant");
 		// Turn2 assistant is the second one
 		const turn2Assistant = assistantEntries[1];
 		h.sessionManager.appendSegmentSummary([turn2Assistant.id], "Summarized turn 2");
@@ -322,11 +321,7 @@ describe("rollback message rendering (get_messages / get_full_messages simulatio
 
 		// Step 2: continue
 		await doSimpleTurn(h, "turn4");
-		expect(h.session.messages.filter((m) => m.role === "user").map(getText)).toEqual([
-			"turn1",
-			"turn2",
-			"turn4",
-		]);
+		expect(h.session.messages.filter((m) => m.role === "user").map(getText)).toEqual(["turn1", "turn2", "turn4"]);
 
 		// Step 3: rollback to t1
 		await h.session.navigateTree(t1, { summarize: false });
@@ -338,19 +333,11 @@ describe("rollback message rendering (get_messages / get_full_messages simulatio
 
 		// Step 5: rollback to t3 (which is on a different branch now)
 		await h.session.navigateTree(t3, { summarize: false });
-		expect(h.session.messages.filter((m) => m.role === "user").map(getText)).toEqual([
-			"turn1",
-			"turn2",
-			"turn3",
-		]);
+		expect(h.session.messages.filter((m) => m.role === "user").map(getText)).toEqual(["turn1", "turn2", "turn3"]);
 
 		// Verify get_full_messages agrees at every step
 		const full = getFullMessagesFromHarness(h);
-		expect(full.messages.filter((m) => m.role === "user").map(getText)).toEqual([
-			"turn1",
-			"turn2",
-			"turn3",
-		]);
+		expect(full.messages.filter((m) => m.role === "user").map(getText)).toEqual(["turn1", "turn2", "turn3"]);
 	});
 
 	it("8. tree.leafId always matches sessionManager.getLeafId()", async () => {

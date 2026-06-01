@@ -10,8 +10,9 @@
  *   4. Entry types visible in tree structure after rollback
  *   5. buildSessionContext vs session.messages consistency after complex operations
  */
-import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
+
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
 
@@ -387,9 +388,7 @@ describe("rollback deep coverage: entry types + first-load + multi-cycle", () =>
 		expect(full.messages.filter((m) => m.role === "user").map(getText)).toEqual(["A", "C-fork"]);
 
 		// Tree has entries from BOTH branches
-		const treeRoles = full.tree.entries
-			.filter((e) => e.type === "message" && e.label === "user")
-			.map((e) => e.id);
+		const treeRoles = full.tree.entries.filter((e) => e.type === "message" && e.label === "user").map((e) => e.id);
 		// B is in the tree even though it's not on the current branch
 		expect(full.tree.entries.length).toBeGreaterThan(4);
 
@@ -438,12 +437,7 @@ describe("rollback deep coverage: entry types + first-load + multi-cycle", () =>
 
 		// Cycle 6: continue
 		await doTurn(h, "F");
-		expect(h.session.messages.filter((m) => m.role === "user").map(getText)).toEqual([
-			"A",
-			"B",
-			"C",
-			"F",
-		]);
+		expect(h.session.messages.filter((m) => m.role === "user").map(getText)).toEqual(["A", "B", "C", "F"]);
 
 		// get_full_messages agrees
 		const full = getFullMessages(h);
@@ -505,9 +499,7 @@ describe("rollback deep coverage: entry types + first-load + multi-cycle", () =>
 
 		// Append segment summary
 		const entries = h.sessionManager.getEntries();
-		const assistant = entries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "assistant",
-		);
+		const assistant = entries.filter((e) => e.type === "message" && (e as any).message?.role === "assistant");
 		h.sessionManager.appendSegmentSummary([assistant[assistant.length - 1].id], "Summarized C");
 
 		// Append deletion
@@ -555,9 +547,7 @@ describe("rollback deep coverage: entry types + first-load + multi-cycle", () =>
 
 		// Rollback to before compaction and custom entry
 		const allEntries = h.sessionManager.getEntries();
-		const userEntries = allEntries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = allEntries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		await h.session.navigateTree(userEntries[1].id, { summarize: false });
 
 		// customEntries and compactionEntries STILL include ALL entries (not filtered by branch)

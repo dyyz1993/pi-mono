@@ -1208,7 +1208,7 @@ export class SessionManager {
 			// File hasn't been fully flushed yet — direct append so the
 			// leaf_pointer is durably written even if the buffer flush fails
 			try {
-				await appendFile(this.sessionFile, "\n" + JSON.stringify(entry) + "\n", "utf-8");
+				await appendFile(this.sessionFile, `\n${JSON.stringify(entry)}\n`, "utf-8");
 			} catch {
 				// Best-effort: leaf_pointer is advisory, not critical
 			}

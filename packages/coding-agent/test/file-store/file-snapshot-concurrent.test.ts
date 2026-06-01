@@ -61,7 +61,7 @@ describe("FileSnapshotManager concurrent/external modification", () => {
 		return appendedEntries as unknown as SessionEntry[];
 	};
 
-	it("dirty file detection during restoreFiles reports externally modified files", async () => {
+	it("dirty file detection during restoreFiles reports externally modified files but still restores them", async () => {
 		writeFileSync(join(tempDir, "a.ts"), "v1", "utf-8");
 		await manager.initialize(tempDir);
 
@@ -82,8 +82,9 @@ describe("FileSnapshotManager concurrent/external modification", () => {
 		});
 
 		expect(result.dirty).toContain("a.ts");
-		expect(result.skipped).toContain("a.ts");
-		expect(readFileSync(join(tempDir, "a.ts"), "utf-8")).toBe("v3-dirty");
+		expect(result.skipped).toEqual([]);
+		expect(result.restored).toContain("a.ts");
+		expect(readFileSync(join(tempDir, "a.ts"), "utf-8")).toBe("v2");
 	});
 
 	it("external file added between turns IS captured in snapshot and gets deleted on rollback", async () => {

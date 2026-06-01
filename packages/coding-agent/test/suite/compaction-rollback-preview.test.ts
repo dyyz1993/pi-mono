@@ -83,9 +83,7 @@ describe("compaction rollback preview correctness", () => {
 
 		const entries = harness.sessionManager.getEntries();
 		const mgr = (harness.session as any).fileSnapshotManager;
-		const userEntries = entries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 
 		const userEntry1 = userEntries[0];
 		const preview = mgr.getRollbackPreviewFiles({
@@ -132,9 +130,7 @@ describe("compaction rollback preview correctness", () => {
 
 		await harness.session.compact();
 
-		const compactionEntries = harness.sessionManager
-			.getEntries()
-			.filter((e) => e.type === "compaction");
+		const compactionEntries = harness.sessionManager.getEntries().filter((e) => e.type === "compaction");
 		expect(compactionEntries.length).toBeGreaterThanOrEqual(1);
 
 		harness.setResponses([
@@ -156,9 +152,7 @@ describe("compaction rollback preview correctness", () => {
 
 		mgr.rebuildIndex(entries, harness.sessionManager.getLeafId());
 
-		const userEntries = entries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		const userEntry3 = userEntries[userEntries.length - 1];
 
 		const preview = mgr.getRollbackPreviewFiles({
@@ -283,9 +277,7 @@ describe("compaction rollback preview correctness", () => {
 		const mgr = (harness.session as any).fileSnapshotManager;
 		mgr.rebuildIndex(entries, harness.sessionManager.getLeafId());
 
-		const userEntries = entries.filter(
-			(e) => e.type === "message" && (e as any).message?.role === "user",
-		);
+		const userEntries = entries.filter((e) => e.type === "message" && (e as any).message?.role === "user");
 		const userEntry3 = userEntries[userEntries.length - 1];
 
 		const resolved = mgr.resolveSnapshotEntryIdForTarget(userEntry3.id, entries);
