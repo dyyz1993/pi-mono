@@ -253,6 +253,7 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+	streamingMessage?: AgentMessage;
 }
 
 /**

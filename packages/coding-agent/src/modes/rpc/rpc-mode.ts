@@ -480,6 +480,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
+					streamingMessage: session.state.streamingMessage,
 				};
 				return success(id, "get_state", state);
 			}

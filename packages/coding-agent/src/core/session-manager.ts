@@ -521,10 +521,7 @@ export function buildSessionContext(
 			// Skip toolResult messages whose toolCall was in a folded assistant.
 			// These are orphans — the assistant (with tool_calls) was replaced by
 			// a foldSummary (user role), so the toolResult has no matching tool_calls.
-			if (
-				entry.message.role === "toolResult" &&
-				foldedToolCallIds.has(entry.message.toolCallId)
-			) {
+			if (entry.message.role === "toolResult" && foldedToolCallIds.has(entry.message.toolCallId)) {
 				return;
 			}
 
@@ -947,7 +944,6 @@ async function listSessionsFromDir(
  * handles compaction summaries and follows the path from root to current leaf.
  */
 export class SessionManager {
-
 	private static readonly _SKIP_TYPES = new Set([
 		"custom",
 		"agent_change",
@@ -1244,17 +1240,14 @@ export class SessionManager {
 		};
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
-
-		{
-			// Always write leaf_pointer directly to ensure durability before returning.
-			// The buffered flush path (_scheduleFlush) is too late — navigateTree
-			// returns before the flush fires, causing getFullMessages to read a
-			// stale leaf_pointer from JSONL.
-			try {
-				await appendFile(this.sessionFile, `\n${JSON.stringify(entry)}\n`, "utf-8");
-			} catch {
-				// Best-effort: leaf_pointer is advisory, not critical
-			}
+		// Always write leaf_pointer directly to ensure durability before returning.
+		// The buffered flush path (_scheduleFlush) is too late — navigateTree
+		// returns before the flush fires, causing getFullMessages to read a
+		// stale leaf_pointer from JSONL.
+		try {
+			await appendFile(this.sessionFile, `\n${JSON.stringify(entry)}\n`, "utf-8");
+		} catch {
+			// Best-effort: leaf_pointer is advisory, not critical
 		}
 	}
 
