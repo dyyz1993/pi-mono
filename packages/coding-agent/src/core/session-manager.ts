@@ -142,6 +142,17 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
+export interface DeletionEntry extends SessionEntryBase {
+	type: "deletion";
+	targetIds: string[];
+}
+
+export interface SegmentSummaryEntry extends SessionEntryBase {
+	type: "segment_summary";
+	targetIds: string[];
+	summary: string;
+}
+
 /**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
@@ -174,7 +185,9 @@ export type SessionEntry =
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	| DeletionEntry
+	| SegmentSummaryEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -412,11 +425,88 @@ export function buildSessionContext(
 	// 2. Emit kept messages (from firstKeptEntryId up to compaction)
 	// 3. Emit messages after compaction
 	const messages: AgentMessage[] = [];
+	const deletedIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "deletion") {
+			for (const targetId of entry.targetIds) {
+				deletedIds.add(targetId);
+			}
+		}
+	}
+
+	const deletedToolCallIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "message" && deletedIds.has(entry.id)) {
+			const message = entry.message;
+			if (message.role === "assistant" && Array.isArray(message.content)) {
+				for (const part of message.content as Array<{ type: string; id?: string }>) {
+					if (part.type === "toolCall" && part.id) {
+						deletedToolCallIds.add(part.id);
+					}
+				}
+			}
+		}
+	}
+	for (const entry of path) {
+		if (entry.type === "message" && entry.message.role === "toolResult") {
+			if (deletedToolCallIds.has(entry.message.toolCallId)) {
+				deletedIds.add(entry.id);
+			}
+		}
+	}
+
+	const strippedToolCallIds = new Set<string>();
+	for (const entry of path) {
+		if (entry.type === "message" && deletedIds.has(entry.id) && entry.message.role === "toolResult") {
+			strippedToolCallIds.add(entry.message.toolCallId);
+		}
+	}
+
+	const segmentTargets = new Map<string, { summary: string; isFirst: boolean; timestamp: string }>();
+	for (const entry of path) {
+		if (entry.type === "segment_summary") {
+			for (let i = 0; i < entry.targetIds.length; i++) {
+				const targetId = entry.targetIds[i];
+				if (deletedIds.has(targetId) || segmentTargets.has(targetId)) continue;
+				segmentTargets.set(targetId, {
+					summary: entry.summary,
+					isFirst: i === 0,
+					timestamp: entry.timestamp,
+				});
+			}
+		}
+	}
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
+			if (deletedIds.has(entry.id)) return;
+
+			const segment = segmentTargets.get(entry.id);
+			if (segment) {
+				if (segment.isFirst) {
+					messages.push(createBranchSummaryMessage(segment.summary, entry.id, segment.timestamp));
+				}
+				return;
+			}
+
+			if (
+				entry.message.role === "assistant" &&
+				Array.isArray(entry.message.content) &&
+				strippedToolCallIds.size > 0
+			) {
+				const filteredContent = entry.message.content.filter(
+					(part: { type: string; id?: string }) =>
+						!(part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id)),
+				);
+				if (filteredContent.length !== entry.message.content.length) {
+					messages.push({ ...entry.message, content: filteredContent as typeof entry.message.content });
+					return;
+				}
+			}
+
 			messages.push(entry.message);
 		} else if (entry.type === "custom_message") {
+			if (deletedIds.has(entry.id)) return;
 			messages.push(
 				createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp),
 			);
@@ -1125,6 +1215,33 @@ export class SessionManager {
 			content,
 			display,
 			details,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a deletion entry that excludes target messages from LLM context. Returns entry id. */
+	appendDeletion(targetIds: string[]): string {
+		const entry: DeletionEntry = {
+			type: "deletion",
+			targetIds,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a segment summary entry that replaces target messages with a summary in LLM context. Returns entry id. */
+	appendSegmentSummary(targetIds: string[], summary: string): string {
+		const entry: SegmentSummaryEntry = {
+			type: "segment_summary",
+			targetIds,
+			summary,
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),

@@ -12,15 +12,19 @@
  */
 
 import * as crypto from "node:crypto";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { PermissionMode } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { discoverAgents } from "../../core/agent-types.ts";
+import { generateSegmentSummary } from "../../core/compaction/branch-summarization.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import { createBranchSummaryMessage } from "../../core/messages.ts";
+import { resolveModelAlias } from "../../core/model-resolver.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -675,6 +679,55 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				});
 			}
 
+			case "delete_entries": {
+				const entryId = session.sessionManager.appendDeletion(command.targetIds);
+				const sessionContext = session.sessionManager.buildSessionContext();
+				session.agent.state.messages = sessionContext.messages;
+				return success(id, "delete_entries", { entryId });
+			}
+
+			case "summarize_entries": {
+				let summary = command.summary;
+				if (!summary) {
+					const entries = command.targetIds
+						.map((targetId) => session.sessionManager.getEntry(targetId))
+						.filter((entry): entry is SessionEntry => entry !== undefined);
+					if (entries.length === 0) {
+						return error(id, "summarize_entries", "No valid entries found for summarization");
+					}
+
+					const modelInput = command.model ?? "pro";
+					const aliasTarget = resolveModelAlias(modelInput, session.getTierModels());
+					const summarizationModel = aliasTarget
+						? session.modelRegistry.getAll().find((model) => `${model.provider}/${model.id}` === aliasTarget)
+						: session.model;
+					if (!summarizationModel) {
+						return error(id, "summarize_entries", "No model available for summarization");
+					}
+
+					const authResult = await session.modelRegistry.getApiKeyAndHeaders(summarizationModel);
+					if (!authResult.ok) {
+						return error(id, "summarize_entries", `No API key for summarization model: ${authResult.error}`);
+					}
+
+					const result = await generateSegmentSummary(entries, {
+						model: summarizationModel,
+						apiKey: authResult.apiKey ?? "",
+						headers: authResult.headers,
+						signal: AbortSignal.timeout(30000),
+					});
+					if (result.error) {
+						return error(id, "summarize_entries", result.error);
+					}
+					summary = result.summary;
+				}
+
+				const entryId = session.sessionManager.appendSegmentSummary(command.targetIds, summary);
+				const sessionContext = session.sessionManager.buildSessionContext();
+				session.agent.state.messages = sessionContext.messages;
+				return success(id, "summarize_entries", { entryId });
+			}
+
 			case "clone": {
 				const leafId = session.sessionManager.getLeafId();
 				if (!leafId) {
@@ -717,10 +770,44 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_full_messages": {
 				const allEntries = session.sessionManager.getEntries();
 				const branchEntries = session.sessionManager.getBranch();
-				const branchIds = new Set(branchEntries.map((entry) => entry.id));
-				const messageEntries = allEntries.filter(
-					(entry): entry is SessionMessageEntry => isSessionMessageEntry(entry) && branchIds.has(entry.id),
-				);
+				const deletedIds = new Set<string>();
+				for (const entry of branchEntries) {
+					if (entry.type === "deletion") {
+						for (const targetId of entry.targetIds) {
+							deletedIds.add(targetId);
+						}
+					}
+				}
+				const segmentTargets = new Map<string, { summary: string; isFirst: boolean; timestamp: string }>();
+				for (const entry of branchEntries) {
+					if (entry.type === "segment_summary") {
+						for (let index = 0; index < entry.targetIds.length; index++) {
+							const targetId = entry.targetIds[index];
+							if (deletedIds.has(targetId) || segmentTargets.has(targetId)) continue;
+							segmentTargets.set(targetId, {
+								summary: entry.summary,
+								isFirst: index === 0,
+								timestamp: entry.timestamp,
+							});
+						}
+					}
+				}
+
+				const messageEntries: Array<{ entryId: string; message: AgentMessage }> = [];
+				for (const entry of branchEntries) {
+					if (!isSessionMessageEntry(entry) || deletedIds.has(entry.id)) continue;
+					const segment = segmentTargets.get(entry.id);
+					if (segment) {
+						if (segment.isFirst) {
+							messageEntries.push({
+								entryId: entry.id,
+								message: createBranchSummaryMessage(segment.summary, entry.id, segment.timestamp),
+							});
+						}
+						continue;
+					}
+					messageEntries.push({ entryId: entry.id, message: entry.message });
+				}
 				const messages = messageEntries.map((entry) => entry.message);
 				const totalCount = messages.length;
 				const treeEntries = allEntries.map(toTreeEntry);
@@ -739,7 +826,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 				if (command.limit !== undefined) {
 					const startIndex = command.afterEntryId
-						? Math.max(0, messageEntries.findIndex((entry) => entry.id === command.afterEntryId) + 1)
+						? Math.max(0, messageEntries.findIndex((entry) => entry.entryId === command.afterEntryId) + 1)
 						: 0;
 					const page = messages.slice(startIndex, startIndex + command.limit);
 					const hasMore = startIndex + command.limit < totalCount;
@@ -748,7 +835,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						messages: page,
 						hasMore,
 						totalCount,
-						nextCursor: nextCursorEntry?.id ?? null,
+						nextCursor: nextCursorEntry?.entryId ?? null,
 						tree: { entries: treeEntries, leafId: session.sessionManager.getLeafId() },
 						customEntries,
 						compactionEntries,

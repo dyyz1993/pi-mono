@@ -71,6 +71,8 @@ export type RpcCommand =
 			replaceInstructions?: boolean;
 			label?: string;
 	  }
+	| { id?: string; type: "delete_entries"; targetIds: string[] }
+	| { id?: string; type: "summarize_entries"; targetIds: string[]; summary?: string; model?: string }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
@@ -316,6 +318,8 @@ export type RpcResponse =
 			success: true;
 			data: { cancelled: boolean; editorText?: string; newLeafId: string | null };
 	  }
+	| { id?: string; type: "response"; command: "delete_entries"; success: true; data: { entryId: string } }
+	| { id?: string; type: "response"; command: "summarize_entries"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
 	| {
 			id?: string;

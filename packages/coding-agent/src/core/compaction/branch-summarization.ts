@@ -162,9 +162,13 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 		// These don't contribute to conversation content
 		case "thinking_level_change":
 		case "model_change":
+		case "agent_change":
+		case "tier_models_change":
 		case "custom":
 		case "label":
 		case "session_info":
+		case "deletion":
+		case "segment_summary":
 			return undefined;
 	}
 }
@@ -352,4 +356,73 @@ export async function generateBranchSummary(
 		readFiles,
 		modifiedFiles,
 	};
+}
+
+// ============================================================================
+// Segment Summary
+// ============================================================================
+
+const SEGMENT_SUMMARY_PROMPT = `Summarize the following conversation segment concisely. Focus on:
+1. What was discussed or requested
+2. What was done
+3. Important context such as file paths, function names, error messages, and decisions
+
+Keep the summary under 200 words. Preserve exact technical references.`;
+
+export interface SegmentSummaryResult {
+	summary: string;
+	error?: string;
+}
+
+export interface GenerateSegmentSummaryOptions {
+	model: Model<any>;
+	apiKey: string;
+	headers?: Record<string, string>;
+	signal: AbortSignal;
+}
+
+export async function generateSegmentSummary(
+	entries: SessionEntry[],
+	options: GenerateSegmentSummaryOptions,
+): Promise<SegmentSummaryResult> {
+	const messages: AgentMessage[] = [];
+	for (const entry of entries) {
+		const message = getMessageFromEntry(entry);
+		if (message) messages.push(message);
+	}
+
+	if (messages.length === 0) {
+		return { summary: "No content to summarize" };
+	}
+
+	const conversationText = serializeConversation(convertToLlm(messages));
+	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${SEGMENT_SUMMARY_PROMPT}`;
+	const response = await completeSimple(
+		options.model,
+		{
+			systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: promptText }],
+					timestamp: Date.now(),
+				},
+			],
+		},
+		{ apiKey: options.apiKey, headers: options.headers, signal: options.signal, maxTokens: 1024 },
+	);
+
+	if (response.stopReason === "aborted") {
+		return { summary: "", error: "Summarization aborted" };
+	}
+	if (response.stopReason === "error") {
+		return { summary: "", error: response.errorMessage || "Summarization failed" };
+	}
+
+	const summary = response.content
+		.filter((content): content is { type: "text"; text: string } => content.type === "text")
+		.map((content) => content.text)
+		.join("\n");
+
+	return { summary: summary || "No summary generated" };
 }
