@@ -80,6 +80,8 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Maximum number of agent turns before stopping. */
+	maxTurns?: number;
 }
 
 /** Result from createAgentSession */
@@ -421,6 +423,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		maxTurns: options.maxTurns,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

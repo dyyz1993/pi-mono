@@ -430,6 +430,9 @@ function buildSessionOptions(
 	if (parsed.excludeTools) {
 		options.excludeTools = [...parsed.excludeTools];
 	}
+	if (parsed.maxTurns !== undefined) {
+		options.maxTurns = parsed.maxTurns;
+	}
 
 	return { options, cliThinkingFromModel, diagnostics };
 }
@@ -664,6 +667,7 @@ export async function main(args: string[], options?: MainOptions) {
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
+			maxTurns: sessionOptions.maxTurns,
 		});
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {

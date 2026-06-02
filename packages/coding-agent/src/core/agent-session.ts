@@ -199,6 +199,8 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional operation overrides for built-in tools. */
 	toolOperationsProvider?: ToolOperationsProvider;
+	/** Maximum number of agent turns before stopping. */
+	maxTurns?: number;
 }
 
 export interface ExtensionBindings {
@@ -448,6 +450,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._toolOperationsProvider = config.toolOperationsProvider;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._maxTurns = config.maxTurns !== undefined && config.maxTurns > 0 ? config.maxTurns : undefined;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)

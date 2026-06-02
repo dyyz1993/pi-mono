@@ -57,6 +57,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	maxTurns?: CreateAgentSessionOptions["maxTurns"];
 }
 
 /**
@@ -196,6 +197,7 @@ export async function createAgentSessionFromServices(
 		excludeTools: options.excludeTools,
 		noTools: options.noTools,
 		customTools: options.customTools,
+		maxTurns: options.maxTurns,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 }

@@ -151,6 +151,18 @@ describe("parseArgs", () => {
 			expect(result.thinking).toBe("high");
 		});
 
+		test("parses --max-turns", () => {
+			const result = parseArgs(["--max-turns", "3"]);
+			expect(result.maxTurns).toBe(3);
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("reports invalid --max-turns values", () => {
+			const result = parseArgs(["--max-turns", "0"]);
+			expect(result.maxTurns).toBeUndefined();
+			expect(result.diagnostics).toEqual([{ type: "warning", message: 'Invalid --max-turns value "0"' }]);
+		});
+
 		test("parses --models as comma-separated list", () => {
 			const result = parseArgs(["--models", "gpt-4o,claude-sonnet,gemini-pro"]);
 			expect(result.models).toEqual(["gpt-4o", "claude-sonnet", "gemini-pro"]);
