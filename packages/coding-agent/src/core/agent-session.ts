@@ -33,12 +33,13 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@earendil-works/pi-ai";
+import { minimatch } from "minimatch";
 import { getAgentDir } from "../config.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
-import type { AgentConfig } from "./agent-types.ts";
+import type { AgentConfig, PathConfig } from "./agent-types.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -288,6 +289,57 @@ function buildAgentSystemPrompt(agent: AgentConfig): string | undefined {
 	return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
+function normalizeAgentPath(filePath: string): string {
+	let normalized = filePath.startsWith("file://") ? filePath.slice("file://".length) : filePath;
+	normalized = normalized.replace(/\\/g, "/");
+	const parts = normalized.split("/");
+	const resolved: string[] = [];
+	for (const part of parts) {
+		if (part === "..") {
+			if (resolved.length > 0 && resolved[resolved.length - 1] !== "") {
+				resolved.pop();
+			}
+		} else if (part !== "." && part !== "") {
+			resolved.push(part);
+		} else if (part === "" && resolved.length === 0) {
+			resolved.push("");
+		}
+	}
+	if (normalized.startsWith("/")) {
+		return `/${resolved.filter((part) => part !== "").join("/")}`;
+	}
+	return resolved.join("/") || ".";
+}
+
+function matchesAgentPath(filePath: string, pattern: string): boolean {
+	if (pattern === "**") return true;
+	const normalized = normalizeAgentPath(filePath);
+	const parts = normalized.split("/");
+	for (let i = 0; i < parts.length; i++) {
+		const subpath = parts.slice(i).join("/");
+		if (minimatch(subpath, pattern, { dot: true })) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function matchesAnyAgentPath(filePath: string, patterns: string[] | undefined): boolean {
+	return patterns?.some((pattern) => matchesAgentPath(filePath, pattern)) ?? false;
+}
+
+function getPathArg(args: unknown): string | undefined {
+	if (typeof args !== "object" || args === null) return undefined;
+	const record = args as Record<string, unknown>;
+	for (const key of ["file_path", "filePath", "path"]) {
+		const value = record[key];
+		if (typeof value === "string" && value.length > 0) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -363,6 +415,7 @@ export class AgentSession {
 	private _permissionMode: PermissionMode = "auto";
 	private _currentAgentName = "build";
 	private _agentSystemPromptOverride: string | undefined;
+	private _currentAgentPaths: PathConfig | undefined;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -453,6 +506,8 @@ export class AgentSession {
 	 */
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			this._assertAgentPathAllowed(toolCall.name, args);
+
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
 				return undefined;
@@ -910,8 +965,30 @@ export class AgentSession {
 		return this._currentAgentName;
 	}
 
+	private _assertAgentPathAllowed(toolName: string, args: unknown): void {
+		const paths = this._currentAgentPaths;
+		if (!paths) return;
+
+		const rawPath = getPathArg(args);
+		if (!rawPath) return;
+
+		const normalizedPath = normalizeAgentPath(rawPath);
+		if (
+			paths.write &&
+			["edit", "write", "multiedit", "patch"].includes(toolName) &&
+			!matchesAnyAgentPath(normalizedPath, paths.write)
+		) {
+			throw new Error(`Path ${normalizedPath} is not in the allowed write paths: ${paths.write.join(", ")}`);
+		}
+
+		if (paths.read && toolName === "read" && !matchesAnyAgentPath(normalizedPath, paths.read)) {
+			throw new Error(`Path ${normalizedPath} is not in the allowed read paths: ${paths.read.join(", ")}`);
+		}
+	}
+
 	applyAgentConfig(agent: AgentConfig): void {
 		this._currentAgentName = agent.name;
+		this._currentAgentPaths = agent.paths;
 
 		if (agent.permissionMode && isPermissionMode(agent.permissionMode)) {
 			this.setPermissionMode(agent.permissionMode);
