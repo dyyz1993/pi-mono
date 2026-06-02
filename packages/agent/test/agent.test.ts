@@ -422,6 +422,56 @@ describe("Agent", () => {
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
 	});
 
+	it("auto-consumes follow-up messages queued during agent_end handlers", async () => {
+		let responseCount = 0;
+		let queuedFollowUp = false;
+		const agent = new Agent({
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				responseCount++;
+				queueMicrotask(() => {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage(`Response ${responseCount}`),
+					});
+				});
+				return stream;
+			},
+		});
+
+		agent.subscribe((event) => {
+			if (event.type !== "agent_end" || queuedFollowUp) return;
+			queuedFollowUp = true;
+			agent.followUp({
+				role: "user",
+				content: [{ type: "text", text: "Queued during agent_end" }],
+				timestamp: Date.now(),
+			});
+		});
+
+		await agent.prompt("Initial");
+		await agent.waitForIdle();
+
+		const userTexts = agent.state.messages
+			.filter((message) => message.role === "user")
+			.map((message) =>
+				typeof message.content === "string"
+					? message.content
+					: message.content
+							.filter((part) => part.type === "text")
+							.map((part) => part.text)
+							.join("\n"),
+			);
+		const assistantTexts = agent.state.messages
+			.filter((message) => message.role === "assistant")
+			.flatMap((message) => message.content.filter((part) => part.type === "text").map((part) => part.text));
+
+		expect(userTexts).toEqual(["Initial", "Queued during agent_end"]);
+		expect(assistantTexts).toEqual(["Response 1", "Response 2"]);
+		expect(responseCount).toBe(2);
+	});
+
 	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {
 		let responseCount = 0;
 		const agent = new Agent({

@@ -497,6 +497,12 @@ export class Agent {
 		this._state.pendingToolCalls = new Set<string>();
 		this.activeRun?.resolve();
 		this.activeRun = undefined;
+
+		if (this.followUpQueue.hasItems()) {
+			this.continue().catch((_err: unknown) => {
+				// The queue may have been cleared or the transcript may no longer support continuation.
+			});
+		}
 	}
 
 	/**
