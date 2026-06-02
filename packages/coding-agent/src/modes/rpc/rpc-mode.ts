@@ -437,6 +437,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	await rebindSession();
 	registerSignalHandlers();
+	output({ type: "ready" });
 
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {

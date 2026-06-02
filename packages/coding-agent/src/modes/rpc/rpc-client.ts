@@ -121,6 +121,8 @@ export class RpcClient {
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private channelHandlers = new Map<string, Set<(data: unknown) => unknown>>();
+	private readyResolve: (() => void) | null = null;
+	private readyReject: ((error: Error) => void) | null = null;
 	private requestId = 0;
 	private stderr = "";
 	private exitError: Error | null = null;
@@ -170,12 +172,14 @@ export class RpcClient {
 			if (this.process !== childProcess) return;
 			const error = this.createProcessExitError(code, signal);
 			this.exitError = error;
+			this.rejectReady(error);
 			this.rejectPendingRequests(error);
 		});
 		childProcess.once("error", (error) => {
 			if (this.process !== childProcess) return;
 			const processError = new Error(`Agent process error: ${error.message}. Stderr: ${this.stderr}`);
 			this.exitError = processError;
+			this.rejectReady(processError);
 			this.rejectPendingRequests(processError);
 		});
 		childProcess.stdin?.on("error", (error) => {
@@ -183,6 +187,7 @@ export class RpcClient {
 			const stdinError =
 				this.exitError ?? new Error(`Agent process stdin error: ${error.message}. Stderr: ${this.stderr}`);
 			this.exitError = stdinError;
+			this.rejectReady(stdinError);
 			this.rejectPendingRequests(stdinError);
 		});
 
@@ -191,8 +196,7 @@ export class RpcClient {
 			this.handleLine(line);
 		});
 
-		// Wait a moment for process to initialize
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await this.waitForReady();
 
 		if (this.process.exitCode !== null) {
 			const error = this.exitError ?? this.createProcessExitError(this.process.exitCode, this.process.signalCode);
@@ -869,6 +873,11 @@ export class RpcClient {
 		try {
 			const data = JSON.parse(line);
 
+			if (data.type === "ready") {
+				this.resolveReady();
+				return;
+			}
+
 			// Check if it's a response to a pending request
 			if (data.type === "response" && data.id && this.pendingRequests.has(data.id)) {
 				const pending = this.pendingRequests.get(data.id)!;
@@ -909,6 +918,48 @@ export class RpcClient {
 
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
 		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
+	}
+
+	private waitForReady(): Promise<void> {
+		return new Promise((resolve, reject) => {
+			if (this.exitError) {
+				reject(this.exitError);
+				return;
+			}
+			if (this.process && this.process.exitCode !== null) {
+				const error = this.createProcessExitError(this.process.exitCode, this.process.signalCode);
+				this.exitError = error;
+				reject(error);
+				return;
+			}
+
+			const timeout = setTimeout(() => {
+				this.readyResolve = null;
+				this.readyReject = null;
+				reject(new Error(`Agent process did not become ready. Stderr: ${this.stderr}`));
+			}, 15000);
+
+			this.readyResolve = () => {
+				clearTimeout(timeout);
+				this.readyResolve = null;
+				this.readyReject = null;
+				resolve();
+			};
+			this.readyReject = (error: Error) => {
+				clearTimeout(timeout);
+				this.readyResolve = null;
+				this.readyReject = null;
+				reject(error);
+			};
+		});
+	}
+
+	private resolveReady(): void {
+		this.readyResolve?.();
+	}
+
+	private rejectReady(error: Error): void {
+		this.readyReject?.(error);
 	}
 
 	private rejectPendingRequests(error: Error): void {

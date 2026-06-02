@@ -24,6 +24,7 @@ describe("RpcClient child process failures", () => {
 	test("rejects an in-flight request when the child process exits", async () => {
 		const client = new RpcClient({
 			cliPath: writeChildScript(`
+process.stdout.write(JSON.stringify({ type: "ready" }) + "\\n");
 process.stdin.once("data", () => {
 	process.exit(43);
 });
