@@ -1220,6 +1220,12 @@ export interface ExtensionAPI {
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
 
+	/** Hide existing entries from LLM context by appending a deletion marker. */
+	deleteEntries(targetIds: string[]): void;
+
+	/** Replace existing entries in LLM context with a summary marker. */
+	summarizeEntries(targetIds: string[], summary: string): void;
+
 	// =========================================================================
 	// Session Metadata
 	// =========================================================================
@@ -1458,6 +1464,10 @@ export type SendUserMessageHandler = (
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
+export type DeleteEntriesHandler = (targetIds: string[]) => void;
+
+export type SummarizeEntriesHandler = (targetIds: string[], summary: string) => void;
+
 export type SetSessionNameHandler = (name: string) => void;
 
 export type GetSessionNameHandler = () => string | undefined;
@@ -1534,6 +1544,8 @@ export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
+	deleteEntries: DeleteEntriesHandler;
+	summarizeEntries: SummarizeEntriesHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;

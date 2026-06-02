@@ -2531,6 +2531,12 @@ export class AgentSession {
 					const id = this.sessionManager.appendCustomEntry(customType, data);
 					this._emit({ type: "custom_entry", customType, data, id });
 				},
+				deleteEntries: (targetIds) => {
+					this.sessionManager.appendDeletion(targetIds);
+				},
+				summarizeEntries: (targetIds, summary) => {
+					this.sessionManager.appendSegmentSummary(targetIds, summary);
+				},
 				setSessionName: (name) => {
 					this.setSessionName(name);
 				},

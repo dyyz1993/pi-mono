@@ -60,6 +60,8 @@ describe("ExtensionRunner", () => {
 		sendMessage: () => {},
 		sendUserMessage: () => {},
 		appendEntry: () => {},
+		deleteEntries: () => {},
+		summarizeEntries: () => {},
 		setSessionName: () => {},
 		getSessionName: () => undefined,
 		setLabel: () => {},
@@ -432,6 +434,40 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("context creation", () => {
+		it("delegates entry deletion and summarization from extension commands", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.registerCommand("prune", {
+						handler: async (_args, ctx) => {
+							pi.deleteEntries(["entry-1", "entry-2"]);
+							pi.summarizeEntries(["entry-3"], "Summary text");
+						},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "entry-actions.ts"), extCode);
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const deleteEntries = vi.fn();
+			const summarizeEntries = vi.fn();
+
+			runner.bindCore(
+				{
+					...extensionActions,
+					deleteEntries,
+					summarizeEntries,
+				},
+				extensionContextActions,
+			);
+
+			const command = runner.getCommand("prune");
+			expect(command).toBeDefined();
+			await command?.handler("", runner.createCommandContext());
+
+			expect(deleteEntries).toHaveBeenCalledWith(["entry-1", "entry-2"]);
+			expect(summarizeEntries).toHaveBeenCalledWith(["entry-3"], "Summary text");
+		});
+
 		it("exposes the current abort signal on ExtensionContext", async () => {
 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);

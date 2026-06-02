@@ -136,6 +136,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
+		deleteEntries: notInitialized,
+		summarizeEntries: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
@@ -258,6 +260,16 @@ function createExtensionAPI(
 		appendEntry(customType: string, data?: unknown): void {
 			runtime.assertActive();
 			runtime.appendEntry(customType, data);
+		},
+
+		deleteEntries(targetIds: string[]): void {
+			runtime.assertActive();
+			runtime.deleteEntries(targetIds);
+		},
+
+		summarizeEntries(targetIds: string[], summary: string): void {
+			runtime.assertActive();
+			runtime.summarizeEntries(targetIds, summary);
 		},
 
 		setSessionName(name: string): void {
