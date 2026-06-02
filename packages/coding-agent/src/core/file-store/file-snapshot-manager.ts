@@ -202,7 +202,7 @@ export class FileSnapshotManager {
 			const data = entry.data as StepSnapshotData | undefined;
 			if (!data) continue;
 			if (this.sessionStartTreeHash === null && this.lastCommittedTreeHash === null) {
-				this.sessionStartTreeHash = data.baselineTreeHash;
+				this.sessionStartTreeHash = data.baselineTreeHash ?? "";
 			}
 
 			this.snapshotIndex.set(entry.id, { ...data, entryId: entry.id, timestamp: entry.timestamp });
@@ -221,7 +221,15 @@ export class FileSnapshotManager {
 			if (!isOnPathTo(byId, leafId, entry.id)) continue;
 			snapshots.push(entry.data as StepSnapshotData);
 		}
-		return snapshots.at(-1) ?? null;
+		if (snapshots.length > 0) return snapshots.at(-1) ?? null;
+
+		const children: StepSnapshotData[] = [];
+		for (const entry of entries) {
+			if (entry.type !== "custom" || entry.customType !== "step-snapshot") continue;
+			if (entry.parentId !== leafId) continue;
+			children.push(entry.data as StepSnapshotData);
+		}
+		return children.at(-1) ?? null;
 	}
 
 	resolveSnapshotEntryIdForTarget(targetEntryId: string, entries: SessionEntry[]): string | null {
