@@ -710,6 +710,8 @@ export interface MessageUpdateEvent {
 export interface MessageEndEvent {
 	type: "message_end";
 	message: AgentMessage;
+	/** Session entry id for messages persisted in the session tree. */
+	entryId?: string;
 }
 
 /** Fired when a tool starts executing */

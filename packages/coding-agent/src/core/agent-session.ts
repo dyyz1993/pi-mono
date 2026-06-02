@@ -183,7 +183,8 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
-	| Exclude<AgentEvent, { type: "agent_end" }>
+	| Exclude<AgentEvent, { type: "agent_end" | "message_end" }>
+	| (Extract<AgentEvent, { type: "message_end" }> & { entryId?: string })
 	| {
 			type: "agent_end";
 			messages: AgentMessage[];
@@ -730,15 +731,13 @@ export class AgentSession {
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
 
-		// Notify all listeners
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
-
 		// Handle session persistence
+		let persistedEntryId: string | undefined;
 		if (event.type === "message_end") {
 			// Check if this is a custom message from extensions
 			if (event.message.role === "custom") {
 				// Persist as CustomMessageEntry
-				this.sessionManager.appendCustomMessageEntry(
+				persistedEntryId = this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
@@ -750,7 +749,7 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				persistedEntryId = this.sessionManager.appendMessage(event.message);
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
@@ -775,6 +774,16 @@ export class AgentSession {
 				}
 			}
 		}
+
+		const publicEvent =
+			event.type === "message_end" && persistedEntryId
+				? { ...event, entryId: persistedEntryId }
+				: event.type === "agent_end"
+					? { ...event, willRetry: this._willRetryAfterAgentEnd(event) }
+					: event;
+
+		// Notify all listeners
+		this._emit(publicEvent);
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
