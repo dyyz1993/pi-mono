@@ -205,7 +205,8 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "custom_entry"; customType: string; data?: unknown; id: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -2527,7 +2528,8 @@ export class AgentSession {
 					});
 				},
 				appendEntry: (customType, data) => {
-					this.sessionManager.appendCustomEntry(customType, data);
+					const id = this.sessionManager.appendCustomEntry(customType, data);
+					this._emit({ type: "custom_entry", customType, data, id });
 				},
 				setSessionName: (name) => {
 					this.setSessionName(name);
