@@ -585,6 +585,12 @@ export class AgentSession {
 			const manager = new FileSnapshotManager(git);
 			manager.rebuildIndex(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 			manager.initialize(this._cwd);
+			void git.enforceLimit(100 * 1024 * 1024, manager.getActiveTreeHashes()).catch((err: unknown) => {
+				console.warn(
+					"[initFileSnapshotManager] file store cleanup failed:",
+					err instanceof Error ? err.message : String(err),
+				);
+			});
 			this._fileSnapshotManager = manager;
 		} catch (err) {
 			console.warn(

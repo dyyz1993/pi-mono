@@ -575,6 +575,20 @@ export class FileSnapshotManager {
 		return entries;
 	}
 
+	getActiveTreeHashes(): Set<string> {
+		const activeHashes = new Set<string>();
+		if (this.sessionStartTreeHash) {
+			activeHashes.add(this.sessionStartTreeHash);
+		}
+		for (const snapshot of this.snapshotIndex.values()) {
+			activeHashes.add(snapshot.snapshotTreeHash);
+			if (snapshot.baselineTreeHash) {
+				activeHashes.add(snapshot.baselineTreeHash);
+			}
+		}
+		return activeHashes;
+	}
+
 	private readTree(treeHash: string | null): Map<string, string> {
 		return treeHash ? (this.git.readTree(treeHash) ?? new Map<string, string>()) : new Map<string, string>();
 	}
