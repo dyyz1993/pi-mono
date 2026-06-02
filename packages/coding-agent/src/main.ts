@@ -46,6 +46,7 @@ import { ExtensionSelectorComponent } from "./modes/interactive/components/exten
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
+import { resolveSchema } from "./utils/structured-output.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 /**
@@ -778,6 +779,7 @@ export async function main(args: string[], options?: MainOptions) {
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
+			outputSchema: parsed.outputSchema ? resolveSchema(parsed.outputSchema) : undefined,
 		});
 		stopThemeWatcher();
 		restoreStdout();
