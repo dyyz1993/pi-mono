@@ -1261,6 +1261,14 @@ export interface ExtensionAPI {
 	/** Set thinking level (clamped to model capabilities). */
 	setThinkingLevel(level: ThinkingLevel): void;
 
+	/**
+	 * Make an LLM call using the current session's model and provider settings.
+	 *
+	 * Without `tools`: single-turn call, returns response text.
+	 * With `tools`: starts a temporary Agent loop with the specified built-in tools.
+	 */
+	callLLM(options: CallLLMOptions): Promise<string>;
+
 	// =========================================================================
 	// Provider Registration
 	// =========================================================================
@@ -1475,6 +1483,21 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
+// ============================================================================
+// callLLM
+// ============================================================================
+
+export interface CallLLMOptions {
+	systemPrompt?: string;
+	messages: Array<{ role: "user" | "assistant"; content: string }>;
+	tools?: string[];
+	maxTurns?: number;
+	maxTokens?: number;
+	signal?: AbortSignal;
+}
+
+export type CallLLMHandler = (options: CallLLMOptions) => Promise<string>;
+
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
@@ -1518,6 +1541,7 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	callLLM: CallLLMHandler;
 }
 
 /**

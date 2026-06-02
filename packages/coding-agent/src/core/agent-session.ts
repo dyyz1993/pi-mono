@@ -23,7 +23,8 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
+import { Agent as CoreAgent } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -56,6 +57,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
+	type CallLLMOptions,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
@@ -103,12 +105,57 @@ import {
 } from "./storage.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
-import { createAllToolDefinitions, type ToolOperationsProvider, toolsOptionsFromProvider } from "./tools/index.ts";
+import {
+	createAllToolDefinitions,
+	createTool,
+	type ToolName,
+	type ToolOperationsProvider,
+	toolsOptionsFromProvider,
+} from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
 // ============================================================================
 // Skill Block Parsing
 // ============================================================================
+
+const EMPTY_CALL_LLM_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function textFromAssistantMessage(message: AssistantMessage): string {
+	return message.content
+		.filter((content): content is TextContent => content.type === "text")
+		.map((content) => content.text)
+		.join("\n");
+}
+
+function toCallLlmMessages(messages: CallLLMOptions["messages"], model: Model<any>): Message[] {
+	return messages.map((message) => {
+		const content: TextContent[] = [{ type: "text", text: message.content }];
+		if (message.role === "user") {
+			return {
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			};
+		}
+		return {
+			role: "assistant",
+			content,
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: EMPTY_CALL_LLM_USAGE,
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+	});
+}
 
 /** Parsed skill block from a user message */
 export interface ParsedSkillBlock {
@@ -2507,6 +2554,7 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				callLLM: (options) => this.callLLM(options),
 			},
 			{
 				getModel: () => this.model,
@@ -2548,6 +2596,88 @@ export class AgentSession {
 				},
 			},
 		);
+	}
+
+	async callLLM(options: CallLLMOptions): Promise<string> {
+		const model = this.model;
+		if (!model) {
+			throw new Error("No model selected");
+		}
+		if (options.signal?.aborted) {
+			throw new Error("Aborted");
+		}
+
+		const context: Context = {
+			systemPrompt: options.systemPrompt ?? "",
+			messages: toCallLlmMessages(options.messages, model),
+		};
+		const tools = options.tools
+			?.map((name) => this._toolRegistry.get(name) ?? this._createBuiltinTool(name))
+			.filter((tool): tool is AgentTool => tool !== undefined);
+
+		if (!tools || tools.length === 0) {
+			const stream = await this.agent.streamFn(model, context, {
+				maxTokens: options.maxTokens,
+				signal: options.signal,
+				sessionId: this.sessionId,
+				reasoning: this.thinkingLevel === "off" ? undefined : this.thinkingLevel,
+			});
+			const response = await stream.result();
+			return textFromAssistantMessage(response);
+		}
+
+		const agent = new CoreAgent({
+			initialState: {
+				systemPrompt: options.systemPrompt ?? "",
+				model,
+				thinkingLevel: "off",
+				tools,
+			},
+			convertToLlm: this.agent.convertToLlm,
+			streamFn: this.agent.streamFn,
+			sessionId: this.sessionId,
+			transport: this.agent.transport,
+			thinkingBudgets: this.agent.thinkingBudgets,
+			maxRetryDelayMs: this.agent.maxRetryDelayMs,
+		});
+
+		const abort = () => agent.abort();
+		options.signal?.addEventListener("abort", abort, { once: true });
+		let resultText = "";
+		let turnIndex = 0;
+		const unsubscribe = agent.subscribe((event) => {
+			if (event.type === "turn_end") {
+				turnIndex++;
+				if (options.maxTurns !== undefined && options.maxTurns > 0 && turnIndex >= options.maxTurns) {
+					agent.abort();
+				}
+				return;
+			}
+			if (event.type !== "message_end" || event.message.role !== "assistant") {
+				return;
+			}
+			resultText = textFromAssistantMessage(event.message);
+		});
+
+		try {
+			await agent.prompt(options.messages[0]?.content ?? "");
+		} finally {
+			unsubscribe();
+			options.signal?.removeEventListener("abort", abort);
+		}
+
+		return resultText;
+	}
+
+	private _createBuiltinTool(name: string): AgentTool | undefined {
+		if (!this._baseToolDefinitions.has(name)) {
+			return undefined;
+		}
+		try {
+			return createTool(name as ToolName, this._cwd, toolsOptionsFromProvider(this.toolOperationsProvider ?? {}));
+		} catch {
+			return undefined;
+		}
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {

@@ -52,6 +52,8 @@ export type {
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
+	CallLLMHandler,
+	CallLLMOptions,
 	// Context
 	CompactOptions,
 	// Events - Agent
