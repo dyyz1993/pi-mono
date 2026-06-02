@@ -96,7 +96,7 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
-import { createAllToolDefinitions } from "./tools/index.ts";
+import { createAllToolDefinitions, type ToolOperationsProvider, toolsOptionsFromProvider } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
 // ============================================================================
@@ -190,6 +190,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Optional operation overrides for built-in tools. */
+	toolOperationsProvider?: ToolOperationsProvider;
 }
 
 export interface ExtensionBindings {
@@ -393,6 +395,7 @@ export class AgentSession {
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
+	private _toolOperationsProvider?: ToolOperationsProvider;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
@@ -436,6 +439,7 @@ export class AgentSession {
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
+		this._toolOperationsProvider = config.toolOperationsProvider;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 
 		// Always subscribe to agent events for internal handling
@@ -456,6 +460,18 @@ export class AgentSession {
 
 	get fileSnapshotManager(): FileSnapshotManager | null {
 		return this._fileSnapshotManager;
+	}
+
+	set toolOperationsProvider(provider: ToolOperationsProvider | undefined) {
+		this._toolOperationsProvider = provider;
+		this._baseToolDefinitions = new Map(
+			Object.entries(this._createBaseToolDefinitions()).map(([name, tool]) => [name, tool as ToolDefinition]),
+		);
+		this._refreshToolRegistry();
+	}
+
+	get toolOperationsProvider(): ToolOperationsProvider | undefined {
+		return this._toolOperationsProvider;
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -2451,6 +2467,10 @@ export class AgentSession {
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
 				refreshTools: () => this._refreshToolRegistry(),
+				setToolOperationsProvider: (provider) => {
+					this.toolOperationsProvider = provider;
+				},
+				getToolOperationsProvider: () => this.toolOperationsProvider,
 				getCommands,
 				setModel: async (model) => {
 					if (!this.modelRegistry.hasConfiguredAuth(model)) return false;
@@ -2595,15 +2615,14 @@ export class AgentSession {
 		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
 	}
 
-	private _buildRuntime(options: {
-		activeToolNames?: string[];
-		flagValues?: Map<string, boolean | string>;
-		includeAllExtensionTools?: boolean;
-	}): void {
+	private _createBaseToolDefinitions(): Record<string, ToolDefinition> {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
-		const baseToolDefinitions = this._baseToolsOverride
+		const providerOptions = this._toolOperationsProvider
+			? toolsOptionsFromProvider(this._toolOperationsProvider)
+			: {};
+		return this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
 						name,
@@ -2611,9 +2630,22 @@ export class AgentSession {
 					]),
 				)
 			: createAllToolDefinitions(this._cwd, {
-					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					read: { autoResizeImages, ...providerOptions.read },
+					bash: { commandPrefix: shellCommandPrefix, shellPath, ...providerOptions.bash },
+					write: providerOptions.write,
+					edit: providerOptions.edit,
+					grep: providerOptions.grep,
+					find: providerOptions.find,
+					ls: providerOptions.ls,
 				});
+	}
+
+	private _buildRuntime(options: {
+		activeToolNames?: string[];
+		flagValues?: Map<string, boolean | string>;
+		includeAllExtensionTools?: boolean;
+	}): void {
+		const baseToolDefinitions = this._createBaseToolDefinitions();
 
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),

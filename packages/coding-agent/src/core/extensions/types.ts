@@ -73,6 +73,7 @@ import type {
 	LsToolInput,
 	ReadToolDetails,
 	ReadToolInput,
+	ToolOperationsProvider,
 	WriteToolInput,
 } from "../tools/index.ts";
 
@@ -1223,6 +1224,12 @@ export interface ExtensionAPI {
 	/** Set the active tools by name. */
 	setActiveTools(toolNames: string[]): void;
 
+	/** Set or clear operation overrides for built-in tools. */
+	setToolOperationsProvider(provider: ToolOperationsProvider | undefined): void;
+
+	/** Get the current operation overrides for built-in tools. */
+	getToolOperationsProvider(): ToolOperationsProvider | undefined;
+
 	/** Get available slash commands in the current session. */
 	getCommands(): SlashCommandInfo[];
 
@@ -1441,6 +1448,10 @@ export type SetActiveToolsHandler = (toolNames: string[]) => void;
 
 export type RefreshToolsHandler = () => void;
 
+export type SetToolOperationsProviderHandler = (provider: ToolOperationsProvider | undefined) => void;
+
+export type GetToolOperationsProviderHandler = () => ToolOperationsProvider | undefined;
+
 export type SetModelHandler = (model: Model<any>) => Promise<boolean>;
 
 export type GetThinkingLevelHandler = () => ThinkingLevel;
@@ -1486,6 +1497,8 @@ export interface ExtensionActions {
 	getAllTools: GetAllToolsHandler;
 	setActiveTools: SetActiveToolsHandler;
 	refreshTools: RefreshToolsHandler;
+	setToolOperationsProvider: SetToolOperationsProviderHandler;
+	getToolOperationsProvider: GetToolOperationsProviderHandler;
 	getCommands: GetCommandsHandler;
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;

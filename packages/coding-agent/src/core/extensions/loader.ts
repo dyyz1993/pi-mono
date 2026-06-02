@@ -144,6 +144,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setActiveTools: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
+		setToolOperationsProvider: notInitialized,
+		getToolOperationsProvider: notInitialized,
 		getCommands: notInitialized,
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
@@ -290,6 +292,16 @@ function createExtensionAPI(
 		setActiveTools(toolNames: string[]): void {
 			runtime.assertActive();
 			runtime.setActiveTools(toolNames);
+		},
+
+		setToolOperationsProvider(provider): void {
+			runtime.assertActive();
+			runtime.setToolOperationsProvider(provider);
+		},
+
+		getToolOperationsProvider() {
+			runtime.assertActive();
+			return runtime.getToolOperationsProvider();
 		},
 
 		getCommands() {

@@ -70,13 +70,13 @@ export {
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
-import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
-import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
-import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
-import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
-import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
-import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
+import { type BashOperations, type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
+import { createEditTool, createEditToolDefinition, type EditOperations, type EditToolOptions } from "./edit.ts";
+import { createFindTool, createFindToolDefinition, type FindOperations, type FindToolOptions } from "./find.ts";
+import { createGrepTool, createGrepToolDefinition, type GrepOperations, type GrepToolOptions } from "./grep.ts";
+import { createLsTool, createLsToolDefinition, type LsOperations, type LsToolOptions } from "./ls.ts";
+import { createReadTool, createReadToolDefinition, type ReadOperations, type ReadToolOptions } from "./read.ts";
+import { createWriteTool, createWriteToolDefinition, type WriteOperations, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
@@ -91,6 +91,28 @@ export interface ToolsOptions {
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
+}
+
+export interface ToolOperationsProvider {
+	bash?: BashOperations;
+	read?: ReadOperations;
+	write?: WriteOperations;
+	edit?: EditOperations;
+	grep?: GrepOperations;
+	find?: FindOperations;
+	ls?: LsOperations;
+}
+
+export function toolsOptionsFromProvider(provider: ToolOperationsProvider): ToolsOptions {
+	const options: ToolsOptions = {};
+	if (provider.bash) options.bash = { operations: provider.bash };
+	if (provider.read) options.read = { operations: provider.read };
+	if (provider.write) options.write = { operations: provider.write };
+	if (provider.edit) options.edit = { operations: provider.edit };
+	if (provider.grep) options.grep = { operations: provider.grep };
+	if (provider.find) options.find = { operations: provider.find };
+	if (provider.ls) options.ls = { operations: provider.ls };
+	return options;
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
