@@ -5,9 +5,11 @@
 ### Added
 
 - Added `ctx.mode` to extension contexts so extensions can distinguish TUI, RPC, JSON, and print mode.
+- Added `ctx.getSystemPromptOptions()` for extension commands to inspect the current base system prompt inputs.
 
 ### Fixed
 
+- Fixed stored XSS in HTML session exports by sanitizing Markdown link and image URLs with a scheme allow-list after stripping control characters.
 - Fixed opening and listing very large JSONL session files by reading session entries line-by-line instead of materializing the full file as one string ([#5231](https://github.com/earendil-works/pi/issues/5231)).
 
 ## [0.78.0] - 2026-05-29
