@@ -83,6 +83,7 @@ import {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { FileSnapshotManager } from "./file-store/file-snapshot-manager.ts";
 import { InternalGit } from "./file-store/internal-git.ts";
+import { handleLargeInput } from "./large-input.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -1175,10 +1176,11 @@ export class AgentSession {
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 					);
 				}
+				const { text: finalText } = handleLargeInput(expandedText);
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages);
+					await this._queueFollowUp(finalText, currentImages);
 				} else {
-					await this._queueSteer(expandedText, currentImages);
+					await this._queueSteer(finalText, currentImages);
 				}
 				preflightResult?.(true);
 				return;
@@ -1220,8 +1222,10 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
+			const { text: finalText } = handleLargeInput(expandedText);
+
 			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: finalText }];
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
@@ -1355,7 +1359,8 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images);
+		const { text: finalText } = handleLargeInput(expandedText);
+		await this._queueSteer(finalText, images);
 	}
 
 	/**
@@ -1375,7 +1380,8 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images);
+		const { text: finalText } = handleLargeInput(expandedText);
+		await this._queueFollowUp(finalText, images);
 	}
 
 	/**
