@@ -451,8 +451,9 @@ export class RpcClient {
 			customInstructions?: string;
 			replaceInstructions?: boolean;
 			label?: string;
+			skipFiles?: boolean;
 		},
-	): Promise<{ cancelled: boolean; editorText?: string; newLeafId: string | null }> {
+	): Promise<{ cancelled: boolean; editorText?: string; newLeafId: string | null; reason?: string }> {
 		const response = await this.send({
 			type: "navigate_tree",
 			targetId,
@@ -460,6 +461,7 @@ export class RpcClient {
 			customInstructions: options?.customInstructions,
 			replaceInstructions: options?.replaceInstructions,
 			label: options?.label,
+			skipFiles: options?.skipFiles,
 		});
 		return this.getData(response);
 	}

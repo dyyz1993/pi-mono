@@ -71,6 +71,7 @@ export type RpcCommand =
 			customInstructions?: string;
 			replaceInstructions?: boolean;
 			label?: string;
+			skipFiles?: boolean;
 	  }
 	| { id?: string; type: "rollback_preview"; targetId: string }
 	| { id?: string; type: "delete_entries"; targetIds: string[] }
@@ -342,7 +343,7 @@ export type RpcResponse =
 			type: "response";
 			command: "navigate_tree";
 			success: true;
-			data: { cancelled: boolean; editorText?: string; newLeafId: string | null };
+			data: { cancelled: boolean; editorText?: string; newLeafId: string | null; reason?: string };
 	  }
 	| {
 			id?: string;

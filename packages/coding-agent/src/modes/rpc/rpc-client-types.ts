@@ -120,8 +120,9 @@ export interface RpcClientSurface {
 			customInstructions?: string;
 			replaceInstructions?: boolean;
 			label?: string;
+			skipFiles?: boolean;
 		},
-	): Promise<SessionOperationResult & { editorText?: string; newLeafId: string | null }>;
+	): Promise<SessionOperationResult & { editorText?: string; newLeafId: string | null; reason?: string }>;
 	previewRollback(targetId: string): Promise<RollbackPreviewResult>;
 	deleteEntries(targetIds: string[]): Promise<{ entryId: string }>;
 	summarizeEntries(targetIds: string[], options?: { summary?: string; model?: string }): Promise<{ entryId: string }>;

@@ -3110,8 +3110,20 @@ export class AgentSession {
 	 */
 	async navigateTree(
 		targetId: string,
-		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
-	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
+		options: {
+			summarize?: boolean;
+			customInstructions?: string;
+			replaceInstructions?: boolean;
+			label?: string;
+			skipFiles?: boolean;
+		} = {},
+	): Promise<{
+		editorText?: string;
+		cancelled: boolean;
+		aborted?: boolean;
+		summaryEntry?: BranchSummaryEntry;
+		reason?: string;
+	}> {
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target
@@ -3243,6 +3255,16 @@ export class AgentSession {
 				newLeafId = targetId;
 			}
 
+			if (options.skipFiles !== true) {
+				const userMessageCount = this.sessionManager.countUserMessagesOnPath(newLeafId);
+				if (userMessageCount === 0) {
+					return {
+						cancelled: true,
+						reason: `Navigation to "${targetId}" would remove all user messages and restore files to their pre-session state. Use message-only rollback (skipFiles: true) to undo without file changes.`,
+					};
+				}
+			}
+
 			// Switch leaf (with or without summary)
 			// Summary is attached at the navigation target position (newLeafId), not the old branch
 			let summaryEntry: BranchSummaryEntry | undefined;
@@ -3277,7 +3299,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 
-			if (this._fileSnapshotManager) {
+			if (this._fileSnapshotManager && options.skipFiles !== true) {
 				await this._fileSnapshotManager.restoreFiles(this._cwd, {
 					targetEntryId: newLeafId ?? undefined,
 					currentLeafId: oldLeafId,

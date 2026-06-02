@@ -383,8 +383,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						customInstructions: options?.customInstructions,
 						replaceInstructions: options?.replaceInstructions,
 						label: options?.label,
+						skipFiles: options?.skipFiles,
 					});
-					return { cancelled: result.cancelled };
+					return { cancelled: result.cancelled, reason: result.reason };
 				},
 				switchSession: async (sessionPath, options) => {
 					return runtimeHost.switchSession(sessionPath, options);
@@ -671,11 +672,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					customInstructions: command.customInstructions,
 					replaceInstructions: command.replaceInstructions,
 					label: command.label,
+					skipFiles: command.skipFiles,
 				});
 				return success(id, "navigate_tree", {
 					cancelled: result.cancelled,
 					editorText: result.editorText,
 					newLeafId: session.sessionManager.getLeafId(),
+					reason: result.reason,
 				});
 			}
 

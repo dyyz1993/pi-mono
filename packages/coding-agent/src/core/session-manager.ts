@@ -1362,6 +1362,18 @@ export class SessionManager {
 		return this.leafId ? this.byId.get(this.leafId) : undefined;
 	}
 
+	countUserMessagesOnPath(leafId: string | null): number {
+		let count = 0;
+		let current = leafId ? this.byId.get(leafId) : undefined;
+		while (current) {
+			if (current.type === "message" && current.message.role === "user") {
+				count++;
+			}
+			current = current.parentId ? this.byId.get(current.parentId) : undefined;
+		}
+		return count;
+	}
+
 	getEntry(id: string): SessionEntry | undefined {
 		return this.byId.get(id);
 	}
