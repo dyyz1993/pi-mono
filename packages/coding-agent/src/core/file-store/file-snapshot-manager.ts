@@ -329,19 +329,29 @@ export class FileSnapshotManager {
 			if (!snapshot?.diff) continue;
 
 			for (const path of snapshot.diff.added) {
-				fileMap.set(path, { path, status: "added", turnIndex: snapshot.turnIndex, entryId: snapshot.entryId });
+				if (!fileMap.has(path)) {
+					fileMap.set(path, { path, status: "added", turnIndex: snapshot.turnIndex, entryId: snapshot.entryId });
+				}
 			}
 			for (const path of snapshot.diff.modified) {
-				const existing = fileMap.get(path);
-				fileMap.set(path, {
-					path,
-					status: existing?.status === "added" ? "added" : "modified",
-					turnIndex: existing?.turnIndex ?? snapshot.turnIndex,
-					entryId: existing?.entryId ?? snapshot.entryId,
-				});
+				if (!fileMap.has(path)) {
+					fileMap.set(path, {
+						path,
+						status: "modified",
+						turnIndex: snapshot.turnIndex,
+						entryId: snapshot.entryId,
+					});
+				} else {
+					const existing = fileMap.get(path);
+					if (existing && existing.status !== "added") {
+						existing.status = "modified";
+					}
+				}
 			}
 			for (const path of snapshot.diff.deleted) {
-				fileMap.set(path, { path, status: "deleted", turnIndex: snapshot.turnIndex, entryId: snapshot.entryId });
+				if (!fileMap.has(path)) {
+					fileMap.set(path, { path, status: "deleted", turnIndex: snapshot.turnIndex, entryId: snapshot.entryId });
+				}
 			}
 		}
 
@@ -370,9 +380,26 @@ export class FileSnapshotManager {
 			? (toSnap?.snapshotTreeHash ?? null)
 			: (this.lastCommittedTreeHash ?? this.sessionStartTreeHash);
 
-		const oldContent = this.readTree(fromHash).get(options.filePath) ?? null;
+		let oldContent = this.readTree(fromHash).get(options.filePath) ?? null;
 		const newContent = this.readTree(toHash).get(options.filePath) ?? null;
-		if (oldContent === null && newContent === null) return null;
+		if (oldContent === null && newContent === null) {
+			const fromIdx = options.fromEntryId
+				? snapshots.findIndex((snapshot) => snapshot.entryId === options.fromEntryId)
+				: 0;
+			const toIdx = options.toEntryId
+				? snapshots.findIndex((snapshot) => snapshot.entryId === options.toEntryId)
+				: snapshots.length - 1;
+			for (let i = toIdx; i >= fromIdx; i--) {
+				const snapshot = snapshots[i];
+				if (!snapshot) continue;
+				const content = this.readTree(snapshot.snapshotTreeHash).get(options.filePath);
+				if (content !== undefined) {
+					oldContent = content;
+					break;
+				}
+			}
+			if (oldContent === null) return null;
+		}
 
 		return {
 			path: options.filePath,
@@ -395,10 +422,14 @@ export class FileSnapshotManager {
 				if (file.status === "added") added++;
 				if (file.status === "modified") modified++;
 				if (file.status === "deleted") deleted++;
+				let diff: FileDiffInfo | null = null;
+				try {
+					diff = this.getFileDiff({ filePath: file.path, ...options });
+				} catch {}
 				return {
 					path: file.path,
 					status: file.status,
-					diff: this.getFileDiff({ filePath: file.path, ...options }),
+					diff,
 				};
 			}),
 			summary: { totalFiles: files.length, added, modified, deleted },
@@ -469,8 +500,9 @@ export class FileSnapshotManager {
 
 		const targetFiles = this.readTree(targetTreeHash);
 		const currentFiles = this.readTree(currentTreeHash);
+		const actualDiskFiles = readFilteredWorkingDir(this.git, cwd);
 		let restore = [...targetFiles.entries()]
-			.filter(([path, content]) => currentFiles.get(path) !== content)
+			.filter(([path, content]) => actualDiskFiles.get(path) !== content)
 			.map(([path]) => path);
 		let deleted = [...currentFiles.keys()].filter((path) => !targetFiles.has(path));
 
@@ -479,6 +511,7 @@ export class FileSnapshotManager {
 			restore = restore.filter((path) => fileSet.has(path));
 			deleted = deleted.filter((path) => fileSet.has(path));
 		}
+		if (restore.length === 0 && deleted.length === 0) return empty;
 
 		const dirty = this.findDirtyFiles(cwd, currentFiles, restore);
 		if (options.preview) {
