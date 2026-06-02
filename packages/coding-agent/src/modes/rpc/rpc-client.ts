@@ -14,6 +14,7 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { Settings } from "../../core/settings-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
+	RpcAgentMessage,
 	RpcAgentSummary,
 	RpcAllTool,
 	RpcCommand,
@@ -527,7 +528,7 @@ export class RpcClient {
 	}
 
 	async getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
-		messages: AgentMessage[];
+		messages: RpcAgentMessage[];
 		hasMore: boolean;
 		totalCount: number;
 		nextCursor: string | null;

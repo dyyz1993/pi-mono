@@ -813,7 +813,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					}
 					messageEntries.push({ entryId: entry.id, message: entry.message });
 				}
-				const messages = messageEntries.map((entry) => entry.message);
+				const messages = messageEntries.map((entry) => ({ ...entry.message, entryId: entry.entryId }));
 				const totalCount = messages.length;
 				const treeEntries = allEntries.map(toTreeEntry);
 				const customEntries = allEntries.filter(isCustomEntry).map((entry) => ({

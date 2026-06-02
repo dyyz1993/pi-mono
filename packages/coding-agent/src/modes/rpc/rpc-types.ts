@@ -199,6 +199,8 @@ export interface RpcTool {
 	sourceInfo: SourceInfo;
 }
 
+export type RpcAgentMessage = AgentMessage & { entryId?: string };
+
 export interface RpcContextUsage {
 	tokens: number | null;
 	contextWindow: number;
@@ -376,7 +378,7 @@ export type RpcResponse =
 			command: "get_full_messages";
 			success: true;
 			data: {
-				messages: AgentMessage[];
+				messages: RpcAgentMessage[];
 				hasMore: boolean;
 				totalCount: number;
 				nextCursor: string | null;

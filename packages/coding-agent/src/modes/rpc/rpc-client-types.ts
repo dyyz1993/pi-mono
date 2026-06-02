@@ -20,6 +20,7 @@ import type {
 	TreeWithLeaf,
 } from "./rpc-client.ts";
 import type {
+	RpcAgentMessage,
 	RpcAgentSummary,
 	RpcAllTool,
 	RpcContextUsage,
@@ -130,7 +131,7 @@ export interface RpcClientSurface {
 	setSessionName(name: string): Promise<void>;
 	getMessages(): Promise<AgentMessage[]>;
 	getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
-		messages: AgentMessage[];
+		messages: RpcAgentMessage[];
 		hasMore: boolean;
 		totalCount: number;
 		nextCursor: string | null;
