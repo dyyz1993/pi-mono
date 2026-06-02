@@ -89,6 +89,7 @@ export interface AgentChangeEntry extends SessionEntryBase {
 		};
 		maxTurns?: number;
 		effort?: string;
+		skills?: string[];
 	};
 }
 

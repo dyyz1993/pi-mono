@@ -328,6 +328,8 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
+	private _maxTurns: number | undefined;
+	private _activeSkillNames: Set<string> | undefined;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -688,6 +690,9 @@ export class AgentSession {
 				this.sessionManager.appendCustomEntry(type, data),
 			);
 			this._turnIndex++;
+			if (this._maxTurns !== undefined && this._turnIndex >= this._maxTurns) {
+				this.agent.abort();
+			}
 		} else if (event.type === "message_start") {
 			const extensionEvent: MessageStartEvent = {
 				type: "message_start",
@@ -915,9 +920,16 @@ export class AgentSession {
 			this.setThinkingLevel(agent.thinkingLevel);
 		}
 
+		this._maxTurns = agent.maxTurns !== undefined && agent.maxTurns > 0 ? agent.maxTurns : undefined;
+		this._activeSkillNames = agent.skills && agent.skills.length > 0 ? new Set(agent.skills) : undefined;
+
 		if (agent.tools && agent.tools.length > 0) {
 			this.setActiveToolsByName(agent.tools);
-		} else if (agent.disallowedTools && agent.disallowedTools.length > 0) {
+		} else {
+			this.setActiveToolsByName([...this._toolRegistry.keys()]);
+		}
+
+		if (agent.disallowedTools && agent.disallowedTools.length > 0) {
 			const disallowedTools = new Set(agent.disallowedTools);
 			this.setActiveToolsByName(this.getActiveToolNames().filter((toolName) => !disallowedTools.has(toolName)));
 		}
@@ -937,6 +949,7 @@ export class AgentSession {
 			paths: agent.paths,
 			maxTurns: agent.maxTurns,
 			effort: agent.effort,
+			skills: agent.skills,
 		});
 	}
 
@@ -1039,11 +1052,14 @@ export class AgentSession {
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
+		const activeSkills = this._activeSkillNames
+			? loadedSkills.filter((skill) => this._activeSkillNames?.has(skill.name))
+			: loadedSkills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
-			skills: loadedSkills,
+			skills: activeSkills,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
