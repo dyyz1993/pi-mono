@@ -227,19 +227,71 @@ export class FileSnapshotManager {
 	resolveSnapshotEntryIdForTarget(targetEntryId: string, entries: SessionEntry[]): string | null {
 		if (this.snapshotIndex.has(targetEntryId)) return targetEntryId;
 		const pathSnap = this.getLatestSnapshotOnPath(entries, targetEntryId);
-		if (!pathSnap) return null;
-		for (const [entryId, snapshot] of this.snapshotIndex.entries()) {
-			if (snapshot.snapshotTreeHash === pathSnap.snapshotTreeHash) {
-				return entryId;
+		if (pathSnap) {
+			for (const [entryId, snapshot] of this.snapshotIndex.entries()) {
+				if (snapshot.snapshotTreeHash === pathSnap.snapshotTreeHash) {
+					return entryId;
+				}
 			}
 		}
+
+		const children: Array<{ entryId: string; data: StepSnapshotData }> = [];
+		for (const entry of entries) {
+			if (entry.type !== "custom" || entry.customType !== "step-snapshot") continue;
+			if (entry.parentId !== targetEntryId) continue;
+			children.push({ entryId: entry.id, data: entry.data as StepSnapshotData });
+		}
+		if (children.length > 0) {
+			return children[children.length - 1].entryId;
+		}
+
 		return null;
+	}
+
+	private resolveTargetTreeHash(targetEntryId: string, entries: SessionEntry[]): string | null {
+		const snapshot = this.snapshotIndex.get(targetEntryId);
+		if (snapshot) return snapshot.snapshotTreeHash;
+		const pathSnap = this.getLatestSnapshotOnPath(entries, targetEntryId);
+		if (pathSnap) return pathSnap.snapshotTreeHash;
+
+		const children: StepSnapshotData[] = [];
+		for (const entry of entries) {
+			if (entry.type !== "custom" || entry.customType !== "step-snapshot") continue;
+			if (entry.parentId !== targetEntryId) continue;
+			children.push(entry.data as StepSnapshotData);
+		}
+		if (children.length > 0) {
+			return children[children.length - 1].snapshotTreeHash;
+		}
+
+		return this.sessionStartTreeHash;
 	}
 
 	getRollbackPreviewFiles(options: { targetEntryId: string; entries: SessionEntry[] }): ModifiedFileInfo[] {
 		const targetTreeHash = this.resolveTargetTreeHash(options.targetEntryId, options.entries);
 		const currentTreeHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
-		return this.diffTreesAsModifiedFiles(currentTreeHash, targetTreeHash);
+		if (targetTreeHash === currentTreeHash) return [];
+
+		const emptyFiles = new Map<string, string>();
+		const targetFiles = targetTreeHash ? (this.git.readTree(targetTreeHash) ?? emptyFiles) : emptyFiles;
+		const currentFiles = currentTreeHash ? (this.git.readTree(currentTreeHash) ?? emptyFiles) : emptyFiles;
+		const files: ModifiedFileInfo[] = [];
+
+		for (const [path, content] of currentFiles) {
+			const targetContent = targetFiles.get(path);
+			if (targetContent === undefined) {
+				files.push({ path, status: "added", turnIndex: -1, entryId: "" });
+			} else if (targetContent !== content) {
+				files.push({ path, status: "modified", turnIndex: -1, entryId: "" });
+			}
+		}
+		for (const path of targetFiles.keys()) {
+			if (!currentFiles.has(path)) {
+				files.push({ path, status: "deleted", turnIndex: -1, entryId: "" });
+			}
+		}
+
+		return files.sort((a, b) => a.path.localeCompare(b.path));
 	}
 
 	getModifiedFiles(options?: {
@@ -389,9 +441,23 @@ export class FileSnapshotManager {
 		},
 	): Promise<RestoreResult> {
 		const empty: RestoreResult = { restored: [], deleted: [], skipped: [], dirty: [], forceRestored: [] };
-		const targetTreeHash = options.targetEntryId
-			? this.resolveTargetTreeHash(options.targetEntryId, options.entries)
-			: this.sessionStartTreeHash;
+		let targetTreeHash: string | null;
+		let targetIsEmpty = false;
+		if (options.targetEntryId) {
+			const snapshot = this.snapshotIndex.get(options.targetEntryId);
+			if (snapshot) {
+				targetTreeHash = snapshot.snapshotTreeHash;
+			} else {
+				const pathSnap = this.getLatestSnapshotOnPath(options.entries, options.targetEntryId);
+				targetTreeHash = pathSnap?.snapshotTreeHash ?? null;
+				if (targetTreeHash === null && !this.sessionStartTreeHash) {
+					targetIsEmpty = true;
+				}
+			}
+		} else {
+			targetTreeHash = this.sessionStartTreeHash;
+			targetIsEmpty = !targetTreeHash;
+		}
 		const currentSnapshot =
 			options.currentLeafId !== undefined
 				? this.getLatestSnapshotOnPath(options.entries, options.currentLeafId)
@@ -399,6 +465,7 @@ export class FileSnapshotManager {
 		const currentTreeHash =
 			currentSnapshot?.snapshotTreeHash ?? this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
 		if (targetTreeHash === currentTreeHash) return empty;
+		if (targetTreeHash === null && !targetIsEmpty) return empty;
 
 		const targetFiles = this.readTree(targetTreeHash);
 		const currentFiles = this.readTree(currentTreeHash);
@@ -459,32 +526,6 @@ export class FileSnapshotManager {
 			} catch {}
 		}
 		return dirty.sort();
-	}
-
-	private resolveTargetTreeHash(targetEntryId: string, entries: SessionEntry[]): string | null {
-		const snapshot = this.snapshotIndex.get(targetEntryId);
-		if (snapshot) return snapshot.snapshotTreeHash;
-		return this.getLatestSnapshotOnPath(entries, targetEntryId)?.snapshotTreeHash ?? this.sessionStartTreeHash;
-	}
-
-	private diffTreesAsModifiedFiles(fromHash: string | null, toHash: string | null): ModifiedFileInfo[] {
-		const fromFiles = this.readTree(fromHash);
-		const toFiles = this.readTree(toHash);
-		const files: ModifiedFileInfo[] = [];
-
-		for (const [path, content] of fromFiles) {
-			if (!toFiles.has(path)) {
-				files.push({ path, status: "added", turnIndex: -1, entryId: "" });
-			} else if (toFiles.get(path) !== content) {
-				files.push({ path, status: "modified", turnIndex: -1, entryId: "" });
-			}
-		}
-		for (const path of toFiles.keys()) {
-			if (!fromFiles.has(path)) {
-				files.push({ path, status: "deleted", turnIndex: -1, entryId: "" });
-			}
-		}
-		return files.sort((a, b) => a.path.localeCompare(b.path));
 	}
 
 	private parseTreeEntriesFromHash(treeHash: string): Map<string, TreeEntry> {
