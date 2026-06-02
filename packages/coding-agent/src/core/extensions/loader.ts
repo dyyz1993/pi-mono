@@ -28,6 +28,7 @@ import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
+import type { Channel } from "./channel-types.ts";
 import type {
 	Extension,
 	ExtensionAPI,
@@ -152,9 +153,12 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
+		registerChannel: notInitialized,
 		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
+		pendingChannelRegistrations: [],
+		resolvedChannels: new Map(),
 		assertActive,
 		invalidate: (message) => {
 			state.staleMessage ??=
@@ -169,6 +173,70 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		unregisterProvider: (name) => {
 			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
 		},
+	};
+
+	runtime.registerChannel = (name: string) => {
+		if (runtime.resolvedChannels.has(name)) {
+			return runtime.resolvedChannels.get(name)!;
+		}
+		if (runtime.pendingChannelRegistrations.some((pending) => pending.name === name)) {
+			throw new Error(`Channel "${name}" is already registered`);
+		}
+
+		const bufferedSends: unknown[] = [];
+		const bufferedHandlers: Array<(data: unknown) => void> = [];
+		let realChannel: Channel | undefined;
+
+		const deferred: Channel = {
+			name,
+			send: (data) => {
+				if (realChannel) {
+					realChannel.send(data);
+					return;
+				}
+				bufferedSends.push(data);
+			},
+			onReceive: (handler) => {
+				if (realChannel) {
+					return realChannel.onReceive(handler);
+				}
+				bufferedHandlers.push(handler);
+				return () => {
+					const index = bufferedHandlers.indexOf(handler);
+					if (index >= 0) bufferedHandlers.splice(index, 1);
+				};
+			},
+			invoke: (data, timeoutMs) => {
+				if (realChannel) {
+					return realChannel.invoke(data, timeoutMs);
+				}
+				return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
+			},
+			call: (method, params, timeoutMs) => {
+				if (realChannel) {
+					return realChannel.call(method, params, timeoutMs);
+				}
+				return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
+			},
+		};
+
+		runtime.pendingChannelRegistrations.push({
+			name,
+			resolve: (channel) => {
+				realChannel = channel;
+				for (const handler of bufferedHandlers) {
+					channel.onReceive(handler);
+				}
+				bufferedHandlers.length = 0;
+				for (const buffered of bufferedSends) {
+					channel.send(buffered);
+				}
+				bufferedSends.length = 0;
+			},
+			reject: () => {},
+		});
+
+		return deferred;
 	};
 
 	return runtime;
@@ -320,6 +388,11 @@ function createExtensionAPI(
 		getCommands() {
 			runtime.assertActive();
 			return runtime.getCommands();
+		},
+
+		registerChannel(name: string) {
+			runtime.assertActive();
+			return runtime.registerChannel(name);
 		},
 
 		setModel(model) {

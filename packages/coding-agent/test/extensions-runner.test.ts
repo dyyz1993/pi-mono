@@ -75,6 +75,13 @@ describe("ExtensionRunner", () => {
 		setModel: async () => false,
 		getThinkingLevel: () => "off",
 		setThinkingLevel: () => {},
+		registerChannel: (name) => ({
+			name,
+			send: () => {},
+			onReceive: () => () => {},
+			invoke: async () => ({}),
+			call: async () => ({}),
+		}),
 		callLLM: async () => "",
 	};
 

@@ -12,6 +12,7 @@ import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { Channel } from "./channel-types.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -321,6 +322,7 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.registerChannel = actions.registerChannel;
 		this.runtime.callLLM = actions.callLLM;
 
 		// Context actions (required)
@@ -369,6 +371,26 @@ export class ExtensionRunner {
 			}
 			this.modelRegistry.unregisterProvider(name);
 		};
+	}
+
+	flushPendingChannels(registerChannel: (name: string) => Channel): void {
+		if (this.runtime.pendingChannelRegistrations.length === 0) return;
+
+		for (const pending of this.runtime.pendingChannelRegistrations) {
+			try {
+				const channel = registerChannel(pending.name);
+				this.runtime.resolvedChannels.set(pending.name, channel);
+				pending.resolve(channel);
+			} catch (err) {
+				pending.reject(err instanceof Error ? err : new Error(String(err)));
+			}
+		}
+		this.runtime.pendingChannelRegistrations = [];
+		this.runtime.registerChannel = registerChannel;
+	}
+
+	updateRegisterChannel(registerChannel: (name: string) => Channel): void {
+		this.runtime.registerChannel = registerChannel;
 	}
 
 	bindCommandContext(actions?: ExtensionCommandContextActions): void {

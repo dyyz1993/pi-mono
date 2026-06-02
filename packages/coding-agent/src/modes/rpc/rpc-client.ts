@@ -5,12 +5,14 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.ts";
 import type { Settings } from "../../core/settings-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
@@ -118,6 +120,7 @@ export class RpcClient {
 	private eventListeners: RpcEventListener[] = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
+	private channelHandlers = new Map<string, Set<(data: unknown) => unknown>>();
 	private requestId = 0;
 	private stderr = "";
 	private exitError: Error | null = null;
@@ -798,6 +801,66 @@ export class RpcClient {
 		return eventsPromise;
 	}
 
+	channel(name: string): Pick<Channel, "name" | "send" | "onReceive" | "invoke" | "call"> {
+		const invokeImpl = (data: unknown, timeoutMs = 30_000): Promise<unknown> => {
+			return new Promise((resolve, reject) => {
+				const invokeId = `inv_${randomUUID().slice(0, 8)}`;
+				let timer: ReturnType<typeof setTimeout>;
+				const handler = (responseData: unknown) => {
+					const payload = responseData as Record<string, unknown> | undefined;
+					if (payload?.invokeId !== invokeId) return;
+					clearTimeout(timer);
+					const handlers = this.channelHandlers.get(name);
+					handlers?.delete(handler);
+					if (handlers?.size === 0) this.channelHandlers.delete(name);
+					resolve(responseData);
+				};
+				timer = setTimeout(() => {
+					const handlers = this.channelHandlers.get(name);
+					handlers?.delete(handler);
+					if (handlers?.size === 0) this.channelHandlers.delete(name);
+					reject(new Error(`Channel invoke "${name}" timed out after ${timeoutMs}ms`));
+				}, timeoutMs);
+
+				let handlers = this.channelHandlers.get(name);
+				if (!handlers) {
+					handlers = new Set();
+					this.channelHandlers.set(name, handlers);
+				}
+				handlers.add(handler);
+
+				this.writeLine({
+					type: "channel_data",
+					name,
+					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+				} as ChannelDataMessage);
+			});
+		};
+
+		return {
+			name,
+			send: (data: unknown) => {
+				this.writeLine({ type: "channel_data", name, data } as ChannelDataMessage);
+			},
+			onReceive: (handler: (data: unknown) => unknown) => {
+				let handlers = this.channelHandlers.get(name);
+				if (!handlers) {
+					handlers = new Set();
+					this.channelHandlers.set(name, handlers);
+				}
+				handlers.add(handler);
+				return () => {
+					handlers.delete(handler);
+					if (handlers.size === 0) this.channelHandlers.delete(name);
+				};
+			},
+			invoke: invokeImpl,
+			call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
+				return invokeImpl({ ...params, __call: method }, timeoutMs);
+			},
+		};
+	}
+
 	// =========================================================================
 	// Internal
 	// =========================================================================
@@ -811,6 +874,27 @@ export class RpcClient {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
+				return;
+			}
+
+			if (data.type === "channel_data" && data.name) {
+				const handlers = this.channelHandlers.get(data.name as string);
+				if (handlers) {
+					for (const handler of handlers) {
+						const payload = data.data as Record<string, unknown> | undefined;
+						const invokeId = payload?.invokeId as string | undefined;
+						const result = handler(data.data);
+						if (invokeId && result !== undefined) {
+							const responseData =
+								result && typeof result === "object" ? (result as Record<string, unknown>) : { value: result };
+							this.writeLine({
+								type: "channel_data",
+								name: data.name,
+								data: { ...responseData, invokeId },
+							} as ChannelDataMessage);
+						}
+					}
+				}
 				return;
 			}
 
@@ -875,7 +959,7 @@ export class RpcClient {
 			});
 
 			try {
-				stdin.write(serializeJsonLine(fullCommand));
+				this.writeLine(fullCommand);
 			} catch (error: unknown) {
 				const writeError = error instanceof Error ? error : new Error(String(error));
 				const pending = this.pendingRequests.get(id);
@@ -883,6 +967,14 @@ export class RpcClient {
 				pending?.reject(writeError);
 			}
 		});
+	}
+
+	private writeLine(obj: object): void {
+		const stdin = this.process?.stdin;
+		if (!stdin) {
+			throw new Error("Client not started");
+		}
+		stdin.write(serializeJsonLine(obj));
 	}
 
 	private getData<T>(response: RpcResponse): T {

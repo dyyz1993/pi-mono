@@ -56,6 +56,7 @@ import {
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
+import type { Channel } from "./extensions/channel-types.ts";
 import {
 	type CallLLMOptions,
 	type ContextUsage,
@@ -258,6 +259,7 @@ export interface ExtensionBindings {
 	abortHandler?: () => void;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+	registerChannel?: (name: string) => Channel;
 }
 
 /** Options for AgentSession.prompt() */
@@ -461,6 +463,7 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _registerChannel?: (name: string) => Channel;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -2415,6 +2418,11 @@ export class AgentSession {
 		if (bindings.onError !== undefined) {
 			this._extensionErrorListener = bindings.onError;
 		}
+		if (bindings.registerChannel !== undefined) {
+			this._registerChannel = bindings.registerChannel;
+			this._extensionRunner.flushPendingChannels(bindings.registerChannel);
+			this._extensionRunner.updateRegisterChannel(bindings.registerChannel);
+		}
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
@@ -2597,6 +2605,11 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				registerChannel:
+					this._registerChannel ??
+					((name: string) => {
+						throw new Error(`registerChannel("${name}") is only available in RPC mode`);
+					}),
 				callLLM: (options) => this.callLLM(options),
 			},
 			{

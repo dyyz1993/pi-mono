@@ -76,6 +76,7 @@ import type {
 	ToolOperationsProvider,
 	WriteToolInput,
 } from "../tools/index.ts";
+import type { Channel } from "./channel-types.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -1271,6 +1272,9 @@ export interface ExtensionAPI {
 	/** Get available slash commands in the current session. */
 	getCommands(): SlashCommandInfo[];
 
+	/** Register a bidirectional RPC channel for extension/client communication. */
+	registerChannel(name: string): Channel;
+
 	// =========================================================================
 	// Model and Thinking Level
 	// =========================================================================
@@ -1510,6 +1514,8 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
+export type RegisterChannelHandler = (name: string) => Channel;
+
 // ============================================================================
 // callLLM
 // ============================================================================
@@ -1533,6 +1539,12 @@ export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+	pendingChannelRegistrations: Array<{
+		name: string;
+		resolve: (channel: Channel) => void;
+		reject: (error: Error) => void;
+	}>;
+	resolvedChannels: Map<string, Channel>;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
@@ -1570,6 +1582,7 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	registerChannel: RegisterChannelHandler;
 	callLLM: CallLLMHandler;
 }
 
