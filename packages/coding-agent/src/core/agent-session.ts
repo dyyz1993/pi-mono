@@ -793,6 +793,7 @@ export class AgentSession {
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				args: event.args,
+				timestamp: event.timestamp,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		} else if (event.type === "tool_execution_update") {
@@ -811,6 +812,8 @@ export class AgentSession {
 				toolName: event.toolName,
 				result: event.result,
 				isError: event.isError,
+				timestamp: event.timestamp,
+				durationMs: event.durationMs,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		}

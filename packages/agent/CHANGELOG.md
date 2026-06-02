@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `timestamp` to `tool_execution_start` events and `timestamp` plus `durationMs` to `tool_execution_end` events.
+
 ## [0.78.0] - 2026-05-29
 
 ## [0.77.0] - 2026-05-28

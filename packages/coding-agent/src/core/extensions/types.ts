@@ -689,6 +689,7 @@ export interface ToolExecutionStartEvent {
 	toolCallId: string;
 	toolName: string;
 	args: any;
+	timestamp: number;
 }
 
 /** Fired during tool execution with partial/streaming output */
@@ -707,6 +708,8 @@ export interface ToolExecutionEndEvent {
 	toolName: string;
 	result: any;
 	isError: boolean;
+	timestamp: number;
+	durationMs: number;
 }
 
 // ============================================================================
