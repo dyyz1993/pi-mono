@@ -4,6 +4,11 @@
 
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
 export type { SourceInfo } from "../source-info.ts";
+export type { TypedChannel } from "./channel-factory.ts";
+export { createTypedChannel, defineChannel } from "./channel-factory.ts";
+export { ChannelManager } from "./channel-manager.ts";
+export type { Channel, ChannelDataMessage, ChannelEntry, ChannelOutputFn } from "./channel-types.ts";
+export { ClientChannel } from "./client-channel.ts";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
@@ -19,6 +24,15 @@ export type {
 	SwitchSessionHandler,
 } from "./runner.ts";
 export { ExtensionRunner } from "./runner.ts";
+export type {
+	ChannelContract,
+	EventData,
+	EventKeys,
+	MethodKeys,
+	MethodParams,
+	MethodReturn,
+} from "./server-channel.ts";
+export { ServerChannel } from "./server-channel.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,

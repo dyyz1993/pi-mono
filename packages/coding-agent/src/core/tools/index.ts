@@ -42,6 +42,7 @@ export {
 	type LsToolInput,
 	type LsToolOptions,
 } from "./ls.ts";
+export { OutputCollector } from "./output-collector.ts";
 export {
 	createReadTool,
 	createReadToolDefinition,
@@ -50,7 +51,10 @@ export {
 	type ReadToolInput,
 	type ReadToolOptions,
 } from "./read.ts";
+export { type SpawnedProcess, type SpawnOptions, spawnManagedProcess } from "./spawn-managed.ts";
+export { stripMarkdownCodeBlock } from "./strip-markdown.ts";
 export {
+	DEFAULT_INPUT_MAX_BYTES,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
