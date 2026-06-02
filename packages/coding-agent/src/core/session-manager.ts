@@ -174,6 +174,11 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	display: boolean;
 }
 
+export interface LeafPointerEntry extends SessionEntryBase {
+	type: "leaf_pointer";
+	leafId: string | null;
+}
+
 /** Session entry - has id/parentId for tree structure (returned by "read" methods in SessionManager) */
 export type SessionEntry =
 	| SessionMessageEntry
@@ -188,7 +193,8 @@ export type SessionEntry =
 	| LabelEntry
 	| SessionInfoEntry
 	| DeletionEntry
-	| SegmentSummaryEntry;
+	| SegmentSummaryEntry
+	| LeafPointerEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -972,10 +978,14 @@ export class SessionManager {
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
 		this.leafId = null;
+
+		const parentIds = new Set<string>();
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
 			this.byId.set(entry.id, entry);
-			this.leafId = entry.id;
+			if (entry.parentId) {
+				parentIds.add(entry.parentId);
+			}
 			if (entry.type === "label") {
 				if (entry.label) {
 					this.labelsById.set(entry.targetId, entry.label);
@@ -986,6 +996,82 @@ export class SessionManager {
 				}
 			}
 		}
+
+		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
+			const entry = this.fileEntries[i];
+			if (entry.type !== "leaf_pointer") continue;
+
+			const targetId = entry.leafId;
+			if (targetId === null) {
+				let bestLeafId: string | null = null;
+				let bestDepth = -1;
+				for (let j = i + 1; j < this.fileEntries.length; j++) {
+					const candidate = this.fileEntries[j];
+					if (candidate.type === "session" || candidate.type === "leaf_pointer") continue;
+					if (parentIds.has(candidate.id)) continue;
+					const depth = this._getEntryDepth(candidate);
+					if (depth > bestDepth) {
+						bestDepth = depth;
+						bestLeafId = candidate.id;
+					}
+				}
+				this.leafId = bestLeafId;
+				return;
+			}
+
+			if (this.byId.has(targetId)) {
+				let bestLeafId = targetId;
+				let bestDepth = 0;
+				for (let j = i + 1; j < this.fileEntries.length; j++) {
+					const candidate = this.fileEntries[j];
+					if (candidate.type === "session" || candidate.type === "leaf_pointer") continue;
+					if (parentIds.has(candidate.id)) continue;
+					if (!this._isDescendantOf(candidate, targetId)) continue;
+					const depth = this._getEntryDepth(candidate);
+					if (depth > bestDepth) {
+						bestDepth = depth;
+						bestLeafId = candidate.id;
+					}
+				}
+				this.leafId = bestLeafId;
+				return;
+			}
+		}
+
+		let bestLeafId: string | null = null;
+		let bestDepth = -1;
+		for (const [id, entry] of this.byId) {
+			if (entry.type === "leaf_pointer" || parentIds.has(id)) continue;
+			const depth = this._getEntryDepth(entry);
+			if (depth > bestDepth) {
+				bestDepth = depth;
+				bestLeafId = id;
+			}
+		}
+		this.leafId = bestLeafId;
+	}
+
+	private _getEntryDepth(entry: SessionEntry): number {
+		let depth = 0;
+		let currentId: string | null = entry.parentId;
+		const visited = new Set<string>();
+		while (currentId !== null && this.byId.has(currentId) && !visited.has(currentId)) {
+			visited.add(currentId);
+			depth++;
+			currentId = this.byId.get(currentId)?.parentId ?? null;
+		}
+		return depth;
+	}
+
+	private _isDescendantOf(entry: SessionEntry, ancestorId: string): boolean {
+		let currentId: string | null = entry.parentId;
+		const visited = new Set<string>();
+		while (currentId !== null && this.byId.has(currentId) && !visited.has(currentId)) {
+			if (currentId === ancestorId) return true;
+			visited.add(currentId);
+			currentId = this.byId.get(currentId)?.parentId ?? null;
+		}
+		return false;
 	}
 
 	private _rewriteFile(): void {
@@ -1051,6 +1137,19 @@ export class SessionManager {
 		} else {
 			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
 		}
+	}
+
+	private _persistLeafPointer(leafId: string | null): void {
+		const entry: LeafPointerEntry = {
+			type: "leaf_pointer",
+			id: generateId(this.byId),
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			leafId,
+		};
+		this.fileEntries.push(entry);
+		this.byId.set(entry.id, entry);
+		this._persist(entry);
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
@@ -1433,6 +1532,7 @@ export class SessionManager {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
 		this.leafId = branchFromId;
+		this._persistLeafPointer(branchFromId);
 	}
 
 	/**
@@ -1442,6 +1542,7 @@ export class SessionManager {
 	 */
 	resetLeaf(): void {
 		this.leafId = null;
+		this._persistLeafPointer(null);
 	}
 
 	/**
