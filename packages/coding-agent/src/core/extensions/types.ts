@@ -610,6 +610,15 @@ export interface SessionTreeEvent {
 	fromExtension?: boolean;
 }
 
+/** Fired when entries are removed from or replaced in LLM context. */
+export interface EntriesInvalidatedEvent {
+	type: "entries_invalidated";
+	invalidatedEntryIds: string[];
+	reason: "deletion" | "segment_summary";
+	operationEntryId: string;
+	invalidatedToolCallIds: string[];
+}
+
 export type SessionEvent =
 	| SessionStartEvent
 	| SessionBeforeSwitchEvent
@@ -618,7 +627,8 @@ export type SessionEvent =
 	| SessionCompactEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
-	| SessionTreeEvent;
+	| SessionTreeEvent
+	| EntriesInvalidatedEvent;
 
 // ============================================================================
 // Agent Events
@@ -1129,6 +1139,7 @@ export interface ExtensionAPI {
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
+	on(event: "entries_invalidated", handler: ExtensionHandler<EntriesInvalidatedEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
 	on(
 		event: "before_provider_request",

@@ -891,6 +891,11 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private _onEntryAppended?: (entry: SessionEntry) => void;
+
+	setOnEntryAppended(callback: ((entry: SessionEntry) => void) | undefined): void {
+		this._onEntryAppended = callback;
+	}
 
 	private constructor(
 		cwd: string,
@@ -1157,6 +1162,7 @@ export class SessionManager {
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
 		this._persist(entry);
+		this._onEntryAppended?.(entry);
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.

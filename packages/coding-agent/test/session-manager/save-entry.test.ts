@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type CustomEntry, SessionManager } from "../../src/core/session-manager.ts";
+import { type CustomEntry, type SessionEntry, SessionManager } from "../../src/core/session-manager.ts";
 
 describe("SessionManager.saveCustomEntry", () => {
 	it("saves custom entries and includes them in tree traversal", () => {
@@ -51,5 +51,21 @@ describe("SessionManager.saveCustomEntry", () => {
 		// buildSessionContext should work (custom entries skipped in messages)
 		const ctx = session.buildSessionContext();
 		expect(ctx.messages).toHaveLength(2); // only message entries
+	});
+
+	it("notifies when entries are appended", () => {
+		const session = SessionManager.inMemory();
+		const appended: SessionEntry[] = [];
+		session.setOnEntryAppended((entry) => {
+			appended.push(entry);
+		});
+
+		const messageId = session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+		const deletionId = session.appendDeletion([messageId]);
+		const summaryId = session.appendSegmentSummary([messageId], "Summary text");
+
+		expect(appended.map((entry) => entry.id)).toEqual([messageId, deletionId, summaryId]);
+		expect(appended[1]).toMatchObject({ type: "deletion", targetIds: [messageId] });
+		expect(appended[2]).toMatchObject({ type: "segment_summary", targetIds: [messageId], summary: "Summary text" });
 	});
 });

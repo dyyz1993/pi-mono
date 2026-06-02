@@ -671,6 +671,32 @@ export class AgentSession {
 		});
 	}
 
+	private _emitEntriesInvalidated(
+		invalidatedEntryIds: string[],
+		reason: "deletion" | "segment_summary",
+		operationEntryId: string,
+	): void {
+		if (!this._extensionRunner || invalidatedEntryIds.length === 0) return;
+
+		const invalidatedToolCallIds: string[] = [];
+		for (const id of invalidatedEntryIds) {
+			const entry = this.sessionManager.getEntry(id);
+			if (entry?.type === "message" && entry.message.role === "toolResult") {
+				invalidatedToolCallIds.push(entry.message.toolCallId);
+			}
+		}
+
+		this._extensionRunner
+			.emit({
+				type: "entries_invalidated",
+				invalidatedEntryIds,
+				reason,
+				operationEntryId,
+				invalidatedToolCallIds,
+			})
+			.catch(() => {});
+	}
+
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
@@ -2451,6 +2477,15 @@ export class AgentSession {
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
 		runner.setUIContext(this._extensionUIContext, this._extensionMode);
 		runner.bindCommandContext(this._extensionCommandContextActions);
+		this.sessionManager.setOnEntryAppended((entry) => {
+			if (entry.type === "deletion") {
+				this._emitEntriesInvalidated(entry.targetIds, "deletion", entry.id);
+				return;
+			}
+			if (entry.type === "segment_summary") {
+				this._emitEntriesInvalidated(entry.targetIds, "segment_summary", entry.id);
+			}
+		});
 		const projectRoot = resolveProjectIdentity(this._cwd);
 		runner.setContextDirFns({
 			getProjectRoot: () => projectRoot,
