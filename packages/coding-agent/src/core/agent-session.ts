@@ -2956,12 +2956,12 @@ export class AgentSession {
 			let editorText: string | undefined;
 
 			if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-				// User message: leaf = parent (null if root), text goes to editor
-				newLeafId = targetEntry.parentId;
+				// User message: skip custom ancestors, then leaf = first non-custom ancestor.
+				newLeafId = this.sessionManager.findBranchPointAbove(targetId);
 				editorText = this._extractUserMessageText(targetEntry.message.content);
 			} else if (targetEntry.type === "custom_message") {
-				// Custom message: leaf = parent (null if root), text goes to editor
-				newLeafId = targetEntry.parentId;
+				// Custom message: skip custom ancestors, then leaf = first non-custom ancestor.
+				newLeafId = this.sessionManager.findBranchPointAbove(targetId);
 				editorText =
 					typeof targetEntry.content === "string"
 						? targetEntry.content
@@ -3274,7 +3274,7 @@ export class AgentSession {
 		const newLeafId =
 			(targetEntry.type === "message" && targetEntry.message.role === "user") ||
 			targetEntry.type === "custom_message"
-				? targetEntry.parentId
+				? this.sessionManager.findBranchPointAbove(targetId)
 				: targetId;
 
 		return this._fileSnapshotManager.restoreFiles(this._cwd, {

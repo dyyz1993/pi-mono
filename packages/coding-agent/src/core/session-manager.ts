@@ -1406,6 +1406,23 @@ export class SessionManager {
 	// =========================================================================
 
 	/**
+	 * Find the branch point above an entry, skipping custom ancestors that should
+	 * not remain visible when re-editing a user/custom message.
+	 */
+	findBranchPointAbove(entryId: string): string | null {
+		const entry = this.byId.get(entryId);
+		if (!entry) return null;
+		let ancestorId: string | null | undefined = entry.parentId;
+		while (ancestorId) {
+			const ancestor = this.byId.get(ancestorId);
+			if (!ancestor) break;
+			if (ancestor.type !== "custom") break;
+			ancestorId = ancestor.parentId;
+		}
+		return ancestorId ?? null;
+	}
+
+	/**
 	 * Start a new branch from an earlier entry.
 	 * Moves the leaf pointer to the specified entry. The next appendXXX() call
 	 * will create a child of that entry, forming a new branch. Existing entries
