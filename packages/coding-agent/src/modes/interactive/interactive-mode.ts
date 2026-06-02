@@ -1683,6 +1683,12 @@ export class InteractiveMode {
 				})();
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
+			extensionName: "shortcut",
+			projectRoot: this.sessionManager.getCwd(),
+			sessionDataDir: "",
+			projectDataDir: "",
+			cwdDataDir: "",
+			globalDataDir: "",
 		});
 
 		// Set up the extension shortcut handler on the default editor

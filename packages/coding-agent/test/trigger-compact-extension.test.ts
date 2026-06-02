@@ -19,6 +19,12 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
 		getContextUsage: () => ({ tokens, contextWindow: 200_000, percent: tokens === null ? null : tokens / 2000 }),
 		compact,
 		getSystemPrompt: () => "",
+		extensionName: "test",
+		projectRoot: process.cwd(),
+		sessionDataDir: "",
+		projectDataDir: "",
+		cwdDataDir: "",
+		globalDataDir: "",
 	};
 }
 

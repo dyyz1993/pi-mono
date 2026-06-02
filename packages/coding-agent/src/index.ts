@@ -247,6 +247,17 @@ export {
 	type SkillFrontmatter,
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
+export {
+	ExtensionStorage,
+	encodeProjectPath,
+	getCwdDataDir,
+	getGlobalDataDir,
+	getProjectDataDir,
+	getSessionDataDir,
+	resolveProjectIdentity,
+	resolveProjectRoot,
+	type StoragePaths,
+} from "./core/storage.ts";
 // Tools
 export {
 	type BashOperations,

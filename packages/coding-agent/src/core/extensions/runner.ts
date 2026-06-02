@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { basename } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
@@ -222,6 +223,13 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+function getExtensionName(extensionPath: string): string {
+	if (extensionPath.startsWith("<") && extensionPath.endsWith(">")) {
+		return extensionPath.slice(1, -1).split(":")[0] || "temporary";
+	}
+	return basename(extensionPath).replace(/\.(ts|js|mjs|cjs)$/, "") || "extension";
+}
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
@@ -240,6 +248,12 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private _currentExtensionName = "";
+	private getProjectRootFn: () => string = () => this.cwd;
+	private getSessionDataDirFn: () => string = () => "";
+	private getProjectDataDirFn: () => string = () => "";
+	private getCwdDataDirFn: () => string = () => "";
+	private getGlobalDataDirFn: () => string = () => "";
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -263,6 +277,21 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
+	}
+
+	setContextDirFns(fns: {
+		getProjectRoot?: () => string;
+		getSessionDataDir?: (extName: string) => string;
+		getProjectDataDir?: (extName: string) => string;
+		getCwdDataDir?: (extName: string) => string;
+		getGlobalDataDir?: (extName: string) => string;
+	}): void {
+		if (fns.getProjectRoot) this.getProjectRootFn = fns.getProjectRoot;
+		const getExtName = () => this._currentExtensionName;
+		if (fns.getSessionDataDir) this.getSessionDataDirFn = () => fns.getSessionDataDir!(getExtName());
+		if (fns.getProjectDataDir) this.getProjectDataDirFn = () => fns.getProjectDataDir!(getExtName());
+		if (fns.getCwdDataDir) this.getCwdDataDirFn = () => fns.getCwdDataDir!(getExtName());
+		if (fns.getGlobalDataDir) this.getGlobalDataDirFn = () => fns.getGlobalDataDir!(getExtName());
 	}
 
 	bindCore(
@@ -639,6 +668,30 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
 			},
+			get extensionName() {
+				runner.assertActive();
+				return runner._currentExtensionName;
+			},
+			get projectRoot() {
+				runner.assertActive();
+				return runner.getProjectRootFn();
+			},
+			get sessionDataDir() {
+				runner.assertActive();
+				return runner.getSessionDataDirFn();
+			},
+			get projectDataDir() {
+				runner.assertActive();
+				return runner.getProjectDataDirFn();
+			},
+			get cwdDataDir() {
+				runner.assertActive();
+				return runner.getCwdDataDirFn();
+			},
+			get globalDataDir() {
+				runner.assertActive();
+				return runner.getGlobalDataDirFn();
+			},
 		};
 	}
 
@@ -694,6 +747,7 @@ export class ExtensionRunner {
 			const handlers = ext.handlers.get(event.type);
 			if (!handlers || handlers.length === 0) continue;
 
+			this._currentExtensionName = getExtensionName(ext.path);
 			for (const handler of handlers) {
 				try {
 					const handlerResult = await handler(event, ctx);

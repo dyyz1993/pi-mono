@@ -329,6 +329,18 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/** The name of the current extension. */
+	extensionName: string;
+	/** Canonical git root (worktree-aware). Falls back to cwd if not a git repo. */
+	projectRoot: string;
+	/** Per-session data directory. Automatically created on first access. */
+	sessionDataDir: string;
+	/** Per-project data directory shared across sessions. Automatically created on first access. */
+	projectDataDir: string;
+	/** Per-cwd data directory isolated by current working directory. Automatically created on first access. */
+	cwdDataDir: string;
+	/** Global data directory shared across all projects. Automatically created on first access. */
+	globalDataDir: string;
 }
 
 /**

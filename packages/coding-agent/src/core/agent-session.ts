@@ -94,6 +94,13 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import {
+	getCwdDataDir,
+	getGlobalDataDir,
+	getProjectDataDir,
+	getSessionDataDir,
+	resolveProjectIdentity,
+} from "./storage.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions, type ToolOperationsProvider, toolsOptionsFromProvider } from "./tools/index.ts";
@@ -2387,6 +2394,15 @@ export class AgentSession {
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
 		runner.setUIContext(this._extensionUIContext, this._extensionMode);
 		runner.bindCommandContext(this._extensionCommandContextActions);
+		const projectRoot = resolveProjectIdentity(this._cwd);
+		runner.setContextDirFns({
+			getProjectRoot: () => projectRoot,
+			getSessionDataDir: (extName: string) =>
+				getSessionDataDir(this.sessionManager.getSessionDir(), this.sessionManager.getSessionId(), extName),
+			getProjectDataDir: (extName: string) => getProjectDataDir(projectRoot, extName),
+			getCwdDataDir: (extName: string) => getCwdDataDir(this._cwd, extName),
+			getGlobalDataDir: (extName: string) => getGlobalDataDir(extName),
+		});
 
 		this._extensionErrorUnsubscriber?.();
 		this._extensionErrorUnsubscriber = this._extensionErrorListener

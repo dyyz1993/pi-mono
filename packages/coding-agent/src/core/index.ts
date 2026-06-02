@@ -87,3 +87,14 @@ export {
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
+export {
+	ExtensionStorage,
+	encodeProjectPath,
+	getCwdDataDir,
+	getGlobalDataDir,
+	getProjectDataDir,
+	getSessionDataDir,
+	resolveProjectIdentity,
+	resolveProjectRoot,
+	type StoragePaths,
+} from "./storage.ts";
