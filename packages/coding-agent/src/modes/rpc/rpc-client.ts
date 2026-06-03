@@ -6,8 +6,8 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { AgentEvent, AgentMessage, ThinkingLevel } from "@dyyz1993/pi-agent-core";
+import type { ImageContent } from "@dyyz1993/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";

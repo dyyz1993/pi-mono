@@ -49,10 +49,10 @@ I regularly publish my own `pi-mono` work sessions here:
 
 | Package | Description |
 |---------|-------------|
-| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
-| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
+| **[@dyyz1993/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
+| **[@dyyz1993/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
+| **[@dyyz1993/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
+| **[@dyyz1993/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
 
 For Slack/chat automation and workflows see [dyyz1993/pi-chat](https://github.com/dyyz1993/pi-chat).
 

@@ -12,7 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { PermissionMode } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { discoverAgents } from "../../core/agent-types.ts";

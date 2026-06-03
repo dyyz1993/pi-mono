@@ -72,7 +72,7 @@ export {
 	type WriteToolOptions,
 } from "./write.ts";
 
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { type BashOperations, type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditOperations, type EditToolOptions } from "./edit.ts";

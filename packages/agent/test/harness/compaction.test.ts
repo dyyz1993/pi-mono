@@ -6,7 +6,7 @@ import {
 	type Model,
 	registerFauxProvider,
 	type Usage,
-} from "@earendil-works/pi-ai";
+} from "@dyyz1993/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type CompactionPreparation,
