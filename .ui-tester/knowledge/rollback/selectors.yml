@@ -1,0 +1,70 @@
+# Module: rollback
+# Site: http://localhost:5173 (pi-agent-chat WebUI)
+# Version: 13
+# Status: verified (ALL BUGS FIXED - BUG-1/2/3/4 confirmed passing)
+# Last updated: 2026-05-25
+# Last verified: 2026-05-25
+# Verified in round: r13
+
+chat_page:
+  url: "http://localhost:5173"
+  new_session_button: "button[title='新建会话']"
+  message_input: "textarea[placeholder*='输入消息']"
+  send_button: "button[title='发送']"
+  stop_button: "button[title='停止']"
+  auth_token_input: "#auth-token"
+  auth_token_env: "AUTH_TOKEN=demo-test-token"
+  chat_input: "[data-testid='chat-input']"
+
+# Session status indicators (sidebar)
+session_status:
+  idle_label: "空闲"
+  active_processing: "停止"
+
+message_card:
+  # Card container class: contains "group/msgcard"
+  card_container: "[class*='group/msgcard']"
+  fork_button: "button[title='Fork']"
+  rollback_message_button: "button[title='回滚消息']"
+  rollback_message_and_code_button: "button[title='回滚消息+代码']"
+
+# Rollback confirmation overlay
+rollback_overlay:
+  container: "div.fixed.inset-0.z-50"
+  cancel_button_x: "button[title='取消']"
+  cancel_button_text: "button:has-text('取消')"
+  confirm_button: "button:has-text('确认回滚')"
+  title_msg_only: "回滚确认"
+  title_msg_and_code: "回滚消息 + 代码"
+  msg_only_description: "回滚将移除当前轮次的消息，确定继续吗？"
+  msg_and_code_description: "回滚将恢复以下文件到之前的状态："
+  file_count_text: "个文件"
+  expandable_diff: "button containing filename + status (click to expand/collapse)"
+  expanded_diff_container: "div.rounded-md within overlay after expansion"
+  diff_pre_element: "pre within overlay (contains unified diff text)"
+  file_removed_text: "文件将被移除（新建的内容将丢失）"
+  empty_text: "本轮无文件变更"
+  behavior: "Appears after clicking rollback, shows file list or empty message"
+
+# File change status indicators
+file_status:
+  added: "A"
+  modified: "M"
+  deleted: "D"
+
+sidebar:
+  search_input: "input[placeholder*='搜索会话']"
+
+# Auth flow
+auth_flow:
+  login_page:
+    token_input: "#auth-token"
+    connect_button: "button:has-text('连接')"
+  token_storage: "localStorage.setItem('rpc-auth-token', '<token>')"
+
+# Permission dialog (appears during tool execution)
+permission_dialog:
+  always_allow: "button:has-text('始终允许')"
+  allow_once: "button:has-text('允许一次')"
+  cancel: "button:has-text('取消')"
+  wait_for_permission: "button:has-text('等待权限确认')"

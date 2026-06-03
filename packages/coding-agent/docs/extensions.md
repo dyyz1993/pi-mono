@@ -9,6 +9,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
 - **Event interception** - Block or modify tool calls, inject context, customize compaction
+- **UI interception** - Intercept `ctx.ui.confirm/select/input` calls from any extension, respond remotely
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
@@ -24,6 +25,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 - Interactive tools (questions, wizards, custom dialogs)
 - Stateful tools (todo lists, connection pools)
 - External integrations (file watchers, webhooks, CI triggers)
+- Remote approval (forward UI dialogs to a remote service, hold until response)
 - Games while you wait (see `snake.ts` example)
 
 See [examples/extensions/](../examples/extensions/) for working implementations.
@@ -42,6 +44,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
   - [Agent Events](#agent-events)
   - [Model Events](#model-events)
   - [Tool Events](#tool-events)
+  - [UI Interception Events](#ui-interception-events)
 - [ExtensionContext](#extensioncontext)
 - [ExtensionCommandContext](#extensioncommandcontext)
 - [ExtensionAPI Methods](#extensionapi-methods)
@@ -57,7 +60,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
 Create `~/.pi/agent/extensions/my-extension.ts`:
 
 ```typescript
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { Type } from "typebox";
 
 export default function (pi: ExtensionAPI) {
@@ -139,10 +142,10 @@ To share extensions via npm or git as pi packages, see [packages.md](packages.md
 
 | Package | Purpose |
 |---------|---------|
-| `@earendil-works/pi-coding-agent` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) |
+| `@dyyz1993/pi-coding-agent` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) |
 | `typebox` | Schema definitions for tool parameters |
-| `@earendil-works/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums) |
-| `@earendil-works/pi-tui` | TUI components for custom rendering |
+| `@dyyz1993/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums) |
+| `@dyyz1993/pi-tui` | TUI components for custom rendering |
 
 npm dependencies work too. Add a `package.json` next to your extension (or in a parent directory), run `npm install`, and imports from `node_modules/` are resolved automatically.
 
@@ -155,7 +158,7 @@ Node.js built-ins (`node:fs`, `node:path`, etc.) are also available.
 An extension exports a default factory function that receives `ExtensionAPI`. The factory can be synchronous or asynchronous:
 
 ```typescript
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   // Subscribe to events
@@ -184,7 +187,7 @@ If the factory returns a `Promise`, pi awaits it before continuing startup. That
 Use an async factory for one-time startup work such as fetching remote configuration or dynamically discovering available models.
 
 ```typescript
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 
 export default async function (pi: ExtensionAPI) {
   const response = await fetch("http://localhost:1234/v1/models");
@@ -461,6 +464,18 @@ pi.on("session_shutdown", async (event, ctx) => {
 });
 ```
 
+#### session_rename
+
+Fired when the session display name is changed via `pi.setSessionName()`. Not emitted if the new name matches the current name.
+
+```typescript
+pi.on("session_rename", async (event, ctx) => {
+  // event.oldName - previous name, or undefined if there was none
+  // event.newName - the new name (empty string clears the name)
+  console.log(`Session renamed: "${event.oldName}" -> "${event.newName}"`);
+});
+```
+
 ### Agent Events
 
 #### before_agent_start
@@ -688,7 +703,7 @@ Behavior guarantees:
 - Return values from `tool_call` only control blocking via `{ block: true, reason?: string }`
 
 ```typescript
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType } from "@dyyz1993/pi-coding-agent";
 
 pi.on("tool_call", async (event, ctx) => {
   // event.toolName - "bash", "read", "write", "edit", etc.
@@ -724,7 +739,7 @@ export type MyToolInput = Static<typeof myToolSchema>;
 Use `isToolCallEventType` with explicit type parameters:
 
 ```typescript
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType } from "@dyyz1993/pi-coding-agent";
 import type { MyToolInput } from "my-extension";
 
 pi.on("tool_call", (event) => {
@@ -748,7 +763,7 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 Use `ctx.signal` for nested async work inside the handler. This lets Esc cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
 ```typescript
-import { isBashToolResult } from "@earendil-works/pi-coding-agent";
+import { isBashToolResult } from "@dyyz1993/pi-coding-agent";
 
 pi.on("tool_result", async (event, ctx) => {
   // event.toolName, event.toolCallId, event.input
@@ -776,7 +791,7 @@ pi.on("tool_result", async (event, ctx) => {
 Fired when user executes `!` or `!!` commands. **Can intercept.**
 
 ```typescript
-import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations } from "@dyyz1993/pi-coding-agent";
 
 pi.on("user_bash", (event, ctx) => {
   // event.command - the bash command
@@ -851,6 +866,95 @@ pi.on("input", async (event, ctx) => {
 - `handled` - skip agent entirely (first handler to return this wins)
 
 Transforms chain across handlers. See [input-transform.ts](../examples/extensions/input-transform.ts) and [input-transform-streaming.ts](../examples/extensions/input-transform-streaming.ts) for `streamingBehavior`-aware routing.
+
+### UI Interception Events
+
+Intercept `ctx.ui.confirm()`, `ctx.ui.select()`, and `ctx.ui.input()` calls from **any extension** or the agent itself. This allows a single extension to observe and respond to all UI dialogs -- for example, to forward permission requests to a remote service and wait for a response.
+
+Without UI interception, each extension calls `ctx.ui.confirm()` independently and the results are invisible to other extensions. With UI interception, one extension can observe and respond to all UI dialogs on behalf of the user.
+
+#### ui
+
+Fired when any code calls `ctx.ui.confirm()`, `ctx.ui.select()`, or `ctx.ui.input()`. The `method` field distinguishes which UI call triggered the event.
+
+```typescript
+pi.on("ui", async (event, ctx) => {
+  // event.id       - unique identifier for this UI request
+  // event.method   - "confirm" | "select" | "input" | "notify"
+  // event.title    - dialog title (for notify, this is the message)
+  // event.message  - dialog message (confirm only)
+  // event.options  - string[] of options (select only)
+  // event.placeholder - placeholder text (input only)
+  // event.notifyType - "info" | "warning" | "error" (notify only)
+  // event.signal   - AbortSignal if the caller provided one
+  // event.timeout  - timeout in ms if the caller provided one
+
+  // Example: intercept all confirmations and forward to a remote service
+  if (event.method === "confirm") {
+    const response = await fetch("https://my-server/api/confirm", {
+      method: "POST",
+      body: JSON.stringify({ id: event.id, title: event.title, message: event.message }),
+    });
+    const decision = await response.json();
+    return { action: "responded", confirmed: decision.allowed };
+  }
+
+  // Example: intercept select dialogs with a remote decision
+  if (event.method === "select" && event.title.includes("Dangerous")) {
+    const choice = await askRemote(event);
+    return { action: "responded", value: choice };
+  }
+
+  // Example: forward notifications to a remote service (return value is ignored for notify)
+  if (event.method === "notify") {
+    sendToRemote({ type: "notification", message: event.message, level: event.notifyType });
+    return undefined; // original notify still fires
+  }
+
+  return undefined; // pass through to the original UI
+});
+```
+
+**Results:**
+- `{ action: "responded", confirmed: boolean }` - answer a confirm dialog (first handler to respond wins)
+- `{ action: "responded", value: string | undefined }` - answer a select or input dialog (undefined = dismissed/cancelled)
+- `undefined` - pass through to the original UI implementation
+- For `notify`, the return value is ignored. The original `notify` always fires regardless.
+
+#### Short-circuit behavior
+
+The `ui` event uses first-responder semantics: the first handler to return `{ action: "responded" }` wins. Remaining handlers are not called. If no handler responds, the original UI implementation runs (TUI dialog, RPC protocol, or no-op depending on the mode).
+
+If a handler throws, the error is reported via the error listener and the next handler is tried. If all handlers fail, the original UI runs as fallback.
+
+#### ctx.respondUI(id, result) -- async response injection
+
+When a handler returns `undefined`, the original UI is invoked -- but the handler can also capture the `event.id` and call `ctx.respondUI(id, result)` later to inject a response asynchronously. This creates a **race** between the original UI and the async response: first one wins, the other is ignored.
+
+```typescript
+pi.on("ui", async (event, ctx) => {
+  if (event.method === "confirm") {
+    // Forward to remote service (fire-and-forget)
+    sendToRemote({ id: event.id, message: event.message });
+    // Return undefined to let original UI also show
+    return undefined;
+  }
+});
+
+// When remote responds (e.g. via channel, webhook, etc.):
+someChannel.onReceive((response) => {
+  ctx.respondUI(response.id, { action: "responded", confirmed: response.allowed });
+});
+```
+
+If the user responds from the TUI first, the `respondUI` call is ignored. If the remote service responds first, the TUI dialog is cancelled. First response wins.
+
+#### Use cases
+
+- **Remote permission control** -- forward all `confirm`/`select` dialogs to a web dashboard or mobile app, race with the local UI
+- **Audit logging** -- record all UI interactions without intercepting them (return `undefined` after logging)
+- **Headless automation** -- auto-approve or auto-deny dialogs based on rules, enabling unattended operation
+- **Custom approval workflows** -- require multiple approvers, time-based auto-approval, or integration with ticketing systems
 
 ## ExtensionContext
 
@@ -977,6 +1081,74 @@ pi.on("before_agent_start", (event, ctx) => {
   console.log(`System prompt length: ${prompt.length}`);
 });
 ```
+
+### Project & Storage Paths
+
+Extensions can access standardized storage paths at different scopes through `ExtensionContext`. All paths are automatically created on first access and namespaced per extension to prevent conflicts.
+
+#### `ctx.projectRoot`
+
+```typescript
+projectRoot: string
+```
+
+The canonical git root directory. If `cwd` is inside a git worktree, this resolves to the main repository root. If not a git repository, falls back to `cwd`.
+
+```typescript
+// In a worktree at /Users/alice/projects/myapp-feature/
+ctx.cwd          // "/Users/alice/projects/myapp-feature/"
+ctx.projectRoot  // "/Users/alice/projects/myapp/" (main repo)
+
+// Not a git repo
+ctx.cwd          // "/Users/alice/my-folder/"
+ctx.projectRoot  // "/Users/alice/my-folder/" (same as cwd)
+```
+
+#### `ctx.extensionName`
+
+```typescript
+extensionName: string
+```
+
+The name of the current extension. Auto-derived from the extension's file/directory/package name, or overridden via `pi.setName()`.
+
+```typescript
+// In an extension loaded from my-tool/index.ts
+ctx.extensionName  // "my-tool"
+```
+
+#### Storage Paths
+
+All storage paths include the extension name as the final path segment, providing automatic isolation between extensions:
+
+| Property | Scope | Path Template | Lifecycle |
+|----------|-------|---------------|-----------|
+| `ctx.sessionDataDir` | Session | `~/.pi/agent/sessions/<project>/data/<sessionId>/<ext-name>/` | Per-session, can be cleaned up when session ends |
+| `ctx.cwdDataDir` | Working directory | `~/.pi/agent/cwd-data/<encoded-cwd>/<ext-name>/` | Per-cwd, isolated in worktrees |
+| `ctx.projectDataDir` | Project | `~/.pi/agent/project-data/<encoded-project>/<ext-name>/` | Per-project, shared across worktrees |
+| `ctx.globalDataDir` | Global | `~/.pi/agent/extensions-data/<ext-name>/` | Cross-project, persists forever |
+
+```typescript
+// Example: Store per-session cache
+import { writeFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const cacheFile = join(ctx.sessionDataDir, "cache.json");
+writeFileSync(cacheFile, JSON.stringify(data));
+
+// Example: Share data across all sessions of a project
+const projectConfig = join(ctx.projectDataDir, "config.json");
+
+// Example: Global extension settings shared across all projects
+const globalSettings = join(ctx.globalDataDir, "settings.json");
+```
+
+**Choosing the right scope:**
+
+- **Session**: Temporary data for a single conversation (e.g., conversation cache, working state)
+- **CWD**: Data tied to the current working directory, isolated in worktrees (e.g., build artifacts, local cache)
+- **Project**: Data shared across all worktrees of a project (e.g., project config, shared memory)
+- **Global**: Cross-project data (e.g., knowledge bases, shared settings, global caches)
 
 ## ExtensionCommandContext
 
@@ -1107,7 +1279,7 @@ Options:
 To discover available sessions, use the static `SessionManager.list()` or `SessionManager.listAll()` methods:
 
 ```typescript
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@dyyz1993/pi-coding-agent";
 
 pi.registerCommand("switch", {
   description: "Switch to another session",
@@ -1201,7 +1373,7 @@ Tools run with `ExtensionContext`, so they cannot call `ctx.reload()` directly. 
 Example tool the LLM can call to trigger reload:
 
 ```typescript
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { Type } from "typebox";
 
 export default function (pi: ExtensionAPI) {
@@ -1250,7 +1422,7 @@ See [dynamic-tools.ts](../examples/extensions/dynamic-tools.ts) for a full examp
 
 ```typescript
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@dyyz1993/pi-ai";
 
 pi.registerTool({
   name: "my_tool",
@@ -1355,7 +1527,7 @@ pi.on("session_start", async (_event, ctx) => {
 
 ### pi.setSessionName(name)
 
-Set the session display name (shown in session selector instead of first message).
+Set the session display name (shown in session selector instead of first message). Emits a `session_rename` event to all extensions if the name actually changed.
 
 ```typescript
 pi.setSessionName("Refactor auth module");
@@ -1371,6 +1543,38 @@ if (name) {
   console.log(`Session: ${name}`);
 }
 ```
+
+### pi.setName(name)
+
+```typescript
+setName(name: string): void
+```
+
+Override the auto-derived extension name. Must be called before any event handlers are registered. Extension names must be unique — duplicate names cause a load-time error.
+
+```typescript
+export default function(pi: ExtensionAPI) {
+    pi.setName("my-custom-extension");
+    // ctx.extensionName will now be "my-custom-extension"
+    // Storage paths will use "my-custom-extension" as the namespace
+}
+```
+
+### pi.extensionName
+
+```typescript
+extensionName: string
+```
+
+Read the current extension name. Returns the auto-derived name unless overridden by `setName()`.
+
+**Name derivation rules:**
+
+| Extension Form | Derived From | Example |
+|----------------|-------------|---------|
+| Package (with package.json) | `name` field (strips `@scope/`) | `@scope/my-ext` → `my-ext` |
+| Directory (index.ts/js) | Directory name | `my-ext/index.ts` → `my-ext` |
+| Single file | Filename without extension | `hello.ts` → `hello` |
 
 ### pi.setLabel(entryId, label)
 
@@ -1408,7 +1612,7 @@ pi.registerCommand("stats", {
 Optional: add argument auto-completion for `/command ...`:
 
 ```typescript
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import type { AutocompleteItem } from "@dyyz1993/pi-tui";
 
 pi.registerCommand("deploy", {
   description: "Deploy to an environment",
@@ -1699,7 +1903,7 @@ Pass the real target file path to `withFileMutationQueue()`, not the raw user ar
 Queue the entire mutation window on that target path. That includes read-modify-write logic, not just the final write.
 
 ```typescript
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { withFileMutationQueue } from "@dyyz1993/pi-coding-agent";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -1724,8 +1928,8 @@ async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 
 ```typescript
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { StringEnum } from "@dyyz1993/pi-ai";
+import { Text } from "@dyyz1993/pi-tui";
 
 pi.registerTool({
   name: "my_tool",
@@ -1793,7 +1997,7 @@ async execute(toolCallId, params) {
 }
 ```
 
-**Important:** Use `StringEnum` from `@earendil-works/pi-ai` for string enums. `Type.Union`/`Type.Literal` doesn't work with Google's API.
+**Important:** Use `StringEnum` from `@dyyz1993/pi-ai` for string enums. `Type.Union`/`Type.Literal` doesn't work with Google's API.
 
 **Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it to mimic an older accepted input shape when pi resumes an older session whose stored tool call arguments no longer match the current schema. Return the object you want validated against `parameters`. Keep the public schema strict. Do not add deprecated compatibility fields to `parameters` just to keep old resumed sessions working.
 
@@ -1866,20 +2070,20 @@ See [examples/extensions/tool-override.ts](../examples/extensions/tool-override.
 **Your implementation must match the exact result shape**, including the `details` type. The UI and session logic depend on these shapes for rendering and state tracking.
 
 Built-in tool implementations:
-- [read.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts) - `ReadToolDetails`
-- [bash.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts) - `BashToolDetails`
-- [edit.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)
-- [write.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/write.ts)
-- [grep.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/grep.ts) - `GrepToolDetails`
-- [find.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/find.ts) - `FindToolDetails`
-- [ls.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/ls.ts) - `LsToolDetails`
+- [read.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts) - `ReadToolDetails`
+- [bash.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts) - `BashToolDetails`
+- [edit.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)
+- [write.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/core/tools/write.ts)
+- [grep.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/core/tools/grep.ts) - `GrepToolDetails`
+- [find.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/core/tools/find.ts) - `FindToolDetails`
+- [ls.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/core/tools/ls.ts) - `LsToolDetails`
 
 ### Remote Execution
 
 Built-in tools support pluggable operations for delegating to remote systems (SSH, containers, etc.):
 
 ```typescript
-import { createReadTool, createBashTool, type ReadOperations } from "@earendil-works/pi-coding-agent";
+import { createReadTool, createBashTool, type ReadOperations } from "@dyyz1993/pi-coding-agent";
 
 // Create tool with custom operations
 const remoteRead = createReadTool(cwd, {
@@ -1910,7 +2114,7 @@ For `user_bash`, extensions can reuse pi's local shell backend via `createLocalB
 The bash tool also supports a spawn hook to adjust the command, cwd, or env before execution:
 
 ```typescript
-import { createBashTool } from "@earendil-works/pi-coding-agent";
+import { createBashTool } from "@dyyz1993/pi-coding-agent";
 
 const bashTool = createBashTool(cwd, {
   spawnHook: ({ command, cwd, env }) => ({
@@ -1940,7 +2144,7 @@ import {
   formatSize,        // Human-readable size (e.g., "50KB", "1.5MB")
   DEFAULT_MAX_BYTES, // 50KB
   DEFAULT_MAX_LINES, // 2000
-} from "@earendil-works/pi-coding-agent";
+} from "@dyyz1993/pi-coding-agent";
 
 async execute(toolCallId, params, signal, onUpdate, ctx) {
   const output = await runCommand();
@@ -1995,7 +2199,7 @@ export default function (pi: ExtensionAPI) {
 
 ### Custom Rendering
 
-Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
+Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](https://github.com/dyyz1993/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
 
 By default, tool output is wrapped in a `Box` that handles padding and background. A defined `renderCall` or `renderResult` must return a `Component`. If a slot renderer is not defined, `tool-execution.ts` uses fallback rendering for that slot.
 
@@ -2031,7 +2235,7 @@ Use `context.state` for cross-slot shared state. Keep slot-local caches on the r
 Renders the tool call or header:
 
 ```typescript
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@dyyz1993/pi-tui";
 
 renderCall(args, theme, context) {
   const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
@@ -2076,7 +2280,7 @@ If a slot intentionally has no visible content, return an empty `Component` such
 Use `keyHint()` to display keybinding hints that respect the active keybinding configuration:
 
 ```typescript
-import { keyHint } from "@earendil-works/pi-coding-agent";
+import { keyHint } from "@dyyz1993/pi-coding-agent";
 
 renderResult(result, { expanded }, theme, context) {
   let text = theme.fg("success", "✓ Done");
@@ -2350,7 +2554,7 @@ See [github-issue-autocomplete.ts](../examples/extensions/github-issue-autocompl
 For complex UI, use `ctx.ui.custom()`. This temporarily replaces the editor with your component until `done()` is called:
 
 ```typescript
-import { Text, Component } from "@earendil-works/pi-tui";
+import { Text, Component } from "@dyyz1993/pi-tui";
 
 const result = await ctx.ui.custom<boolean>((tui, theme, keybindings, done) => {
   const text = new Text("Press Enter to confirm, Escape to cancel", 1, 1);
@@ -2415,8 +2619,8 @@ See [tui.md](tui.md) for the full `OverlayOptions` and `OverlayHandle` API and [
 Replace the main input editor with a custom implementation (vim mode, emacs mode, etc.):
 
 ```typescript
-import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { CustomEditor, type ExtensionAPI } from "@dyyz1993/pi-coding-agent";
+import { matchesKey } from "@dyyz1993/pi-tui";
 
 class VimEditor extends CustomEditor {
   private mode: "normal" | "insert" = "insert";
@@ -2466,7 +2670,7 @@ See [tui.md](tui.md) Pattern 7 for a complete example with mode indicator.
 Register a custom renderer for messages with your `customType`:
 
 ```typescript
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@dyyz1993/pi-tui";
 
 pi.registerMessageRenderer("my-extension", (message, options, theme) => {
   const { expanded } = options;
@@ -2515,7 +2719,7 @@ theme.strikethrough(text)
 For syntax highlighting in custom tool renderers:
 
 ```typescript
-import { highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
+import { highlightCode, getLanguageFromPath } from "@dyyz1993/pi-coding-agent";
 
 // Highlight code with explicit language
 const highlighted = highlightCode("const x = 1;", "typescript", theme);
@@ -2618,6 +2822,7 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `message-renderer.ts` | Custom message rendering | `registerMessageRenderer`, `sendMessage` |
 | `event-bus.ts` | Inter-extension events | `pi.events` |
 | **Session Metadata** |||
+| `auto-session-title.ts` | Auto-generate session titles | `callLLM`, `setSessionName`, `on("turn_end")`, `on("session_rename")` |
 | `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |
 | `bookmark.ts` | Bookmark entries for /tree | `setLabel` |
 | **Misc** |||

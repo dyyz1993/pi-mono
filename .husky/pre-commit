@@ -1,7 +1,8 @@
 #!/bin/sh
+# pre-commit: run checks before allowing a commit
 
-# Get list of staged files before running check
-STAGED_FILES=$(git diff --cached --name-only)
+# Block new .js files in src/ directories (stale build artifacts)
+"$(git rev-parse --show-toplevel)/scripts/check-no-js-in-src.sh"
 
 node scripts/check-lockfile-commit.mjs
 if [ $? -ne 0 ]; then

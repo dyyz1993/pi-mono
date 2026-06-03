@@ -1,0 +1,45 @@
+name: Publish Packages
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@dyyz1993"
+
+      - name: Install dependencies
+        run: |
+          rm -f package-lock.json
+          npm install
+
+      - name: Create jiti workaround - symlink @mariozechner to @dyyz1993
+        run: |
+          mkdir -p node_modules/@mariozechner
+          for pkg in pi-agent-core pi-ai pi-tui pi-coding-agent pi-mom pi-pods pi-web-ui pi; do
+            rm -rf "node_modules/@mariozechner/$pkg"
+            ln -sf "../@dyyz1993/$pkg" "node_modules/@mariozechner/$pkg"
+          done
+
+      - name: Build packages
+        run: |
+          npm run build
+
+      - name: Publish packages to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in packages/tui packages/agent packages/ai packages/coding-agent packages/mom packages/web-ui packages/pods; do
+            echo "Publishing $dir..."
+            npm publish "$(pwd)/$dir" --access public --ignore-scripts || echo "⚠️  $dir publish skipped (already exists or error)"
+          done

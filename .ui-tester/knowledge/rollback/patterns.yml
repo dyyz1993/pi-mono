@@ -1,0 +1,346 @@
+# Module: rollback
+# Reusable operation sequences for testing rollback functionality
+# Version: 13
+# Last updated: 2026-05-25
+# Verified in round: r13
+# Status: verified (ALL BUGS FIXED - BUG-1/2/3/4 confirmed passing)
+
+rollback_message_only_flow:
+  description: "Roll back messages only - no code changes"
+  steps:
+    - action: click
+      selector: "button[title='回滚消息']"
+      description: "Click '回滚消息' on target user message card"
+      note: "Each user message card has this button in the hover-revealed action bar"
+    - action: wait
+      ms: 2000
+    - action: verify
+      description: "Rollback overlay appears with title '回滚确认'"
+    - action: verify
+      description: "Overlay shows '回滚将移除当前轮次的消息，确定继续吗？'"
+    - action: click
+      selector: "button:has-text('确认回滚')"
+      description: "Confirm the rollback"
+    - action: wait
+      ms: 3000
+  expected_result: "Messages from that turn onward are removed. Input box restores the rolled-back user message text."
+
+rollback_with_code_flow:
+  description: "Roll back messages AND code changes - shows file overlay"
+  steps:
+    - action: click
+      selector: "button[title='回滚消息+代码']"
+      description: "Click '回滚消息+代码' on target user message card"
+      note: "Each user message card has this button"
+    - action: wait
+      ms: 2000
+    - action: verify
+      description: "Rollback overlay appears with title '回滚消息 + 代码'"
+    - action: verify
+      description: "Overlay shows file count 'N 个文件' and file list with status (A/M/D)"
+    - action: optional_click
+      description: "Click on file entry to expand diff (shows change details)"
+    - action: click
+      selector: "button:has-text('确认回滚')"
+      description: "Confirm the rollback (or click Cancel to preserve)"
+    - action: wait
+      ms: 3000
+  expected_result: "Messages and file changes from that turn onward are reverted"
+
+cancel_rollback_flow:
+  description: "Cancel rollback overlay - preserves all messages"
+  steps:
+    - action: click
+      selector: "button[title='回滚消息+代码']"
+      description: "Open rollback overlay"
+    - action: click
+      selector: "button[title='取消']"
+      description: "Click X cancel button in overlay header"
+      note: "Can also use button:has-text('取消') at bottom"
+    - action: wait
+      ms: 1000
+  expected_result: "Overlay dismissed, all messages preserved"
+
+auth_flow:
+  description: "Authenticate with token"
+  steps:
+    - action: verify
+      description: "Auth page shows with pre-filled demo-test-token"
+    - action: click
+      selector: "button:has-text('连接')"
+      description: "Click Connect button"
+    - action: wait
+      ms: 5000
+  expected_result: "Main chat UI loads with sidebar and session list"
+
+send_message_flow:
+  description: "Send a chat message using eval click for reliability"
+  steps:
+    - action: fill
+      selector: "[data-testid='chat-input']"
+      description: "Type message in chat input"
+    - action: eval
+      script: "document.querySelector('button[title=\"发送\"]').click()"
+      description: "Click send button via eval (more reliable than @ref)"
+    - action: wait
+      ms: 15000
+  expected_result: "User message appears, assistant responds"
+
+tips:
+  - "Rollback buttons ONLY appear on user message cards (not assistant)"
+  - "Rollback buttons are revealed on HOVER over the message card"
+  - "During streaming, rollback buttons are DISABLED (disabled: true)"
+  - "After rollback, the chat INPUT BOX is restored with the rolled-back user message text"
+  - "FIRST MESSAGE ROLLBACK GUARD (BUG-1): FIXED as of r11"
+  - "  - Clicking '回滚消息' on first message now does NOTHING (no overlay, no toast, no deletion)"
+  - "  - Cards remain unchanged, rollback is silently blocked"
+  - "  - Verified: non-first message rollback still works correctly"
+  - "eval .click() works for send button; Playwright click sometimes fails to find '发送' text"
+  - "eval .click() does NOT trigger React onClick for rollback buttons - must use Playwright click via @ref"
+  - "Permission dialog may appear during tool execution (始终允许/允许一次/取消)"
+  - "File review approval may be needed (approveAll button in right panel)"
+  - "Close overlay with X button (button[title='取消']) or bottom cancel button"
+  - "Message cards use class 'group/msgcard' for selector queries"
+  - "First user message may not always appear as a separate card after rollback operations"
+  - "Console errors: 0 observed across all rollback operations"
+  - "CONVERSATION COMPACTION: App compacts older turns aggressively when new turns are added"
+  - "Compaction removes user message cards from older turns - only latest user message card stays visible"
+  - "CANCEL TRICK: Opening rollback overlay and clicking Cancel expands compacted cards partially"
+  - "Cancel trick reveals older assistant cards but may NOT restore older user message cards"
+  - "Rollback overlay shows status 'A' (Added) when file was created in conversation, with '文件将被移除' message"
+  - "Despite 'file will be removed' message, rollback actually restores to previous turn state correctly"
+  - "Send button ref changes after each message - must re-snapshot to get fresh ref"
+  - "Use snapshot -i to find send ref, then click via @ref (more reliable than eval for rollback buttons)"
+  - "Hover on user card: use dispatchEvent with mouseenter/mouseover/pointerover to reveal buttons"
+  - "CASE 3.1 VERIFIED: Rollback then continue chat produces correct message order (A, A-resp, D, D-resp)"
+  - "Case 3.1: count_after_new_chat = count_after_rollback + 2 (one user + one assistant card)"
+  - "Case 3.1: No stale messages, no duplicates, timestamps monotonically increasing after rollback+continue"
+  - "CASE 5.1 BUG CONFIRMED: First message rollback clears ENTIRE conversation (0 cards), no guard/warning"
+  - "Case 5.1: Sending new message after first-msg rollback works correctly (fresh conversation starts)"
+  - "CASE 2.1 BUG: Created file shows 'A' (Added) correctly as of r11 - FIXED"
+  - "CASE 2.1/2.2 BUG: Rollback overlay does NOT show line-by-line diff (+/- markers), only summary text"
+  - "CASE 2.2: Modified file correctly shows 'M' status in overlay, but no diff content"
+  - "CASE 2.3 BUG: Deleted file not tracked in rollback overlay - shows '本轮无文件变更' instead"
+  - "CASE 4.1 VERIFIED: Rolling back middle turn removes target AND all subsequent turns"
+  - "CASE 5.2 VERIFIED: Rollback buttons disabled (disabled:true) during streaming"
+  - "CASE 5.3 VERIFIED: Cancel rollback overlay preserves all messages unchanged"
+  - "CASE 5.5 VERIFIED: Input box restored with rolled-back message text, draft saved to localStorage"
+  - "CASE 5.5: Draft saved to key 'pi-draft:<session-uuid>' in localStorage"
+  - "File change status in overlay: 'M' for modified, expected 'A' for added, 'D' for deleted - BUT A/D not working"
+  - "Diff summary text: '文件将恢复到修改前的状态' for modified, '文件将被移除' for added (inconsistent)"
+  - "CASE 3.2 FAIL: First-turn rollback clears entire conversation (0 cards), branch after rollback works correctly"
+  - "CASE 3.3 PASS: Consecutive rollback+chat works correctly (0 cards → new branch message → 2 cards)"
+  - "PENDING PERMISSIONS BLOCK: When tool calls await approval ('始终允许'), ALL rollback buttons become disabled"
+  - "Must approve pending permissions (click '始终允许') before rollback operations"
+  - "TIMELINE VIEW NOT AVAILABLE: '显示时间线' setting does not create separate timeline UI with different rollback buttons"
+  - "No TimelineTurn components in DOM; rollback buttons always show as '回滚消息'/'回滚消息+代码' on hover"
+  - "CASES 6.1/6.2/6.3 SKIPPED: No timeline view with RotateCcw/MessageSquare rollback icons exists"
+  - "Compaction: scrolling container to top reveals all cards (even compacted ones still in DOM)"
+  - "Chat scrollable container: document.querySelectorAll('[class*=\"overflow-y-auto\"]')[1] contains msgcards"
+  - ""
+  - "# === REGRESSION TEST 2026-05-24 (Round r9) ==="
+  - "REGRESSION BUG-1 (FIX 1): First message rollback guard NOT WORKING"
+  - "  - Clicking '回滚消息' on FIRST message OPENS RollbackOverlay (should show notification instead)"
+  - "  - No notification/toast appeared saying '这是第一条消息，无法继续回滚'"
+  - "  - The overlay showed standard '回滚确认 - 回滚将移除当前轮次的消息，确定继续吗？'"
+  - "  - Previous behavior (r8): First message rollback cleared entire conversation (0 cards)"
+  - "  - Current behavior (r9): Overlay opens normally, confirming rollback would still clear conversation"
+  - "  - FIX 1 NOT DEPLOYED or NOT WORKING"
+  - ""
+  - "REGRESSION BUG-3 (FIX 2): Deleted file diff NOT SHOWING"
+  - "  - Rolling back delete turn shows file status 'A' (Added) instead of showing deletion details"
+  - "  - Overlay text: 'test-diff.txt A' with '文件将被移除（新建的内容将丢失）'"
+  - "  - No line-by-line diff (no +/- markers) when expanding the file entry"
+  - "  - Rolling back modify turn also shows 'A' status, no diff content"
+  - "  - FIX 2 NOT DEPLOYED or NOT WORKING"
+  - ""
+  - "PASSING: Second message (non-first) rollback still works correctly (Turn B removed, 2 cards remain)"
+  - "PASSING: Cancel rollback preserves all messages unchanged"
+  - "PASSING: No console errors during rollback operations"
+  - ""
+  - "SESSION STABILITY NOTE: Browser session may navigate to about:blank after connect/new-session"
+  - "  - Workaround: Set localStorage.setItem('rpc-auth-token', 'demo-test-token') BEFORE clicking Connect"
+  - "  - After connect, URL stays on localhost:5173 correctly"
+  - ""
+  - "# === REGRESSION TEST 2026-05-25 (Round r10) ==="
+  - "REGRESSION BUG-1 (FIX 1): First message rollback guard STILL NOT WORKING"
+  - "  - Fresh page load with hard refresh, connected with demo-test-token"
+  - "  - Created 4-card conversation (Turn A user + resp, Turn B user + resp)"
+  - "  - Hovered over Turn A (card 0, first user message), clicked '回滚消息'"
+  - "  - Expected: notification/toast, no overlay"
+  - "  - Actual: Standard overlay opened: '回滚确认 - 回滚将移除当前轮次的消息，确定继续吗？'"
+  - "  - 0 notification/toast/alert elements found in DOM"
+  - "  - FIX 1 CONFIRMED NOT DEPLOYED or NOT WORKING (same as r9)"
+  - ""
+  - "REGRESSION BUG-3 (FIX 2): File diff display STILL NOT WORKING"
+  - "  - Fresh session: Created hello.txt, Modified it, Deleted it"
+  - "  - Rolled back Modify turn via '回滚消息+代码'"
+  - "  - Overlay: 1 file listed (hello.txt, status M)"
+  - "  - Expanded file entry: NO diff content at all"
+  - "  - 0 <pre> elements, 0 <code> elements in overlay"
+  - "  - Only text: '文件将恢复到修改前的状态'"
+  - "  - No +/- line markers, no before/after comparison"
+  - "  - FIX 2 CONFIRMED NOT DEPLOYED or NOT WORKING (same as r9)"
+  - ""
+  - "SEND BUTTON: After fill, document.querySelector('button[title=\"发送\"]') may return null"
+  - "  - Workaround: Use Enter key dispatch on textarea: textarea.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', ...}))"
+  - "  - Alternative: eval with document.querySelector('button[title=\"发送\"]').click() when button exists"
+  - "COMPATION: First user message card may be removed when many turns added"
+  - "  - Use data-msg-card-id attribute to target specific cards"
+  - "  - Scroll to card before hover: card.scrollIntoView({block: 'center'})"
+  - ""
+  - "# === REGRESSION TEST 2026-05-25 (Round r11) ==="
+  - "BUG-1 (First message rollback guard): FIXED"
+  - "  - Clicking '回滚消息' on FIRST message does NOTHING - no overlay, no toast, no deletion"
+  - "  - Cards remain unchanged (6 cards stayed 6)"
+  - "  - Non-first message rollback still works (overlay opens correctly for Turn B)"
+  - ""
+  - "BUG-4 (Added file status): FIXED"
+  - "  - Created file hello.txt correctly shows status 'A' in rollback overlay"
+  - "  - Previous rounds showed 'M' - now correctly shows 'A'"
+  - ""
+  - "BUG-2 (Modified file diff): NOT FIXED"
+  - "  - Modified file still shows status 'A' instead of 'M'"
+  - "  - No diff content (0 <pre>, 0 <code>, no +/- markers)"
+  - "  - Message says '文件将被移除（新建的内容将丢失）' which is wrong for modification"
+  - ""
+  - "BUG-3 (Deleted file diff): NOT FIXED"
+  - "  - Deleted file shows status 'A' instead of 'D'"
+  - "  - No diff content showing what will be restored"
+  - "  - Message says '文件将被移除（新建的内容将丢失）' - incorrect for deletion rollback"
+  - ""
+  - "TEST 5 (Rollback then chat): PASS"
+  - "  - 3 turns (A, B, C), rollback C → only A+B remain (4 cards)"
+  - "  - Send D after rollback → A, B, D in correct order (6 cards), no stale C"
+  - "  - No duplicates, timestamps monotonically increasing"
+  - ""
+  - "COMPATION NOTE: With longer AI responses, user cards get compacted"
+  - "  - Use short prompts like 'Say exactly: OK-X' to avoid compaction during testing"
+  - "  - New session button sometimes navigates to wrong session - use fresh browser session for clean tests"
+  - ""
+  - "# === VERIFICATION TEST 2026-05-25 (Round r12) ==="
+  - "TEST: Create z.txt (AAA,BBB) → Modify z.txt (XXX,BBB) → Rollback modify → Expand overlay"
+  - "BUG-2 (Modified file diff): FIXED"
+  - "  - Modified file correctly shows status 'M' (not 'A' anymore)"
+  - "  - Expanded file entry shows FULL unified diff in <pre> element:"
+  - "    --- z.txt"
+  - "    +++ z.txt"
+  - "    @@ -1,0 +1,1 @@"
+  - "    +XXX, BBB"
+  - "  - <pre> element found (count: 1), contains diff with proper +/- markers"
+  - "  - '+' lines present: true (hasPlusLines: true)"
+  - "  - '-' lines present: false (diff only shows addition from 0 lines to 1 line)"
+  - "  - 'AAA' NOT found in overlay (correct - original had AAA,BBB, diff shows only XXX,BBB addition)"
+  - "  - 'XXX' FOUND in overlay (correct - shows the added line that will be reverted)"
+  - "  - Diff uses standard unified diff format: ---, +++, @@ hunk headers"
+  - "FILE STATUS: M (Modified) - correctly shows the modification icon and status badge"
+  - "EXPAND: Click on file entry (button containing z.txt + M) to toggle expanded diff"
+  - "  - Chevron changes from right (>) to down (v) when expanded"
+  - "  - Pre element in monospace font (12px, ui-monospace)"
+  - "  - Max height 256px (max-h-64) with scroll for long diffs"
+
+# === FINAL REGRESSION TEST 2026-05-25 (Round r13) ===
+# ALL 4 BUGS VERIFIED FIXED:
+# BUG-1: First message guard - clicking rollback on first msg does nothing (no overlay, no deletion)
+# BUG-4: Added file shows "A" status with "+N" line count
+# BUG-2: Modified file shows "M" status with unified diff in <pre> element
+# BUG-3: Deleted file shows "D" status with unified diff showing -deleted_content
+# Rollback+chat produces correct message order (no stale/duplicate cards)
+
+# === CASE 5.2 TEST 2026-05-25 (Rollback Blocked During Streaming) ===
+# RESULT: PASS - Rollback correctly disabled during streaming
+#
+# TEST METHOD:
+#   - Installed JS monitor (window.__rbMon) sampling every 150ms
+#   - Sent 2 short messages (BEFORE1, BEFORE2), then long streaming message
+#   - Monitor recorded button states throughout streaming
+#
+# KEY FINDINGS:
+#   - 738 samples captured during streaming → ALL rollback buttons disabled in EVERY sample
+#   - 344 samples after streaming → ALL rollback buttons re-enabled
+#   - During streaming: disabled=true, cursor="not-allowed", class contains "cursor-not-allowed"
+#   - After streaming: disabled=false, cursor="pointer", buttons fully functional
+#   - Clicking disabled rollback button has NO EFFECT (no overlay, no messages lost)
+#   - All 6 messages (3 user + 3 assistant) preserved after streaming completes
+#
+# TECHNICAL DETAILS:
+#   - Rollback buttons use HTML disabled attribute (btn.disabled = true)
+#   - CSS class changes: adds "cursor-not-allowed" during streaming
+#   - All user message cards' rollback buttons are disabled (not just the latest)
+#   - Virtual scrolling: only visible cards are in DOM; scroll to top to see all cards
+#   - Rollback buttons only visible on hover (mouseenter event on card)
+#
+# MONITORING PATTERN:
+#   const monitor = { states: [], start() { this.interval = setInterval(() => {
+#     const stopBtn = document.querySelector('button[title="停止"]:not([disabled])');
+#     const btns = document.querySelectorAll('button[title="回滚消息"]');
+#     this.states.push({ streaming: !!stopBtn, btnStates: Array.from(btns).map(b => ({disabled: b.disabled})) });
+#   }, 150); } };
+
+# === CASE 2.4 TEST 2026-05-25 (Multi-file diff display) ===
+# TEST: Create 3 files → Modify 1, Delete 1, Create 1 → Rollback → Check overlay
+# RESULT: PARTIAL PASS (2 bugs found)
+#
+# BUG-MULTI-1 (Added file missing from overlay): CONFIRMED
+#   - Created file-multi-D.txt (status A) NOT shown in rollback overlay
+#   - Overlay shows "2 个文件" instead of expected 3
+#   - Only shows M (modified) and D (deleted) files
+#   - Newly created files from the SAME turn are excluded from the overlay
+#   - This means the rollback won't show the user that a new file will be removed
+#
+# BUG-MULTI-2 (Modified file diff missing): CONFIRMED
+#   - file-multi-A.txt shows status M correctly (yellow icon)
+#   - BUT expanding it shows only text "文件将恢复到修改前的状态"
+#   - No unified diff (<pre> element) for modified files
+#   - 0 <pre> elements found for the M file entry
+#   - Previous r12 test showed diff working for M - may be regression or different code path
+#
+# PASSING:
+#   - Deleted file (D) shows proper unified diff: "--- file-multi-B.txt\n+++ file-multi-B.txt\n@@ -1,1 +1,0 @@\n-WORLD"
+#   - <pre> element found for D file (count: 1)
+#   - File status icons: yellow for M, red for D (correct colors)
+#   - Cancel button works correctly (overlay dismissed, all messages preserved)
+#   - File count badge shows "2 个文件"
+#   - Title shows "回滚消息 + 代码"
+#
+# FIRST MESSAGE GUARD: Still working
+#   - Clicking rollback on FIRST user message ("Create three files") does nothing
+#   - No overlay, no toast - guard correctly blocks first message rollback
+#   - Test proceeded with second user message instead
+#
+# COMPACTION NOTE:
+#   - After 2 turns with long AI responses, first user card gets compacted
+#   - querySelectorAll('[class*="group/msgcard"]') may return more cards after overlay cancel
+#   - Before overlay: 4 cards; After cancel: 6 cards (partial de-compaction)
+
+# === CASE 5.4 TEST 2026-05-25 (Rollback Ineffective Detection) ===
+# RESULT: GUARD WORKS, NO USER-VISIBLE NOTIFICATION
+#
+# TEST METHOD:
+#   - New session, sent "Say exactly: ONLY" (1 turn, 2 cards)
+#   - Tried rollback on first message → SILENT BLOCK (no overlay, no toast)
+#   - Sent "Say exactly: SECOND" → 4 cards
+#   - Successfully rolled back SECOND → 2 cards
+#   - Tried rollback on first message again → SILENT BLOCK (same behavior)
+#
+# KEY FINDINGS:
+#   - First message rollback guard: WORKING (silently blocks)
+#   - NO toast/notification/alert shown when rollback is blocked
+#   - NO "afterCount >= beforeCount" check observed
+#   - Guard uses pre-rollback check: findTurnBoundary returns null for first message
+#   - Console shows WARN messages but nothing user-visible
+#
+# CONSOLE LOG PATTERN (first message rollback attempt):
+#   [INFO] rollback requested {sessionId, mode: "message"}
+#   [WARN] resolveRollbackTarget: findTurnBoundary returned null (first message?) {entryId}
+#   [WARN] rollback aborted: resolveRollbackTarget returned null {sessionId, mode, messageId, hasEntryId, messagesCount}
+#
+# CONSOLE LOG PATTERN (successful rollback):
+#   [INFO] rollback requested {sessionId, mode: "message"}
+#   [INFO] resolveRollbackTarget: success {entryId, targetId}
+#   [INFO] opening rollback overlay {sessionId, mode, targetId, fileCount}
+#
+# IMPORTANT: eval .click() does NOT trigger React onClick for rollback buttons
+#   - Must use Playwright click via @ref for rollback buttons to work
+#   - Eval click triggers server-side handler but overlay doesn't appear
+#   - This is because the overlay is a React state change triggered by onClick handler

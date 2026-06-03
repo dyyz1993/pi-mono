@@ -5,7 +5,7 @@ See [AGENTS.md](https://github.com/earendil-works/pi-mono/blob/main/AGENTS.md) f
 ## Setup
 
 ```bash
-git clone https://github.com/earendil-works/pi-mono
+git clone https://github.com/dyyz1993/pi-mono
 cd pi-mono
 npm install
 npm run build

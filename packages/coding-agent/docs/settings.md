@@ -20,6 +20,7 @@ Edit directly or use `/settings` for common options.
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
+| `tierModels` | `Record<string, string>` | `{ fast: "anthropic/claude-haiku-4", pro: "anthropic/claude-sonnet-4-20250514", max: "anthropic/claude-opus-4-6" }` | Model alias mapping. Maps short names (like "fast", "pro", "max") to concrete model identifiers in `provider/modelId` format. These aliases work everywhere a model can be specified: CLI `--model`, `settings.json` defaultModel, `/model` command, agent configs, and extension APIs. Only override the aliases you need. Unspecified aliases use the hardcoded defaults. Set in `.pi/settings.json` for per-project overrides. Scope: Global + Project |
 
 #### thinkingBudgets
 
@@ -30,6 +31,17 @@ Edit directly or use `/settings` for common options.
     "low": 4096,
     "medium": 10240,
     "high": 32768
+  }
+}
+```
+
+#### tierModels
+
+```json
+{
+  "tierModels": {
+    "fast": "openai/gpt-4o-mini",
+    "pro": "google/gemini-2.5-pro"
   }
 }
 ```

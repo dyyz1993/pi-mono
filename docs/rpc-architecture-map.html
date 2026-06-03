@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RpcClient Architecture Map</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --bg:#0a0e17;--bg2:#111827;--bg3:#1a2235;--bg-hover:#1e293b;
+  --border:#2a3550;--border-light:#374766;
+  --text:#e2e8f0;--text-dim:#8892a8;--text-bright:#f8fafc;
+  --accent:#38bdf8;--accent2:#818cf8;--accent3:#a78bfa;
+  --green:#34d399;--yellow:#fbbf24;--orange:#fb923c;
+  --red:#f87171;--pink:#f472b6;--cyan:#22d3ee;--teal:#2dd4bf;
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;overflow:hidden}
+
+#app{width:100%;height:100%;display:flex}
+
+/* ─── Sidebar ─── */
+#sidebar{width:280px;min-width:280px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;z-index:10}
+#sidebar-header{padding:20px 16px 16px;border-bottom:1px solid var(--border)}
+#sidebar-header h1{font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-.5px}
+#sidebar-header p{font-size:11px;color:var(--text-dim);margin-top:4px}
+#search-box{margin:12px 16px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:inherit;font-size:12px;outline:none;width:calc(100% - 32px);transition:border-color .2s}
+#search-box:focus{border-color:var(--accent)}
+#search-box::placeholder{color:var(--text-dim)}
+#nav-list{flex:1;overflow-y:auto;padding:8px 0}
+#nav-list::-webkit-scrollbar{width:4px}
+#nav-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.nav-group-label{padding:10px 16px 4px;font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+.nav-item{padding:7px 16px 7px 24px;cursor:pointer;display:flex;align-items:center;gap:10px;font-size:12px;transition:all .15s;border-left:3px solid transparent}
+.nav-item:hover{background:var(--bg-hover)}
+.nav-item.active{background:var(--bg3);border-left-color:var(--accent)}
+.nav-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.nav-label{flex:1}
+.nav-count{font-size:10px;color:var(--text-dim);background:var(--bg);padding:1px 6px;border-radius:3px}
+#sidebar-footer{padding:12px 16px;border-top:1px solid var(--border);font-size:10px;color:var(--text-dim);display:flex;gap:16px}
+#sidebar-footer span{color:var(--accent);font-weight:600}
+
+/* ─── Main ─── */
+#main{flex:1;overflow-y:auto;position:relative}
+#main::-webkit-scrollbar{width:6px}
+#main::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ─── Tabs ─── */
+.tab-bar{display:flex;border-bottom:1px solid var(--border);background:var(--bg2);position:sticky;top:0;z-index:5}
+.tab-btn{padding:14px 24px;font-family:inherit;font-size:13px;font-weight:500;color:var(--text-dim);background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;transition:all .15s}
+.tab-btn:hover{color:var(--text);background:var(--bg-hover)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-panel{display:none;padding:40px 48px 80px}
+.tab-panel.active{display:block}
+
+/* ─── Overview ─── */
+.overview-title{font-family:'Space Grotesk',sans-serif;font-size:28px;font-weight:700;color:var(--text-bright);margin-bottom:6px}
+.overview-sub{font-size:13px;color:var(--text-dim);margin-bottom:24px}
+.overview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:28px}
+.stat-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px 16px;cursor:pointer;transition:all .2s}
+.stat-card:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:0 4px 12px rgba(56,189,248,.1)}
+.stat-value{font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700}
+.stat-label{font-size:11px;color:var(--text-dim);margin-top:2px}
+.ascii-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px 24px;font-size:10.5px;line-height:1.55;color:var(--text-dim);white-space:pre;overflow-x:auto;margin-bottom:24px}
+
+/* ─── Detail Sections ─── */
+.detail-section{margin-bottom:32px;scroll-margin-top:60px}
+.detail-section.hidden{display:none}
+.section-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.section-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.section-title{font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:600;color:var(--text-bright)}
+.section-desc{font-size:11px;color:var(--text-dim)}
+
+/* ─── API Cards ─── */
+.api-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;transition:border-color .2s}
+.api-card:hover{border-color:var(--border-light)}
+.api-card-header{padding:12px 16px;display:flex;align-items:baseline;gap:8px;cursor:pointer;user-select:none}
+.api-card-header:hover{background:var(--bg3)}
+.api-method{font-size:13px;font-weight:600;color:var(--green);flex-shrink:0}
+.api-params{font-size:12px;color:var(--text-dim)}
+.api-return{font-size:11px;color:var(--yellow);margin-left:auto;flex-shrink:0;background:var(--bg);padding:2px 8px;border-radius:4px}
+.api-card-body{padding:0 16px 14px;display:none}
+.api-card.open .api-card-body{display:block}
+.api-desc{font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.5}
+.type-table{width:100%;border-collapse:collapse;font-size:11px;margin:8px 0}
+.type-table th{text-align:left;padding:6px 10px;background:var(--bg);color:var(--text-dim);font-weight:500;border-bottom:1px solid var(--border)}
+.type-table td{padding:5px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.type-table tr:last-child td{border-bottom:none}
+.fn{color:var(--accent);font-weight:500}
+.ft{color:var(--accent2)}
+.fd{color:var(--text-dim)}
+.en{color:var(--orange);font-weight:600;white-space:nowrap}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:500}
+.tag-async{background:rgba(52,211,153,.15);color:var(--green)}
+.tag-sub{background:rgba(244,114,182,.15);color:var(--pink)}
+.tag-ff{background:rgba(251,191,36,.15);color:var(--yellow)}
+.tag-rr{background:rgba(129,140,248,.15);color:var(--accent2)}
+.conn-box{background:var(--bg3);border:1px dashed var(--border-light);border-radius:8px;padding:14px 18px;margin-top:12px}
+.conn-title{font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px}
+.conn-text{font-size:11px;color:var(--text-dim);line-height:1.6}
+.flow-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin:10px 0;font-size:11px;line-height:1.7;white-space:pre;overflow-x:auto}
+.intro-box{background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.2);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:11px;color:var(--yellow);line-height:1.5}
+
+/* ─── Lifecycle Diagrams ─── */
+.lc-diagram{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:24px 28px;margin:16px 0;overflow-x:auto}
+.lc-flow{display:flex;align-items:stretch;gap:0;min-width:max-content;padding:8px 0}
+.lc-node{min-width:120px;padding:12px 16px;border-radius:8px;text-align:center;display:flex;flex-direction:column;justify-content:center;gap:4px;flex-shrink:0;border:2px solid transparent;transition:all .2s;cursor:default;position:relative}
+.lc-node:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.3)}
+.lc-node-idle{background:#0f2918;border-color:#1a5c2e;color:var(--green)}
+.lc-node-streaming{background:#1a1535;border-color:#3b2d6b;color:var(--accent2)}
+.lc-node-compacting{background:#0f2528;border-color:#1a5c5e;color:var(--teal)}
+.lc-node-retrying{background:#2a1215;border-color:#6b2025;color:var(--red)}
+.lc-node-done{background:#0a1a25;border-color:#1a4a6b;color:var(--accent)}
+.lc-node-event{background:#1a1800;border-color:#5c521a;color:var(--yellow)}
+.lc-node-ext{background:#1a0f25;border-color:#5c2d6b;color:var(--pink)}
+.lc-title{font-size:12px;font-weight:700}
+.lc-sub{font-size:9.5px;opacity:.7}
+.lc-arrow{display:flex;align-items:center;flex-shrink:0;padding:0 4px;color:var(--text-dim);font-size:18px;position:relative}
+.lc-arrow-label{position:absolute;top:-14px;left:50%;transform:translateX(-50%);font-size:9px;white-space:nowrap;color:var(--text-dim);background:var(--bg);padding:0 4px}
+.lc-arrow-label-bottom{position:absolute;bottom:-14px;left:50%;transform:translateX(-50%);font-size:9px;white-space:nowrap;color:var(--text-dim);background:var(--bg);padding:0 4px}
+.lc-branch{display:flex;flex-direction:column;gap:0;position:relative}
+
+/* ─── State Machine ─── */
+.sm-grid{display:grid;gap:16px;margin:16px 0}
+.sm-row{display:flex;gap:16px;flex-wrap:wrap}
+.sm-state{flex:1;min-width:200px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+.sm-state-title{font-size:13px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.sm-state-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.sm-state-body{font-size:11px;color:var(--text-dim);line-height:1.5}
+.sm-state-body code{color:var(--green);font-size:10px}
+.sm-trans{font-size:10px;color:var(--accent);margin-top:6px;display:flex;align-items:center;gap:4px}
+.sm-trans::before{content:"→";color:var(--text-dim)}
+
+/* ─── Use Cases ─── */
+.uc-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin:20px 0;overflow:hidden}
+.uc-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+.uc-num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}
+.uc-title{font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:600;color:var(--text-bright)}
+.uc-body{padding:16px 20px}
+.uc-step{display:flex;gap:12px;margin-bottom:12px;align-items:flex-start}
+.uc-step:last-child{margin-bottom:0}
+.uc-step-num{width:22px;height:22px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:var(--accent);flex-shrink:0;border:1px solid var(--border)}
+.uc-step-content{flex:1}
+.uc-step-title{font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px}
+.uc-step-desc{font-size:11px;color:var(--text-dim);line-height:1.4}
+.uc-code{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:11px;line-height:1.5;margin-top:6px;color:var(--green);overflow-x:auto}
+.uc-code .cm{color:var(--text-dim)}
+.uc-code .st{color:var(--yellow)}
+.uc-code .kw{color:var(--pink)}
+
+@media(max-width:900px){
+  #sidebar{display:none}
+  .tab-panel{padding-left:24px;padding-right:24px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h1>RpcClient</h1>
+      <p>Architecture & Lifecycle Reference</p>
+    </div>
+    <input type="text" id="search-box" placeholder="Search methods, types, events..." />
+    <div id="nav-list"></div>
+    <div id="sidebar-footer">
+      <div><span>19</span> dims</div>
+      <div><span>60+</span> APIs</div>
+      <div><span>6</span> lifecycles</div>
+    </div>
+  </div>
+  <div id="main">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="api">API Reference</button>
+      <button class="tab-btn" data-tab="lifecycle">Lifecycles</button>
+      <button class="tab-btn" data-tab="usecases">Use Cases</button>
+    </div>
+
+    <!-- ═══════════════════════ TAB 1: API ═══════════════════════ -->
+    <div class="tab-panel active" id="tab-api">
+      <div style="padding:40px 0 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--bg2),var(--bg))">
+        <div style="padding:0 48px">
+          <div class="overview-title">RpcClient Architecture Map</div>
+          <div class="overview-sub">Complete interactive reference — 19 dimensions, all methods, types, events, and connections</div>
+          <div class="overview-grid" id="overview-grid"></div>
+        </div>
+      </div>
+      <div style="padding:24px 48px 80px" id="api-sections"></div>
+    </div>
+
+    <!-- ═══════════════════════ TAB 2: LIFECYCLES ═══════════════════════ -->
+    <div class="tab-panel" id="tab-lifecycle">
+      <div style="padding:40px 48px 80px" id="lifecycle-content"></div>
+    </div>
+
+    <!-- ═══════════════════════ TAB 3: USE CASES ═══════════════════════ -->
+    <div class="tab-panel" id="tab-usecases">
+      <div style="padding:40px 48px 80px" id="usecases-content"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ┌─────────────────────────────────────────────┐
+// │  DATA                                       │
+// └─────────────────────────────────────────────┘
+const SECTIONS = [
+  { id:'lifecycle',icon:'⚡',title:'Lifecycle',color:'var(--accent)',desc:'Start / stop / options',stats:{v:3,l:'methods'},apis:[
+    {m:'start()',p:'',r:'Promise<void>',d:'Spawn agent in RPC mode as child process'},
+    {m:'stop()',p:'',r:'Promise<void>',d:'Stop agent (SIGTERM → SIGKILL)'},
+    {m:'getStderr()',p:'',r:'string',d:'Collected stderr for debugging'}
+  ],opts:{t:'RpcClientOptions',f:[{n:'cliPath',t:'string?',d:'CLI entry path'},{n:'cwd',t:'string?',d:'Working directory'},{n:'env',t:'Record<string,string>?',d:'Extra env vars'},{n:'provider',t:'string?',d:'LLM provider'},{n:'model',t:'string?',d:'Model ID'},{n:'args',t:'string[]?',d:'Extra CLI args'}]}},
+  { id:'prompting',icon:'💬',title:'Prompting',color:'var(--green)',desc:'Send prompts, steer, follow-up',stats:{v:7,l:'methods'},apis:[
+    {m:'prompt',p:'(message, images?)',r:'Promise<void>',d:'Send prompt, returns immediately',tags:['async']},
+    {m:'steer',p:'(message, images?)',r:'Promise<void>',d:'Interrupt agent mid-run with steering',tags:['async']},
+    {m:'followUp',p:'(message, images?)',r:'Promise<void>',d:'Queue message for after current run',tags:['async']},
+    {m:'abort',p:'()',r:'Promise<void>',d:'Abort current operation',tags:['async']},
+    {m:'waitForIdle',p:'(timeout=60000)',r:'Promise<void>',d:'Wait for agent_end event',tags:['helper']},
+    {m:'collectEvents',p:'(timeout=60000)',r:'Promise<AgentEvent[]>',d:'Collect all events until idle',tags:['helper']},
+    {m:'promptAndWait',p:'(message, images?, timeout?)',r:'Promise<AgentEvent[]>',d:'prompt + collectEvents combo',tags:['helper']}
+  ],conn:{t:'Flow',x:'prompt() → onEvent() event stream → agent_start → turn_start → message_start/update/end → tool_execution_* → turn_end → agent_end. Use waitForIdle() to sync.'}},
+  { id:'events',icon:'📡',title:'Event Subscription',color:'var(--yellow)',desc:'onEvent() streaming events',stats:{v:11,l:'event types'},apis:[
+    {m:'onEvent',p:'(listener)',r:'() => void',d:'Subscribe to agent event stream',tags:['sub']}
+  ],events:[
+    {n:'agent_start',c:'Lifecycle',cc:'var(--accent)',f:'(none)',d:'Agent begins processing'},
+    {n:'agent_end',c:'Lifecycle',cc:'var(--accent)',f:'messages: AgentMessage[]',d:'Agent finishes'},
+    {n:'turn_start',c:'Turn',cc:'var(--accent2)',f:'(none)',d:'Turn begins (1 assistant + tools)'},
+    {n:'turn_end',c:'Turn',cc:'var(--accent2)',f:'message, toolResults[]',d:'Turn completes'},
+    {n:'message_start',c:'Message',cc:'var(--accent3)',f:'message',d:'New message created'},
+    {n:'message_update',c:'Message',cc:'var(--accent3)',f:'message, assistantMessageEvent',d:'Streaming delta (assistant only)'},
+    {n:'message_end',c:'Message',cc:'var(--accent3)',f:'message',d:'Message finalized'},
+    {n:'tool_execution_start',c:'Tool',cc:'var(--pink)',f:'toolCallId, toolName, args',d:'Tool begins'},
+    {n:'tool_execution_update',c:'Tool',cc:'var(--pink)',f:'toolCallId, toolName, partialResult',d:'Partial tool output'},
+    {n:'tool_execution_end',c:'Tool',cc:'var(--pink)',f:'toolCallId, toolName, result, isError',d:'Tool finishes'}
+  ],subEvents:{t:'AssistantMessageEvent (inside message_update)',f:[{n:'text_start/delta/end',t:'contentIndex, delta',d:'Text streaming'},{n:'thinking_start/delta/end',t:'contentIndex, delta',d:'Thinking streaming'},{n:'toolcall_start/delta/end',t:'contentIndex, delta/toolCall',d:'Tool call streaming'},{n:'done',t:'reason: stop|length|toolUse',d:'Streaming complete'},{n:'error',t:'reason: aborted|error',d:'Streaming error'}]},conn:{t:'Message Types',x:'AgentMessage = UserMessage | AssistantMessage | ToolResultMessage | BashExecutionMessage | CustomMessage | BranchSummaryMessage | CompactionSummaryMessage (7 roles)'}},
+  { id:'state',icon:'🔍',title:'State',color:'var(--accent2)',desc:'Session state snapshot',stats:{v:1,l:'method'},apis:[
+    {m:'getState',p:'()',r:'Promise<RpcSessionState>',d:'Complete session state snapshot',tags:['rr']}
+  ],opts:{t:'RpcSessionState',f:[{n:'model',t:'Model?',d:'Current model'},{n:'thinkingLevel',t:'ThinkingLevel',d:'off|minimal|low|medium|high|xhigh'},{n:'isStreaming',t:'boolean',d:'Agent streaming'},{n:'isCompacting',t:'boolean',d:'Compaction in progress'},{n:'steeringMode',t:'"all"|"one-at-a-time"',d:'Steering mode'},{n:'followUpMode',t:'"all"|"one-at-a-time"',d:'Follow-up mode'},{n:'sessionFile',t:'string?',d:'Session file path'},{n:'sessionId',t:'string',d:'Unique ID'},{n:'sessionName',t:'string?',d:'Display name'},{n:'autoCompactionEnabled',t:'boolean',d:'Auto-compaction'},{n:'messageCount',t:'number',d:'Total messages'},{n:'pendingMessageCount',t:'number',d:'Pending messages'}]}},
+  { id:'model',icon:'🧠',title:'Model',color:'var(--pink)',desc:'Switch models, thinking levels',stats:{v:5,l:'methods'},apis:[
+    {m:'setModel',p:'(provider, modelId)',r:'Promise<{provider,id}>',d:'Set active model'},
+    {m:'cycleModel',p:'()',r:'Promise<{model,thinkingLevel,isScoped}|null>',d:'Cycle to next model'},
+    {m:'getAvailableModels',p:'()',r:'Promise<ModelInfo[]>',d:'List all available models'},
+    {m:'setThinkingLevel',p:'(level)',r:'Promise<void>',d:'Set: off|minimal|low|medium|high|xhigh'},
+    {m:'cycleThinkingLevel',p:'()',r:'Promise<{level}|null>',d:'Cycle thinking level'}
+  ],opts:{t:'ModelInfo',f:[{n:'provider',t:'string',d:'Provider name'},{n:'id',t:'string',d:'Model ID'},{n:'contextWindow',t:'number',d:'Max tokens'},{n:'reasoning',t:'boolean',d:'Supports reasoning'}]}},
+  { id:'queue',icon:'📋',title:'Queue',color:'var(--orange)',desc:'Steering & follow-up queues',stats:{v:4,l:'methods'},apis:[
+    {m:'setSteeringMode',p:'(mode)',r:'Promise<void>',d:'"all" or "one-at-a-time"'},
+    {m:'setFollowUpMode',p:'(mode)',r:'Promise<void>',d:'"all" or "one-at-a-time"'},
+    {m:'getQueue',p:'()',r:'Promise<{steering[],followUp[]}>',d:'Current queued messages'},
+    {m:'clearQueue',p:'()',r:'Promise<{steering[],followUp[]}>',d:'Clear queues'}
+  ]},
+  { id:'session',icon:'📁',title:'Session',color:'var(--cyan)',desc:'Create/switch/fork/clone/navigate',stats:{v:10,l:'methods'},apis:[
+    {m:'newSession',p:'(parentSession?)',r:'Promise<{cancelled}>',d:'Start new session'},
+    {m:'switchSession',p:'(sessionPath)',r:'Promise<{cancelled}>',d:'Switch to session file'},
+    {m:'fork',p:'(entryId, opts?)',r:'Promise<{text,cancelled,newSessionFile?,newSessionId?}>',d:'Fork from message'},
+    {m:'navigateTree',p:'(targetId, opts?)',r:'Promise<{cancelled}>',d:'Navigate to tree node'},
+    {m:'clone',p:'()',r:'Promise<{cancelled}>',d:'Clone current branch'},
+    {m:'setSessionName',p:'(name)',r:'Promise<void>',d:'Set display name'},
+    {m:'getSessionStats',p:'()',r:'Promise<SessionStats>',d:'Get statistics'},
+    {m:'exportHtml',p:'(outputPath?)',r:'Promise<{path}>',d:'Export to HTML'},
+    {m:'getForkMessages',p:'()',r:'Promise<Array<{entryId,text}>>',d:'Messages available for forking'},
+    {m:'getLastAssistantText',p:'()',r:'Promise<string|null>',d:'Last assistant text'}
+  ],opts:{t:'SessionStats',f:[{n:'sessionFile/sessionId',t:'string',d:'Session identity'},{n:'userMessages/assistantMessages',t:'number',d:'Message counts'},{n:'toolCalls/toolResults',t:'number',d:'Tool counts'},{n:'totalMessages',t:'number',d:'Total'},{n:'tokens',t:'{input,output,cacheRead,cacheWrite,total}',d:'Token usage'},{n:'cost',t:'number',d:'Total cost'},{n:'contextUsage',t:'ContextUsage?',d:'Window usage'}]}},
+  { id:'messages',icon:'📨',title:'Messages',color:'var(--accent3)',desc:'Messages and tree',stats:{v:3,l:'methods'},apis:[
+    {m:'getMessages',p:'()',r:'Promise<AgentMessage[]>',d:'All messages in session'},
+    {m:'getTree',p:'()',r:'Promise<TreeEntry[]>',d:'Message tree (id,parentId,type,label)'},
+    {m:'getTreeWithLeaf',p:'()',r:'Promise<{entries,leafId}>',d:'Tree + active leaf ID'}
+  ],opts:{t:'AgentMessage (7 roles)',f:[{n:'user',t:'UserMessage',d:'content: string | (Text|Image)[]'},{n:'assistant',t:'AssistantMessage',d:'content: (Text|Thinking|ToolCall)[]'},{n:'toolResult',t:'ToolResultMessage',d:'toolCallId, toolName, content'},{n:'bashExecution',t:'BashExecutionMessage',d:'command, output, exitCode'},{n:'custom',t:'CustomMessage',d:'customType, content'},{n:'branchSummary',t:'BranchSummaryMessage',d:'summary, fromId'},{n:'compactionSummary',t:'CompactionSummaryMessage',d:'summary, tokensBefore'}]}},
+  { id:'compaction',icon:'🗜',title:'Compaction',color:'var(--teal)',desc:'Context window compression',stats:{v:2,l:'methods'},apis:[
+    {m:'compact',p:'(customInstructions?)',r:'Promise<CompactionResult>',d:'Manual compaction'},
+    {m:'setAutoCompaction',p:'(enabled)',r:'Promise<void>',d:'Auto-compaction on/off'}
+  ],opts:{t:'CompactionResult',f:[{n:'summary',t:'string',d:'Generated summary'},{n:'firstKeptEntryId',t:'string',d:'First kept entry'},{n:'tokensBefore',t:'number',d:'Tokens before'},{n:'details',t:'T?',d:'Extension data'}]}},
+  { id:'retry',icon:'🔄',title:'Retry',color:'var(--red)',desc:'Auto-retry on failure',stats:{v:2,l:'methods'},apis:[
+    {m:'setAutoRetry',p:'(enabled)',r:'Promise<void>',d:'Enable auto-retry'},
+    {m:'abortRetry',p:'()',r:'Promise<void>',d:'Abort retry attempt'}
+  ]},
+  { id:'bash',icon:'🖥',title:'Bash',color:'var(--orange)',desc:'Shell command execution',stats:{v:2,l:'methods'},apis:[
+    {m:'bash',p:'(command)',r:'Promise<BashResult>',d:'Execute bash command'},
+    {m:'abortBash',p:'()',r:'Promise<void>',d:'Abort running command'}
+  ],opts:{t:'BashResult',f:[{n:'output',t:'string',d:'stdout+stderr'},{n:'exitCode',t:'number?',d:'Process exit code'},{n:'cancelled',t:'boolean',d:'Was aborted'},{n:'truncated',t:'boolean',d:'Output truncated'},{n:'fullOutputPath',t:'string?',d:'Full output temp file'}]}},
+  { id:'resources',icon:'📦',title:'Resources',color:'var(--green)',desc:'Skills / Extensions / Tools / Commands',stats:{v:4,l:'methods'},apis:[
+    {m:'getSkills',p:'()',r:'Promise<RpcSkill[]>',d:'Loaded skills'},
+    {m:'getExtensions',p:'()',r:'Promise<RpcExtension[]>',d:'Loaded extensions'},
+    {m:'getTools',p:'()',r:'Promise<RpcTool[]>',d:'Registered tools'},
+    {m:'getCommands',p:'()',r:'Promise<RpcSlashCommand[]>',d:'Available slash commands'}
+  ],types:[
+    {t:'RpcSkill',f:[{n:'name',t:'string',d:'Skill name'},{n:'description',t:'string',d:'Description'},{n:'filePath',t:'string',d:'File path'},{n:'baseDir',t:'string',d:'Base dir'},{n:'sourceInfo',t:'SourceInfo',d:'Origin'},{n:'disableModelInvocation',t:'boolean',d:'No auto-invoke'}]},
+    {t:'RpcExtension',f:[{n:'path/resolvedPath',t:'string',d:'Extension paths'},{n:'sourceInfo',t:'SourceInfo',d:'Origin'},{n:'toolNames',t:'string[]',d:'Registered tools'},{n:'commandNames',t:'string[]',d:'Registered commands'}]},
+    {t:'RpcTool',f:[{n:'name',t:'string',d:'Tool ID'},{n:'label',t:'string',d:'Human label'},{n:'description',t:'string',d:'What it does'},{n:'sourceInfo',t:'SourceInfo',d:'Origin'}]},
+    {t:'RpcSlashCommand',f:[{n:'name',t:'string',d:'Command name (no /)'},{n:'source',t:'"extension"|"prompt"|"skill"',d:'Origin type'},{n:'sourceInfo',t:'SourceInfo',d:'Origin metadata'}]}
+  ],conn:{t:'SourceInfo',x:'{ path, source: local|package|cli|sdk|builtin, scope: user|project|temporary, origin: package|top-level }. Carried by ALL resources.'}},
+  { id:'settings',icon:'⚙',title:'Settings',color:'var(--accent2)',desc:'Global/project settings',stats:{v:2,l:'methods'},apis:[
+    {m:'getSettings',p:'(scope?)',r:'Promise<Record<string,unknown>>',d:'Get settings (global/project)'},
+    {m:'setSettings',p:'(settings, scope?)',r:'Promise<void>',d:'Apply settings overrides'}
+  ]},
+  { id:'context',icon:'📊',title:'Context',color:'var(--cyan)',desc:'Context usage & system prompt',stats:{v:2,l:'methods'},apis:[
+    {m:'getContextUsage',p:'()',r:'Promise<RpcContextUsage>',d:'Token usage info'},
+    {m:'getSystemPrompt',p:'()',r:'Promise<{systemPrompt,appendSystemPrompt[]}>',d:'System prompt'}
+  ],opts:{t:'RpcContextUsage',f:[{n:'tokens',t:'number|null',d:'Tokens used'},{n:'contextWindow',t:'number',d:'Max window'},{n:'percent',t:'number|null',d:'Usage %'}]}},
+  { id:'activetools',icon:'🔧',title:'Active Tools',color:'var(--pink)',desc:'Enable/disable tools',stats:{v:2,l:'methods'},apis:[
+    {m:'getActiveTools',p:'()',r:'Promise<string[]>',d:'Active tool names'},
+    {m:'setActiveTools',p:'(toolNames)',r:'Promise<void>',d:'Set active tools'}
+  ]},
+  { id:'flags',icon:'🚩',title:'Flags',color:'var(--yellow)',desc:'Extension feature flags',stats:{v:3,l:'methods'},apis:[
+    {m:'getFlags',p:'()',r:'Promise<RpcExtensionFlag[]>',d:'All registered flags'},
+    {m:'getFlagValues',p:'()',r:'Promise<Record<string,boolean|string>>',d:'Current values'},
+    {m:'setFlag',p:'(name, value)',r:'Promise<void>',d:'Set flag value'}
+  ],opts:{t:'RpcExtensionFlag',f:[{n:'name',t:'string',d:'Flag ID'},{n:'type',t:'"boolean"|"string"',d:'Value type'},{n:'default',t:'boolean|string?',d:'Default'},{n:'extensionPath',t:'string',d:'Owner extension'}]}},
+  { id:'reload',icon:'🔃',title:'Reload',color:'var(--accent)',desc:'Reload resources & agent files',stats:{v:2,l:'methods'},apis:[
+    {m:'reload',p:'()',r:'Promise<void>',d:'Reload all resources'},
+    {m:'getAgentsFiles',p:'()',r:'Promise<Array<{path,content}>>',d:'AGENTS.md / CLAUDE.md files'}
+  ]},
+  { id:'channel',icon:'🔗',title:'Channel',color:'var(--green)',desc:'Bidirectional extension communication',stats:{v:3,l:'operations'},apis:[
+    {m:'channel',p:'(name)',r:'Channel',d:'Get/create named channel'}
+  ],types:[{t:'Channel Interface',f:[{n:'send',t:'(data) => void',d:'Fire-and-forget outbound'},{n:'onReceive',t:'(handler) => unsubscribe',d:'Subscribe inbound'},{n:'invoke',t:'(data, timeout?) => Promise',d:'Request/response with correlation ID'}]}],flow:'Client                         Extension (Agent)\n──────                        ─────────────────\nch.invoke({cmd:"bar"})\n  │\n  ├─ channel_data ───────────► handleInbound()\n  │  {name, data:{cmd,         → onReceive handler\n  │   invokeId:"inv_x"}}            returns result\n  │\n  │ ◄──── channel_data\n  │       {name, data:{result,\n  │        invokeId:"inv_x"}}\n  │\nPromise resolves ◄─── correlated by invokeId',conn:{t:'Wire Protocol',x:'ChannelDataMessage: {type:"channel_data", name, data}. invoke() embeds invokeId. Extensions register via pi.registerChannel(name).'}},
+  { id:'ui',icon:'🖥',title:'Extension UI',color:'var(--accent3)',desc:'Passive UI request/response from extensions',stats:{v:9,l:'UI methods'},intro:'These are events RECEIVED on stdout as extension_ui_request when an extension needs user interaction. Respond with extension_ui_response.',events:[
+    {n:'select',c:'Dialog',cc:'var(--green)',f:'title, options[], timeout?',d:'Respond: {id, value}'},
+    {n:'confirm',c:'Dialog',cc:'var(--green)',f:'title, message, timeout?',d:'Respond: {id, confirmed}'},
+    {n:'input',c:'Dialog',cc:'var(--green)',f:'title, placeholder?, timeout?',d:'Respond: {id, value}'},
+    {n:'editor',c:'Dialog',cc:'var(--green)',f:'title, prefill?',d:'Respond: {id, value}'},
+    {n:'notify',c:'Notify',cc:'var(--yellow)',f:'message, notifyType?',d:'NO response (fire & forget)'},
+    {n:'setStatus',c:'Status',cc:'var(--accent)',f:'statusKey, statusText?',d:'NO response'},
+    {n:'setWidget',c:'Widget',cc:'var(--accent2)',f:'widgetKey, widgetLines[]?, placement?',d:'NO response'},
+    {n:'setTitle',c:'Title',cc:'var(--accent2)',f:'title',d:'NO response'},
+    {n:'set_editor_text',c:'Editor',cc:'var(--accent2)',f:'text',d:'NO response'}
+  ],respTypes:{t:'RpcExtensionUIResponse',f:[{n:'value',t:'{id, value: string}',d:'For select/input/editor'},{n:'confirmed',t:'{id, confirmed: boolean}',d:'For confirm'},{n:'cancelled',t:'{id, cancelled: true}',d:'User cancelled'}]}}
+];
+
+const LIFECYCLES = [
+  { id:'lc-session',icon:'📁',title:'Session Lifecycle',color:'var(--cyan)',desc:'From creation to destruction',
+    intro:'A session is a JSONL file containing an append-only tree of entries. The SessionManager tracks a leaf pointer that advances with each new entry.',
+    states:[
+      {name:'EMPTY',color:'#1a5c2e',desc:'Session file created with header only',trans:'newSession() → session_start event'},
+      {name:'ACTIVE',color:'#2a3580',desc:'Session loaded, agent running, extensions bound',trans:'switchSession() or after first prompt'},
+      {name:'STREAMING',color:'#3b2d6b',desc:'Agent processing prompt, LLM calls in progress',trans:'prompt() → agent_start'},
+      {name:'SWITCHING',color:'#5c521a',desc:'Tearing down old session, creating new runtime',trans:'switchSession() / newSession() / fork()'},
+      {name:'SHUTDOWN',color:'#6b2025',desc:'Session disposed, extensions torn down',trans:'stop() / dispose()'}
+    ],
+    flow:[
+      {from:'EMPTY',to:'ACTIVE',label:'first prompt / switchSession',via:'session_start(reason:"new"|"resume")'},
+      {from:'ACTIVE',to:'STREAMING',label:'prompt()',via:'isStreaming=true'},
+      {from:'STREAMING',to:'ACTIVE',label:'agent_end',via:'check retry → check compaction → resolveRunningPrompt'},
+      {from:'ACTIVE',to:'SWITCHING',label:'newSession / switchSession / fork',via:'session_shutdown(reason) → teardown → createRuntime → session_start(reason)'},
+      {from:'ACTIVE',to:'SHUTDOWN',label:'stop() / dispose()',via:'session_shutdown(reason:"quit")'}
+    ]
+  },
+  { id:'lc-prompt',icon:'💬',title:'Prompt Lifecycle',color:'var(--green)',desc:'Full prompt processing from input to completion',
+    intro:'This is the most complex lifecycle — a single prompt goes through preflight checks, extension hooks, LLM streaming, tool execution, retry, and compaction.',
+    phases:[
+      {name:'1. PREFLIGHT',color:'var(--accent)',steps:[
+        'Extension command check (if text starts with /)',
+        'Extension input interception (can transform/handle)',
+        'Skill/template expansion (/skill:name, /template)',
+        'If already streaming → queue as steer/followUp',
+        'Flush pending bash messages',
+        'Validate model & API key',
+        'Check compaction threshold'
+      ]},
+      {name:'2. BEFORE AGENT',color:'var(--pink)',steps:[
+        'Create user message (text + images)',
+        'Inject pending extension messages',
+        'Emit before_agent_start — extensions can modify system prompt, inject messages',
+        'Apply modified system prompt or reset'
+      ]},
+      {name:'3. STREAMING',color:'var(--accent2)',steps:[
+        'agent.prompt(messages) → isStreaming = true',
+        'Emit agent_start event',
+        'LLM call → stream response tokens',
+        'Emit: turn_start → message_start → message_update (text/thinking/toolcall deltas) → tool_execution_* → message_end → turn_end',
+        'Handle tool calls: emitToolCall (extensions can block/mutate) → execute → emitToolResult (extensions can modify result)',
+        'Repeat turns until agent_end'
+      ]},
+      {name:'4. POST-PROCESS',color:'var(--teal)',steps:[
+        'Persist messages to session JSONL (appendEntry)',
+        'Check for retryable error → retry with exponential backoff',
+        'Check context threshold → auto-compact if needed',
+        'Resolve runningPrompt → return to IDLE'
+      ]}
+    ]
+  },
+  { id:'lc-tree',icon:'🌳',title:'Message Tree Lifecycle',color:'var(--accent3)',desc:'Append-only tree with forking, compaction, navigation',
+    intro:'Messages are stored as an append-only tree. Each entry has id + parentId. The leaf pointer tracks the current position. Forking creates new branches; compaction summarizes old entries.',
+    entryTypes:[
+      {type:'message',desc:'LLM messages (user/assistant/toolResult/bash/custom/branchSummary/compactionSummary)'},
+      {type:'compaction',desc:'Summary of old messages; has firstKeptEntryId pointing to where kept messages start'},
+      {type:'branch_summary',desc:'Summary of abandoned branch when navigating tree'},
+      {type:'model_change / thinking_level_change',desc:'Model or thinking level setting changes'},
+      {type:'custom / custom_message',desc:'Extension data; custom_message enters LLM context'},
+      {type:'label / session_info',desc:'User labels and session metadata'}
+    ],
+    operations:[
+      {name:'appendMessage',desc:'Add message entry → advances leaf pointer → persists to JSONL'},
+      {name:'fork(entryId)',desc:'Extract root→entryId path → create new JSONL file → new session with parent link. Position "at" = include entry, "before" = fork before user message'},
+      {name:'navigateTree(targetId)',desc:'Move leaf to different branch (same file). Generates branch_summary for abandoned entries. Calls buildSessionContext() to rebuild agent messages'},
+      {name:'compact',desc:'Append CompactionEntry → buildSessionContext() skips pre-compaction entries, uses summary instead. Original entries preserved for history'},
+      {name:'branch(fromId)',desc:'In-file branching: move leaf pointer to fromId. Next append creates a sibling branch'}
+    ]
+  },
+  { id:'lc-state',icon:'🔄',title:'Agent State Machine',color:'var(--accent2)',desc:'State transitions during agent processing',
+    intro:'No explicit state enum — states are derived from isStreaming, compaction controllers, retry promises, and bash controllers.',
+    machine:{
+      states:[
+        {id:'idle',name:'IDLE',color:'#1a5c2e',desc:'isStreaming=false, no compaction/retry/bash'},
+        {id:'streaming',name:'STREAMING',color:'#3b2d6b',desc:'isStreaming=true, Agent running LLM loop'},
+        {id:'compacting',name:'COMPACTING',color:'#1a5c5e',desc:'Compaction in progress (manual or auto)'},
+        {id:'retrying',name:'RETRYING',color:'#6b2025',desc:'Exponential backoff waiting for retry'},
+        {id:'bash',name:'BASH',color:'#5c3a1a',desc:'Bash command executing'}
+      ],
+      transitions:[
+        {from:'idle',to:'streaming',label:'prompt()',trigger:'Agent._prepareRun()'},
+        {from:'streaming',to:'idle',label:'agent_end (success)',trigger:'resolveRunningPrompt'},
+        {from:'streaming',to:'streaming',label:'steer() / followUp()',trigger:'Queued messages keep streaming'},
+        {from:'streaming',to:'retrying',label:'agent_end (retryable error)',trigger:'429/500/503/timeout/network'},
+        {from:'retrying',to:'streaming',label:'backoff elapsed',trigger:'agent.continue()'},
+        {from:'streaming',to:'compacting',label:'agent_end (overflow)',trigger:'Context window exceeded'},
+        {from:'compacting',to:'streaming',label:'compact + retry',trigger:'agent.continue() after overflow compaction'},
+        {from:'idle',to:'compacting',label:'threshold / manual',trigger:'compact() or auto-threshold'},
+        {from:'compacting',to:'idle',label:'compact done',trigger:'Summary appended, context rebuilt'},
+        {from:'idle',to:'bash',label:'bash()',trigger:'executeBash()'},
+        {from:'bash',to:'idle',label:'done / abort',trigger:'BashResult returned'}
+      ]
+    }
+  },
+  { id:'lc-extension',icon:'🔌',title:'Extension Lifecycle',color:'var(--pink)',desc:'From discovery to binding to event handling',
+    phases:[
+      {name:'1. DISCOVERY',color:'var(--accent)',steps:[
+        'Scan cwd/.pi/extensions/ (project-local)',
+        'Scan agentDir/extensions/ (global)',
+        'Scan configured CLI paths',
+        'Rules: *.ts/*.js files, or subdir with index.ts/js, or package.json with "pi" field'
+      ]},
+      {name:'2. LOADING',color:'var(--green)',steps:[
+        'Create shared ExtensionRuntime with throwing stubs',
+        'For each extension: load module via jiti (TypeScript transpile)',
+        'Call factory function: await factory(api)',
+        'Extension registers: tools, commands, flags, shortcuts, handlers, channels',
+        'Channel registrations create deferred proxies (not yet connected)',
+        'Provider registrations queued as pending'
+      ]},
+      {name:'3. BINDING',color:'var(--accent2)',steps:[
+        'bindCore() — replace throwing stubs with real implementations',
+        'Flush pending provider registrations → ModelRegistry',
+        'bindExtensions() — set UI context, command context, error handler',
+        'Flush pending channel registrations → real Channel objects',
+        'Replay buffered channel sends and handlers',
+        'Emit session_start event to all extensions',
+        'Emit resources_discover — extensions contribute skills/prompts/themes'
+      ]},
+      {name:'4. RUNTIME',color:'var(--yellow)',steps:[
+        'Extensions receive 28 event types via pi.on()',
+        'Tool calls: tool_call (can block/mutate) → execute → tool_result (can modify)',
+        'Context events: context (transform messages), before_provider_request (modify payload)',
+        'Session events: session_start/shutdown/before_switch/before_fork/before_compact/...',
+        'Agent events: agent_start/end, turn_start/end, message_start/update/end'
+      ]},
+      {name:'5. RELOAD',color:'var(--red)',steps:[
+        'Save current flag values',
+        'Emit session_shutdown(reason:"reload")',
+        'Invalidate old ExtensionRunner',
+        'Reload settings, reset providers, reload ResourceLoader',
+        'Re-discover and re-load all extensions from scratch',
+        'Re-bind core, re-apply bindings',
+        'Emit session_start(reason:"reload"), resources_discover(reason:"reload")',
+        'Restore saved flag values'
+      ]}
+    ]
+  },
+  { id:'lc-toolcall',icon:'🔧',title:'Tool Call Lifecycle',color:'var(--pink)',desc:'How a tool call flows through extension hooks',
+    steps:[
+      {phase:'LLM REQUEST',color:'var(--accent2)',desc:'LLM generates tool_call content block with toolName, toolCallId, args'},
+      {phase:'BEFORE TOOL',color:'var(--pink)',desc:'agent.beforeToolCall → runner.emitToolCall(): extensions can { block: true } or mutate args in-place'},
+      {phase:'EXECUTE',color:'var(--green)',desc:'Tool executes with (possibly mutated) args'},
+      {phase:'INFORM EVENTS',color:'var(--yellow)',desc:'Emit tool_execution_start → tool_execution_update (streaming) → tool_execution_end (informational, fire-and-forget)'},
+      {phase:'AFTER TOOL',color:'var(--teal)',desc:'agent.afterToolCall → runner.emitToolResult(): extensions can modify content, details, isError'},
+      {phase:'RETURN',color:'var(--accent)',desc:'(possibly modified) result returned to agent loop for next turn'}
+    ]
+  }
+];
+
+const USECASES = [
+  { num:'01', title:'Simple Prompt & Collect Response', color:'var(--green)', steps:[
+    {t:'Start client',d:'Create and start RpcClient',code:'const client = new RpcClient({ provider: "anthropic", model: "claude-4-sonnet" });\nawait client.start();'},
+    {t:'Send prompt',d:'Fire-and-forget, events follow',code:'await client.prompt("List all TypeScript files in src/")'},
+    {t:'Wait for completion',d:'Block until agent finishes',code:'await client.waitForIdle();'},
+    {t:'Get result',d:'Read the last assistant message',code:'const text = await client.getLastAssistantText();\nconsole.log(text);'}
+  ]},
+  { num:'02', title:'Stream Events with Progress', color:'var(--accent2)', steps:[
+    {t:'Subscribe to events',d:'Listen before sending prompt',code:'client.onEvent((event) => {\n  switch (event.type) {\n    case "message_update":\n      // Streaming text deltas\n      process.stdout.write(".");\n      break;\n    case "tool_execution_start":\n      console.log(`Tool: ${event.toolName}`);\n      break;\n    case "agent_end":\n      console.log("Done!");\n      break;\n  }\n});'},
+    {t:'Send and collect',d:'Get all events at once',code:'const events = await client.promptAndWait("Fix all lint errors");\nconsole.log(`Got ${events.length} events`);'}
+  ]},
+  { num:'03', title:'Session Fork & Branch Navigation', color:'var(--cyan)', steps:[
+    {t:'Send initial prompt',d:'Build up a conversation',code:'await client.promptAndWait("Create a REST API with Express");'},
+    {t:'Get forkable messages',d:'List messages that can be forked from',code:'const msgs = await client.getForkMessages();\n// [{ entryId: "a1b2c3", text: "Create a REST API" }, ...]'},
+    {t:'Fork from first message',d:'Create a new branch from a specific point',code:'const fork = await client.fork(msgs[0].entryId, {\n  position: "before"\n});\nconsole.log(fork.newSessionId); // new session ID'},
+    {t:'Prompt on new branch',d:'Take a different direction',code:'await client.promptAndWait("Create a GraphQL API instead");'},
+    {t:'Navigate back',d:'Go back to original branch (same file)',code:'const tree = await client.getTreeWithLeaf();\nawait client.navigateTree(tree.entries[1].id, { summarize: true });'}
+  ]},
+  { num:'04', title:'Auto-Compaction & Context Management', color:'var(--teal)', steps:[
+    {t:'Enable auto-compaction',d:'Automatically compress when context fills',code:'await client.setAutoCompaction(true);'},
+    {t:'Monitor context usage',d:'Check how much context is used',code:'const usage = await client.getContextUsage();\nconsole.log(`${usage.percent}% used (${usage.tokens}/${usage.contextWindow})`);'},
+    {t:'Long conversation triggers compaction',d:'As context fills, auto-compaction summarizes old messages',code:'// After many turns...\nclient.onEvent((e) => {\n  if (e.type === "agent_end") {\n    // Auto-compaction may have run\n    client.getContextUsage().then(u =>\n      console.log(`After: ${u.percent}%`)\n    );\n  }\n});'},
+    {t:'Manual compaction with instructions',d:'Compact with custom guidance',code:'const result = await client.compact(\n  "Focus on API design decisions"\n);\nconsole.log(`Saved ${result.tokensBefore} tokens`);'}
+  ]},
+  { num:'05', title:'Channel Communication with Extension', color:'var(--green)', steps:[
+    {t:'Get a named channel',d:'Connect to an extension-registered channel',code:'const ch = client.channel("my-extension");'},
+    {t:'Listen for messages',d:'Subscribe to inbound data',code:'const unsub = ch.onReceive((data) => {\n  console.log("From extension:", data);\n});'},
+    {t:'Send data',d:'Fire-and-forget',code:'ch.send({ action: "refresh" });'},
+    {t:'Invoke with response',d:'Request-response with timeout',code:'const result = await ch.invoke(\n  { cmd: "getStatus" },\n  5000 // 5s timeout\n);\nconsole.log(result);'},
+    {t:'Cleanup',d:'Unsubscribe when done',code:'unsub();'}
+  ]},
+  { num:'06', title:'Handle Extension UI Dialogs', color:'var(--accent3)', steps:[
+    {t:'Listen for UI requests',d:'Parse stdout for extension_ui_request messages',code:'// When you receive extension_ui_request on stdout:\n// { type: "extension_ui_request", id: "uuid",\n//   method: "confirm", title: "Deploy?",\n//   message: "Deploy to production?" }'},
+    {t:'Show UI to user',d:'Display the dialog in your application',code:'const userChoice = await showConfirmDialog(\n  request.title,\n  request.message\n);'},
+    {t:'Respond',d:'Send response back via stdin',code:'// Send on stdin:\n// { type: "extension_ui_response",\n//   id: request.id,\n//   confirmed: true }'},
+    {t:'Handle notifications',d:'Fire-and-forget, no response needed',code:'// notify / setStatus / setTitle / set_editor_text\n// Just display in your UI, no response required'}
+  ]},
+  { num:'07', title:'Retry on Failure', color:'var(--red)', steps:[
+    {t:'Enable auto-retry',d:'Automatically retry on provider errors',code:'await client.setAutoRetry(true);'},
+    {t:'Send prompt',d:'If LLM returns 429/500/503, auto-retry kicks in',code:'await client.promptAndWait("Analyze this codebase");\n// Agent auto-retries with exponential backoff'},
+    {t:'Monitor retry',d:'Watch for retry events',code:'client.onEvent((e) => {\n  if (e.type === "agent_end" && e.messages) {\n    const last = e.messages[e.messages.length - 1];\n    if (last.errorMessage) console.log("Error:", last.errorMessage);\n  }\n});'},
+    {t:'Abort retry',d:'Cancel an in-progress retry',code:'await client.abortRetry();'}
+  ]},
+  { num:'08', title:'Full Session Lifecycle', color:'var(--accent)', steps:[
+    {t:'Create & configure',d:'Instantiate with options',code:'const client = new RpcClient({\n  cwd: "/my/project",\n  provider: "anthropic",\n  model: "claude-4-sonnet",\n});\nawait client.start();'},
+    {t:'Query resources',d:'Check what\'s available',code:'const skills = await client.getSkills();\nconst tools = await client.getTools();\nconst models = await client.getAvailableModels();'},
+    {t:'Work with multiple sessions',d:'Create, fork, switch',code:'await client.promptAndWait("Build feature A");\nawait client.newSession();\nawait client.promptAndWait("Build feature B");\nawait client.switchSession("/path/to/session-a.jsonl");'},
+    {t:'Export & cleanup',d:'Save and stop',code:'const { path } = await client.exportHtml();\nconst stats = await client.getSessionStats();\nconsole.log(`Cost: $${stats.cost.toFixed(4)}`);\nawait client.stop();'}
+  ]}
+];
+
+// ┌─────────────────────────────────────────────┐
+// │  RENDER                                     │
+// └─────────────────────────────────────────────┘
+function buildSidebar() {
+  const nav = document.getElementById('nav-list');
+  let h = '<div class="nav-group-label">API Dimensions</div>';
+  SECTIONS.forEach(s => {
+    h += `<div class="nav-item" data-tab="api" data-section="${s.id}"><div class="nav-dot" style="background:${s.color}"></div><span class="nav-label">${s.icon} ${s.title}</span><span class="nav-count">${s.stats.v}</span></div>`;
+  });
+  h += '<div class="nav-group-label" style="margin-top:8px">Lifecycles</div>';
+  LIFECYCLES.forEach(l => {
+    h += `<div class="nav-item" data-tab="lifecycle" data-section="${l.id}"><div class="nav-dot" style="background:${l.color}"></div><span class="nav-label">${l.icon} ${l.title}</span></div>`;
+  });
+  h += '<div class="nav-group-label" style="margin-top:8px">Use Cases</div>';
+  USECASES.forEach(u => {
+    h += `<div class="nav-item" data-tab="usecases" data-section="uc-${u.num}"><div class="nav-dot" style="background:${u.color}"></div><span class="nav-label">${u.title}</span></div>`;
+  });
+  nav.innerHTML = h;
+  nav.querySelectorAll('.nav-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const tab = el.dataset.tab;
+      switchTab(tab);
+      setTimeout(() => {
+        document.getElementById(el.dataset.section)?.scrollIntoView({behavior:'smooth',block:'start'});
+      }, 50);
+    });
+  });
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+}
+
+function buildOverview() {
+  document.getElementById('overview-grid').innerHTML = SECTIONS.map(s =>
+    `<div class="stat-card" onclick="document.getElementById('${s.id}')?.scrollIntoView({behavior:'smooth'})"><div class="stat-value" style="color:${s.color}">${s.icon} ${s.stats.v}</div><div class="stat-label">${s.title}</div></div>`
+  ).join('');
+}
+
+function buildApiSections() {
+  const c = document.getElementById('api-sections');
+  c.innerHTML = SECTIONS.map(s => {
+    let h = `<div class="detail-section" id="${s.id}" data-title="${s.title}">`;
+    h += `<div class="section-header"><div class="section-icon" style="background:${s.color}20;color:${s.color}">${s.icon}</div><div><div class="section-title">${s.title}</div><div class="section-desc">${s.desc}</div></div></div>`;
+    if (s.intro) h += `<div class="intro-box">${s.intro}</div>`;
+    if (s.opts && !s.types) h += typeTable(s.opts.t, s.opts.f, s.color);
+    if (s.apis) s.apis.forEach(a => {
+      h += `<div class="api-card" data-api="${a.m}"><div class="api-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="api-method">${a.m}</span><span class="api-params">${a.p}</span>${a.r ? `<span class="api-return">${a.r}</span>` : ''}</div><div class="api-card-body"><div class="api-desc">${a.d}</div>`;
+      if (a.tags) h += `<div style="margin-bottom:8px;display:flex;gap:6px">${a.tags.map(t => `<span class="tag tag-${t==='async'?'async':t==='sub'?'sub':t==='helper'?'ff':'rr'}">${t}</span>`).join('')}</div>`;
+      if (a.flow) h += `<div class="flow-box">${a.flow}</div>`;
+      h += `</div></div>`;
+    });
+    if (s.events) {
+      h += `<table class="type-table"><thead><tr><th>Name</th><th>Cat</th><th>Fields</th><th>Description</th></tr></thead><tbody>`;
+      s.events.forEach(e => h += `<tr><td class="en">${e.n}</td><td><span style="background:${e.cc}20;color:${e.cc};padding:1px 6px;border-radius:3px;font-size:10px">${e.c}</span></td><td style="font-size:11px">${e.f}</td><td class="fd">${e.d}</td></tr>`);
+      h += `</tbody></table>`;
+    }
+    if (s.types) s.types.forEach(t => h += typeTable(t.t, t.f, s.color));
+    if (s.subEvents) h += typeTable(s.subEvents.t, s.subEvents.f, s.color);
+    if (s.respTypes) h += typeTable(s.respTypes.t, s.respTypes.f, s.color);
+    if (s.flow) h += `<div class="flow-box">${s.flow}</div>`;
+    if (s.conn) h += `<div class="conn-box"><div class="conn-title">↔ ${s.conn.t}</div><div class="conn-text">${s.conn.x}</div></div>`;
+    h += `</div>`;
+    return h;
+  }).join('');
+}
+
+function typeTable(title, fields, color) {
+  return `<div style="margin:12px 0"><div style="font-size:13px;font-weight:600;color:${color};margin-bottom:8px">${title}</div><table class="type-table"><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>${fields.map(f => `<tr><td class="fn">${f.n}</td><td class="ft">${f.t}</td><td class="fd">${f.d}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function buildLifecycles() {
+  const c = document.getElementById('lifecycle-content');
+  c.innerHTML = LIFECYCLES.map(lc => {
+    let h = `<div class="detail-section" id="${lc.id}">`;
+    h += `<div class="section-header"><div class="section-icon" style="background:${lc.color}20;color:${lc.color}">${lc.icon}</div><div><div class="section-title">${lc.title}</div><div class="section-desc">${lc.desc}</div></div></div>`;
+    if (lc.intro) h += `<div class="intro-box">${lc.intro}</div>`;
+
+    // State machine
+    if (lc.machine) {
+      const m = lc.machine;
+      h += `<div class="lc-diagram"><div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px">`;
+      m.states.forEach(s => {
+        h += `<div style="flex:1;min-width:140px;padding:12px 14px;border-radius:8px;background:${s.color}20;border:2px solid ${s.color}50"><div style="font-size:12px;font-weight:700;color:${s.color}">${s.name}</div><div style="font-size:10px;color:var(--text-dim);margin-top:4px">${s.desc}</div></div>`;
+      });
+      h += `</div><table class="type-table"><thead><tr><th>From</th><th>→</th><th>To</th><th>Trigger</th><th>Condition</th></tr></thead><tbody>`;
+      m.transitions.forEach(t => {
+        const fromC = m.states.find(s=>s.id===t.from)?.color||'var(--text)';
+        const toC = m.states.find(s=>s.id===t.to)?.color||'var(--text)';
+        h += `<tr><td style="color:${fromC};font-weight:600">${t.from.toUpperCase()}</td><td style="color:var(--text-dim)">→</td><td style="color:${toC};font-weight:600">${t.to.toUpperCase()}</td><td class="fn">${t.label}</td><td class="fd">${t.trigger}</td></tr>`;
+      });
+      h += `</tbody></table></div>`;
+    }
+
+    // States grid
+    if (lc.states) {
+      h += `<div class="sm-row" style="margin-bottom:16px">`;
+      lc.states.forEach(s => {
+        h += `<div class="sm-state"><div class="sm-state-title"><div class="sm-state-dot" style="background:${s.color}"></div><span style="color:${s.color}">${s.name}</span></div><div class="sm-state-body">${s.desc}</div><div class="sm-trans">${s.trans}</div></div>`;
+      });
+      h += `</div>`;
+    }
+
+    // Transition table
+    if (lc.flow) {
+      h += `<table class="type-table"><thead><tr><th>From</th><th>→</th><th>To</th><th>Method</th><th>Internal Flow</th></tr></thead><tbody>`;
+      lc.flow.forEach(f => {
+        h += `<tr><td style="font-weight:600;color:var(--accent)">${f.from}</td><td style="color:var(--text-dim)">→</td><td style="font-weight:600;color:var(--green)">${f.to}</td><td class="fn">${f.label}</td><td class="fd">${f.via}</td></tr>`;
+      });
+      h += `</tbody></table>`;
+    }
+
+    // Entry types
+    if (lc.entryTypes) {
+      h += `<div style="margin:12px 0"><div style="font-size:13px;font-weight:600;color:${lc.color};margin-bottom:8px">Entry Types (8)</div><table class="type-table"><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>`;
+      lc.entryTypes.forEach(e => h += `<tr><td class="fn">${e.type}</td><td class="fd">${e.desc}</td></tr>`);
+      h += `</tbody></table></div>`;
+    }
+
+    // Operations
+    if (lc.operations) {
+      h += `<div style="margin:12px 0"><div style="font-size:13px;font-weight:600;color:${lc.color};margin-bottom:8px">Tree Operations</div>`;
+      lc.operations.forEach(op => {
+        h += `<div class="api-card"><div class="api-card-header" onclick="this.parentElement.classList.toggle('open')"><span class="api-method">${op.name}</span><span class="api-return">tree op</span></div><div class="api-card-body"><div class="api-desc">${op.desc}</div></div></div>`;
+      });
+      h += `</div>`;
+    }
+
+    // Phases (vertical steps)
+    if (lc.phases) {
+      lc.phases.forEach(phase => {
+        h += `<div style="margin:16px 0"><div style="font-size:13px;font-weight:700;color:${phase.color};margin-bottom:10px;padding:6px 12px;background:${phase.color}15;border-radius:6px;display:inline-block">${phase.name}</div>`;
+        phase.steps.forEach((step, i) => {
+          h += `<div style="display:flex;gap:10px;margin-bottom:8px;align-items:flex-start"><div style="width:20px;height:20px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;color:${phase.color};flex-shrink:0;border:1px solid var(--border)">${i+1}</div><div style="font-size:11px;color:var(--text-dim);line-height:1.5;padding-top:2px">${step}</div></div>`;
+        });
+        h += `</div>`;
+      });
+    }
+
+    // Steps (horizontal tool call)
+    if (lc.steps) {
+      h += `<div class="lc-diagram"><div style="display:flex;flex-wrap:wrap;gap:10px">`;
+      lc.steps.forEach((step, i) => {
+        h += `<div style="flex:1;min-width:140px;padding:12px;border-radius:8px;background:${step.color}15;border:1px solid ${step.color}40;text-align:center"><div style="font-size:10px;font-weight:600;color:${step.color};margin-bottom:4px">${step.phase}</div><div style="font-size:9px;color:var(--text-dim)">${step.desc}</div></div>`;
+        if (i < lc.steps.length - 1) h += `<div style="display:flex;align-items:center;color:var(--text-dim);font-size:16px">→</div>`;
+      });
+      h += `</div></div>`;
+    }
+
+    h += `</div>`;
+    return h;
+  }).join('');
+}
+
+function buildUsecases() {
+  const c = document.getElementById('usecases-content');
+  c.innerHTML = `<div style="margin-bottom:24px"><div class="overview-title">Use Cases</div><div class="overview-sub">Practical examples showing RPC Client lifecycle patterns in action</div></div>` + USECASES.map(uc => {
+    let h = `<div class="uc-card" id="uc-${uc.num}"><div class="uc-header"><div class="uc-num" style="background:${uc.color}20;color:${uc.color}">${uc.num}</div><div class="uc-title">${uc.title}</div></div><div class="uc-body">`;
+    uc.steps.forEach((step, i) => {
+      h += `<div class="uc-step"><div class="uc-step-num">${i+1}</div><div class="uc-step-content"><div class="uc-step-title">${step.t}</div><div class="uc-step-desc">${step.d}</div>`;
+      if (step.code) h += `<div class="uc-code">${step.code}</div>`;
+      h += `</div></div>`;
+    });
+    h += `</div></div>`;
+    return h;
+  }).join('');
+}
+
+// ┌─────────────────────────────────────────────┐
+// │  INTERACTIVITY                              │
+// └─────────────────────────────────────────────┘
+function setupTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+}
+
+function setupScrollSpy() {
+  const main = document.getElementById('main');
+  const items = document.querySelectorAll('.nav-item');
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        items.forEach(i => i.classList.remove('active'));
+        const itemsForSection = document.querySelectorAll(`.nav-item[data-section="${entry.target.id}"]`);
+        if (itemsForSection.length) itemsForSection[0].classList.add('active');
+      }
+    });
+  }, {root: main, threshold: 0.15, rootMargin: '0px 0px -60% 0px'});
+  document.querySelectorAll('.detail-section').forEach(s => observer.observe(s));
+}
+
+function setupSearch() {
+  document.getElementById('search-box').addEventListener('input', function() {
+    const q = this.value.toLowerCase().trim();
+    switchTab('api');
+    document.querySelectorAll('#api-sections .detail-section').forEach(sec => {
+      if (!q) { sec.classList.remove('hidden'); return; }
+      sec.classList.toggle('hidden', !sec.textContent.toLowerCase().includes(q));
+    });
+    if (q) {
+      document.querySelectorAll('.api-card').forEach(card => {
+        if (card.textContent.toLowerCase().includes(q)) {
+          card.classList.add('open');
+          card.closest('.detail-section')?.classList.remove('hidden');
+        }
+      });
+    }
+  });
+}
+
+// ┌─────────────────────────────────────────────┐
+// │  INIT                                       │
+// └─────────────────────────────────────────────┘
+buildSidebar();
+buildOverview();
+buildApiSections();
+buildLifecycles();
+buildUsecases();
+setupTabs();
+setupScrollSpy();
+setupSearch();
+</script>
+</body>
+</html>
