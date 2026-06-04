@@ -167,6 +167,8 @@ export type {
 	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
+	UIEvent,
+	UIEventResult,
 	// Events - User Bash
 	UserBashEvent,
 	UserBashEventResult,
