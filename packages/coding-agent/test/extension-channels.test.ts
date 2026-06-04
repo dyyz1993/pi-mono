@@ -574,11 +574,7 @@ describe("Extension Channel Integration", () => {
 			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
 
 			writeFileSync(path.join(tempDir, "rollback.txt"), "version1\n");
-			const entryId = snapshotManager.onTurnEnd(
-				tempDir,
-				0,
-				appendEntry,
-			);
+			const entryId = snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
 
 			// The rollback handler reads entries from sessionManager to locate
 			// the snapshot's treeHash. We need to inject a matching entry.
