@@ -630,6 +630,13 @@ export type RpcExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
 	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string };
 
+/** Emitted when an extension UI request is resolved (response received, timeout, or aborted) */
+export type RpcExtensionUIResolved = {
+	type: "extension_ui_resolved";
+	id: string;
+	reason: "responded" | "timeout" | "aborted";
+};
+
 // ============================================================================
 // Extension UI Commands (stdin)
 // ============================================================================

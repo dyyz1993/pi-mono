@@ -164,30 +164,31 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		return new Promise((resolve, reject) => {
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-			const cleanup = () => {
-				if (timeoutId) clearTimeout(timeoutId);
-				opts?.signal?.removeEventListener("abort", onAbort);
-				pendingExtensionRequests.delete(id);
-			};
+		const cleanup = (reason: "responded" | "timeout" | "aborted" = "responded") => {
+			if (timeoutId) clearTimeout(timeoutId);
+			opts?.signal?.removeEventListener("abort", onAbort);
+			pendingExtensionRequests.delete(id);
+			output({ type: "extension_ui_resolved", id, reason });
+		};
 
-			const onAbort = () => {
-				cleanup();
+		const onAbort = () => {
+			cleanup("aborted");
+			resolve(defaultValue);
+		};
+		opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+		if (opts?.timeout) {
+			timeoutId = setTimeout(() => {
+				cleanup("timeout");
 				resolve(defaultValue);
-			};
-			opts?.signal?.addEventListener("abort", onAbort, { once: true });
+			}, opts.timeout);
+		}
 
-			if (opts?.timeout) {
-				timeoutId = setTimeout(() => {
-					cleanup();
-					resolve(defaultValue);
-				}, opts.timeout);
-			}
-
-			pendingExtensionRequests.set(id, {
-				resolve: (response: RpcExtensionUIResponse) => {
-					cleanup();
-					resolve(parseResponse(response));
-				},
+		pendingExtensionRequests.set(id, {
+			resolve: (response: RpcExtensionUIResponse) => {
+				cleanup("responded");
+				resolve(parseResponse(response));
+			},
 				reject,
 			});
 			output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
