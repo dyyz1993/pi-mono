@@ -6,6 +6,7 @@
  */
 
 import * as fs from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,8 +16,16 @@ import { ChannelManager } from "../src/core/extensions/channel-manager.ts";
 import type { ChannelDataMessage, ChannelOutputFn } from "../src/core/extensions/channel-types.ts";
 import { discoverAndLoadExtensions } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
-import type { ExtensionActions, ExtensionContextActions, ProviderConfig } from "../src/core/extensions/types.ts";
+import type {
+	ExtensionActions,
+	ExtensionContext,
+	ExtensionContextActions,
+	ProviderConfig,
+} from "../src/core/extensions/types.ts";
+import { FileSnapshotManager } from "../src/core/file-store/file-snapshot-manager.ts";
+import { InternalGit } from "../src/core/file-store/internal-git.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -58,6 +67,71 @@ function findResponse(
 		(m) => m.name === channelName && (m.data as Record<string, unknown>)?.invokeId === invokeId,
 	);
 	return msg ? (msg.data as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Directly invoke a channel handler registered on the ChannelManager
+ * and capture its return value. This bypasses handleInbound() which
+ * discards handler returns — necessary for testing raw onReceive handlers
+ * like file-snapshot that return values instead of calling channel.send().
+ */
+async function invokeChannelHandler(manager: ChannelManager, channelName: string, data: unknown): Promise<unknown> {
+	const channels = (
+		manager as unknown as {
+			channels: Map<string, { handlers: Set<(data: unknown) => unknown> }>;
+		}
+	).channels;
+	const entry = channels.get(channelName);
+	if (!entry || entry.handlers.size === 0) {
+		throw new Error(`No handler registered for channel "${channelName}"`);
+	}
+	for (const handler of entry.handlers) {
+		return await handler(data);
+	}
+	throw new Error("Handler did not execute");
+}
+
+/**
+ * Create a mock ExtensionContext with a real FileSnapshotManager.
+ */
+function createMockExtensionContext(
+	cwd: string,
+	snapshotManager: FileSnapshotManager,
+	sessionManager: SessionManager,
+	modelRegistry: ModelRegistry,
+): ExtensionContext {
+	return {
+		ui: {
+			confirm: async () => true,
+			select: async () => undefined,
+			input: async () => undefined,
+			notify: () => {},
+			editor: async () => undefined,
+		} as unknown as ExtensionContext["ui"],
+		mode: "rpc" as const,
+		hasUI: false,
+		cwd,
+		sessionManager: sessionManager as unknown as ExtensionContext["sessionManager"],
+		modelRegistry,
+		model: undefined,
+		isIdle: () => true,
+		signal: undefined,
+		sessionSignal: undefined,
+		abort: () => {},
+		hasPendingMessages: () => false,
+		shutdown: () => {},
+		getContextUsage: () => undefined,
+		compact: () => {},
+		getSystemPrompt: () => "",
+		extensionName: "file-snapshot",
+		projectRoot: cwd,
+		sessionDataDir: cwd,
+		projectDataDir: cwd,
+		cwdDataDir: cwd,
+		globalDataDir: cwd,
+		fileSnapshotManager: snapshotManager,
+		respondUI: () => () => {},
+	};
 }
 
 // ─── Test setup ────────────────────────────────────────────────────────────
@@ -374,28 +448,251 @@ describe("Extension Channel Integration", () => {
 		// file-snapshot uses raw channel.onReceive (not ServerChannel with __call).
 		// The handler expects { method, params, context } where context is
 		// ExtensionContext — only available after session_start fires.
-		// These methods require a real fileSnapshotManager wired via
-		// runner.setFileSnapshotManagerFn() to function.
+		// We test by invoking the handler directly with a mock context containing
+		// a real FileSnapshotManager, bypassing handleInbound() which discards returns.
 
-		it.todo("snapshot.list returns list of modified files — requires fileSnapshotManager via ExtensionContext");
+		const snapshotActions: ExtensionActions = {
+			...extensionActions,
+			appendEntry: ((type: string) => `entry-${type}-${Date.now()}`) as unknown as ExtensionActions["appendEntry"],
+		};
+		const appendEntry = snapshotActions.appendEntry as unknown as (type: string) => string;
 
-		it.todo("snapshot.get returns snapshot by entry ID — requires getSnapshotAtEntry() and ExtensionContext");
+		async function setupSnapshotChannel() {
+			const extPath = builtinExtensionPath("file-snapshot");
+			const result = await discoverAndLoadExtensions([extPath], tempDir, tempDir);
+			expect(result.errors).toEqual([]);
 
-		it.todo("snapshot.restoreByHash restores from hash — requires fileSnapshotManager.restoreFiles()");
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore(snapshotActions, extensionContextActions);
 
-		it.todo("snapshot.restoreByEntry restores from entry ID — requires fileSnapshotManager.restoreFiles()");
+			const { manager } = createCapturingChannelManager();
+			runner.flushPendingChannels((name) => manager.register(name));
 
-		it.todo("snapshot.rollback restores files to a previous state — requires fileSnapshotManager");
+			const storeDir = path.join(tempDir, ".pi-snapshot-store");
+			mkdirSync(storeDir, { recursive: true });
+			const git = new InternalGit(storeDir);
+			const snapshotManager = new FileSnapshotManager(git);
+			snapshotManager.initialize(tempDir);
 
-		it.todo("snapshot.unrevert restores to pre-rollback state — requires fileSnapshotManager + session entries");
+			const ctx = createMockExtensionContext(tempDir, snapshotManager, sessionManager, modelRegistry);
 
-		it.todo("snapshot.gc runs garbage collection — requires GitApi from fileSnapshotManager");
+			return { manager, runner, snapshotManager, ctx, git, storeDir };
+		}
 
-		it.todo("snapshot.prune removes old objects — requires GitApi from fileSnapshotManager");
+		it("snapshot.list returns empty list when no snapshots recorded", async () => {
+			const { manager, ctx } = await setupSnapshotChannel();
 
-		it.todo("snapshot.stats returns git object store statistics — requires GitApi");
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.list",
+				context: ctx,
+			});
 
-		it.todo("snapshot.enforceLimit removes objects exceeding size limit — requires GitApi");
+			expect(Array.isArray(result)).toBe(true);
+			expect(result).toHaveLength(0);
+		});
+
+		it("snapshot.list returns modified files after a turn", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			// Simulate file changes
+			writeFileSync(path.join(tempDir, "new-file.txt"), "content\n");
+
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.list",
+				context: ctx,
+			});
+
+			expect(Array.isArray(result)).toBe(true);
+			expect((result as unknown[]).length).toBeGreaterThan(0);
+			const files = result as Array<Record<string, unknown>>;
+			const newFile = files.find((f) => f.path === "new-file.txt");
+			expect(newFile).toBeDefined();
+			expect(newFile!.status).toBe("added");
+		});
+
+		it("snapshot.get returns null for unknown entry ID", async () => {
+			const { manager, ctx } = await setupSnapshotChannel();
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.get",
+				params: { snapshotId: "nonexistent-id" },
+				context: ctx,
+			});
+
+			expect(result).toBeNull();
+		});
+
+		it("snapshot.get returns snapshot data for valid entry ID", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			writeFileSync(path.join(tempDir, "test.txt"), "hello\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const snapshots = snapshotManager.getModifiedFiles({});
+			expect(snapshots.length).toBeGreaterThan(0);
+			const entryId = snapshots[0]!.entryId;
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.get",
+				params: { snapshotId: entryId },
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			const snapshot = result as Record<string, unknown>;
+			expect(snapshot).not.toBeNull();
+			expect(snapshot.id).toBe(entryId);
+			expect(snapshot.stepIndex).toBe(0);
+			expect(snapshot.treeHash).toBeDefined();
+			expect(snapshot.diff).toBeDefined();
+			expect(snapshot.files).toBeDefined();
+			expect(snapshot.rolledBack).toBe(false);
+		});
+
+		it("snapshot.restoreByHash restores files from a tree hash", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			writeFileSync(path.join(tempDir, "restore-me.txt"), "original\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const snapshots = snapshotManager.getModifiedFiles({});
+			const treeHash = snapshots[0]!.entryId;
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.restoreByHash",
+				params: { snapshotTreeHash: treeHash },
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			expect((result as Record<string, unknown>).restored).toBeDefined();
+		});
+
+		it("snapshot.rollback restores files to a previous snapshot state", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			writeFileSync(path.join(tempDir, "rollback.txt"), "version1\n");
+			const entryId = snapshotManager.onTurnEnd(
+				tempDir,
+				0,
+				appendEntry,
+			);
+
+			// The rollback handler reads entries from sessionManager to locate
+			// the snapshot's treeHash. We need to inject a matching entry.
+			const stepSnapshotEntry: SessionEntry = {
+				type: "custom",
+				id: entryId ?? "snap-1",
+				parentId: "root",
+				timestamp: new Date().toISOString(),
+				customType: "step-snapshot",
+				data: snapshotManager.getSnapshotAtEntry(entryId ?? "snap-1") ?? {
+					baselineTreeHash: null,
+					snapshotTreeHash: "",
+					diff: null,
+					turnIndex: 0,
+				},
+			};
+			(sessionManager as unknown as { entries: SessionEntry[] }).entries = [stepSnapshotEntry];
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.rollback",
+				params: { snapshotId: entryId ?? "snap-1" },
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			const r = result as Record<string, unknown>;
+			expect(r.ok).toBe(true);
+			expect(Array.isArray(r.restoredFiles)).toBe(true);
+		});
+
+		it("snapshot.unrevert returns ok=false when no unrevert point exists", async () => {
+			const { manager, ctx } = await setupSnapshotChannel();
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.unrevert",
+				params: { snapshotId: "no-such-point" },
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			expect((result as Record<string, unknown>).ok).toBe(false);
+		});
+
+		it("snapshot.stats returns git object store statistics", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			writeFileSync(path.join(tempDir, "stats.txt"), "data\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.stats",
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			const stats = result as Record<string, number>;
+			expect(stats.totalObjects).toBeDefined();
+			expect(stats.totalBytes).toBeDefined();
+			expect(stats.totalObjects).toBeGreaterThan(0);
+			expect(typeof stats.totalBytes).toBe("number");
+		});
+
+		it("snapshot.gc runs garbage collection and returns result", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			writeFileSync(path.join(tempDir, "gc.txt"), "will be snapshotted\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.gc",
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			const gcResult = result as Record<string, unknown>;
+			expect(gcResult.deletedObjects).toBeDefined();
+			expect(gcResult.freedBytes).toBeDefined();
+		});
+
+		it("snapshot.prune removes old objects and returns result", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			writeFileSync(path.join(tempDir, "prune.txt"), "data\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.prune",
+				params: { maxAgeMs: 1 }, // Very short age to prune everything
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			const pruneResult = result as Record<string, unknown>;
+			expect(pruneResult.deletedObjects).toBeDefined();
+			expect(pruneResult.freedBytes).toBeDefined();
+		});
+
+		it("snapshot.enforceLimit removes objects exceeding size limit", async () => {
+			const { manager, ctx, snapshotManager } = await setupSnapshotChannel();
+
+			writeFileSync(path.join(tempDir, "limit.txt"), "data\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+
+			const result = await invokeChannelHandler(manager, "file-snapshot", {
+				method: "snapshot.enforceLimit",
+				params: { maxBytes: 1 }, // Very small limit
+				context: ctx,
+			});
+
+			expect(result).toBeDefined();
+			const limitResult = result as Record<string, unknown>;
+			expect(limitResult.deletedObjects).toBeDefined();
+			expect(limitResult.freedBytes).toBeDefined();
+		});
 	});
 
 	// ─── Channel infrastructure ────────────────────────────────────────────
