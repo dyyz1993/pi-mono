@@ -425,6 +425,18 @@ function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
+		background: (<T>(fn: (signal: AbortSignal) => Promise<T>) => {
+			const controller = new AbortController();
+			const id = `bg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const promise = fn(controller.signal);
+			return {
+				id,
+				signal: controller.signal,
+				promise,
+				cancel: () => controller.abort(),
+			};
+		}) as import("./types.ts").BackgroundHandler,
+
 		events: eventBus,
 	} as ExtensionAPI;
 

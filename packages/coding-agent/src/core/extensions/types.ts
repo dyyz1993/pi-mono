@@ -45,6 +45,7 @@ import type { BashResult } from "../bash-executor.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
+import type { FileSnapshotManager } from "../file-store/file-snapshot-manager.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
@@ -318,6 +319,8 @@ export interface ExtensionContext {
 	isIdle(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
+	/** Alias for signal — the session-level abort signal. */
+	readonly sessionSignal: AbortSignal | undefined;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */
@@ -342,7 +345,34 @@ export interface ExtensionContext {
 	cwdDataDir: string;
 	/** Global data directory shared across all projects. Automatically created on first access. */
 	globalDataDir: string;
+	/** File snapshot manager for live change tracking. Null if not initialized. */
+	fileSnapshotManager: FileSnapshotManager | null;
+	/**
+	 * Respond to a UI event from a remote source.
+	 * First response wins (original UI or respondUI), subsequent calls are ignored.
+	 * Returns a cleanup function.
+	 */
+	respondUI(id: string, result: UIEventResult): () => void;
 }
+
+/** UI event emitted to extensions for remote response. */
+export interface UIEvent {
+	type: "ui";
+	id: string;
+	method: "confirm" | "select" | "input" | "notify" | "editor";
+	title: string;
+	message?: string;
+	options?: string[];
+	placeholder?: string;
+	prefill?: string;
+	notifyType?: "info" | "warning" | "error";
+	multiple?: boolean;
+	signal?: AbortSignal;
+	timeout?: number;
+}
+
+/** Result of a UI event response. */
+export type UIEventResult = { action: "responded"; confirmed?: boolean; value?: string } | undefined;
 
 /**
  * Extended context for command handlers.
@@ -1374,9 +1404,23 @@ export interface ExtensionAPI {
 	 */
 	unregisterProvider(name: string): void;
 
+	/** Run a background task with abort signal. Returns a cancellable task handle. */
+	background<T>(fn: (signal: AbortSignal) => Promise<T>): BackgroundTask<T>;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
+
+/** Handle for a background task started via pi.background(). */
+export interface BackgroundTask<T> {
+	readonly id: string;
+	readonly signal: AbortSignal;
+	readonly promise: Promise<T>;
+	cancel(): () => void;
+}
+
+/** Handler type for pi.background. */
+export type BackgroundHandler = <T>(fn: (signal: AbortSignal) => Promise<T>) => BackgroundTask<T>;
 
 // ============================================================================
 // Provider Registration Types

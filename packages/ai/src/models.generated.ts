@@ -3869,8 +3869,8 @@ export const MODELS = {
 				cacheRead: 0.1,
 				cacheWrite: 0,
 			},
-			contextWindow: 128000,
-			maxTokens: 8192,
+			contextWindow: 262144,
+			maxTokens: 65536,
 		} satisfies Model<"anthropic-messages">,
 		"accounts/fireworks/routers/glm-5p1-fast": {
 			id: "accounts/fireworks/routers/glm-5p1-fast",
@@ -10691,23 +10691,6 @@ export const MODELS = {
 			contextWindow: 8191,
 			maxTokens: 4096,
 		} satisfies Model<"openai-completions">,
-		"openai/gpt-4-0314": {
-			id: "openai/gpt-4-0314",
-			name: "OpenAI: GPT-4 (older v0314)",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1",
-			reasoning: false,
-			input: ["text"],
-			cost: {
-				input: 30,
-				output: 60,
-				cacheRead: 0,
-				cacheWrite: 0,
-			},
-			contextWindow: 8191,
-			maxTokens: 4096,
-		} satisfies Model<"openai-completions">,
 		"openai/gpt-4-1106-preview": {
 			id: "openai/gpt-4-1106-preview",
 			name: "OpenAI: GPT-4 Turbo (older v1106)",
@@ -13518,7 +13501,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text", "image"],
+			input: ["text"],
 			cost: {
 				input: 1.3,
 				output: 7.8,
@@ -13790,7 +13773,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text", "image"],
+			input: ["text"],
 			cost: {
 				input: 1.25,
 				output: 3.75,
@@ -14222,7 +14205,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text", "image"],
+			input: ["text"],
 			cost: {
 				input: 0.435,
 				output: 0.87,
@@ -14715,7 +14698,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text", "image"],
+			input: ["text"],
 			cost: {
 				input: 0.6,
 				output: 2.4,
@@ -14732,7 +14715,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text", "image"],
+			input: ["text"],
 			cost: {
 				input: 0.3,
 				output: 1.2,
@@ -14749,7 +14732,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text", "image"],
+			input: ["text"],
 			cost: {
 				input: 0.6,
 				output: 2.4,

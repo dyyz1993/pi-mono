@@ -81,6 +81,9 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { FileSnapshotManager } from "./file-store/file-snapshot-manager.ts";
 import { InternalGit } from "./file-store/internal-git.ts";
 import { handleLargeInput } from "./large-input.ts";
+import { type McpConnection, McpManager } from "./mcp/index.ts";
+import { createMcpToolDefinition } from "./mcp/tool-converter.ts";
+import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -470,6 +473,7 @@ export class AgentSession {
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 	private _permissionMode: PermissionMode = "auto";
+	private _mcpManager: McpManager | undefined;
 	private _currentAgentName = "build";
 	private _agentSystemPromptOverride: string | undefined;
 	private _currentAgentPaths: PathConfig | undefined;
@@ -2429,6 +2433,66 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		await this._initMcpServers();
+	}
+
+	get mcpManager(): McpManager | undefined {
+		return this._mcpManager;
+	}
+
+	private async _initMcpServers(): Promise<void> {
+		// Dispose any existing MCP manager (e.g., on reload)
+		if (this._mcpManager) {
+			await this._mcpManager.dispose();
+			this._mcpManager = undefined;
+		}
+
+		const mcpSettings = this.settingsManager.getMcpSettings();
+		const servers = mcpSettings.servers;
+		if (!servers || Object.keys(servers).length === 0) return;
+
+		this._mcpManager = new McpManager({
+			...mcpSettings.options,
+			onConnectionChange: (conn: McpConnection) => {
+				this._handleMcpConnectionChange(conn);
+			},
+		});
+
+		await this._mcpManager.connectAll(servers as Record<string, McpServerConfig>);
+
+		// Register discovered tools into the extension system
+		this._registerMcpTools();
+	}
+
+	private _registerMcpTools(): void {
+		if (!this._mcpManager) return;
+		const tools = this._mcpManager.getAllTools();
+		for (const tool of tools) {
+			const definition = createMcpToolDefinition(tool, this._mcpManager);
+			this._customTools = [...(this._customTools ?? []), definition];
+		}
+		// Rebuild tool registry to include MCP tools
+		this._refreshToolRegistry({
+			activeToolNames: this.getActiveToolNames(),
+			includeAllExtensionTools: true,
+		});
+	}
+
+	private _handleMcpConnectionChange(conn: McpConnection): void {
+		// Emit as a custom event for the RPC layer to forward to the frontend
+		for (const listener of this._eventListeners) {
+			try {
+				listener({
+					type: "mcp_connection_change",
+					server: {
+						name: conn.name,
+						status: conn.status,
+						error: conn.error,
+						tools: conn.tools,
+					},
+				} as unknown as AgentSessionEvent);
+			} catch {}
+		}
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -2888,6 +2952,7 @@ export class AgentSession {
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 		this._initFileSnapshotManager();
+		this._extensionRunner.setFileSnapshotManagerFn(() => this._fileSnapshotManager);
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
@@ -2919,6 +2984,7 @@ export class AgentSession {
 		if (hasBindings) {
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
+			await this._initMcpServers();
 		}
 	}
 

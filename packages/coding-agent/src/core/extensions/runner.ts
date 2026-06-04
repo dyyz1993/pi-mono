@@ -256,6 +256,9 @@ export class ExtensionRunner {
 	private getProjectDataDirFn: () => string = () => "";
 	private getCwdDataDirFn: () => string = () => "";
 	private getGlobalDataDirFn: () => string = () => "";
+	private getFileSnapshotManagerFn: () => import("../file-store/file-snapshot-manager.ts").FileSnapshotManager | null =
+		() => null;
+	private respondUIFn: (id: string, result: import("./types.ts").UIEventResult) => () => void = () => () => {};
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -294,6 +297,16 @@ export class ExtensionRunner {
 		if (fns.getProjectDataDir) this.getProjectDataDirFn = () => fns.getProjectDataDir!(getExtName());
 		if (fns.getCwdDataDir) this.getCwdDataDirFn = () => fns.getCwdDataDir!(getExtName());
 		if (fns.getGlobalDataDir) this.getGlobalDataDirFn = () => fns.getGlobalDataDir!(getExtName());
+	}
+
+	setFileSnapshotManagerFn(
+		fn: () => import("../file-store/file-snapshot-manager.ts").FileSnapshotManager | null,
+	): void {
+		this.getFileSnapshotManagerFn = fn;
+	}
+
+	setRespondUIFn(fn: (id: string, result: import("./types.ts").UIEventResult) => () => void): void {
+		this.respondUIFn = fn;
 	}
 
 	bindCore(
@@ -671,6 +684,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.getSignalFn();
 			},
+			get sessionSignal() {
+				runner.assertActive();
+				return runner.getSignalFn();
+			},
 			abort: () => {
 				runner.assertActive();
 				runner.abortFn();
@@ -718,6 +735,14 @@ export class ExtensionRunner {
 			get globalDataDir() {
 				runner.assertActive();
 				return runner.getGlobalDataDirFn();
+			},
+			get fileSnapshotManager() {
+				runner.assertActive();
+				return runner.getFileSnapshotManagerFn();
+			},
+			respondUI: (id, result) => {
+				runner.assertActive();
+				return runner.respondUIFn(id, result);
 			},
 		};
 	}

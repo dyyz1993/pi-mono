@@ -144,6 +144,7 @@ export type {
 } from "./core/extensions/index.ts";
 export {
 	ChannelManager,
+	type ChannelTypeRegistry,
 	ClientChannel,
 	createExtensionRuntime,
 	createTypedChannel,
@@ -234,6 +235,7 @@ export {
 	type ImageSettings,
 	type PackageSource,
 	type RetrySettings,
+	type Settings,
 	SettingsManager,
 } from "./core/settings-manager.ts";
 // Skills
@@ -312,18 +314,32 @@ export {
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
 export {
+	type AgentsFile,
+	type BatchDiffResult,
+	type FileDiffResult,
+	type FileHistoryResult,
+	type ForkMessage,
+	type ForkResult,
 	InteractiveMode,
 	type InteractiveModeOptions,
 	type ModelInfo,
+	type ModifiedFilesResult,
 	type PrintModeOptions,
+	type QueueState,
+	type RollbackPreviewResult,
 	RpcClient,
+	type RpcClientAPI,
 	type RpcClientOptions,
+	type RpcClientSurface,
 	type RpcCommand,
 	type RpcEventListener,
 	type RpcResponse,
 	type RpcSessionState,
 	runPrintMode,
 	runRpcMode,
+	type SessionOperationResult,
+	type SystemPromptResult,
+	type TreeWithLeaf,
 } from "./modes/index.ts";
 // UI components for extensions
 export {

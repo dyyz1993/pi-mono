@@ -57,6 +57,12 @@ export interface FileHistoryEntry {
 	previousHash: string | null;
 }
 
+export interface LiveChange {
+	path: string;
+	status: "added" | "modified" | "deleted";
+	diff: { oldContent: string | null; newContent: string | null } | null;
+}
+
 interface SnapshotWithEntryId extends StepSnapshotData {
 	entryId: string;
 	timestamp: string;
@@ -156,6 +162,31 @@ export class FileSnapshotManager {
 		this.turnIndex = 0;
 	}
 
+	getLiveChanges(cwd: string): LiveChange[] {
+		const currentFiles = readFilteredWorkingDir(this.git, cwd);
+		const baselineHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
+		const baselineFiles = this.readTree(baselineHash);
+
+		const changes: LiveChange[] = [];
+
+		for (const [path, content] of currentFiles) {
+			const oldContent = baselineFiles.get(path);
+			if (oldContent === undefined) {
+				changes.push({ path, status: "added", diff: { oldContent: null, newContent: content } });
+			} else if (oldContent !== content) {
+				changes.push({ path, status: "modified", diff: { oldContent, newContent: content } });
+			}
+		}
+
+		for (const [path, oldContent] of baselineFiles) {
+			if (!currentFiles.has(path)) {
+				changes.push({ path, status: "deleted", diff: { oldContent, newContent: null } });
+			}
+		}
+
+		return changes;
+	}
+
 	onTurnEnd(cwd: string, turnIndex: number, appendEntry: (type: string, data: unknown) => string): void {
 		const files = readFilteredWorkingDir(this.git, cwd);
 		const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
@@ -230,6 +261,21 @@ export class FileSnapshotManager {
 			children.push(entry.data as StepSnapshotData);
 		}
 		return children.at(-1) ?? null;
+	}
+
+	/**
+	 * Get the snapshot data for a specific entry ID.
+	 * Returns null if no snapshot was recorded for the given entry.
+	 */
+	getSnapshotAtEntry(entryId: string): StepSnapshotData | null {
+		const snap = this.snapshotIndex.get(entryId);
+		if (!snap) return null;
+		return {
+			baselineTreeHash: snap.baselineTreeHash,
+			snapshotTreeHash: snap.snapshotTreeHash,
+			diff: snap.diff,
+			turnIndex: snap.turnIndex,
+		};
 	}
 
 	resolveSnapshotEntryIdForTarget(targetEntryId: string, entries: SessionEntry[]): string | null {
@@ -472,6 +518,7 @@ export class FileSnapshotManager {
 		cwd: string,
 		options: {
 			targetEntryId?: string;
+			snapshotHash?: string;
 			files?: string[];
 			preview?: boolean;
 			currentLeafId?: string | null;
@@ -482,7 +529,9 @@ export class FileSnapshotManager {
 		const empty: RestoreResult = { restored: [], deleted: [], skipped: [], dirty: [], forceRestored: [] };
 		let targetTreeHash: string | null;
 		let targetIsEmpty = false;
-		if (options.targetEntryId) {
+		if (options.snapshotHash) {
+			targetTreeHash = options.snapshotHash;
+		} else if (options.targetEntryId) {
 			const snapshot = this.snapshotIndex.get(options.targetEntryId);
 			if (snapshot) {
 				targetTreeHash = snapshot.snapshotTreeHash;

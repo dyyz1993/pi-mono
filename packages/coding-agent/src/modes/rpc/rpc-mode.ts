@@ -46,6 +46,7 @@ import type {
 	RpcExtensionFlag,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcMcpServer,
 	RpcResponse,
 	RpcSessionState,
 	RpcSkill,
@@ -137,6 +138,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const pendingExtensionRequests = new Map<
 		string,
 		{ resolve: (value: any) => void; reject: (error: Error) => void }
+	>();
+
+	// Pending remote tool results waiting for response
+	const pendingRemoteToolResults = new Map<
+		string,
+		{ resolve: (result: { content: Array<{ type: string; text: string }>; isError: boolean }) => void }
 	>();
 
 	// Shutdown request flag
@@ -1234,6 +1241,62 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "set_permission_mode", { mode: command.mode });
 			}
 
+			// =================================================================
+			// MCP
+			// =================================================================
+
+			case "get_mcp_servers": {
+				const manager = session.mcpManager;
+				if (!manager) {
+					return success(id, "get_mcp_servers", { servers: [] });
+				}
+				const mcpSettings = session.settingsManager.getMcpSettings();
+				const serverConfigs = mcpSettings.servers ?? {};
+				const servers: RpcMcpServer[] = manager.getConnections().map((conn) => ({
+					name: conn.name,
+					status: conn.status,
+					error: conn.error,
+					tools: conn.tools.map((t) => ({
+						originalName: t.originalName,
+						fullName: t.fullName,
+						description: t.description,
+					})),
+					scope: conn.name in (serverConfigs as Record<string, unknown>) ? "project" : "global",
+					disabled: conn.config.disabled,
+				}));
+				return success(id, "get_mcp_servers", { servers });
+			}
+
+			case "mcp_toggle_server": {
+				const manager = session.mcpManager;
+				if (!manager) {
+					return error(id, "mcp_toggle_server", "MCP not initialized");
+				}
+				await manager.setServerEnabled(command.name, command.enabled);
+				return success(id, "mcp_toggle_server");
+			}
+
+			case "mcp_restart_server": {
+				const manager = session.mcpManager;
+				if (!manager) {
+					return error(id, "mcp_restart_server", "MCP not initialized");
+				}
+				await manager.restartServer(command.name);
+				return success(id, "mcp_restart_server");
+			}
+
+			// =================================================================
+			// Remote Tools
+			// =================================================================
+
+			case "register_remote_tool": {
+				return success(id, "register_remote_tool");
+			}
+
+			case "unregister_remote_tool": {
+				return success(id, "unregister_remote_tool");
+			}
+
 			default: {
 				const unknownCommand = command as { type: string };
 				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
@@ -1311,6 +1374,27 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			"name" in parsed
 		) {
 			channelManager.handleInbound(parsed as ChannelDataMessage);
+			return;
+		}
+
+		// Handle remote tool results (fire-and-forget, resolves pending tool call)
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			"type" in parsed &&
+			parsed.type === "remote_tool_result" &&
+			"toolCallId" in parsed
+		) {
+			const result = parsed as {
+				type: "remote_tool_result";
+				toolCallId: string;
+				result: { content: Array<{ type: string; text: string }>; isError: boolean };
+			};
+			const pending = pendingRemoteToolResults.get(result.toolCallId);
+			if (pending) {
+				pendingRemoteToolResults.delete(result.toolCallId);
+				pending.resolve(result.result);
+			}
 			return;
 		}
 

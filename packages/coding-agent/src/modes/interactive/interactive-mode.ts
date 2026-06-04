@@ -1663,6 +1663,7 @@ export class InteractiveMode {
 			model: this.session.model,
 			isIdle: () => !this.session.isStreaming,
 			signal: this.session.agent.signal,
+			sessionSignal: this.session.agent.signal,
 			abort: () => {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
@@ -1689,6 +1690,8 @@ export class InteractiveMode {
 			projectDataDir: "",
 			cwdDataDir: "",
 			globalDataDir: "",
+			fileSnapshotManager: this.session.fileSnapshotManager,
+			respondUI: () => () => {},
 		});
 
 		// Set up the extension shortcut handler on the default editor

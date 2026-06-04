@@ -6,6 +6,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_TIER_ALIASES } from "./defaults.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import type { McpSettings } from "./mcp/types.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -115,6 +116,7 @@ export interface Settings {
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	tierModels?: Record<string, string>;
+	mcp?: McpSettings;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -1122,5 +1124,9 @@ export class SettingsManager {
 		this.globalSettings.tierModels = { ...models };
 		this.markModified("tierModels");
 		this.save();
+	}
+
+	getMcpSettings(): McpSettings {
+		return this.settings.mcp ?? { servers: {} };
 	}
 }

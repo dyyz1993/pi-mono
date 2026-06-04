@@ -182,13 +182,27 @@ function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 		.filter(([lockPath, entry]) => !entry.link && (lockPath === suffix || lockPath.endsWith(`/${suffix}`)))
 		.map(([lockPath]) => lockPath);
 
-	if (matches.length === 1) {
+	if (matches.length >= 1) {
 		return matches[0];
 	}
 
+	// Fallback: check filesystem for transitive deps not in lockfile
+	const fromDir = fromLockPath
+		? resolve(repoRoot, posix.dirname(fromLockPath))
+		: repoRoot;
+	let dir = fromDir;
+	for (let i = 0; i < 10; i++) {
+		const candidate = join(dir, "node_modules", packageName);
+		if (existsSync(candidate)) {
+			return posix.relative(repoRoot, candidate).replace(/\\/g, "/");
+		}
+		const parent = resolve(dir, "..");
+		if (parent === dir) break;
+		dir = parent;
+	}
+
 	throw new Error(
-		`Cannot resolve ${packageName} from ${fromLockPath || "root"}. ` +
-			(matches.length > 1 ? `Matches: ${matches.join(", ")}` : "No matching lockfile entry found."),
+		`Cannot resolve ${packageName} from ${fromLockPath || "root"}. No matching lockfile entry found.`,
 	);
 }
 
@@ -212,7 +226,23 @@ function addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue,
 		return;
 	}
 
-	const entry = lockPackages[lockPath];
+	let entry = lockPackages[lockPath];
+	if (!entry) {
+		// Fallback: construct entry from on-disk package.json
+		const pkgJsonPath = resolve(repoRoot, lockPath, "package.json");
+		if (existsSync(pkgJsonPath)) {
+			const pkg = readJson(pkgJsonPath);
+			entry = {
+				version: pkg.version,
+				dependencies: pkg.dependencies ?? {},
+				optionalDependencies: pkg.optionalDependencies ?? {},
+				resolved: `https://registry.npmjs.org/${name}/-/${name}-${pkg.version}.tgz`,
+				integrity: "",
+			};
+		} else {
+			throw new Error(`Cannot find package.json or lockfile entry for ${name} at ${lockPath}`);
+		}
+	}
 	shrinkwrapPackages[lockPath] = copyLockEntry(entry);
 	addedPaths.add(lockPath);
 

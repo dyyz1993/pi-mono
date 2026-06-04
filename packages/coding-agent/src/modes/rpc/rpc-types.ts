@@ -155,7 +155,26 @@ export type RpcCommand =
 	| { id?: string; type: "get_all_tools" }
 
 	// Permission mode
-	| { id?: string; type: "set_permission_mode"; mode: PermissionMode };
+	| { id?: string; type: "set_permission_mode"; mode: PermissionMode }
+
+	// MCP
+	| { id?: string; type: "get_mcp_servers" }
+	| { id?: string; type: "mcp_toggle_server"; name: string; enabled: boolean }
+	| { id?: string; type: "mcp_restart_server"; name: string }
+
+	// Remote tools
+	| {
+			id?: string;
+			type: "register_remote_tool";
+			tool: { name: string; description: string; parameters: object };
+	  }
+	| { id?: string; type: "unregister_remote_tool"; name: string }
+	| {
+			id?: string;
+			type: "remote_tool_result";
+			toolCallId: string;
+			result: { content: Array<{ type: string; text: string }>; isError: boolean };
+	  };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -231,6 +250,28 @@ export interface RpcAllTool {
 	name: string;
 	description: string;
 	sourceInfo: SourceInfo;
+}
+
+export interface RpcMcpServerTool {
+	originalName: string;
+	fullName: string;
+	description: string;
+}
+
+export interface RpcMcpServer {
+	name: string;
+	status: "connecting" | "connected" | "error" | "disconnected";
+	error?: string;
+	tools: RpcMcpServerTool[];
+	scope: "global" | "project";
+	disabled?: boolean;
+}
+
+export interface RpcRemoteToolCall {
+	type: "remote_tool_call";
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
 }
 
 export interface TreeEntry {
@@ -534,6 +575,15 @@ export type RpcResponse =
 
 	// Permission mode
 	| { id?: string; type: "response"; command: "set_permission_mode"; success: true; data: { mode: PermissionMode } }
+
+	// MCP
+	| { id?: string; type: "response"; command: "get_mcp_servers"; success: true; data: { servers: RpcMcpServer[] } }
+	| { id?: string; type: "response"; command: "mcp_toggle_server"; success: true }
+	| { id?: string; type: "response"; command: "mcp_restart_server"; success: true }
+
+	// Remote tools
+	| { id?: string; type: "response"; command: "register_remote_tool"; success: true }
+	| { id?: string; type: "response"; command: "unregister_remote_tool"; success: true }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };

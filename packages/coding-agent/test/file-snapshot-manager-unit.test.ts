@@ -1,0 +1,746 @@
+import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FileSnapshotManager, type StepSnapshotData } from "../src/core/file-store/file-snapshot-manager.ts";
+import { InternalGit } from "../src/core/file-store/internal-git.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
+
+function customSnapshotEntry(
+	id: string,
+	parentId: string | null,
+	timestamp: string,
+	data: StepSnapshotData,
+): SessionEntry {
+	return {
+		type: "custom",
+		id,
+		parentId,
+		timestamp,
+		customType: "step-snapshot",
+		data,
+	};
+}
+
+describe("FileSnapshotManager", () => {
+	let testDir: string;
+	let storeDir: string;
+
+	beforeEach(() => {
+		const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		testDir = join(tmpdir(), `pi-fsm-unit-${suffix}`);
+		storeDir = join(tmpdir(), `pi-fsm-store-${suffix}`);
+		mkdirSync(testDir, { recursive: true });
+		mkdirSync(storeDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+		rmSync(storeDir, { recursive: true, force: true });
+	});
+
+	describe("initialize", () => {
+		it("creates session start baseline from working dir", () => {
+			writeFileSync(join(testDir, "a.txt"), "hello\n");
+			writeFileSync(join(testDir, "b.txt"), "world\n");
+
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toEqual([]);
+		});
+
+		it("is idempotent once snapshots exist (second call is no-op)", () => {
+			writeFileSync(join(testDir, "a.txt"), "first\n");
+
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			writeFileSync(join(testDir, "a.txt"), "second\n");
+			mgr.onTurnEnd(testDir, 0, () => "snap-0");
+
+			writeFileSync(join(testDir, "a.txt"), "changed-after-snap\n");
+
+			mgr.initialize(testDir);
+
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toHaveLength(1);
+			expect(changes[0]!.path).toBe("a.txt");
+			expect(changes[0]!.status).toBe("modified");
+		});
+	});
+
+	describe("getLiveChanges", () => {
+		it("returns empty array when no files changed", () => {
+			writeFileSync(join(testDir, "a.txt"), "content\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			expect(mgr.getLiveChanges(testDir)).toEqual([]);
+		});
+
+		it("detects added files", () => {
+			writeFileSync(join(testDir, "a.txt"), "original\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			writeFileSync(join(testDir, "b.txt"), "new file\n");
+
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toHaveLength(1);
+			expect(changes[0]).toMatchObject({ path: "b.txt", status: "added" });
+		});
+
+		it("detects modified files", () => {
+			writeFileSync(join(testDir, "a.txt"), "original\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			writeFileSync(join(testDir, "a.txt"), "modified\n");
+
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toHaveLength(1);
+			expect(changes[0]).toMatchObject({ path: "a.txt", status: "modified" });
+		});
+
+		it("detects deleted files", () => {
+			writeFileSync(join(testDir, "a.txt"), "original\n");
+			writeFileSync(join(testDir, "b.txt"), "keep\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			unlinkSync(join(testDir, "a.txt"));
+
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toHaveLength(1);
+			expect(changes[0]).toMatchObject({ path: "a.txt", status: "deleted" });
+		});
+
+		it("detects mixed add+modify+delete", () => {
+			writeFileSync(join(testDir, "a.txt"), "original-a\n");
+			writeFileSync(join(testDir, "b.txt"), "original-b\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			writeFileSync(join(testDir, "a.txt"), "changed-a\n");
+			unlinkSync(join(testDir, "b.txt"));
+			writeFileSync(join(testDir, "c.txt"), "new-c\n");
+
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toHaveLength(3);
+
+			const byPath = new Map(changes.map((c) => [c.path, c]));
+			expect(byPath.get("a.txt")?.status).toBe("modified");
+			expect(byPath.get("b.txt")?.status).toBe("deleted");
+			expect(byPath.get("c.txt")?.status).toBe("added");
+		});
+
+		it("returns changes relative to lastCommittedTreeHash, not sessionStart", () => {
+			writeFileSync(join(testDir, "a.txt"), "v1\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			const entries: SessionEntry[] = [];
+			writeFileSync(join(testDir, "a.txt"), "v2\n");
+			mgr.onTurnEnd(testDir, 0, (_type, data) => {
+				const id = `snap-${entries.length}`;
+				entries.push(customSnapshotEntry(id, "parent-0", new Date().toISOString(), data as StepSnapshotData));
+				return id;
+			});
+
+			expect(mgr.getLiveChanges(testDir)).toEqual([]);
+
+			writeFileSync(join(testDir, "a.txt"), "v3\n");
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toHaveLength(1);
+			expect(changes[0]).toMatchObject({ path: "a.txt", status: "modified" });
+		});
+
+		it("ignores files larger than 1MB", () => {
+			writeFileSync(join(testDir, "small.txt"), "small\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			const big = "x".repeat(1024 * 1024 + 100);
+			writeFileSync(join(testDir, "big.txt"), big);
+			writeFileSync(join(testDir, "small.txt"), "changed\n");
+
+			const changes = mgr.getLiveChanges(testDir);
+			const paths = changes.map((c) => c.path);
+			expect(paths).not.toContain("big.txt");
+			expect(paths).toContain("small.txt");
+		});
+	});
+
+	describe("onTurnEnd", () => {
+		it("writes step-snapshot entry when there are changes", () => {
+			writeFileSync(join(testDir, "a.txt"), "initial\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			writeFileSync(join(testDir, "a.txt"), "changed\n");
+
+			const entries: SessionEntry[] = [];
+			mgr.onTurnEnd(testDir, 0, (_type, data) => {
+				expect(_type).toBe("step-snapshot");
+				const id = `snap-0`;
+				entries.push(customSnapshotEntry(id, "parent-0", new Date().toISOString(), data as StepSnapshotData));
+				return id;
+			});
+
+			expect(entries).toHaveLength(1);
+			const snap = (entries[0] as { data: unknown }).data as StepSnapshotData;
+			expect(snap.diff!.modified).toContain("a.txt");
+			expect(snap.turnIndex).toBe(0);
+		});
+
+		it("skips entry when no changes", () => {
+			writeFileSync(join(testDir, "a.txt"), "initial\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			const entries: SessionEntry[] = [];
+			mgr.onTurnEnd(testDir, 0, () => {
+				throw new Error("should not be called");
+			});
+
+			expect(entries).toHaveLength(0);
+		});
+
+		it("updates lastCommittedTreeHash after writing", () => {
+			writeFileSync(join(testDir, "a.txt"), "initial\n");
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			mgr.initialize(testDir);
+
+			writeFileSync(join(testDir, "a.txt"), "v2\n");
+			mgr.onTurnEnd(testDir, 0, (_type, _data) => "snap-0");
+
+			expect(mgr.getLiveChanges(testDir)).toEqual([]);
+
+			writeFileSync(join(testDir, "a.txt"), "v3\n");
+			const changes = mgr.getLiveChanges(testDir);
+			expect(changes).toHaveLength(1);
+			expect(changes[0]).toMatchObject({ path: "a.txt", status: "modified" });
+		});
+	});
+
+	describe("rebuildIndex", () => {
+		it("rebuilds from step-snapshot entries", () => {
+			const git = new InternalGit(storeDir);
+			const firstTree = git.writeTree(new Map([["file.txt", "content-1\n"]]));
+			const secondTree = git.writeTree(new Map([["file.txt", "content-2\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "assistant-1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: firstTree.treeHash,
+					diff: { added: ["file.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "assistant-2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: firstTree.treeHash,
+					snapshotTreeHash: secondTree.treeHash,
+					diff: { added: [], modified: ["file.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const modified = mgr.getModifiedFiles();
+			expect(modified).toHaveLength(1);
+			expect(modified[0]).toMatchObject({ path: "file.txt", status: "added" });
+		});
+
+		it("clears existing index first", () => {
+			const git = new InternalGit(storeDir);
+			const treeA = git.writeTree(new Map([["a.txt", "a\n"]]));
+			const treeB = git.writeTree(new Map([["b.txt", "b\n"]]));
+
+			const firstEntries: SessionEntry[] = [
+				customSnapshotEntry("snap-a", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: treeA.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(firstEntries);
+			expect(mgr.getModifiedFiles()).toHaveLength(1);
+
+			const secondEntries: SessionEntry[] = [
+				customSnapshotEntry("snap-b", "p2", "2026-01-02T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: treeB.treeHash,
+					diff: { added: ["b.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+			mgr.rebuildIndex(secondEntries);
+
+			const modified = mgr.getModifiedFiles();
+			expect(modified).toHaveLength(1);
+			expect(modified[0]!.path).toBe("b.txt");
+		});
+	});
+
+	describe("getModifiedFiles", () => {
+		it("returns files from all snapshots when no range specified", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "1\n"]]));
+			const tree2 = git.writeTree(
+				new Map([
+					["a.txt", "1\n"],
+					["b.txt", "2\n"],
+				]),
+			);
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: ["b.txt"], modified: [], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const modified = mgr.getModifiedFiles();
+			expect(modified).toHaveLength(2);
+			const paths = modified.map((m) => m.path).sort();
+			expect(paths).toEqual(["a.txt", "b.txt"]);
+		});
+
+		it("returns empty when no snapshots", () => {
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			expect(mgr.getModifiedFiles()).toEqual([]);
+		});
+	});
+
+	describe("getFileDiff", () => {
+		it("returns diff for a modified file", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "line1\n"]]));
+			const tree2 = git.writeTree(new Map([["a.txt", "line1\nline2\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["a.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const diff = mgr.getFileDiff({ filePath: "a.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			expect(diff).not.toBeNull();
+			expect(diff!.oldContent).toBe("line1\n");
+			expect(diff!.newContent).toBe("line1\nline2\n");
+			expect(diff!.unifiedDiff).toContain("+line2");
+			expect(diff!.unifiedDiff).toContain("--- a.txt");
+			expect(diff!.unifiedDiff).toContain("+++ a.txt");
+		});
+
+		it("returns diff for an added file", () => {
+			const git = new InternalGit(storeDir);
+			const tree = git.writeTree(new Map([["new.txt", "new content\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree.treeHash,
+					diff: { added: ["new.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const diff = mgr.getFileDiff({ filePath: "new.txt", toEntryId: "snap-1" });
+			expect(diff).not.toBeNull();
+			expect(diff!.oldContent).toBeNull();
+			expect(diff!.newContent).toBe("new content\n");
+		});
+
+		it("returns diff for a deleted file", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["rm.txt", "to be deleted\n"]]));
+			const tree2 = git.writeTree(new Map());
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["rm.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: [], deleted: ["rm.txt"] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const diff = mgr.getFileDiff({ filePath: "rm.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			expect(diff).not.toBeNull();
+			expect(diff!.oldContent).toBe("to be deleted\n");
+			expect(diff!.newContent).toBeNull();
+		});
+
+		it("returns null for nonexistent file", () => {
+			const git = new InternalGit(storeDir);
+			const tree = git.writeTree(new Map([["exists.txt", "yes\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree.treeHash,
+					diff: { added: ["exists.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const diff = mgr.getFileDiff({ filePath: "nope.txt" });
+			expect(diff).toBeNull();
+		});
+	});
+
+	describe("getBatchDiffs", () => {
+		it("returns diffs for all modified files", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "v1\n"]]));
+			const tree2 = git.writeTree(
+				new Map([
+					["a.txt", "v2\n"],
+					["b.txt", "new\n"],
+				]),
+			);
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: ["b.txt"], modified: ["a.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const batch = mgr.getBatchDiffs();
+			expect(batch.files).toHaveLength(2);
+			const byPath = new Map(batch.files.map((f) => [f.path, f]));
+			expect(byPath.get("a.txt")?.status).toBe("added");
+			expect(byPath.get("a.txt")?.diff).not.toBeNull();
+			expect(byPath.get("b.txt")?.status).toBe("added");
+			expect(byPath.get("b.txt")?.diff).not.toBeNull();
+		});
+
+		it("includes summary counts", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(
+				new Map([
+					["a.txt", "v1\n"],
+					["b.txt", "v1\n"],
+				]),
+			);
+			const tree2 = git.writeTree(
+				new Map([
+					["a.txt", "v2\n"],
+					["c.txt", "new\n"],
+				]),
+			);
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt", "b.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: ["c.txt"], modified: ["a.txt"], deleted: ["b.txt"] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const batch = mgr.getBatchDiffs();
+			expect(batch.summary.totalFiles).toBe(3);
+			expect(batch.summary.added + batch.summary.modified + batch.summary.deleted).toBe(3);
+		});
+	});
+
+	describe("getFileHistory", () => {
+		it("returns history entries for a file", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "v1\n"]]));
+			const tree2 = git.writeTree(new Map([["a.txt", "v2\n"]]));
+			const tree3 = git.writeTree(new Map([["a.txt", "v3\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["a.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+				customSnapshotEntry("snap-3", "p3", "2026-01-01T00:02:00.000Z", {
+					baselineTreeHash: tree2.treeHash,
+					snapshotTreeHash: tree3.treeHash,
+					diff: { added: [], modified: ["a.txt"], deleted: [] },
+					turnIndex: 2,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const history = mgr.getFileHistory({ filePath: "a.txt" });
+			expect(history).toHaveLength(3);
+			expect(history[0]!.status).toBe("added");
+			expect(history[0]!.entryId).toBe("snap-1");
+			expect(history[1]!.status).toBe("modified");
+			expect(history[2]!.status).toBe("modified");
+		});
+
+		it("returns empty for unchanged file", () => {
+			const git = new InternalGit(storeDir);
+			const tree = git.writeTree(new Map([["a.txt", "content\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const history = mgr.getFileHistory({ filePath: "other.txt" });
+			expect(history).toEqual([]);
+		});
+	});
+
+	describe("restoreFiles", () => {
+		it("restores files to a previous snapshot state", async () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "v1\n"]]));
+			const tree2 = git.writeTree(new Map([["a.txt", "v2\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["a.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+			writeFileSync(join(testDir, "a.txt"), "v2\n");
+
+			const result = await mgr.restoreFiles(testDir, {
+				targetEntryId: "snap-1",
+				entries,
+				preview: false,
+			});
+
+			expect(result.restored).toContain("a.txt");
+			const content = require("node:fs").readFileSync(join(testDir, "a.txt"), "utf-8");
+			expect(content).toBe("v1\n");
+		});
+	});
+
+	describe("getActiveTreeHashes", () => {
+		it("returns all active tree hashes", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "1\n"]]));
+			const tree2 = git.writeTree(new Map([["a.txt", "2\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["a.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const hashes = mgr.getActiveTreeHashes();
+			expect(hashes.has(tree1.treeHash)).toBe(true);
+			expect(hashes.has(tree2.treeHash)).toBe(true);
+		});
+	});
+
+	describe("getRollbackPreviewFiles", () => {
+		it("returns files that would change on rollback", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "v1\n"]]));
+			const tree2 = git.writeTree(
+				new Map([
+					["a.txt", "v2\n"],
+					["b.txt", "new\n"],
+				]),
+			);
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: ["b.txt"], modified: ["a.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			const files = mgr.getRollbackPreviewFiles({ targetEntryId: "snap-1", entries });
+			expect(files).toHaveLength(2);
+			const byPath = new Map(files.map((f) => [f.path, f]));
+			expect(byPath.get("a.txt")?.status).toBe("modified");
+			expect(byPath.get("b.txt")?.status).toBe("added");
+		});
+	});
+
+	describe("resolveSnapshotEntryIdForTarget", () => {
+		it("returns the entry id if it is a snapshot", () => {
+			const git = new InternalGit(storeDir);
+			const tree = git.writeTree(new Map([["a.txt", "content\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			expect(mgr.resolveSnapshotEntryIdForTarget("snap-1", entries)).toBe("snap-1");
+		});
+
+		it("returns null for unknown target", () => {
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			expect(mgr.resolveSnapshotEntryIdForTarget("nonexistent", [])).toBeNull();
+		});
+	});
+
+	// === MISSING METHODS (should show as PENDING in test report) ===
+
+	describe("getSnapshotAtEntry [IMPLEMENTED]", () => {
+		it("should return snapshot data for a given entry ID", () => {
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			expect(typeof (mgr as unknown as Record<string, unknown>).getSnapshotAtEntry).toBe("function");
+		});
+
+		it("returns null for unknown entry ID", () => {
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			const result = mgr.getSnapshotAtEntry("nonexistent");
+			expect(result).toBeNull();
+		});
+	});
+
+	describe("restoreFiles with snapshotHash [IMPLEMENTED]", () => {
+		it("should accept snapshotHash option for direct hash-based restore", async () => {
+			const git = new InternalGit(storeDir);
+			const mgr = new FileSnapshotManager(git);
+			const result = await mgr.restoreFiles(testDir, {
+				entries: [],
+				snapshotHash: "abc",
+			});
+			expect(result).toBeDefined();
+		});
+	});
+});

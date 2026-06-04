@@ -86,6 +86,20 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export type {
+	ConnectionStatus,
+	DiscoveredTool,
+	McpConnection,
+	McpManagerEvents,
+	McpManagerOptions,
+	McpServerConfig,
+	McpSettings,
+	McpSseServerConfig,
+	McpStdioServerConfig,
+	McpStreamableHttpServerConfig,
+} from "./mcp/index.ts";
+// MCP
+export { McpManager } from "./mcp/index.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
 	ExtensionStorage,

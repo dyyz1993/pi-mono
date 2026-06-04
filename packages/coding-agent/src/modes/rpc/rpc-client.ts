@@ -23,6 +23,7 @@ import type {
 	RpcContextUsage,
 	RpcExtension,
 	RpcExtensionFlag,
+	RpcMcpServer,
 	RpcResponse,
 	RpcSessionState,
 	RpcSkill,
@@ -1037,5 +1038,56 @@ export class RpcClient {
 		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
+	}
+
+	/**
+	 * Respond to a pending extension UI request.
+	 * Sends an extension_ui_response message to the CLI process.
+	 * First response wins; subsequent calls are silently ignored by the agent.
+	 */
+	respondUI(requestId: string, response: Record<string, unknown>): void {
+		const childProcess = this.process;
+		const stdin = childProcess?.stdin;
+		if (!childProcess || !stdin || stdin.destroyed || !stdin.writable) return;
+
+		const msg = JSON.stringify({ type: "extension_ui_response", id: requestId, ...response });
+		stdin.write(`${msg}\n`);
+	}
+
+	async getMcpServers(): Promise<RpcMcpServer[]> {
+		const response = await this.send({ type: "get_mcp_servers" });
+		return this.getData<{ servers: RpcMcpServer[] }>(response).servers;
+	}
+
+	async toggleMcpServer(name: string, enabled: boolean): Promise<void> {
+		await this.send({ type: "mcp_toggle_server", name, enabled });
+	}
+
+	async restartMcpServer(name: string): Promise<void> {
+		await this.send({ type: "mcp_restart_server", name });
+	}
+
+	onRemoteToolCall(
+		handler: (call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void,
+	): () => void {
+		const wrapped = (event: AgentEvent) => {
+			const raw = event as unknown as Record<string, unknown>;
+			if (raw.type === "remote_tool_call") {
+				handler(raw as unknown as { toolCallId: string; toolName: string; args: Record<string, unknown> });
+			}
+		};
+		return this.onEvent(wrapped);
+	}
+
+	sendRemoteToolResult(
+		toolCallId: string,
+		result: { content: Array<{ type: string; text: string }>; isError: boolean },
+	): void {
+		const childProcess = this.process;
+		const stdin = childProcess?.stdin;
+		if (!childProcess || !stdin || stdin.destroyed || !stdin.writable) return;
+
+		const msg = JSON.stringify({ type: "remote_tool_result", toolCallId, result });
+		stdin.write(`${msg}\n`);
 	}
 }
