@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { ImageContent, Model } from "@dyyz1993/pi-ai";
@@ -56,6 +57,8 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
+	UIEvent,
+	UIEventResult,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
@@ -235,6 +238,8 @@ export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
+	private uiContextAvailable = false;
+	private pendingUIResponses = new Map<string, { resolve: (result: UIEventResult) => void }>();
 	private mode: ExtensionMode = "print";
 	private cwd: string;
 	private sessionManager: SessionManager;
@@ -278,7 +283,7 @@ export class ExtensionRunner {
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
-		this.uiContext = noOpUIContext;
+		this.uiContext = this.wrapUIForInterception(noOpUIContext);
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
@@ -428,7 +433,8 @@ export class ExtensionRunner {
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
-		this.uiContext = uiContext ?? noOpUIContext;
+		this.uiContext = this.wrapUIForInterception(uiContext ?? noOpUIContext);
+		this.uiContextAvailable = uiContext !== undefined;
 		this.mode = mode;
 	}
 
@@ -437,7 +443,7 @@ export class ExtensionRunner {
 	}
 
 	hasUI(): boolean {
-		return this.uiContext !== noOpUIContext;
+		return this.uiContextAvailable;
 	}
 
 	getExtensionPaths(): string[] {
@@ -640,6 +646,184 @@ export class ExtensionRunner {
 		this.shutdownHandler();
 	}
 
+	private wrapUIForInterception(uiContext: ExtensionUIContext): ExtensionUIContext {
+		const wrapAsyncMethod = <TArgs extends unknown[], TResult>(
+			_methodName: "confirm" | "select" | "input" | "editor",
+			original: (...args: TArgs) => Promise<TResult>,
+			buildEvent: (id: string, args: TArgs) => UIEvent,
+			mapResult: (uiResult: UIEventResult & { action: "responded" }) => TResult | undefined,
+		): ((...args: TArgs) => Promise<TResult>) => {
+			return async (...args: TArgs): Promise<TResult> => {
+				const id = randomUUID();
+				const event = buildEvent(id, args);
+
+				const handlerResult = await this.emitUIEventAsync(event);
+				if (handlerResult?.action === "responded") {
+					return mapResult(handlerResult) as TResult;
+				}
+
+				const originalPromise = original(...args);
+				const asyncPromise = this.createAsyncUIPromise(id).then((asyncResult): Promise<TResult> | TResult => {
+					if (asyncResult?.action === "responded") {
+						return mapResult(asyncResult) as TResult;
+					}
+					return original(...args);
+				});
+
+				try {
+					return (await Promise.race([originalPromise, asyncPromise])) as TResult;
+				} finally {
+					this.pendingUIResponses.delete(id);
+				}
+			};
+		};
+
+		const wrappedConfirm = wrapAsyncMethod(
+			"confirm",
+			uiContext.confirm.bind(uiContext) as (
+				title: string,
+				message: string,
+				opts?: import("./types.ts").ExtensionUIDialogOptions,
+			) => Promise<boolean>,
+			(id, [title, message, opts]) => ({
+				type: "ui" as const,
+				id,
+				method: "confirm" as const,
+				title,
+				message,
+				toolCallId: opts?.toolCallId,
+				hookMeta: opts?.hookMeta,
+				signal: opts?.signal,
+				timeout: opts?.timeout,
+			}),
+			(result) => result.confirmed,
+		);
+
+		const wrappedSelect = wrapAsyncMethod(
+			"select",
+			uiContext.select.bind(uiContext) as (
+				title: string,
+				options: string[],
+				opts?: import("./types.ts").ExtensionUIDialogOptions,
+			) => Promise<string | undefined>,
+			(id, [title, options, opts]) => ({
+				type: "ui" as const,
+				id,
+				method: "select" as const,
+				title,
+				options,
+				multiple: opts?.multiple,
+				signal: opts?.signal,
+				timeout: opts?.timeout,
+			}),
+			(result) => result.value,
+		);
+
+		const wrappedInput = wrapAsyncMethod(
+			"input",
+			uiContext.input.bind(uiContext) as (
+				title: string,
+				placeholder?: string,
+				opts?: import("./types.ts").ExtensionUIDialogOptions,
+			) => Promise<string | undefined>,
+			(id, [title, placeholder, opts]) => ({
+				type: "ui" as const,
+				id,
+				method: "input" as const,
+				title,
+				placeholder,
+				signal: opts?.signal,
+				timeout: opts?.timeout,
+			}),
+			(result) => result.value,
+		);
+
+		const wrappedEditor = wrapAsyncMethod(
+			"editor",
+			uiContext.editor.bind(uiContext) as (title: string, prefill?: string) => Promise<string | undefined>,
+			(id, [title, prefill]) => ({
+				type: "ui" as const,
+				id,
+				method: "editor" as const,
+				title,
+				prefill,
+			}),
+			(result) => result.value,
+		);
+
+		const originalNotify = uiContext.notify.bind(uiContext);
+		const wrappedNotify = (message: string, type?: "info" | "warning" | "error"): void => {
+			const id = randomUUID();
+			const event: UIEvent = {
+				type: "ui",
+				id,
+				method: "notify",
+				title: message,
+				notifyType: type,
+			};
+			this.emitUIEventAsync(event).catch(() => {});
+			originalNotify(message, type);
+		};
+
+		return {
+			...uiContext,
+			confirm: wrappedConfirm,
+			select: wrappedSelect,
+			input: wrappedInput,
+			editor: wrappedEditor,
+			notify: wrappedNotify,
+		};
+	}
+
+	private async emitUIEventAsync(event: UIEvent): Promise<UIEventResult> {
+		const ctx = this.createContext();
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("ui");
+			if (!handlers || handlers.length === 0) continue;
+
+			this._currentExtensionName = getExtensionName(ext.path);
+			for (const handler of handlers) {
+				try {
+					const maybeResult = handler(event, ctx);
+					const handlerResult =
+						maybeResult && typeof maybeResult === "object" && "then" in maybeResult
+							? await (maybeResult as Promise<UIEventResult>)
+							: (maybeResult as UIEventResult);
+					if (handlerResult?.action === "responded") {
+						return handlerResult;
+					}
+				} catch (err) {
+					this.emitError({
+						extensionPath: ext.path,
+						event: "ui",
+						error: err instanceof Error ? err.message : String(err),
+						stack: err instanceof Error ? err.stack : undefined,
+					});
+				}
+			}
+		}
+		return undefined;
+	}
+
+	private createAsyncUIPromise(id: string): Promise<UIEventResult> {
+		return new Promise<UIEventResult>((resolve) => {
+			this.pendingUIResponses.set(id, { resolve });
+		});
+	}
+
+	respondUI(id: string, result: UIEventResult): () => void {
+		const pending = this.pendingUIResponses.get(id);
+		if (pending) {
+			this.pendingUIResponses.delete(id);
+			pending.resolve(result);
+		}
+		return this.respondUIFn(id, result);
+	}
+
+	emitUI(event: UIEvent): void {
+		this.emitUIEventAsync(event).catch(() => {});
+	}
+
 	/**
 	 * Create an ExtensionContext for use in event handlers and tool execution.
 	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
@@ -742,7 +926,7 @@ export class ExtensionRunner {
 			},
 			respondUI: (id, result) => {
 				runner.assertActive();
-				return runner.respondUIFn(id, result);
+				return runner.respondUI(id, result);
 			},
 		};
 	}

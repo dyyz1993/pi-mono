@@ -94,6 +94,17 @@ export interface ExtensionUIDialogOptions {
 	signal?: AbortSignal;
 	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
 	timeout?: number;
+	/** Allow multiple selections for select dialogs. */
+	multiple?: boolean;
+	/** Tool call associated with the dialog, if any. */
+	toolCallId?: string;
+	/** Hook-specific metadata used by RPC clients to render permission prompts. */
+	hookMeta?: {
+		toolName?: string;
+		matcher?: string;
+		command?: string;
+		reason?: string;
+	};
 }
 
 /** Placement for extension widgets. */
@@ -367,6 +378,13 @@ export interface UIEvent {
 	prefill?: string;
 	notifyType?: "info" | "warning" | "error";
 	multiple?: boolean;
+	toolCallId?: string;
+	hookMeta?: {
+		toolName?: string;
+		matcher?: string;
+		command?: string;
+		reason?: string;
+	};
 	signal?: AbortSignal;
 	timeout?: number;
 }
@@ -1199,6 +1217,7 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+	on(event: "ui", handler: ExtensionHandler<UIEvent, UIEventResult>): void;
 
 	// =========================================================================
 	// Tool Registration
