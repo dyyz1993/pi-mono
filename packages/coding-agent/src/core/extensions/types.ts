@@ -1305,6 +1305,12 @@ export interface ExtensionAPI {
 	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
 	setLabel(entryId: string, label: string | undefined): void;
 
+	/** Set the extension's display name. Must be called before event handlers/tools are registered. */
+	setName(name: string): void;
+
+	/** Get the extension's display name. */
+	readonly extensionName: string;
+
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 

@@ -3,6 +3,7 @@
 	"compilerOptions": {
 		"outDir": "./dist",
 		"paths": {
+			"@dyyz1993/pi-coding-agent": ["./src/index.ts"],
 			"@dyyz1993/pi-agent-core": ["../agent/dist/index.d.ts"],
 			"@dyyz1993/pi-agent-core/*": ["../agent/dist/*.d.ts"],
 			"@dyyz1993/pi-ai": ["../ai/dist/index.d.ts"],

@@ -355,6 +355,22 @@ function createExtensionAPI(
 			runtime.setLabel(entryId, label);
 		},
 
+		setName(name: string): void {
+			runtime.assertActive();
+			if (extension.handlers.size > 0 || extension.tools.size > 0 || extension.commands.size > 0) {
+				throw new Error("pi.setName() must be called before registering handlers, tools, or commands");
+			}
+			extension.sourceInfo = {
+				...extension.sourceInfo,
+				source: name,
+			};
+		},
+
+		get extensionName(): string {
+			runtime.assertActive();
+			return extension.sourceInfo.source;
+		},
+
 		exec(command: string, args: string[], options?: ExecOptions) {
 			runtime.assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);

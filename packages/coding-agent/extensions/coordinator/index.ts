@@ -1,0 +1,458 @@
+import {
+  createTypedChannel,
+  type ExtensionAPI,
+} from "@dyyz1993/pi-coding-agent";
+import { Type } from "typebox";
+import { COORDINATOR_CHANNEL_NAME, type CoordinatorChannelContract, type SessionStatus } from "./types.ts";
+import { createCoordinatorHandler, TaskStore, type ProcessManagerApi } from "./handler.ts";
+
+const DelegateParams = Type.Object({
+  task: Type.String({ description: "Task description to delegate to the background session" }),
+  title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
+  projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
+});
+
+const DelegateSendParams = Type.Object({
+  targetSessionId: Type.String({ description: "Session ID to send the message to" }),
+  message: Type.String({ description: "Message content to send" }),
+});
+
+const DelegateStatusParams = Type.Object({
+  sessionId: Type.String({ description: "Session ID to check status for" }),
+});
+
+const DelegateStopParams = Type.Object({
+  sessionId: Type.String({ description: "Session ID to stop" }),
+});
+
+const DelegateForkParams = Type.Object({
+  sessionId: Type.String({ description: "Source session ID to fork from" }),
+  task: Type.String({ description: "Task description for the forked session" }),
+  title: Type.Optional(Type.String({ description: "Short title for the forked task" })),
+  projectPath: Type.Optional(Type.String({ description: "Project directory to run the forked session in. Defaults to the current working directory." })),
+});
+
+const DelegateSyncParams = Type.Object({
+  task: Type.String({ description: "Task description to delegate synchronously" }),
+  title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
+  agent: Type.Optional(Type.String({ description: "Agent name to activate in the delegated session" })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds. Default: 180000." })),
+  projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createServerProxy(client: { call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => Promise<any> }): ProcessManagerApi {
+  return {
+    async delegate(task, projectPath) {
+      return client.call("session_delegate", { task, projectPath });
+    },
+
+    async delegate_send(fromSessionId, toSessionId, message) {
+      return client.call("session_delegate_send", {
+        targetSessionId: toSessionId,
+        message,
+      });
+    },
+
+    async delegate_status(sessionId) {
+      try {
+        const result = await client.call("session_delegate_status", { sessionId }) as { task: { status: SessionStatus } | null; status?: string };
+        if (result.task) {
+          return { status: result.task.status as SessionStatus };
+        }
+        // Handler may return status: "not_found" | "stopped" when task is null
+        const rawStatus = (result as Record<string, unknown>).status as string | undefined;
+        return { status: (rawStatus ?? "stopped") as SessionStatus };
+      } catch (err) {
+        console.debug("[coordinator] delegate_status failed:", err instanceof Error ? err.message : err);
+        return { status: "stopped" as const };
+      }
+    },
+
+    async delegate_list() {
+      try {
+        const result = await client.call("session_delegate_list", {}) as { tasks: unknown };
+        return result.tasks as Array<{ sessionId: string; status: SessionStatus; projectPath: string }>;
+      } catch (err) {
+        console.debug("[coordinator] delegate_list failed:", err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+
+    async delegate_stop(sessionId) {
+      try {
+        const result = await client.call("session_delegate_stop", { sessionId }) as { ok: boolean };
+        return result.ok;
+      } catch (err) {
+        console.debug("[coordinator] delegate_stop failed:", err instanceof Error ? err.message : err);
+        return false;
+      }
+    },
+
+    async delegate_fork(sessionId, task, title, projectPath) {
+      const result = await client.call("session_delegate_fork", { sessionId, task, title, projectPath }) as Record<string, unknown>;
+      const errMsg = result.error as string | undefined;
+      if (errMsg) {
+        throw new Error(errMsg);
+      }
+      return result as unknown as { sessionId: string; status: "started" | "already_running" };
+    },
+
+    async delegate_compact_status(sessionId: string) {
+      try {
+        const result = await client.call("session_delegate_status", { sessionId }) as { task: { isCompacting?: boolean; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } } | null };
+        return {
+          isCompacting: result.task?.isCompacting ?? false,
+          contextUsage: result.task?.contextUsage ?? { tokens: null as number | null, contextWindow: 0, percent: null as number | null },
+        };
+      } catch (err) {
+        console.debug("[coordinator] delegate_compact_status failed:", err instanceof Error ? err.message : err);
+        return { isCompacting: false, contextUsage: { tokens: null as number | null, contextWindow: 0, percent: null as number | null } };
+      }
+    },
+
+    async delegate_remove(sessionId: string) {
+      try {
+        const result = await client.call("session_delegate_remove", { sessionId }) as { ok: boolean };
+        return result.ok;
+      } catch (err) {
+        console.debug("[coordinator] delegate_remove failed:", err instanceof Error ? err.message : err);
+        return false;
+      }
+    },
+
+    async delegate_clear_stopped() {
+      try {
+        const result = await client.call("session_delegate_clear_stopped", {}) as { removed: number };
+        return result.removed;
+      } catch (err) {
+        console.debug("[coordinator] delegate_clear_stopped failed:", err instanceof Error ? err.message : err);
+        return 0;
+      }
+    },
+
+    async delegate_sync(task, agent, timeoutMs, projectPath) {
+      try {
+        const result = await client.call(
+          "session_delegate_sync",
+          { task, title: agent ? `${agent}: ${task.slice(0, 40)}` : undefined, agent, timeoutMs, projectPath },
+          timeoutMs + 30_000,
+        );
+        return result as { sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string };
+      } catch (err) {
+        return {
+          sessionId: "",
+          status: "error" as const,
+          exitCode: 1,
+          finalText: "",
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  };
+}
+
+export default function coordinatorExtension(pi: ExtensionAPI) {
+  const rawChannel = pi.registerChannel(COORDINATOR_CHANNEL_NAME);
+
+  const { server: serverChannel, client } = createTypedChannel<CoordinatorChannelContract>(rawChannel);
+
+  let currentSessionId = "";
+  let store: TaskStore | null = null;
+
+  pi.on("session_start", (_event, ctx) => {
+    currentSessionId = ctx.sessionManager.getSessionId();
+    store = new TaskStore(ctx.sessionManager.getSessionDir());
+  });
+
+  const serverProxy = createServerProxy(client as never);
+
+  createCoordinatorHandler(
+    serverChannel,
+    serverProxy,
+    () => currentSessionId,
+    () => store ?? new TaskStore("/tmp/coordinator-fallback"),
+  );
+
+  pi.on("context", (event, _ctx) => {
+    if (!store) return;
+    const prompt = store.buildPrompt();
+    if (prompt) {
+      event.messages.push({
+        role: "user",
+        content: [{ type: "text", text: prompt }],
+        timestamp: Date.now(),
+      });
+    }
+  });
+
+  pi.registerTool({
+    name: "session_delegate",
+    label: "Session Delegate",
+    description: [
+      "Delegate a task to a background pi session.",
+      "Optionally specify a projectPath to run the session in a specific project directory.",
+      "Returns a sessionId for communication via session_delegate_send.",
+      "The delegated session can message back using its own coordinator channel.",
+      "The delegate session is automatically restarted if inactive when receiving messages.",
+    ].join(" "),
+    parameters: DelegateParams,
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        const sid = currentSessionId || ctx.sessionManager.getSessionId();
+        const projectPath = params.projectPath || ctx.cwd;
+        const result = await serverProxy.delegate(params.task, projectPath);
+
+        if (!result.sessionId) {
+          console.debug("[coordinator] delegate failed: no sessionId returned");
+          pi.appendEntry("coordinator_delegate_failed", { task: params.task, projectPath });
+          return {
+            content: [{ type: "text" as const, text: `Failed to delegate task: no sessionId returned.` }],
+            details: { error: "no sessionId" },
+          };
+        }
+
+        pi.appendEntry("coordinator_delegate", {
+          sessionId: result.sessionId,
+          status: result.status,
+          task: params.task,
+          title: params.title,
+          projectPath,
+          dispatchedBy: sid,
+        });
+        return {
+          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Use session_delegate_send to communicate.` }],
+          details: { ...result, dispatchedBy: sid, projectPath },
+        };
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_send",
+    label: "Session Delegate Send",
+    description: [
+      "Send a message to a delegated session by sessionId.",
+      "If the target session is not active, the server will automatically restart it",
+      "(same as clicking on the session in the UI) and deliver the message.",
+      "The message is injected as a followUp into the target session.",
+      "This tool only fails if the session file has been physically deleted from disk.",
+    ].join(" "),
+    parameters: DelegateSendParams,
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        const sid = currentSessionId || ctx.sessionManager.getSessionId();
+        const result = await serverProxy.delegate_send(sid, params.targetSessionId, params.message);
+
+        if (!result.delivered) {
+          pi.appendEntry("coordinator_send_failed", { fromSessionId: sid, toSessionId: params.targetSessionId });
+          return {
+            content: [{ type: "text" as const, text: `Could not deliver message to ${params.targetSessionId}: session not found (the session file may have been deleted from disk)` }],
+            details: { delivered: false, targetSessionId: params.targetSessionId },
+          };
+        }
+
+        pi.appendEntry("coordinator_send", { fromSessionId: sid, toSessionId: params.targetSessionId, status: result.targetStatus });
+        return {
+          content: [{ type: "text" as const, text: `Message delivered to ${params.targetSessionId} (status: ${result.targetStatus})` }],
+          details: result,
+        };
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_status",
+    label: "Session Delegate Status",
+    description: "Check the status of a delegated task session.",
+    parameters: DelegateStatusParams,
+    async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+      const task = store?.get(params.sessionId);
+      if (task) {
+        const status = task.status === "completed" ? "DONE" : task.status.toUpperCase();
+        return {
+          content: [{ type: "text" as const, text: `Task "${task.title}" (${params.sessionId}): ${status}` }],
+          details: { task },
+        };
+      }
+      const remote = await serverProxy.delegate_status(params.sessionId);
+      return {
+        content: [{ type: "text" as const, text: `Session ${params.sessionId} status: ${remote.status}` }],
+        details: { task: null },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_fork",
+    label: "Session Delegate Fork",
+    description: [
+      "Fork an existing session and delegate a new task to the forked session.",
+      "The forked session starts with a copy of the source session's conversation history.",
+      "Optionally specify a projectPath to run the forked session in a specific project directory.",
+      "The original session continues running unchanged.",
+    ].join(" "),
+    parameters: DelegateForkParams,
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        const sid = currentSessionId || ctx.sessionManager.getSessionId();
+        const projectPath = params.projectPath || ctx.cwd;
+        const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title, projectPath);
+        pi.appendEntry("coordinator_fork", {
+          sessionId: result.sessionId,
+          forkedFrom: params.sessionId,
+          status: result.status,
+          task: params.task,
+          title: params.title,
+          projectPath,
+          dispatchedBy: sid,
+        });
+        return {
+          content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Task: ${params.task}` }],
+          details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid, projectPath },
+        };
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_stop",
+    label: "Session Delegate Stop",
+    description: "Stop a delegated task session.",
+    parameters: DelegateStopParams,
+    async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+      const ok = await serverProxy.delegate_stop(params.sessionId);
+      pi.appendEntry("coordinator_stop", { sessionId: params.sessionId, ok });
+      return {
+        content: [{ type: "text" as const, text: ok ? `Session ${params.sessionId} stopped.` : `Session ${params.sessionId} not found or already stopped.` }],
+        details: { ok },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_remove",
+    label: "Session Delegate Remove",
+    description: [
+      "Remove a delegated task from the task list.",
+      "Stops the session if still running, then removes the task entry.",
+      "Use this to clean up completed, stopped, or zombie tasks.",
+    ].join(" "),
+    parameters: DelegateStatusParams,
+    async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+      const ok = await serverProxy.delegate_remove(params.sessionId);
+      pi.appendEntry("coordinator_remove", { sessionId: params.sessionId, ok });
+      return {
+        content: [{ type: "text" as const, text: ok ? `Task ${params.sessionId} removed.` : `Task ${params.sessionId} not found.` }],
+        details: { ok },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_clear_stopped",
+    label: "Session Delegate Clear Stopped",
+    description: [
+      "Remove all stopped and completed tasks from the task list.",
+      "Use this to clean up accumulated zombie tasks.",
+    ].join(" "),
+    parameters: Type.Object({}),
+    async execute(toolCallId, _params, _signal, _onUpdate, _ctx) {
+      const removed = await serverProxy.delegate_clear_stopped();
+      pi.appendEntry("coordinator_clear_stopped", { removed });
+      return {
+        content: [{ type: "text" as const, text: `Cleared ${removed} stopped/completed task(s).` }],
+        details: { removed },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "session_delegate_sync",
+    label: "Session Delegate Sync",
+    description: [
+      "Synchronously delegate a task to a subagent session and wait for the result.",
+      "Optionally specify an agent name to activate in the delegated session.",
+      "The agent parameter is passed through to the child session so hooks and permissions are applied.",
+    ].join(" "),
+    parameters: DelegateSyncParams,
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      const sid = currentSessionId || ctx.sessionManager.getSessionId();
+      const projectPath = params.projectPath || ctx.cwd;
+      const timeoutMs = params.timeoutMs ?? 180_000;
+
+      try {
+        const result = await serverProxy.delegate_sync(params.task, params.agent, timeoutMs, projectPath);
+
+        pi.appendEntry("coordinator_delegate_sync", {
+          sessionId: result.sessionId,
+          status: result.status,
+          exitCode: result.exitCode,
+          agent: params.agent,
+          task: params.task,
+          title: params.title,
+          projectPath,
+          dispatchedBy: sid,
+        });
+
+        if (result.exitCode !== 0) {
+          return {
+            content: [{ type: "text" as const, text: `Sync delegate ${result.status}: ${result.error || result.finalText}` }],
+            details: { ...result, dispatchedBy: sid, projectPath },
+            isError: true,
+          };
+        }
+
+        return {
+          content: [{ type: "text" as const, text: result.finalText }],
+          details: { ...result, dispatchedBy: sid, projectPath },
+        };
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
+      }
+    },
+  });
+
+  client.on("message_received", (d) => {
+    // Skip messages from sessions that have been stopped
+    const task = store?.get(d.fromSessionId);
+    if (task?.status === "stopped") return;
+
+    // Detect completion signals from delegated sessions
+    if (store && task) {
+      const lowerMsg = d.message.toLowerCase();
+      const isCompletion = lowerMsg.includes("[completed]") || lowerMsg.includes("[done]") || lowerMsg.includes("task completed");
+      if (isCompletion) {
+        store.update(d.fromSessionId, { status: "completed", completedAt: Date.now(), result: d.message });
+        pi.appendEntry("coordinator_task_completed", { sessionId: d.fromSessionId, task: task.title, result: d.message.slice(0, 200) });
+      } else if (task.status !== "completed") {
+        store.update(d.fromSessionId, { status: "streaming" });
+      }
+    }
+
+    try {
+      pi.sendUserMessage(
+        `[Coordinator] Message from session ${d.fromSessionId}:\n${d.message}`,
+        { deliverAs: "followUp" },
+      );
+    } catch (err) {
+      // Silently ignore stale-ctx errors: the extension runtime may have been
+      // invalidated by a concurrent session replacement or reload. The new
+      // runtime's handler will take over.
+      if (err instanceof Error && err.message.includes("stale")) {
+        return;
+      }
+      throw err;
+    }
+  });
+}

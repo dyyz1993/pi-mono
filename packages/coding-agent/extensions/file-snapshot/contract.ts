@@ -1,6 +1,6 @@
 import type { ChannelContract } from "@dyyz1993/pi-coding-agent";
-import type { ModifiedFileInfo } from "../../src/core/file-store/file-snapshot-manager.ts";
 import type { GCResult } from "../../src/core/file-store/internal-git.ts";
+import type { ModifiedFileInfo } from "../../src/core/file-store/file-snapshot-manager.ts";
 
 export const FILE_SNAPSHOT_CHANNEL_NAME = "file-snapshot";
 
