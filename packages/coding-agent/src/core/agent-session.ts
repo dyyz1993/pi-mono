@@ -2953,6 +2953,7 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 		this._initFileSnapshotManager();
 		this._extensionRunner.setFileSnapshotManagerFn(() => this._fileSnapshotManager);
+		this._extensionRunner.setPermissionModeFn(() => this._permissionMode);
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)

@@ -69,6 +69,8 @@ export interface HookConfigSource {
 
 /** Full config snapshot */
 export interface HookConfigSnapshot {
+	/** Session runtime switch. False means hooks are temporarily bypassed in memory. */
+	runtimeEnabled: boolean;
 	sources: HookConfigSource[];
 	events: {
 		name: string;

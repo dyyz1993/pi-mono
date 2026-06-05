@@ -10,13 +10,14 @@ export function buildStdinData(
 		cwd: string;
 		sessionId?: string;
 		agentType?: string;
+		permissionMode?: string;
 	},
 ): HookStdinData {
 	return {
 		session_id: extra.sessionId ?? "",
 		transcript_path: "",
 		cwd: extra.cwd,
-		permission_mode: "default",
+		permission_mode: extra.permissionMode ?? "default",
 		hook_event_name: eventName,
 		tool_name: extra.toolName,
 		tool_input: extra.toolInput,

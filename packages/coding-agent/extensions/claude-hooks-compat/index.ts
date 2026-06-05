@@ -32,6 +32,7 @@ export default function (pi: ExtensionAPI) {
 	const logBuffer = new RingBuffer<HookLogEntry>(RING_BUFFER_CAPACITY);
 	let logIdCounter = 0;
 	let configSources: ConfigSource[] = [];
+	let runtimeEnabled = true;
 
 	let currentSessionId: string | undefined;
 
@@ -53,6 +54,15 @@ export default function (pi: ExtensionAPI) {
 	channel.handle("hooks.clear", () => {
 		logBuffer.clear();
 		return { ok: true };
+	});
+
+	channel.handle("hooks.getStatus", () => {
+		return { enabled: runtimeEnabled };
+	});
+
+	channel.handle("hooks.setEnabled", (params: { enabled: boolean }) => {
+		runtimeEnabled = params.enabled;
+		return { enabled: runtimeEnabled };
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -126,6 +136,8 @@ export default function (pi: ExtensionAPI) {
 		event: { toolName: string; input: Record<string, unknown>; toolCallId?: string; toolOutput?: string },
 		ctx: { cwd: string; hasUI: boolean },
 	): Promise<{ block: boolean; reason: string } | undefined> {
+		if (!runtimeEnabled) return undefined;
+
 		if (!currentSessionId) {
 			const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager;
 			const fromSm = sm?.getSessionId?.();
@@ -137,6 +149,10 @@ export default function (pi: ExtensionAPI) {
 
 		const ctxVars = ((ctx as unknown) as Record<string, unknown>).variables as Record<string, unknown> | undefined;
 		const agentType = (ctxVars?.role ?? ctxVars?.agent_type) as string | undefined;
+		const permissionMode =
+			((ctx as unknown as { permissionMode?: string }).permissionMode)
+			?? (ctxVars?.permission_mode as string | undefined)
+			?? (ctxVars?.permissionMode as string | undefined);
 		const stdinData = buildStdinData(hookEventName, {
 			toolName: event.toolName,
 			toolInput: event.input,
@@ -144,6 +160,7 @@ export default function (pi: ExtensionAPI) {
 			toolUseId: event.toolCallId,
 			cwd: ctx.cwd,
 			agentType,
+			permissionMode,
 		});
 
 		for (const group of groups) {
@@ -245,6 +262,7 @@ export default function (pi: ExtensionAPI) {
 						if (uiCtx?.confirm) {
 							const toolLabel = formatToolLabel(event.toolName);
 							const command = extractCommand(event.input);
+							const hookCommand = truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200);
 							const confirmResult = await uiCtx.confirm(
 								`${toolLabel} 确认`,
 								question,
@@ -254,18 +272,21 @@ export default function (pi: ExtensionAPI) {
 										toolName: event.toolName,
 										matcher: group.matcher ?? "*",
 										command,
+										hookCommand,
+										eventName: hookEventName,
+										source: group.__source__ ?? "unknown",
 										reason: question,
 									},
 								},
 							) as boolean | { confirmed: boolean };
 							const confirmed = typeof confirmResult === "object" ? confirmResult.confirmed : !!confirmResult;
-						if (confirmed) {
+							if (confirmed) {
 								entry.decision = "allow";
 								return undefined;
 							}
-							return { block: true, reason: `[hook] User denied: ${question}` };
+							return { block: true, reason: `用户拒绝: ${question}` };
 						}
-						return { block: true, reason: `[hook] Confirmation required (no UI available): ${question}` };
+						return { block: true, reason: `需要确认但当前没有可用 UI: ${question}` };
 					}
 					return { block: true, reason: result.reason };
 				}
@@ -310,6 +331,7 @@ export default function (pi: ExtensionAPI) {
 			});
 		}
 		return {
+			runtimeEnabled,
 			sources: configSources.map(s => ({
 				path: s.path,
 				scope: s.scope,

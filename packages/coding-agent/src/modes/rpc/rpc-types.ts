@@ -616,6 +616,9 @@ export type RpcExtensionUIRequest =
 				toolName?: string;
 				matcher?: string;
 				command?: string;
+				hookCommand?: string;
+				eventName?: string;
+				source?: string;
 				reason?: string;
 			};
 	  }

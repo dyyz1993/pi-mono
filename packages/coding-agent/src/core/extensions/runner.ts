@@ -255,6 +255,7 @@ export class ExtensionRunner {
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
+	private getPermissionModeFn: () => string = () => "auto";
 	private _currentExtensionName = "";
 	private getProjectRootFn: () => string = () => this.cwd;
 	private getSessionDataDirFn: () => string = () => "";
@@ -312,6 +313,10 @@ export class ExtensionRunner {
 
 	setRespondUIFn(fn: (id: string, result: import("./types.ts").UIEventResult) => () => void): void {
 		this.respondUIFn = fn;
+	}
+
+	setPermissionModeFn(fn: () => string): void {
+		this.getPermissionModeFn = fn;
 	}
 
 	bindCore(
@@ -859,6 +864,10 @@ export class ExtensionRunner {
 			get model() {
 				runner.assertActive();
 				return getModel();
+			},
+			get permissionMode() {
+				runner.assertActive();
+				return runner.getPermissionModeFn();
 			},
 			isIdle: () => {
 				runner.assertActive();

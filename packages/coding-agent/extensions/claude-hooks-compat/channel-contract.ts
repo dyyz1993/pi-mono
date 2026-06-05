@@ -17,6 +17,14 @@ export interface HooksChannelContract extends ChannelContract {
 			params: Record<string, never>;
 			return: { ok: boolean };
 		};
+		"hooks.getStatus": {
+			params: Record<string, never>;
+			return: { enabled: boolean };
+		};
+		"hooks.setEnabled": {
+			params: { enabled: boolean };
+			return: { enabled: boolean };
+		};
 	};
 	events: {
 		hook_executed: HookLogEntry;

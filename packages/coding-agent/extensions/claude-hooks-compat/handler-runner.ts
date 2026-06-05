@@ -351,42 +351,32 @@ export function interpretHookOutput(output: HookOutput): {
 	retry?: boolean;
 } {
 	if (output.exitCode === 2) {
-		return { shouldBlock: true, reason: output.stderr || "Blocked by hook" };
+		return { shouldBlock: true, reason: extractHookMessage(output, "Blocked by hook") };
 	}
 
 	// Exit code 3 = ask user confirmation (treated as block in headless/RPC mode)
 	if (output.exitCode === 3) {
-		let reason = output.stderr || "";
-		if (!reason && output.stdout.trim().startsWith("{")) {
-			try {
-				const parsed = JSON.parse(output.stdout.trim());
-				reason = parsed.reason || parsed.question || "";
-			} catch {
-				reason = output.stdout.trim();
-			}
-		}
-		if (!reason) reason = output.stdout.trim() || "Confirmation required by hook";
-		return { shouldBlock: true, reason };
+		return { shouldBlock: true, reason: extractHookMessage(output, "Confirmation required by hook") };
 	}
 
 	if (output.parsed) {
 		const p = output.parsed;
 
 		if (p.continue === false) {
-			return { shouldBlock: true, reason: p.stopReason || "Hook stopped execution" };
+			return { shouldBlock: true, reason: extractHookMessage(output, "Hook stopped execution") };
 		}
 
 		if (p.ok === false) {
-			return { shouldBlock: true, reason: p.reason || "Blocked by hook" };
+			return { shouldBlock: true, reason: extractHookMessage(output, "Blocked by hook") };
 		}
 
 		if (p.decision === "block") {
-			return { shouldBlock: true, reason: p.reason || "Blocked by hook" };
+			return { shouldBlock: true, reason: extractHookMessage(output, "Blocked by hook") };
 		}
 
 		const hso = p.hookSpecificOutput;
 		if (hso?.permissionDecision === "deny") {
-			return { shouldBlock: true, reason: hso.permissionDecisionReason || "Denied by hook" };
+			return { shouldBlock: true, reason: extractHookMessage(output, "Denied by hook") };
 		}
 
 		return {
@@ -401,4 +391,36 @@ export function interpretHookOutput(output: HookOutput): {
 	}
 
 	return { shouldBlock: false, reason: "" };
+}
+
+function extractHookMessage(output: HookOutput, fallback: string): string {
+	const parsed = output.parsed ?? parseOutputJson(output.stdout);
+	const parsedMessage = parsed
+		? firstString(
+				parsed.hookSpecificOutput?.permissionDecisionReason,
+				parsed.reason,
+				parsed.question,
+				parsed.stopReason,
+				parsed.systemMessage,
+			)
+		: "";
+	return firstString(parsedMessage, output.stdout, output.stderr, fallback) || fallback;
+}
+
+function firstString(...values: Array<string | undefined>): string {
+	for (const value of values) {
+		const trimmed = value?.trim();
+		if (trimmed) return trimmed;
+	}
+	return "";
+}
+
+function parseOutputJson(stdout: string): HookOutput["parsed"] | undefined {
+	const trimmed = stdout.trim();
+	if (!trimmed.startsWith("{")) return undefined;
+	try {
+		return JSON.parse(trimmed) as HookOutput["parsed"];
+	} catch {
+		return undefined;
+	}
 }

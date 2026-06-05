@@ -56,6 +56,7 @@ export interface HookOutput {
 export interface HookParsedOutput {
 	decision?: string;
 	reason?: string;
+	question?: string;
 	ok?: boolean;
 	continue?: boolean;
 	stopReason?: string;
