@@ -1390,6 +1390,7 @@ export class SessionManager {
 	getChildren(parentId: string): SessionEntry[] {
 		const children: SessionEntry[] = [];
 		for (const entry of this.byId.values()) {
+			if (entry.type === "leaf_pointer") continue;
 			if (entry.parentId === parentId) {
 				children.push(entry);
 			}
@@ -1479,7 +1480,7 @@ export class SessionManager {
 	 * Orphaned entries (broken parent chain) are also returned as roots.
 	 */
 	getTree(): SessionTreeNode[] {
-		const entries = this.getEntries();
+		const entries = this.getEntries().filter((entry) => entry.type !== "leaf_pointer");
 		const nodeMap = new Map<string, SessionTreeNode>();
 		const roots: SessionTreeNode[] = [];
 

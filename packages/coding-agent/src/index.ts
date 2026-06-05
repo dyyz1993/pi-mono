@@ -15,6 +15,20 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
+export type {
+	AgentConfig,
+	AgentHook,
+	AgentHookEntry,
+	AgentHooks,
+	AgentScope,
+} from "./core/agent-types.ts";
+// Agent types
+export {
+	discoverAgents,
+	formatAgentList,
+	getBuiltinAgents,
+	loadAgentsFromDir,
+} from "./core/agent-types.ts";
 // Auth and model registry
 export {
 	type ApiKeyCredential,
@@ -31,8 +45,8 @@ export {
 	type BranchPreparation,
 	type BranchSummaryResult,
 	type CollectEntriesResult,
-	type CompactionResult,
 	type CompactionPreparation,
+	type CompactionResult,
 	type CutPointResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -65,6 +79,7 @@ export type {
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
+	CallLLMOptions,
 	Channel,
 	ChannelContract,
 	ChannelDataMessage,
@@ -134,18 +149,17 @@ export type {
 	ToolInfo,
 	ToolRenderResultOptions,
 	ToolResultEvent,
+	ToolResultEventResult,
 	TurnEndEvent,
 	TurnStartEvent,
 	TypedChannel,
+	UIEvent,
+	UIEventResult,
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,
 	WorkingIndicatorOptions,
 	WriteToolCallEvent,
-	CallLLMOptions,
-	ToolResultEventResult,
-	UIEvent,
-	UIEventResult,
 } from "./core/extensions/index.ts";
 export {
 	ChannelManager,
@@ -169,6 +183,8 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+// File store
+export type { GCResult } from "./core/file-store/index.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";
@@ -284,10 +300,6 @@ export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	type EditOperations,
-	OutputCollector,
-	spawnManagedProcess,
-	type SpawnedProcess,
-	type SpawnOptions,
 	type EditToolDetails,
 	type EditToolInput,
 	type EditToolOptions,
@@ -304,10 +316,14 @@ export {
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
+	OutputCollector,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,
 	type ReadToolOptions,
+	type SpawnedProcess,
+	type SpawnOptions,
+	spawnManagedProcess,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
@@ -400,22 +416,7 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.ts";
-// Agent types
-export {
-	discoverAgents,
-	formatAgentList,
-	getBuiltinAgents,
-	loadAgentsFromDir,
-} from "./core/agent-types.ts";
-export type {
-	AgentConfig,
-	AgentHook,
-	AgentHookEntry,
-	AgentHooks,
-	AgentScope,
-} from "./core/agent-types.ts";
-// File store
-export type { GCResult } from "./core/file-store/index.ts";
+export { waitForChildProcess } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
@@ -423,4 +424,3 @@ export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 // Shell utilities
 export { getShellConfig, killProcessTree, sanitizeBinaryOutput } from "./utils/shell.ts";
-export { waitForChildProcess } from "./utils/child-process.ts";
