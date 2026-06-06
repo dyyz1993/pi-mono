@@ -17,9 +17,10 @@
  * Three capabilities:
  *
  * 1. **Global truncation fallback**: Intercepts `tool_result` for tools that
- *    don't self-manage truncation. Applies 50KB/2000-line limit, saves full
- *    output to `<sessionDataDir>/tool-output/`, returns truncated preview
- *    with actionable file path hint.
+ *    don't self-manage truncation. Applies 50KB/2000-line limit with head+tail
+ *    preview (70% head / 30% tail), saves full output to
+ *    `/tmp/<project-slug>/tool-output/`, returns truncated preview with
+ *    actionable file path hint.
  *
  * 2. **Tool limit optimization**: Intercepts `tool_call` to enforce lower
  *    result limits on find (1000 -> 100) and ls (500 -> 100), matching
@@ -41,7 +42,6 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, existsSync, writeFileSync as fsWriteFileSync } from "node:fs";
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve as nodePathResolve } from "node:path";
 import { createRequire } from "node:module";
 import { Type } from "typebox";
@@ -66,6 +66,8 @@ const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
 const DEFAULT_FIND_LIMIT = 100;
 /** Matches OpenCode's ls limit of 100 */
 const DEFAULT_LS_LIMIT = 100;
+/** Head portion ratio for head+tail truncation (0.7 = 70% head, 30% tail) */
+const HEAD_RATIO = 0.7;
 
 /**
  * Built-in tools that self-manage truncation.
@@ -116,10 +118,58 @@ interface TruncationInfo {
 }
 
 /**
- * Truncate text content, keeping the tail (last N lines).
- * Mirrors OpenCode's `Truncate.output()` with direction="tail".
- * Saves full content to `<sessionDataDir>/tool-output/` when truncated
- * (matches OpenCode's `<data-dir>/tool-output/` pattern).
+ * Collect lines within budget, from head or tail direction.
+ * Used by the head+tail truncation strategy.
+ */
+function collectLinesBudget(
+	lines: string[],
+	maxLines: number,
+	maxBytes: number,
+	direction: "head" | "tail",
+): { lines: string[]; bytes: number; truncatedBy: "lines" | "bytes" } {
+	const result: string[] = [];
+	let bytes = 0;
+	let truncatedBy: "lines" | "bytes" = "lines";
+
+	if (direction === "head") {
+		for (let i = 0; i < lines.length && result.length < maxLines; i++) {
+			const lineBytes = Buffer.byteLength(lines[i], "utf-8") + (result.length > 0 ? 1 : 0);
+			if (bytes + lineBytes > maxBytes) {
+				truncatedBy = "bytes";
+				break;
+			}
+			result.push(lines[i]);
+			bytes += lineBytes;
+		}
+		if (result.length >= maxLines && bytes <= maxBytes) truncatedBy = "lines";
+	} else {
+		for (let i = lines.length - 1; i >= 0 && result.length < maxLines; i--) {
+			const lineBytes = Buffer.byteLength(lines[i], "utf-8") + (result.length > 0 ? 1 : 0);
+			if (bytes + lineBytes > maxBytes) {
+				truncatedBy = "bytes";
+				break;
+			}
+			result.unshift(lines[i]);
+			bytes += lineBytes;
+		}
+		if (result.length >= maxLines && bytes <= maxBytes) truncatedBy = "lines";
+	}
+
+	return { lines: result, bytes, truncatedBy };
+}
+
+/**
+ * Build inline notice between head and tail sections.
+ */
+function buildInlineNotice(totalLines: number, headLines: number, tailLines: number, omittedLines: number): string {
+	return `--- ... ${omittedLines} lines omitted (showing ${headLines} head + ${tailLines} tail of ${totalLines} total) ... ---`;
+}
+
+/**
+ * Truncate text content using head+tail strategy (70% head / 30% tail).
+ * Keeps the beginning (for context) and the end (for latest results),
+ * with an inline notice between them indicating what was omitted.
+ * Saves full content to `/tmp/<project-slug>/tool-output/` when truncated.
  */
 function truncateOutput(
 	content: string,
@@ -143,43 +193,52 @@ function truncateOutput(
 		};
 	}
 
-	// Collect lines from the end (tail direction)
-	const outputLinesArr: string[] = [];
-	let outputBytesCount = 0;
-	let truncatedBy: "lines" | "bytes" = "lines";
+	// Split budget: 70% head, 30% tail
+	const headBudget = Math.max(1, Math.floor(config.maxLines * HEAD_RATIO));
+	const tailBudget = Math.max(1, config.maxLines - headBudget);
 
-	for (let i = lines.length - 1; i >= 0 && outputLinesArr.length < config.maxLines; i--) {
-		const line = lines[i];
-		const lineBytes = Buffer.byteLength(line, "utf-8") + (outputLinesArr.length > 0 ? 1 : 0);
+	// Collect head lines
+	const headResult = collectLinesBudget(lines, headBudget, config.maxBytes, "head");
 
-		if (outputBytesCount + lineBytes > config.maxBytes) {
-			truncatedBy = "bytes";
-			break;
-		}
+	// Collect tail lines from the portion after the head
+	const tailStartIndex = Math.min(lines.length, headResult.lines.length);
+	const tailSourceLines = lines.slice(tailStartIndex);
+	const tailResult = collectLinesBudget(tailSourceLines, tailBudget, config.maxBytes, "tail");
 
-		outputLinesArr.unshift(line);
-		outputBytesCount += lineBytes;
+	const headLines = headResult.lines;
+	const tailLines = tailResult.lines;
+	const omittedLines = totalLines - headLines.length - tailLines.length;
+
+	// Assemble: head + inline notice + tail
+	const parts: string[] = [];
+	if (headLines.length > 0) {
+		parts.push(headLines.join("\n"));
+	}
+	if (omittedLines > 0) {
+		parts.push(buildInlineNotice(totalLines, headLines.length, tailLines.length, omittedLines));
+	}
+	if (tailLines.length > 0) {
+		parts.push(tailLines.join("\n"));
 	}
 
-	if (outputLinesArr.length >= config.maxLines && outputBytesCount <= config.maxBytes) {
-		truncatedBy = "lines";
-	}
-
-	const truncatedContent = outputLinesArr.join("\n");
+	const truncatedContent = parts.join("\n\n");
 	const finalOutputBytes = Buffer.byteLength(truncatedContent, "utf-8");
 	let fullOutputPath: string | undefined;
 
-	// Save full output to disk (matches OpenCode's behavior)
+	// Save full output to disk
 	if (config.saveToFile) {
 		fullOutputPath = saveFullOutput(content, ctx);
 	}
+
+	// Determine truncatedBy: if either head or tail was byte-limited, report bytes
+	const truncatedBy = headResult.truncatedBy === "bytes" || tailResult.truncatedBy === "bytes" ? "bytes" : "lines";
 
 	return {
 		truncated: true,
 		content: truncatedContent,
 		totalLines,
 		totalBytes,
-		outputLines: outputLinesArr.length,
+		outputLines: headLines.length + tailLines.length,
 		outputBytes: finalOutputBytes,
 		truncatedBy,
 		fullOutputPath,
@@ -188,26 +247,23 @@ function truncateOutput(
 
 /**
  * Save full output to disk.
- * Uses sessionDataDir/tool-output/ to match OpenCode's <data-dir>/tool-output/.
- * Falls back to tmpdir if sessionDataDir is unavailable.
+ * Uses `/tmp/<project-slug>/tool-output/` to keep temp files out of session data.
  */
 function saveFullOutput(content: string, ctx: ExtensionContext): string | undefined {
 	try {
 		const id = `output-${Date.now()}-${randomBytes(4).toString("hex")}`;
-		// Prefer sessionDataDir if it's an absolute path (production),
-		// otherwise fall back to tmpdir (works reliably in tests too)
-		const rawBaseDir = ctx.sessionDataDir;
+		// Derive project slug from cwd or sessionDataDir
+		const cwd = ctx.cwd ?? process.cwd();
+		const projectSlug = cwd.split("/").pop() ?? "pi";
 		let baseDir: string;
-		if (rawBaseDir && rawBaseDir.startsWith("/")) {
-			baseDir = rawBaseDir;
-		} else {
-			baseDir = join(tmpdir(), "pi-output-guard");
-		}
+		const rawBaseDir = `/tmp/${projectSlug}`;
+		// Use /tmp/<project-slug> as the base directory
+		baseDir = rawBaseDir;
 		const dir = join(baseDir, "tool-output");
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });
 		}
-		const filePath = join(dir, `${id}.log`);
+		const filePath = join(dir, `${id}.txt`);
 		fsWriteFileSync(filePath, content);
 		return filePath;
 	} catch {
@@ -484,7 +540,7 @@ function buildTruncationNotice(info: TruncationInfo, config: OutputGuardConfig):
 
 	if (info.fullOutputPath) {
 		parts.push(`Full output saved to: ${info.fullOutputPath}`);
-		parts.push("Use the read tool to view the full output.");
+		parts.push("Use grep to search within it, or read with offset to paginate.");
 	}
 
 	return parts.join("\n");
