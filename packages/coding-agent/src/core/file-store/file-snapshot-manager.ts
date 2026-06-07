@@ -149,13 +149,15 @@ export class FileSnapshotManager {
 	private turnIndex = 0;
 	private snapshotIndex = new Map<string, SnapshotWithEntryId>();
 	private turnIndexMap = new Map<number, string>();
+	private initialized = false;
 
 	constructor(git: InternalGit) {
 		this.git = git;
 	}
 
 	initialize(cwd: string): void {
-		if (this.snapshotIndex.size > 0) return;
+		if (this.initialized || this.snapshotIndex.size > 0) return;
+		this.initialized = true;
 		const files = readFilteredWorkingDir(this.git, cwd);
 		this.sessionStartTreeHash = files.size > 0 ? this.git.writeTree(files).treeHash : null;
 		this.lastCommittedTreeHash = null;
@@ -224,6 +226,7 @@ export class FileSnapshotManager {
 		this.lastCommittedTreeHash = null;
 		this.sessionStartTreeHash = null;
 		this.turnIndex = 0;
+		this.initialized = false;
 
 		const byId = new Map(entries.map((entry) => [entry.id, entry] as const));
 		for (const entry of entries) {
@@ -434,12 +437,8 @@ export class FileSnapshotManager {
 		// Group files by fromHash so we read each tree at most once
 		const fromHashGroups = new Map<string, string[]>();
 		for (const { filePath, fromEntryId } of filePaths) {
-			const fromSnap = fromEntryId
-				? snapshots.find((s) => s.entryId === fromEntryId)
-				: undefined;
-			const fromHash = fromEntryId
-				? (fromSnap?.snapshotTreeHash ?? null)
-				: this.sessionStartTreeHash;
+			const fromSnap = fromEntryId ? snapshots.find((s) => s.entryId === fromEntryId) : undefined;
+			const fromHash = fromEntryId ? (fromSnap?.snapshotTreeHash ?? null) : this.sessionStartTreeHash;
 			const key = fromHash ?? "";
 			const group = fromHashGroups.get(key);
 			if (group) {
