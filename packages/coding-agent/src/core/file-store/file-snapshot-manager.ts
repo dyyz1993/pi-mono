@@ -412,6 +412,60 @@ export class FileSnapshotManager {
 		return [...fileMap.values()].sort((a, b) => a.path.localeCompare(b.path));
 	}
 
+	/**
+	 * Batch-optimized: get old/new content for multiple files in a single pass.
+	 *
+	 * Reads each unique tree hash ONCE instead of once per file.
+	 * Complexity: O(M + N) instead of O(N × M) where N = files, M = project size.
+	 *
+	 * Typical usage: review.pending needs content for ~50 modified files.
+	 * With getFileDiff() that's 50 × 2 readTree() calls (each reading ALL project files).
+	 * With this method it's typically just 2 readTree() calls total.
+	 */
+	getBatchFileContents(
+		filePaths: Array<{ filePath: string; fromEntryId?: string }>,
+	): Map<string, { oldContent: string | null; newContent: string | null }> {
+		const result = new Map<string, { oldContent: string | null; newContent: string | null }>();
+		if (filePaths.length === 0) return result;
+
+		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
+		const toHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
+
+		// Group files by fromHash so we read each tree at most once
+		const fromHashGroups = new Map<string, string[]>();
+		for (const { filePath, fromEntryId } of filePaths) {
+			const fromSnap = fromEntryId
+				? snapshots.find((s) => s.entryId === fromEntryId)
+				: undefined;
+			const fromHash = fromEntryId
+				? (fromSnap?.snapshotTreeHash ?? null)
+				: this.sessionStartTreeHash;
+			const key = fromHash ?? "";
+			const group = fromHashGroups.get(key);
+			if (group) {
+				group.push(filePath);
+			} else {
+				fromHashGroups.set(key, [filePath]);
+			}
+		}
+
+		// Read toTree ONCE (shared by all files)
+		const toTree = this.readTree(toHash);
+
+		// For each unique fromHash, read tree once and extract all files in that group
+		for (const [fromHashKey, paths] of fromHashGroups) {
+			const fromTree = this.readTree(fromHashKey || null);
+			for (const filePath of paths) {
+				result.set(filePath, {
+					oldContent: fromTree.get(filePath) ?? null,
+					newContent: toTree.get(filePath) ?? null,
+				});
+			}
+		}
+
+		return result;
+	}
+
 	getFileDiff(options: {
 		filePath: string;
 		fromEntryId?: string;
@@ -471,15 +525,35 @@ export class FileSnapshotManager {
 		let modified = 0;
 		let deleted = 0;
 
+		for (const file of files) {
+			if (file.status === "added") added++;
+			if (file.status === "modified") modified++;
+			if (file.status === "deleted") deleted++;
+		}
+
+		// Batch-optimized: read trees ONCE for all files (all share same fromEntryId)
+		const fileRequests = files.map((file) => ({
+			filePath: file.path,
+			fromEntryId: options?.fromEntryId,
+		}));
+		const batchContents = this.getBatchFileContents(fileRequests);
+
 		return {
 			files: files.map((file) => {
-				if (file.status === "added") added++;
-				if (file.status === "modified") modified++;
-				if (file.status === "deleted") deleted++;
+				const content = batchContents.get(file.path);
 				let diff: FileDiffInfo | null = null;
-				try {
-					diff = this.getFileDiff({ filePath: file.path, ...options });
-				} catch {}
+				if (content) {
+					const oldContent = content.oldContent;
+					const newContent = content.newContent;
+					diff = {
+						path: file.path,
+						oldContent,
+						newContent,
+						oldHash: oldContent === null ? null : this.git.hashContent(oldContent),
+						newHash: newContent === null ? null : this.git.hashContent(newContent),
+						unifiedDiff: generateUnifiedDiff(oldContent, newContent, file.path),
+					};
+				}
 				return {
 					path: file.path,
 					status: file.status,

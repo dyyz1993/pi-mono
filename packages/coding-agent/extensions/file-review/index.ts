@@ -118,7 +118,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		return { ok: true };
 	});
 
-	channel?.handle("review.pending", async () => {
+	channel?.handle("review.pending", () => {
 		// Aggregate by path: track FIRST and LATEST status for each file.
 		// Net-zero rule: if first=added AND latest=deleted (never approved), skip it.
 		type PathMeta = { firstStatus: LiveChange["status"]; latestTurnIndex: number; latestFileStatus: LiveChange["status"]; latestTimestamp: number };
@@ -127,7 +127,6 @@ export default function fileReview(pi: ExtensionAPI) {
 			for (const change of record.changes) {
 				const existing = pathMeta.get(change.path);
 				if (!existing) {
-					// First time seeing this path
 					pathMeta.set(change.path, {
 						firstStatus: change.status,
 						latestTurnIndex: record.turnIndex,
@@ -135,7 +134,6 @@ export default function fileReview(pi: ExtensionAPI) {
 						latestTimestamp: record.timestamp,
 					});
 				} else {
-					// Update latest only
 					existing.latestTurnIndex = record.turnIndex;
 					existing.latestFileStatus = change.status;
 					existing.latestTimestamp = record.timestamp;
@@ -143,27 +141,20 @@ export default function fileReview(pi: ExtensionAPI) {
 			}
 		}
 
-		// Get diff data from fileSnapshotManager for content info.
-		// IMPORTANT: yield to event loop periodically to avoid blocking.
-		// getFileDiff() does synchronous git object reads which can take
-		// 10+ seconds for projects with many modified files.
+		// Batch-optimized: read each tree ONCE for all files.
+		// Previously called getFileDiff() per file → O(N×M) disk reads.
+		// Now uses getBatchFileContents() → O(M) total.
 		const mgr = ctx?.fileSnapshotManager;
 		const diffMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
-		if (mgr && ctx) {
+		if (mgr && pathMeta.size > 0) {
 			try {
-				let fileIndex = 0;
-				for (const [path] of pathMeta) {
-					// Yield every 3 files to let pending RPC requests through
-					if (++fileIndex % 3 === 0) {
-						await new Promise<void>((resolve) => setImmediate(resolve));
-					}
-					const approvedEntryId = approvedSnapshotEntry.get(path);
-					const diff = approvedEntryId
-						? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId, cwd: ctx.cwd })
-						: mgr.getFileDiff({ filePath: path, cwd: ctx.cwd });
-					if (diff) {
-						diffMap.set(path, { oldContent: diff.oldContent, newContent: diff.newContent });
-					}
+				const fileRequests = [...pathMeta.keys()].map((path) => ({
+					filePath: path,
+					fromEntryId: approvedSnapshotEntry.get(path),
+				}));
+				const batchResult = mgr.getBatchFileContents(fileRequests);
+				for (const [path, content] of batchResult) {
+					diffMap.set(path, content);
 				}
 			} catch {}
 		}
