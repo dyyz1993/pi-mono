@@ -2,7 +2,11 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
-import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
+import {
+	type AgentSessionRuntimeDiagnostic,
+	type AgentSessionServices,
+	createAgentSessionFromServices,
+} from "./agent-session-services.ts";
 import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
@@ -197,14 +201,32 @@ export class AgentSessionRuntime {
 		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
-				cwd: sessionManager.getCwd(),
-				agentDir: this.services.agentDir,
+
+		const targetCwd = sessionManager.getCwd();
+		if (targetCwd === this.cwd) {
+			const created = await createAgentSessionFromServices({
+				services: this._services,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
-			}),
-		);
+				model: this.session.model,
+				thinkingLevel: this.session.thinkingLevel,
+				scopedModels: [...this.session.scopedModels],
+			});
+			this.apply({
+				...created,
+				services: this._services,
+				diagnostics: this._diagnostics,
+			});
+		} else {
+			this.apply(
+				await this.createRuntime({
+					cwd: targetCwd,
+					agentDir: this.services.agentDir,
+					sessionManager,
+					sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+				}),
+			);
+		}
 		await this.finishSessionReplacement(options?.withSession);
 		return { cancelled: false };
 	}
