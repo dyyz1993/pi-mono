@@ -1,4 +1,5 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -58,6 +59,7 @@ export interface ResolvedLspConfig {
 
 export interface LspConfigResolver {
 	resolve(): ResolvedLspConfig;
+	resolveAsync(): Promise<ResolvedLspConfig>;
 }
 
 export interface LspConfigResolverOptions {
@@ -75,8 +77,13 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 	const warn = options.warn ?? ((message: string) => console.warn(message));
 	const debug = options.debug ?? ((message: string) => console.debug(message));
 
+	// Cache: async resolution fills this so sync callers can reuse it
+	let cached: ResolvedLspConfig | null = null;
+
 	return {
 		resolve(): ResolvedLspConfig {
+			if (cached) return cached;
+
 			const userConfig = loadUserConfig(homeDir, warn);
 			const projectConfig = loadConfigFromDir(join(cwd, ".pi"), warn);
 			const config = mergeConfig(userConfig, projectConfig);
@@ -85,20 +92,24 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 			const searchDirs = getSearchDirs(homeDir, env);
 			const resolvedServers = resolveServers(config.servers, searchDirs, cwd, homeDir, debug);
 			if (resolvedServers.length > 0) {
-				return {
+				const result = {
 					serverCommand: resolvedServers[0]?.command,
 					servers: resolvedServers,
 					maxOpenFiles: resolvedMaxOpenFiles,
 				};
+				cached = result;
+				return result;
 			}
 
 			const explicitCommand = resolveCommand(config.serverCommand, searchDirs, cwd, homeDir);
 			if (explicitCommand) {
-				return {
+				const result = {
 					serverCommand: explicitCommand,
 					servers: [{ name: DEFAULT_SERVER_NAME, command: explicitCommand }],
 					maxOpenFiles: resolvedMaxOpenFiles,
 				};
+				cached = result;
+				return result;
 			}
 
 			const candidates =
@@ -121,18 +132,91 @@ export function createLspConfigResolver(options: LspConfigResolverOptions = {}):
 			}
 
 			if (resolvedDefaultServers.length > 0) {
-				return {
+				const result = {
 					serverCommand: resolvedDefaultServers[0]?.command,
 					servers: resolvedDefaultServers as ResolvedLspServerConfig[],
 					maxOpenFiles: resolvedMaxOpenFiles,
 				};
+				cached = result;
+				return result;
 			}
 
-			return {
+			const result = {
 				serverCommand: undefined,
 				servers: [],
 				maxOpenFiles: resolvedMaxOpenFiles,
 			};
+			cached = result;
+			return result;
+		},
+
+		async resolveAsync(): Promise<ResolvedLspConfig> {
+			if (cached) return cached;
+
+			const userConfig = await loadUserConfigAsync(homeDir, warn);
+			const projectConfig = await loadConfigFromDirAsync(join(cwd, ".pi"), warn);
+			const config = mergeConfig(userConfig, projectConfig);
+			const resolvedMaxOpenFiles = config.maxOpenFiles ?? 30;
+
+			const searchDirs = getSearchDirs(homeDir, env);
+			const resolvedServers = await resolveServersAsync(config.servers, searchDirs, cwd, homeDir, debug);
+			if (resolvedServers.length > 0) {
+				const result = {
+					serverCommand: resolvedServers[0]?.command,
+					servers: resolvedServers,
+					maxOpenFiles: resolvedMaxOpenFiles,
+				};
+				cached = result;
+				return result;
+			}
+
+			const explicitCommand = await resolveCommandAsync(config.serverCommand, searchDirs, cwd, homeDir);
+			if (explicitCommand) {
+				const result = {
+					serverCommand: explicitCommand,
+					servers: [{ name: DEFAULT_SERVER_NAME, command: explicitCommand }],
+					maxOpenFiles: resolvedMaxOpenFiles,
+				};
+				cached = result;
+				return result;
+			}
+
+			const candidates =
+				config.serverCandidates && config.serverCandidates.length > 0
+					? config.serverCandidates
+					: DEFAULT_SERVER_CANDIDATES;
+
+			const resolvedDefaultServers: NormalizedLspServerConfig[] = [];
+			for (const candidate of candidates) {
+				const candidateParts = typeof candidate === "string" ? [candidate] : candidate;
+				const resolvedCandidate = await resolveCommandAsync(candidateParts, searchDirs, cwd, homeDir);
+				if (resolvedCandidate) {
+					resolvedDefaultServers.push({
+						name: candidateParts[0],
+						command: resolvedCandidate,
+						fileTypes: undefined,
+						disabled: undefined,
+					});
+				}
+			}
+
+			if (resolvedDefaultServers.length > 0) {
+				const result = {
+					serverCommand: resolvedDefaultServers[0]?.command,
+					servers: resolvedDefaultServers as ResolvedLspServerConfig[],
+					maxOpenFiles: resolvedMaxOpenFiles,
+				};
+				cached = result;
+				return result;
+			}
+
+			const result = {
+				serverCommand: undefined,
+				servers: [],
+				maxOpenFiles: resolvedMaxOpenFiles,
+			};
+			cached = result;
+			return result;
 		},
 	};
 }
@@ -570,4 +654,149 @@ function isExecutable(filePath: string): boolean {
 		console.debug("[lsp] executable check failed:", err instanceof Error ? err.message : err);
 		return false;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Async versions — use fs/promises to avoid blocking the Node.js event loop.
+// These mirror the sync functions above and are called from resolveAsync().
+// ---------------------------------------------------------------------------
+
+async function isExecutableAsync(filePath: string): Promise<boolean> {
+	try {
+		await access(filePath, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function resolveBinaryAsync(
+	binary: string,
+	searchDirs: string[],
+	cwd: string,
+	homeDir: string,
+): Promise<string | undefined> {
+	const expandedBinary = expandHome(binary, homeDir);
+
+	if (isPathLike(expandedBinary)) {
+		const resolvedPath = isAbsolute(expandedBinary) ? expandedBinary : resolve(cwd, expandedBinary);
+		return (await isExecutableAsync(resolvedPath)) ? resolvedPath : undefined;
+	}
+
+	for (const directory of searchDirs) {
+		for (const candidateName of executableCandidates(binary)) {
+			const fullPath = join(directory, candidateName);
+			if (await isExecutableAsync(fullPath)) {
+				return fullPath;
+			}
+		}
+	}
+
+	return undefined;
+}
+
+async function resolveCommandAsync(
+	command: string[] | undefined,
+	searchDirs: string[],
+	cwd: string,
+	homeDir: string,
+): Promise<string[] | undefined> {
+	if (!command || command.length === 0) {
+		return undefined;
+	}
+
+	const [binary, ...args] = command;
+	const resolvedBinary = await resolveBinaryAsync(binary, searchDirs, cwd, homeDir);
+	if (!resolvedBinary) {
+		return undefined;
+	}
+
+	return [resolvedBinary, ...args];
+}
+
+async function resolveServersAsync(
+	servers: NormalizedLspServerConfig[] | undefined,
+	searchDirs: string[],
+	cwd: string,
+	homeDir: string,
+	debug: (message: string) => void,
+): Promise<ResolvedLspServerConfig[]> {
+	if (!servers) {
+		return [];
+	}
+
+	debug(`[lsp] Resolving ${servers.length} server(s), searchDirs: ${searchDirs.length}`);
+
+	const resolved: ResolvedLspServerConfig[] = [];
+	for (const server of servers) {
+		if (server.disabled === true || !server.command || server.command.length === 0) {
+			debug(`[lsp] Skipping server "${server.name}": disabled=${server.disabled}, command=${JSON.stringify(server.command)}`);
+			continue;
+		}
+
+		const command = await resolveCommandAsync(server.command, searchDirs, cwd, homeDir);
+		if (!command) {
+			debug(`[lsp] FAILED to resolve binary "${server.command[0]}" for server "${server.name}" — searched ${searchDirs.length} dirs`);
+			continue;
+		}
+
+		debug(`[lsp] Resolved server "${server.name}": ${command.join(" ")}`);
+		resolved.push({
+			name: server.name,
+			command,
+			fileTypes: server.fileTypes,
+		});
+	}
+
+	debug(`[lsp] Resolved ${resolved.length}/${servers.length} server(s)`);
+	return resolved;
+}
+
+async function parseConfigFileAsync(
+	filePath: string,
+	warn: (message: string) => void,
+): Promise<LspConfigFile | undefined> {
+	try {
+		const content = await readFile(filePath, "utf-8");
+		const parsed = filePath.endsWith(".json") ? JSON.parse(content) : parseYaml(content);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			warn(`Ignoring non-object LSP config in ${filePath}`);
+			return undefined;
+		}
+		return parsed as LspConfigFile;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		warn(`Failed to parse LSP config ${filePath}: ${message}`);
+		return undefined;
+	}
+}
+
+async function loadConfigFromDirAsync(
+	baseDir: string,
+	warn: (message: string) => void,
+): Promise<NormalizedLspConfig> {
+	for (const filename of CONFIG_FILENAMES) {
+		const filePath = join(baseDir, filename);
+		try {
+			await access(filePath);
+		} catch {
+			continue;
+		}
+
+		const parsed = await parseConfigFileAsync(filePath, warn);
+		if (parsed) {
+			return normalizeConfig(parsed);
+		}
+	}
+
+	return {};
+}
+
+async function loadUserConfigAsync(
+	homeDir: string,
+	warn: (message: string) => void,
+): Promise<NormalizedLspConfig> {
+	const userRootConfig = await loadConfigFromDirAsync(join(homeDir, ".pi"), warn);
+	const userAgentConfig = await loadConfigFromDirAsync(join(homeDir, ".pi", "agent"), warn);
+	return mergeConfig(userRootConfig, userAgentConfig);
 }

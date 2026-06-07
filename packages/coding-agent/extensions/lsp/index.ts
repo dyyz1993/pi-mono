@@ -162,14 +162,14 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			// registerChannel is only available in RPC mode; gracefully degrade in TUI/print mode
 		}
 
-		const config = configResolver.resolve();
+		const config = await configResolver.resolveAsync();
 
 		// Build lazy activation index
 		lazyActivator.buildIndex(config.servers);
 
 		// Scan project for file counts to determine primary languages
 		const cwd = process.cwd();
-		const scanResult = scanProjectFileTypes(cwd);
+		const scanResult = await scanProjectFileTypes(cwd);
 		lazyActivator.markPrimary(scanResult.extensionCounts);
 
 		const primaryNames = lazyActivator.getPrimaryServerNames();

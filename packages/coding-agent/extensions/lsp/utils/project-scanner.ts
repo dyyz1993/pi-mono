@@ -1,7 +1,10 @@
-import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { exec } from "node:child_process";
+import { access } from "node:fs/promises";
+import { promisify } from "node:util";
 import { extname, join } from "node:path";
 import type { ResolvedLspServerConfig } from "../config/resolver.ts";
+
+const execAsync = promisify(exec);
 
 export interface ProjectScanResult {
 	discoveredExtensions: Set<string>;
@@ -70,8 +73,11 @@ function isUnderExcludedDir(filePath: string): boolean {
  * Scan the project for file types present on disk.
  * Uses `git ls-files` when available (fast, respects .gitignore),
  * falls back to a shallow `find` otherwise.
+ *
+ * Async to avoid blocking the Node.js event loop — the underlying
+ * `git ls-files` and `find` commands are spawned as child processes.
  */
-export function scanProjectFileTypes(cwd: string): ProjectScanResult {
+export async function scanProjectFileTypes(cwd: string): Promise<ProjectScanResult> {
 	const extensions = new Set<string>();
 	const extensionCounts = new Map<string, number>();
 	let fileCount = 0;
@@ -79,7 +85,7 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 	const skippedDirs = new Map<string, number>();
 
 	// Strategy 1: git ls-files (fast, respects gitignore)
-	const gitFiles = tryGitLsFiles(cwd);
+	const gitFiles = await tryGitLsFiles(cwd);
 	if (gitFiles.length > 0) {
 		let noNewExtCount = 0;
 
@@ -142,7 +148,7 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 	try {
 		const excludeArgs = [...EXCLUDED_DIRS].map((dir) => `-not -path "*/${dir}/*"`).join(" ");
 		const command = `find . -maxdepth 3 -type f ${excludeArgs} 2>/dev/null | head -${MAX_FILES_TO_SCAN}`;
-		const output = execSync(command, {
+		const { stdout: output } = await execAsync(command, {
 			cwd,
 			timeout: 3000,
 			encoding: "utf8",
@@ -185,14 +191,16 @@ export function scanProjectFileTypes(cwd: string): ProjectScanResult {
 	return { discoveredExtensions: extensions, extensionCounts, fileCount };
 }
 
-function tryGitLsFiles(cwd: string): string[] {
+async function tryGitLsFiles(cwd: string): Promise<string[]> {
 	// Check if we're in a git repo
-	if (!existsSync(join(cwd, ".git"))) {
+	try {
+		await access(join(cwd, ".git"));
+	} catch {
 		return [];
 	}
 
 	try {
-		const output = execSync("git ls-files --cached --others --exclude-standard 2>/dev/null | head -2000", {
+		const { stdout: output } = await execAsync("git ls-files --cached --others --exclude-standard 2>/dev/null | head -2000", {
 			cwd,
 			timeout: 3000,
 			encoding: "utf8",
