@@ -118,7 +118,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		return { ok: true };
 	});
 
-	channel?.handle("review.pending", () => {
+	channel?.handle("review.pending", async () => {
 		// Aggregate by path: track FIRST and LATEST status for each file.
 		// Net-zero rule: if first=added AND latest=deleted (never approved), skip it.
 		type PathMeta = { firstStatus: LiveChange["status"]; latestTurnIndex: number; latestFileStatus: LiveChange["status"]; latestTimestamp: number };
@@ -143,12 +143,20 @@ export default function fileReview(pi: ExtensionAPI) {
 			}
 		}
 
-		// Get diff data from fileSnapshotManager for content info
+		// Get diff data from fileSnapshotManager for content info.
+		// IMPORTANT: yield to event loop periodically to avoid blocking.
+		// getFileDiff() does synchronous git object reads which can take
+		// 10+ seconds for projects with many modified files.
 		const mgr = ctx?.fileSnapshotManager;
 		const diffMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
 		if (mgr && ctx) {
 			try {
+				let fileIndex = 0;
 				for (const [path] of pathMeta) {
+					// Yield every 3 files to let pending RPC requests through
+					if (++fileIndex % 3 === 0) {
+						await new Promise<void>((resolve) => setImmediate(resolve));
+					}
 					const approvedEntryId = approvedSnapshotEntry.get(path);
 					const diff = approvedEntryId
 						? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId, cwd: ctx.cwd })
