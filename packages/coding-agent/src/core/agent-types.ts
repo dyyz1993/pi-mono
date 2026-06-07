@@ -327,7 +327,7 @@ export function getBuiltinAgents(): AgentConfig[] {
 		{
 			name: "build",
 			description: "Full-stack development with read, write, edit and execution capabilities",
-			tools: ["read", "bash", "edit", "write"],
+			// No tools restriction — build agent gets ALL registered tools
 			systemPrompt: "",
 			source: "builtin",
 			filePath: "",
