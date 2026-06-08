@@ -86,7 +86,7 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.ts";
 import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
-import { PathPermissionStore } from "./path-permission-store.ts";
+import { PathPermissionStore, matchPathGlob } from "./path-permission-store.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
@@ -1127,6 +1127,13 @@ export class AgentSession {
 		}
 	}
 
+	private static readonly _SYSTEM_PATH_ALLOWLIST = [
+		"/tmp/**",
+		"/private/tmp/**",
+		"/var/folders/**",
+		"/dev/null",
+	];
+
 	private async _checkPathBoundary(
 		toolName: string,
 		args: unknown,
@@ -1143,6 +1150,11 @@ export class AgentSession {
 		// Is path inside cwd?
 		if (normalizedPath.startsWith(this._cwd + "/") || normalizedPath === this._cwd) {
 			return undefined;
+		}
+
+		// System paths: always allow (tmp, var/folders, etc.)
+		for (const pattern of AgentSession._SYSTEM_PATH_ALLOWLIST) {
+			if (matchPathGlob(normalizedPath, pattern)) return undefined;
 		}
 
 		// YOLO mode: skip approval
