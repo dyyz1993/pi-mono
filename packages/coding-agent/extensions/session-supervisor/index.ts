@@ -11,6 +11,8 @@ import type {
     TaskReport,
     GuardConfig,
     GuardCheckResult,
+    GoalState,
+    GoldResult,
 } from "./types.ts";
 import { loadConfig, DEFAULT_CONFIG } from "./config.ts";
 import { checkWithSmallModel } from "./checker.ts";
@@ -26,7 +28,7 @@ import {
     TODO_CHECK_PROMPT,
     SPECS_CHECK_PROMPT,
 } from "./prompts.ts";
-import { appendFileSync, readFileSync, existsSync } from "node:fs";
+import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 const LOG_FILE = "/tmp/supervisor-debug.log";
@@ -40,15 +42,25 @@ const DEFAULT_GUARDS: GuardConfig[] = [
     { name: "incomplete-keywords", type: "keyword", enable: true, keywords: ["TODO", "FIXME", "WIP", "HACK"] },
 ];
 
+const GOAL_RUNTIME_STATE_FILE = "supervisor-goal-runtime.json";
+
+interface GoalRuntimeState {
+    activeGoal?: GoalState;
+    lastGoldResult?: GoldResult;
+}
+
 export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     let config: SupervisorConfig = DEFAULT_CONFIG;
     let enabled = false;
     let currentState: SupervisorStatus["state"] = "idle";
     let lastCheckResult: CheckResult | undefined;
+    let activeGoal: GoalState | undefined;
+    let lastGoldResult: GoldResult | undefined;
     let schedulerInstance: Scheduler;
     let lastTaskReports: TaskReport[] = [];
     let specsIterationCount = 0;
     let projectRoot = "";
+    let sessionDataDir = "";
 
     // ── Flags ──
 
@@ -131,6 +143,39 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     });
 
     channel.handle("getTaskReport", async () => ({ tasks: lastTaskReports }));
+    channel.handle("setGoal", async (params) => {
+        const now = Date.now();
+        activeGoal = {
+            id: `goal_${now.toString(36)}`,
+            objective: params.objective.trim(),
+            status: "running",
+            startedAt: now,
+            updatedAt: now,
+            continuationCount: schedulerInstance?.getContinueCount() ?? 0,
+            blockers: [],
+        };
+        lastGoldResult = undefined;
+        persistGoalRuntimeState();
+        emitStatusChanged();
+        channel.emit("supervisor.goalChanged", { goal: activeGoal });
+        return { goal: activeGoal };
+    });
+
+    channel.handle("clearGoal", async (params) => {
+        if (activeGoal) {
+            activeGoal = {
+                ...activeGoal,
+                status: "cancelled",
+                updatedAt: Date.now(),
+            };
+            channel.emit("supervisor.goalChanged", { goal: activeGoal, reason: params.reason });
+        }
+        activeGoal = undefined;
+        lastGoldResult = undefined;
+        persistGoalRuntimeState();
+        emitStatusChanged();
+        return { cleared: true };
+    });
 
     channel.handle("checkToolStatus", async (params) => {
         const targetChannelName = params.channelName ?? params.toolName;
@@ -211,10 +256,37 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
 
     // ── Session lifecycle ──
 
+    // ── Inject active goal into system prompt ──
+
+    pi.on("before_agent_start", async (event) => {
+        if (!activeGoal || activeGoal.status === "cancelled" || activeGoal.status === "complete") {
+            return {};
+        }
+
+        const goalSection = `
+
+## Active Goal
+
+You are working toward the following objective. All actions should advance this goal.
+
+**Objective**: ${activeGoal.objective}
+**Status**: ${activeGoal.status}
+**Started**: ${new Date(activeGoal.startedAt).toISOString()}
+
+When you believe the objective is fully achieved, call the \`supervisor_complete\` tool with a summary of what was accomplished.
+`;
+
+        return {
+            systemPrompt: event.systemPrompt + goalSection,
+        };
+    });
+
     pi.on("session_start", async (_event, ctx) => {
+        sessionDataDir = ctx.sessionDataDir;
         config = loadConfig(ctx.sessionDataDir, ctx.projectDataDir);
         enabled = config.enable;
         specsIterationCount = 0;
+        loadGoalRuntimeState();
 
         log(`session_start: enabled=${enabled}, guards=${config.guards.length}, smallModel=${config.smallModel}`);
 
@@ -255,6 +327,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         }
 
         currentState = "checking";
+        setGoalStatus("checking");
         emitStatusChanged();
 
         try {
@@ -302,6 +375,17 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 );
 
                 lastCheckResult = { completed: false, confidence: 0.9, incompleteTasks: [], guardResults };
+                recordGoldResult({
+                    verdict: "incomplete",
+                    confidence: 0.9,
+                    reason: "Active guards found remaining work.",
+                    evidence: guardResults.map((r) => ({
+                        kind: "guard",
+                        summary: `${r.guardName}: ${r.detail ?? (r.completed ? "completed" : r.remainingItems.join(", "))}`,
+                        passed: r.completed,
+                    })),
+                    continueMessage,
+                });
 
                 scheduleContinue(continueMessage);
                 return;
@@ -321,6 +405,24 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 log(`All guards passed + model check passed → idle`);
                 currentState = "idle";
                 lastCheckResult = { ...modelCheck, guardResults };
+                recordGoldResult({
+                    verdict: "complete",
+                    confidence: modelCheck.confidence,
+                    reason: modelCheck.modelResponse ?? "Guards and model check passed.",
+                    evidence: [
+                        ...guardResults.map((r) => ({
+                            kind: "guard" as const,
+                            summary: `${r.guardName}: ${r.detail ?? "completed"}`,
+                            passed: true,
+                        })),
+                        {
+                            kind: "model" as const,
+                            summary: modelCheck.modelResponse ?? "Model check passed.",
+                            passed: true,
+                        },
+                    ],
+                });
+                setGoalStatus("complete");
                 emitStatusChanged();
                 return;
             }
@@ -334,10 +436,38 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             );
 
             lastCheckResult = { ...modelCheck, guardResults };
+            recordGoldResult({
+                verdict: "incomplete",
+                confidence: modelCheck.confidence,
+                reason: modelCheck.modelResponse ?? "Model detected incomplete tasks.",
+                evidence: [
+                    ...guardResults.map((r) => ({
+                        kind: "guard" as const,
+                        summary: `${r.guardName}: ${r.detail ?? (r.completed ? "completed" : r.remainingItems.join(", "))}`,
+                        passed: r.completed,
+                    })),
+                    ...modelCheck.incompleteTasks.map((t) => ({
+                        kind: "model" as const,
+                        summary: `[${t.severity}] ${t.description}`,
+                        passed: false,
+                    })),
+                ],
+                continueMessage,
+            });
             scheduleContinue(continueMessage);
         } catch (err) {
             log(`agent_end error: ${err instanceof Error ? err.message : String(err)}`);
             currentState = "idle";
+            recordGoldResult({
+                verdict: "blocked",
+                confidence: 0,
+                reason: err instanceof Error ? err.message : String(err),
+                evidence: [{ kind: "runtime", summary: "Gold check failed.", passed: false }],
+            });
+            setGoalStatus("blocked", {
+                kind: "runtime",
+                summary: err instanceof Error ? err.message : String(err),
+            });
             emitStatusChanged();
         }
     });
@@ -373,6 +503,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             if (signal.aborted) return;
 
             currentState = "continuing";
+            setGoalStatus("running");
             emitStatusChanged();
             try {
                 pi.sendMessage(
@@ -718,11 +849,75 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             maxContinueCount: config?.maxContinueCount ?? 0,
             activeGuards: getActiveGuards().map((g) => g.name),
             lastCheckResult,
+            goal: activeGoal,
+            lastGoldResult,
         };
     }
 
     function emitStatusChanged(): void {
         channel.emit("supervisor.statusChanged", getStatus());
+    }
+
+    function getGoalRuntimeStatePath(): string {
+        return join(sessionDataDir, GOAL_RUNTIME_STATE_FILE);
+    }
+
+    function isGoalState(value: unknown): value is GoalState {
+        if (!value || typeof value !== "object") return false;
+        const goal = value as Partial<GoalState>;
+        return (
+            typeof goal.id === "string" &&
+            typeof goal.objective === "string" &&
+            typeof goal.status === "string" &&
+            typeof goal.startedAt === "number" &&
+            typeof goal.updatedAt === "number"
+        );
+    }
+
+    function isGoldResult(value: unknown): value is GoldResult {
+        if (!value || typeof value !== "object") return false;
+        const result = value as Partial<GoldResult>;
+        return (
+            typeof result.verdict === "string" &&
+            typeof result.confidence === "number" &&
+            typeof result.checkedAt === "number" &&
+            typeof result.reason === "string" &&
+            Array.isArray(result.evidence)
+        );
+    }
+
+    function loadGoalRuntimeState(): void {
+        activeGoal = undefined;
+        lastGoldResult = undefined;
+        if (!sessionDataDir) return;
+        const filePath = getGoalRuntimeStatePath();
+        if (!existsSync(filePath)) return;
+        try {
+            const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as GoalRuntimeState;
+            activeGoal = isGoalState(parsed.activeGoal) ? parsed.activeGoal : undefined;
+            lastGoldResult = isGoldResult(parsed.lastGoldResult) ? parsed.lastGoldResult : undefined;
+        } catch (err) {
+            log(`loadGoalRuntimeState failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
+    function persistGoalRuntimeState(): void {
+        if (!sessionDataDir) return;
+        const filePath = getGoalRuntimeStatePath();
+        if (!activeGoal && !lastGoldResult) {
+            try {
+                if (existsSync(filePath)) unlinkSync(filePath);
+            } catch (err) {
+                log(`removeGoalRuntimeState failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            return;
+        }
+        const state: GoalRuntimeState = { activeGoal, lastGoldResult };
+        try {
+            writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
+        } catch (err) {
+            log(`persistGoalRuntimeState failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 
     function triggerContinue(reason: string): void {
@@ -742,6 +937,29 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             },
             { triggerTurn: true },
         );
+    }
+
+    function setGoalStatus(status: GoalState["status"], blocker?: GoalState["blockers"][number]): void {
+        if (!activeGoal) return;
+        activeGoal = {
+            ...activeGoal,
+            status,
+            updatedAt: Date.now(),
+            continuationCount: schedulerInstance?.getContinueCount() ?? activeGoal.continuationCount,
+            blockers: blocker ? [...activeGoal.blockers, blocker] : activeGoal.blockers,
+        };
+        persistGoalRuntimeState();
+        channel.emit("supervisor.goalChanged", { goal: activeGoal });
+    }
+
+    function recordGoldResult(result: Omit<GoldResult, "goalId" | "checkedAt">): void {
+        lastGoldResult = {
+            ...result,
+            goalId: activeGoal?.id,
+            checkedAt: Date.now(),
+        };
+        persistGoalRuntimeState();
+        channel.emit("supervisor.goldResult", lastGoldResult);
     }
 
     function extractLastAssistantText(
