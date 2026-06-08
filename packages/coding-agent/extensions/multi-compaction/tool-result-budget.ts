@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { tmpdir } from "node:os";
 
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@dyyz1993/pi-ai";
@@ -8,15 +9,21 @@ export interface ToolResultBudgetConfig {
 	enabled: boolean;
 	maxResultChars: number;
 	previewChars: number;
-	outputDir: string;
 }
 
 export const DEFAULT_TOOL_RESULT_BUDGET_CONFIG: ToolResultBudgetConfig = {
 	enabled: true,
 	maxResultChars: 200_000,
 	previewChars: 2000,
-	outputDir: ".task_outputs/tool-results",
 };
+
+function getOutputDir(): string {
+	// Include project dir name (path slashes → dashes) for uniqueness
+	const projectSlug = process.cwd().replace(/[/\\]/g, "-").replace(/^-/, "");
+	const dir = join(tmpdir(), "pi-tool-results", projectSlug);
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
 
 interface SizedResult {
 	index: number;
@@ -35,9 +42,9 @@ function getTextContentLength(content: ToolResultMessage["content"]): number {
 
 function persistToolResult(
 	toolMsg: ToolResultMessage,
-	outputDir: string,
 	previewChars: number,
 ): ToolResultMessage {
+	const outputDir = getOutputDir();
 	const timestamp = Date.now();
 	const sanitized = toolMsg.toolName.replace(/[^a-zA-Z0-9_-]/g, "_");
 	const filename = `${sanitized}-${timestamp}.txt`;
@@ -112,7 +119,7 @@ export function budgetToolResults(
 	const modified = messages.map((msg, i) => {
 		if (!toPersist.has(i)) return msg;
 		const toolMsg = msg as ToolResultMessage;
-		return persistToolResult(toolMsg, config.outputDir, config.previewChars);
+		return persistToolResult(toolMsg, config.previewChars);
 	});
 
 	return { messages: modified };

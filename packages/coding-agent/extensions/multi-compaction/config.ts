@@ -62,7 +62,6 @@ export const DEFAULT_CONFIG: CompactionManagerConfig = {
 		enabled: true,
 		maxResultChars: 200_000,
 		previewChars: 2000,
-		outputDir: ".task_outputs/tool-results",
 	},
 	snipCompact: {
 		enabled: true,

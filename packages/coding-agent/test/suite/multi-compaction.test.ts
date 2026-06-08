@@ -167,14 +167,11 @@ describe("tool-result-budget", () => {
 			enabled: true,
 			maxResultChars: 200_000,
 			previewChars: 2000,
-			outputDir: "/tmp/test-outputs",
 		};
 		expect(budgetToolResults(messages, config)).toBeUndefined();
 	});
 
 	it("persists oversized tool results and replaces with preview", () => {
-		const outputDir = join("/tmp", `tr-budget-test-${Date.now()}`);
-		tempDirs.push(outputDir);
 		const bigContent = "x".repeat(150_000);
 		const messages: AgentMessage[] = [
 			createUser("hello"),
@@ -186,7 +183,6 @@ describe("tool-result-budget", () => {
 			enabled: true,
 			maxResultChars: 100_000,
 			previewChars: 500,
-			outputDir,
 		};
 		const result = budgetToolResults(messages, config);
 		expect(result).toBeDefined();
@@ -200,23 +196,18 @@ describe("tool-result-budget", () => {
 	});
 
 	it("skips error results", () => {
-		const outputDir = join("/tmp", `tr-budget-err-${Date.now()}`);
-		tempDirs.push(outputDir);
 		const bigContent = "x".repeat(150_000);
 		const messages: AgentMessage[] = [createUser("hello"), createToolResult("bash", bigContent, Date.now(), true)];
 		const config: ToolResultBudgetConfig = {
 			enabled: true,
 			maxResultChars: 100,
 			previewChars: 50,
-			outputDir,
 		};
 		// Error results are skipped, so total non-error chars = 0, under budget
 		expect(budgetToolResults(messages, config)).toBeUndefined();
 	});
 
 	it("skips small results even when total is over budget", () => {
-		const outputDir = join("/tmp", `tr-budget-small-${Date.now()}`);
-		tempDirs.push(outputDir);
 		// Many small results that together exceed budget but each is under previewChars
 		const messages: AgentMessage[] = [
 			createUser("hello"),
@@ -228,7 +219,6 @@ describe("tool-result-budget", () => {
 			enabled: true,
 			maxResultChars: 150,
 			previewChars: 200,
-			outputDir,
 		};
 		// Total is 300 > 150, but each result is 100 < 200 previewChars, so none persisted
 		expect(budgetToolResults(messages, config)).toBeUndefined();
