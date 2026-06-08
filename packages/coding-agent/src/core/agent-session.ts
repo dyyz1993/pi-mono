@@ -1188,7 +1188,7 @@ export class AgentSession {
 		}
 
 		if (choice.startsWith("2")) {
-			const parentDir = normalizedPath.split("/").slice(0, -1).join("/") + "/**";
+			const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
 			this._pathPermissionStore.allow(this._cwd, parentDir, scope);
 		}
 

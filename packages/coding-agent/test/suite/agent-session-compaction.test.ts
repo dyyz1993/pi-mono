@@ -222,6 +222,41 @@ describe("AgentSession compaction characterization", () => {
 		await expect(sessionInternals._runAutoCompaction("threshold", false)).resolves.toBe(true);
 	});
 
+	it("continues after threshold compaction even with no queued messages", async () => {
+		// Regression: threshold compaction must always resume so multi-step
+		// tasks are not interrupted mid-task. Without this the agent stalls
+		// and the user must manually re-prompt after every auto-compaction.
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "auto compacted",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+
+		// No queued messages — agent.hasQueuedMessages() would return false.
+		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
+
+		await expect(sessionInternals._runAutoCompaction("threshold", false)).resolves.toBe(true);
+
+		// After threshold compaction, a followUp continuation message is queued
+		// so agent.continue() can proceed (it throws when last message is assistant
+		// with no queued messages).
+		expect(harness.session.agent.hasQueuedMessages()).toBe(true);
+	});
+
 	it("does not retry overflow recovery more than once", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
