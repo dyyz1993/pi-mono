@@ -438,22 +438,25 @@ describe("Coding Agent Tools", () => {
 
 	describe("bash tool", () => {
 		it("should execute simple commands", async () => {
-			const result = await bashTool.execute("test-call-8", { command: "echo 'test output'" });
+			const result = await bashTool.execute("test-call-8", {
+				description: "Echo test output",
+				command: "echo 'test output'",
+			});
 
 			expect(getTextOutput(result)).toContain("test output");
 			expect(result.details).toBeUndefined();
 		});
 
 		it("should handle command errors", async () => {
-			await expect(bashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
-				/(Command failed|code 1)/,
-			);
+			await expect(
+				bashTool.execute("test-call-9", { description: "Exit with code one", command: "exit 1" }),
+			).rejects.toThrow(/(Command failed|code 1)/);
 		});
 
 		it("should respect timeout", async () => {
-			await expect(bashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(
-				/timed out/i,
-			);
+			await expect(
+				bashTool.execute("test-call-10", { description: "Sleep for timeout test", command: "sleep 5", timeout: 1 }),
+			).rejects.toThrow(/timed out/i);
 		});
 
 		it("should include full output path for truncated timeout and abort errors", async () => {
@@ -473,7 +476,10 @@ describe("Coding Agent Tools", () => {
 
 				let error: unknown;
 				try {
-					await bash.execute(`test-call-${testCase.error}`, { command: "chatty-fail" });
+					await bash.execute(`test-call-${testCase.error}`, {
+						description: "Chatty fail command",
+						command: "chatty-fail",
+					});
 				} catch (err) {
 					error = err;
 				}
@@ -497,9 +503,9 @@ describe("Coding Agent Tools", () => {
 
 			const bashToolWithBadCwd = createBashTool(nonexistentCwd);
 
-			await expect(bashToolWithBadCwd.execute("test-call-11", { command: "echo test" })).rejects.toThrow(
-				/Working directory does not exist/,
-			);
+			await expect(
+				bashToolWithBadCwd.execute("test-call-11", { description: "Echo test in bad cwd", command: "echo test" }),
+			).rejects.toThrow(/Working directory does not exist/);
 		});
 
 		it("should handle process spawn errors", async () => {
@@ -510,7 +516,9 @@ describe("Coding Agent Tools", () => {
 
 			const bashWithBadShell = createBashTool(testDir);
 
-			await expect(bashWithBadShell.execute("test-call-12", { command: "echo test" })).rejects.toThrow(/ENOENT/);
+			await expect(
+				bashWithBadShell.execute("test-call-12", { description: "Echo test with bad shell", command: "echo test" }),
+			).rejects.toThrow(/ENOENT/);
 		});
 
 		it("should pass shellPath through to shell resolution", async () => {
@@ -522,7 +530,10 @@ describe("Coding Agent Tools", () => {
 				},
 			});
 
-			await bashWithCustomShell.execute("test-call-12b", { command: "echo test" });
+			await bashWithCustomShell.execute("test-call-12b", {
+				description: "Echo test with custom shell",
+				command: "echo test",
+			});
 
 			expect(getShellConfigSpy).not.toHaveBeenCalled();
 
@@ -540,7 +551,10 @@ describe("Coding Agent Tools", () => {
 				commandPrefix: "export TEST_VAR=hello",
 			});
 
-			const result = await bashWithPrefix.execute("test-prefix-1", { command: "echo $TEST_VAR" });
+			const result = await bashWithPrefix.execute("test-prefix-1", {
+				description: "Echo prefix test variable",
+				command: "echo $TEST_VAR",
+			});
 			expect(getTextOutput(result).trim()).toBe("hello");
 		});
 
@@ -549,14 +563,20 @@ describe("Coding Agent Tools", () => {
 				commandPrefix: "echo prefix-output",
 			});
 
-			const result = await bashWithPrefix.execute("test-prefix-2", { command: "echo command-output" });
+			const result = await bashWithPrefix.execute("test-prefix-2", {
+				description: "Echo prefix and command output",
+				command: "echo command-output",
+			});
 			expect(getTextOutput(result).trim()).toBe("prefix-output\ncommand-output");
 		});
 
 		it("should work without command prefix", async () => {
 			const bashWithoutPrefix = createBashTool(testDir, {});
 
-			const result = await bashWithoutPrefix.execute("test-prefix-3", { command: "echo no-prefix" });
+			const result = await bashWithoutPrefix.execute("test-prefix-3", {
+				description: "Echo without prefix",
+				command: "echo no-prefix",
+			});
 			expect(getTextOutput(result).trim()).toBe("no-prefix");
 		});
 
@@ -572,8 +592,11 @@ describe("Coding Agent Tools", () => {
 			const updates: Array<{ content: Array<{ type: string; text?: string }>; details?: unknown }> = [];
 			const bash = createBashTool(testDir, { operations });
 
-			const result = await bash.execute("test-call-chatty-updates", { command: "chatty" }, undefined, (update) =>
-				updates.push(update),
+			const result = await bash.execute(
+				"test-call-chatty-updates",
+				{ description: "Chatty output command", command: "chatty" },
+				undefined,
+				(update) => updates.push(update),
 			);
 
 			expect(updates.length).toBeLessThan(25);
@@ -591,7 +614,10 @@ describe("Coding Agent Tools", () => {
 			};
 			const bash = createBashTool(testDir, { operations });
 
-			const result = await bash.execute("test-call-trailing-newline-line-count", { command: "many-lines" });
+			const result = await bash.execute("test-call-trailing-newline-line-count", {
+				description: "Generate many lines",
+				command: "many-lines",
+			});
 			const output = getTextOutput(result);
 
 			expect(result.details?.truncation?.totalLines).toBe(4000);
@@ -613,7 +639,10 @@ describe("Coding Agent Tools", () => {
 			};
 			const bash = createBashTool(testDir, { operations });
 
-			const result = await bash.execute("test-call-split-utf8", { command: "split-utf8" });
+			const result = await bash.execute("test-call-split-utf8", {
+				description: "Test split UTF-8 decoding",
+				command: "split-utf8",
+			});
 
 			expect(getTextOutput(result).trim()).toBe("€");
 		});
@@ -644,7 +673,10 @@ describe("Coding Agent Tools", () => {
 
 		it("should persist full output when truncation happens by line count only", async () => {
 			const bash = createBashTool(testDir);
-			const result = await bash.execute("test-call-line-truncation", { command: "seq 3000" });
+			const result = await bash.execute("test-call-line-truncation", {
+				description: "Sequence output for truncation",
+				command: "seq 3000",
+			});
 			const output = getTextOutput(result);
 			const fullOutputPath = result.details?.fullOutputPath;
 
@@ -681,6 +713,24 @@ describe("Coding Agent Tools", () => {
 			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
 			expect(fullOutput).toContain("1\n2\n3");
 			expect(fullOutput).toContain("2998\n2999\n3000");
+		});
+
+		it("should default timeout to 300 seconds when not provided", async () => {
+			let receivedTimeout: number | undefined;
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { timeout }) => {
+					receivedTimeout = timeout;
+					return { exitCode: 0 };
+				},
+			};
+			const bash = createBashTool(testDir, { operations });
+
+			await bash.execute("test-call-default-timeout", {
+				description: "Test default timeout",
+				command: "echo default",
+			});
+
+			expect(receivedTimeout).toBe(300);
 		});
 	});
 

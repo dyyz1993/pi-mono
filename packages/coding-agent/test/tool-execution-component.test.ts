@@ -145,7 +145,7 @@ describe("ToolExecutionComponent parity", () => {
 		const tool = createBashToolDefinition(process.cwd(), { operations });
 		const promise = tool.execute(
 			"tool-bash-1",
-			{ command: "sleep 10" },
+			{ description: "Sleep for partial update test", command: "sleep 10" },
 			undefined,
 			(update) => updates.push(update as { content: Array<{ type: string; text?: string }>; details?: unknown }),
 			{} as never,
@@ -166,7 +166,7 @@ describe("ToolExecutionComponent parity", () => {
 		const tool = createBashToolDefinition(process.cwd(), { operations });
 		const result = await tool.execute(
 			"tool-bash-1b",
-			{ command: "generate output" },
+			{ description: "Generate large output", command: "generate output" },
 			undefined,
 			undefined,
 			{} as never,
