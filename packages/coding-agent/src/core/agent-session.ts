@@ -86,6 +86,7 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.ts";
 import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
+import { PathPermissionStore } from "./path-permission-store.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
@@ -104,6 +105,7 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import {
 	createAllToolDefinitions,
+	createSkillToolDefinition,
 	createTool,
 	type ToolName,
 	type ToolOperationsProvider,
@@ -301,7 +303,14 @@ export interface SessionStats {
 	contextUsage?: ContextUsage;
 }
 
-export type PermissionMode = "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+export type PermissionMode = "normal" | "yolo";
+/** @deprecated Use "normal" or "yolo" */
+export type LegacyPermissionMode = "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+
+function normalizePermissionMode(mode: string): PermissionMode {
+	if (mode === "dontAsk" || mode === "always-allow") return "yolo";
+	return "normal";
+}
 
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
@@ -319,8 +328,8 @@ function isThinkingLevel(level: string): level is ThinkingLevel {
 	return (THINKING_LEVELS as readonly string[]).includes(level);
 }
 
-function isPermissionMode(mode: string): mode is PermissionMode {
-	return ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"].includes(mode);
+function isPermissionMode(mode: string): mode is PermissionMode | LegacyPermissionMode {
+	return ["normal", "yolo", "auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"].includes(mode);
 }
 
 function buildAgentSystemPrompt(agent: AgentConfig): string | undefined {
@@ -424,6 +433,11 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	private _skipNextThresholdCheck = false;
+	private _consecutiveAutoCompactFailures = 0;
+
+	private static readonly MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES = 3;
+	private static readonly MAX_COMPACT_STREAMING_RETRIES = 2;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -472,11 +486,12 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
-	private _permissionMode: PermissionMode = "auto";
+	private _permissionMode: PermissionMode = "normal";
 	private _mcpManager: McpManager | undefined;
 	private _currentAgentName = "build";
 	private _agentSystemPromptOverride: string | undefined;
 	private _currentAgentPaths: PathConfig | undefined;
+	private _pathPermissionStore: PathPermissionStore;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -504,6 +519,7 @@ export class AgentSession {
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
+		this._pathPermissionStore = new PathPermissionStore(getAgentDir());
 		this._installAgentToolHooks();
 
 		this._buildRuntime({
@@ -582,6 +598,13 @@ export class AgentSession {
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
 			this._assertAgentPathAllowed(toolCall.name, args);
+
+			// Path boundary check with interactive approval
+			const uiCtx = this._extensionRunner.hasUI() ? this._extensionRunner.getUIContext() : null;
+			const boundaryResult = await this._checkPathBoundary(toolCall.name, args, uiCtx);
+			if (boundaryResult?.block) {
+				return { block: true, reason: boundaryResult.reason };
+			}
 
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
@@ -1075,8 +1098,8 @@ export class AgentSession {
 		return this._permissionMode;
 	}
 
-	setPermissionMode(mode: PermissionMode): void {
-		this._permissionMode = mode;
+	setPermissionMode(mode: PermissionMode | LegacyPermissionMode): void {
+		this._permissionMode = normalizePermissionMode(mode);
 	}
 
 	getCurrentAgent(): string {
@@ -1102,6 +1125,67 @@ export class AgentSession {
 		if (paths.read && toolName === "read" && !matchesAnyAgentPath(normalizedPath, paths.read)) {
 			throw new Error(`Path ${normalizedPath} is not in the allowed read paths: ${paths.read.join(", ")}`);
 		}
+	}
+
+	private async _checkPathBoundary(
+		toolName: string,
+		args: unknown,
+		uiContext: ExtensionUIContext | null,
+	): Promise<{ block: true; reason: string } | undefined> {
+		const FILE_TOOLS = new Set(["read", "edit", "write", "multiedit", "patch"]);
+		if (!FILE_TOOLS.has(toolName)) return undefined;
+
+		const rawPath = getPathArg(args);
+		if (!rawPath) return undefined;
+
+		const normalizedPath = normalizeAgentPath(rawPath);
+
+		// Is path inside cwd?
+		if (normalizedPath.startsWith(this._cwd + "/") || normalizedPath === this._cwd) {
+			return undefined;
+		}
+
+		// YOLO mode: skip approval
+		if (this._permissionMode === "yolo") return undefined;
+
+		// Check store for prior decision
+		const scope = ["edit", "write", "multiedit", "patch"].includes(toolName) ? "write" : "read";
+		const decision = this._pathPermissionStore.check(this._cwd, normalizedPath, scope);
+		if (decision === "allow") return undefined;
+		if (decision === "deny") {
+			return { block: true, reason: `Access to ${normalizedPath} was previously denied.` };
+		}
+
+		// No prior decision — ask user via UI
+		if (!uiContext) {
+			return { block: true, reason: `Path ${normalizedPath} is outside the project directory (${this._cwd}).` };
+		}
+
+		const choice = await uiContext.select(
+			`Path outside project\n\n${toolName} ${normalizedPath}\n(outside ${this._cwd})`,
+			["1. Allow once", "2. Always allow", "3. Deny"],
+			{
+				permissionMeta: {
+					type: "path_boundary",
+					path: normalizedPath,
+					cwd: this._cwd,
+					toolName,
+					scope,
+					relativeTo: "outside project directory",
+				},
+			},
+		);
+
+		if (!choice || choice.startsWith("3")) {
+			return { block: true, reason: `User denied access to ${normalizedPath}.` };
+		}
+
+		if (choice.startsWith("2")) {
+			const parentDir = normalizedPath.split("/").slice(0, -1).join("/") + "/**";
+			this._pathPermissionStore.allow(this._cwd, parentDir, scope);
+		}
+
+		return undefined;
 	}
 
 	applyAgentConfig(agent: AgentConfig): void {
@@ -2206,7 +2290,10 @@ export class AgentSession {
 		} else {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
-		if (shouldCompact(contextTokens, contextWindow, settings)) {
+		if (this._skipNextThresholdCheck) {
+			this._skipNextThresholdCheck = false;
+		} else if (shouldCompact(contextTokens, contextWindow, settings)) {
+			this._skipNextThresholdCheck = true;
 			return await this._runAutoCompaction("threshold", false);
 		}
 		return false;
@@ -2216,6 +2303,19 @@ export class AgentSession {
 	 * Internal: Run auto-compaction with events.
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+		// Circuit breaker: skip if too many consecutive failures
+		if (this._consecutiveAutoCompactFailures >= AgentSession.MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES) {
+			this._emit({
+				type: "compaction_end",
+				reason,
+				result: undefined,
+				aborted: false,
+				willRetry: false,
+				errorMessage: `Auto-compaction skipped: ${this._consecutiveAutoCompactFailures} consecutive failures (max ${AgentSession.MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES}). Try /compact-force or restart the session.`,
+			});
+			return false;
+		}
+
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "compaction_start", reason });
@@ -2308,17 +2408,33 @@ export class AgentSession {
 				tokensBefore = extensionCompaction.tokensBefore;
 				details = extensionCompaction.details;
 			} else {
-				// Generate compaction result
-				const compactResult = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					undefined,
-					this._autoCompactionAbortController.signal,
-					this.thinkingLevel,
-					this.agent.streamFn,
-				);
+				// Generate compaction result with streaming retry
+				let compactResult: CompactionResult | undefined;
+				let lastError: Error | undefined;
+				for (let attempt = 0; attempt <= AgentSession.MAX_COMPACT_STREAMING_RETRIES; attempt++) {
+					try {
+						compactResult = await compact(
+							preparation,
+							this.model,
+							apiKey,
+							headers,
+							undefined,
+							this._autoCompactionAbortController!.signal,
+							this.thinkingLevel,
+							this.agent.streamFn,
+						);
+						break;
+					} catch (err) {
+						lastError = err instanceof Error ? err : new Error(String(err));
+						if (this._autoCompactionAbortController!.signal.aborted) break;
+						if (attempt < AgentSession.MAX_COMPACT_STREAMING_RETRIES) {
+							console.debug(
+								`[compaction] streaming retry ${attempt + 1}/${AgentSession.MAX_COMPACT_STREAMING_RETRIES}: ${lastError.message}`,
+							);
+						}
+					}
+				}
+				if (!compactResult) throw lastError ?? new Error("Compaction failed after retries");
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
@@ -2360,6 +2476,7 @@ export class AgentSession {
 				tokensBefore,
 				details,
 			};
+			this._consecutiveAutoCompactFailures = 0;
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
@@ -2371,10 +2488,25 @@ export class AgentSession {
 				return true;
 			}
 
+			// Threshold compaction: queue a continuation prompt so the agent resumes
+			// after compression. continue() throws when the last message is assistant
+			// with no queued messages, so we inject a followUp to unblock it.
+			// The _skipNextThresholdCheck flag prevents the next _handlePostAgentRun
+			// from immediately re-compacting.
+			if (reason === "threshold") {
+				this.agent.followUp({
+					role: "user",
+					content: [{ type: "text", text: "Continue with the previous task." }],
+					timestamp: Date.now(),
+				});
+				return true;
+			}
+
 			// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 			// Continue once so queued messages are delivered.
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
+			this._consecutiveAutoCompactFailures++;
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			this._emit({
 				type: "compaction_end",
@@ -2903,7 +3035,8 @@ export class AgentSession {
 		const providerOptions = this._toolOperationsProvider
 			? toolsOptionsFromProvider(this._toolOperationsProvider)
 			: {};
-		return this._baseToolsOverride
+
+		const baseDefs: Record<string, ToolDefinition> = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
 						name,
@@ -2919,6 +3052,16 @@ export class AgentSession {
 					find: providerOptions.find,
 					ls: providerOptions.ls,
 				});
+
+		// Register skill tool with access to resource loader
+		const skills = this._resourceLoader.getSkills().skills;
+		if (skills.length > 0) {
+			baseDefs.skill = createSkillToolDefinition({
+				getSkills: () => this._resourceLoader.getSkills().skills,
+			}) as ToolDefinition;
+		}
+
+		return baseDefs;
 	}
 
 	private _buildRuntime(options: {
@@ -2957,7 +3100,9 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
+			: this._resourceLoader.getSkills().skills.length > 0
+				? ["read", "bash", "edit", "write", "skill"]
+				: ["read", "bash", "edit", "write"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,

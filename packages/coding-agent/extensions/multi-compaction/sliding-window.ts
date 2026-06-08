@@ -72,8 +72,11 @@ export function applySlidingWindow(
 		result.push(firstMessage);
 	}
 
-	// Add truncation notice
+	// Add truncation notice (use timestamp from first truncated message for determinism)
 	if (config.truncationNotice && cutIndex > 0) {
+		const truncTimestamp = messages[cutIndex] && "timestamp" in messages[cutIndex]!
+			? (messages[cutIndex] as { timestamp: number }).timestamp
+			: 0;
 		result.push({
 			role: "user",
 			content: [
@@ -82,7 +85,7 @@ export function applySlidingWindow(
 					text: `[Sliding window: ${cutIndex} older message(s) truncated to fit within ${windowTokens} token window]`,
 				},
 			],
-			timestamp: Date.now(),
+			timestamp: truncTimestamp,
 		} as AgentMessage);
 	}
 

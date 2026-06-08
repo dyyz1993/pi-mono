@@ -1,6 +1,10 @@
 import type { HalfCompactionConfig } from "./half-compaction.ts";
+import type { LineFoldConfig } from "./line-fold.ts";
+import type { RecoveryConfig as PostCompactRecoveryConfig } from "./post-compact-recovery.ts";
 import type { SegmentCompactionConfig } from "./segment-compaction.ts";
 import type { SlidingWindowConfig } from "./sliding-window.ts";
+import type { SnipCompactConfig } from "./snip-compact.ts";
+import type { ToolResultBudgetConfig } from "./tool-result-budget.ts";
 
 /**
  * Compaction strategy selector.
@@ -12,10 +16,18 @@ import type { SlidingWindowConfig } from "./sliding-window.ts";
 export type CompactionStrategy = "full" | "half" | "segment" | "sliding-window";
 
 export interface CompactionManagerConfig {
+	/** L0: Persist oversized tool results to disk (zero-cost, runs first) */
+	toolResultBudget: ToolResultBudgetConfig;
+	/** L1: Snip middle messages when conversation is too long (zero-cost) */
+	snipCompact: SnipCompactConfig;
+	/** L1.5: Fold consecutive identical lines in tool results (zero-cost, deterministic) */
+	lineFold: LineFoldConfig;
 	microcompact: {
 		enabled: boolean;
-		maxAgeMs: number;
+		keepRecentCount: number;
 		clearableTools: string[];
+		/** Cached path: max recent tool results to keep full content (default: 3) */
+		maxCachedResults: number;
 	};
 	sessionMemory: {
 		enabled: boolean;
@@ -41,13 +53,32 @@ export interface CompactionManagerConfig {
 	segmentCompaction: SegmentCompactionConfig;
 	/** Sliding window settings (used when strategy = "sliding-window") */
 	slidingWindow: SlidingWindowConfig;
+	/** Post-compaction file recovery settings */
+	postCompactRecovery: PostCompactRecoveryConfig;
 }
 
 export const DEFAULT_CONFIG: CompactionManagerConfig = {
+	toolResultBudget: {
+		enabled: true,
+		maxResultChars: 200_000,
+		previewChars: 2000,
+		outputDir: ".task_outputs/tool-results",
+	},
+	snipCompact: {
+		enabled: true,
+		maxMessages: 50,
+		keepHeadCount: 3,
+	},
+	lineFold: {
+		enabled: true,
+		minConsecutive: 3,
+		toolNames: ["bash", "read", "grep", "find", "glob"],
+	},
 	microcompact: {
 		enabled: true,
-		maxAgeMs: 60 * 60 * 1000,
+		keepRecentCount: 5,
 		clearableTools: ["read", "bash", "grep", "find", "glob", "webFetch"],
+		maxCachedResults: 3,
 	},
 	sessionMemory: {
 		enabled: true,
@@ -78,5 +109,11 @@ export const DEFAULT_CONFIG: CompactionManagerConfig = {
 		enabled: false,
 		windowTokens: 80000,
 		truncationNotice: true,
+	},
+	postCompactRecovery: {
+		enabled: true,
+		maxFilesToRestore: 5,
+		maxTokensPerFile: 5000,
+		totalTokenBudget: 50000,
 	},
 };

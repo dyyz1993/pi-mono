@@ -41,7 +41,7 @@ export async function readMemoryFiles(cwd: string, memoryDir: string): Promise<M
 			files.set(entry, content);
 		}
 	} catch (err) {
-		console.debug("[compaction-manager] session memory dir read failed:", err instanceof Error ? err.message : err);
+		console.debug("[multi-compaction] session memory dir read failed:", err instanceof Error ? err.message : err);
 	}
 
 	return files;
