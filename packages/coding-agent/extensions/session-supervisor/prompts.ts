@@ -110,6 +110,61 @@ For each item, determine if it is completed or not. Respond with JSON:
 
 You MUST respond with valid JSON only.`;
 
+// ── Goal refinement prompt ──
+
+export const REFINE_GOAL_SYSTEM_PROMPT = `You are a goal refinement assistant for a coding agent. Your job is to transform a rough user-provided objective into a structured, trackable, and actionable goal specification.
+
+## Methodology
+
+Transform the objective following these principles:
+
+1. **Specific**: What exactly needs to be done? Break vague goals into concrete deliverables.
+2. **Measurable**: How will completion be verified? Define clear acceptance criteria.
+3. **Actionable**: What steps are needed? List the key tasks as a checklist.
+4. **Relevant**: Focus only on what matters — no gold-plating.
+5. **Time-bounded**: Estimate scope (small/medium/large) and number of key milestones.
+
+## Output Format
+
+Respond with a structured goal in the following format (plain text, NOT markdown code blocks):
+
+### Objective
+[One clear sentence describing the end state]
+
+### Acceptance Criteria
+- [ ] [Criterion 1 — must be verifiable]
+- [ ] [Criterion 2]
+- [ ] [Criterion 3]
+
+### Key Steps
+1. [Step 1]
+2. [Step 2]
+3. [Step 3]
+
+### Files to Track
+- \`path/to/file\` — [purpose]
+
+### Scope: [small/medium/large]
+
+## Rules
+- Keep it concise — the entire output should be under 500 words
+- Acceptance criteria MUST be verifiable (e.g., "tests pass", "file exists", "no TODO keywords")
+- If the objective references specific files or features, include them in "Files to Track"
+- Key steps should be ordered by dependency
+- Do NOT include implementation details — focus on WHAT, not HOW
+- Use the project context (directory structure, existing specs/docs) to make the goal concrete`;
+
+export const REFINE_GOAL_USER_PROMPT = (objective: string, projectContext: string) =>
+    `Please refine the following rough objective into a structured, trackable goal specification.
+
+## Rough Objective
+${objective}
+
+## Project Context
+${projectContext}
+
+Respond with the refined goal following the format specified in your instructions.`;
+
 export const SPECS_CHECK_PROMPT = (specsContent: string, lastAssistantText: string) =>
     `You are checking specs completion. Here is the specs file:
 

@@ -197,33 +197,37 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             return { success: false, error: "No objective provided" };
         }
 
+        const refineStart = Date.now();
         try {
             // Gather project context: directory structure + key MD files
+            const ctxStart = Date.now();
             const projectContext = gatherProjectContext(projectRoot);
+            const ctxDurationMs = Date.now() - ctxStart;
+            const ctxChars = projectContext.length;
+            log(`refineGoal: gathered project context in ${ctxDurationMs}ms (${ctxChars} chars)`);
 
+            const llmStart = Date.now();
             const refinedObjective = await pi.callLLM({
                 systemPrompt: REFINE_GOAL_SYSTEM_PROMPT,
                 messages: [{ role: "user", content: REFINE_GOAL_USER_PROMPT(objective, projectContext) }],
-                maxTokens: 2048,
+                maxTokens: 4096,
             });
+            const llmDurationMs = Date.now() - llmStart;
 
             const trimmed = refinedObjective.trim();
+            log(`refineGoal: LLM responded in ${llmDurationMs}ms, output ${trimmed.length} chars`);
 
-            // Update the active goal's objective with the refined version
-            if (activeGoal) {
-                activeGoal = {
-                    ...activeGoal,
-                    objective: trimmed,
-                    updatedAt: Date.now(),
-                };
-                persistGoalRuntimeState();
-                channel.emit("supervisor.goalChanged", { goal: activeGoal });
-            }
+            // Do NOT update activeGoal — just return the refined text
+            // The frontend will fill it into the input box for user review
+
+            const totalDurationMs = Date.now() - refineStart;
+            log(`refineGoal: completed in ${totalDurationMs}ms (context=${ctxDurationMs}ms, llm=${llmDurationMs}ms)`);
 
             return { success: true, objective: trimmed };
         } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            log(`refineGoal failed: ${errMsg}`);
+            const totalDurationMs = Date.now() - refineStart;
+            log(`refineGoal failed after ${totalDurationMs}ms: ${errMsg}`);
             return { success: false, error: errMsg };
         }
     });

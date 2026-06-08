@@ -148,6 +148,18 @@ export interface SupervisorChannelContract extends ChannelContract {
             params: { toolName: string; channelName?: string; method?: string };
             return: { reachable: boolean; status?: string; error?: string };
         };
+        setGoal: {
+            params: { objective: string };
+            return: { goal: GoalState };
+        };
+        clearGoal: {
+            params: { reason?: string };
+            return: { cleared: boolean };
+        };
+        refineGoal: {
+            params: { objective: string };
+            return: { success: boolean; objective?: string; error?: string };
+        };
     };
     events: {
         "supervisor.statusChanged": SupervisorStatus;
@@ -155,10 +167,42 @@ export interface SupervisorChannelContract extends ChannelContract {
         "supervisor.pauseCancelled": { reason: string };
         "supervisor.continueTriggered": { reason: string; delayMs: number };
         "supervisor.taskReport": { tasks: TaskReport[] };
+        "supervisor.goalChanged": { goal?: GoalState; reason?: string };
+        "supervisor.goldResult": GoldResult;
     };
 }
 
 // ── Status & Reporting ──
+
+export interface GoalState {
+    id: string;
+    objective: string;
+    status: "running" | "checking" | "complete" | "blocked" | "needs_user" | "cancelled";
+    startedAt: number;
+    updatedAt: number;
+    currentMilestone?: string;
+    continuationCount: number;
+    blockers: Array<{
+        kind: "permission" | "choice" | "runtime" | "unsafe" | "unknown";
+        summary: string;
+    }>;
+}
+
+export interface GoldResult {
+    goalId?: string;
+    verdict: "complete" | "incomplete" | "blocked" | "unsafe";
+    confidence: number;
+    checkedAt: number;
+    durationMs?: number;
+    reason: string;
+    evidence: Array<{
+        kind: "test" | "command" | "diff" | "assistant_claim" | "runtime" | "guard" | "model";
+        summary: string;
+        passed?: boolean;
+    }>;
+    continueMessage?: string;
+    userQuestion?: string;
+}
 
 export interface SupervisorStatus {
     enabled: boolean;
@@ -167,6 +211,8 @@ export interface SupervisorStatus {
     maxContinueCount: number;
     activeGuards: string[];
     lastCheckResult?: CheckResult;
+    goal?: GoalState;
+    lastGoldResult?: GoldResult;
     pendingPause?: { scheduledAt: number; delayMs: number; reason?: string };
 }
 
