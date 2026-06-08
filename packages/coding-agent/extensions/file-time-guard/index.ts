@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { minimatch } from "minimatch";
 import { DEFAULT_CONFIG, type FileTimeGuardConfig } from "./config.ts";
 
@@ -14,9 +14,12 @@ interface FileStamp {
 const fileRecords = new Map<string, Map<string, FileStamp>>();
 const fileConfigs = new Map<string, FileTimeGuardConfig>();
 
-function shouldIgnorePath(p: string, cfg: FileTimeGuardConfig): boolean {
+function shouldIgnorePath(absolutePath: string, cwd: string, cfg: FileTimeGuardConfig): boolean {
+	// Match against both the absolute path and the cwd-relative path so relative
+	// patterns (e.g. "node_modules/**") match files resolved under cwd.
+	const relativePath = relative(cwd, absolutePath);
 	for (const pattern of cfg.ignorePatterns) {
-		if (minimatch(p, pattern)) {
+		if (minimatch(relativePath, pattern) || minimatch(absolutePath, pattern)) {
 			return true;
 		}
 	}
@@ -186,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 			const relativePath = (event.input as { path: string }).path;
 			const absolutePath = resolve(ctx.cwd, relativePath);
 
-			if (shouldIgnorePath(absolutePath, config)) return;
+			if (shouldIgnorePath(absolutePath, ctx.cwd, config)) return;
 
 			try {
 				const stats = await stat(absolutePath);
@@ -206,7 +209,7 @@ export default function (pi: ExtensionAPI) {
 			const relativePath = (event.input as { path: string }).path;
 			const absolutePath = resolve(ctx.cwd, relativePath);
 
-			if (shouldIgnorePath(absolutePath, config)) return;
+			if (shouldIgnorePath(absolutePath, ctx.cwd, config)) return;
 
 			// write (create new file): skip read-before-edit check
 			// Only check edit (modify existing file)
@@ -270,7 +273,7 @@ export default function (pi: ExtensionAPI) {
 			const unreadFiles: string[] = [];
 			for (const file of targetFiles) {
 				const absolutePath = resolve(ctx.cwd, file);
-				if (shouldIgnorePath(absolutePath, config)) continue;
+				if (shouldIgnorePath(absolutePath, ctx.cwd, config)) continue;
 				if (!records.has(absolutePath)) {
 					unreadFiles.push(file);
 				}
@@ -290,6 +293,53 @@ export default function (pi: ExtensionAPI) {
 						`警告: 以下文件未读取过: ${fileList}`,
 						"warning",
 					);
+				}
+			}
+		}
+	});
+
+	// After a tool executes successfully, refresh the recorded mtime/ctime/size so the
+	// next edit on the same file is not wrongly flagged as "externally modified".
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.isError) return;
+
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (!sessionId) return;
+
+		const config = fileConfigs.get(sessionId);
+		if (!config) return;
+
+		const records = fileRecords.get(sessionId);
+		if (!records) return;
+
+		const refreshRecord = async (relativePath: string) => {
+			const absolutePath = resolve(ctx.cwd, relativePath);
+			if (shouldIgnorePath(absolutePath, ctx.cwd, config)) return;
+			try {
+				const stats = await stat(absolutePath);
+				records.set(absolutePath, {
+					readTime: Date.now(),
+					mtime: stats.mtimeMs,
+					ctime: stats.ctimeMs,
+					size: stats.size,
+				});
+			} catch {
+				// File may not exist (e.g. write was rolled back); leave record as-is.
+			}
+		};
+
+		if (event.toolName === "edit" || event.toolName === "write") {
+			const relativePath = (event.input as { path?: string }).path;
+			if (typeof relativePath === "string") {
+				await refreshRecord(relativePath);
+			}
+		}
+
+		if (event.toolName === "bash") {
+			const command = (event.input as { command?: string }).command;
+			if (typeof command === "string") {
+				for (const file of extractBashInPlaceFiles(command)) {
+					await refreshRecord(file);
 				}
 			}
 		}
