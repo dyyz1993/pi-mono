@@ -51,6 +51,12 @@ export {
 	type ReadToolInput,
 	type ReadToolOptions,
 } from "./read.ts";
+export {
+	createSkillTool,
+	createSkillToolDefinition,
+	type SkillToolInput,
+	type SkillToolOptions,
+} from "./skill.ts";
 export { type SpawnedProcess, type SpawnOptions, spawnManagedProcess } from "./spawn-managed.ts";
 export { stripMarkdownCodeBlock } from "./strip-markdown.ts";
 export {
@@ -80,6 +86,7 @@ import { createFindTool, createFindToolDefinition, type FindOperations, type Fin
 import { createGrepTool, createGrepToolDefinition, type GrepOperations, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsOperations, type LsToolOptions } from "./ls.ts";
 import { createReadTool, createReadToolDefinition, type ReadOperations, type ReadToolOptions } from "./read.ts";
+import { createSkillToolDefinition, type SkillToolOptions } from "./skill.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteOperations, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;

@@ -67,9 +67,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += "</project_context>\n";
 		}
 
-		// Append skills section (only if read tool is available)
-		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
-		if (customPromptHasRead && skills.length > 0) {
+		// Append skills section (only if skill or read tool is available)
+		const customPromptHasSkill = !selectedTools || selectedTools.includes("skill") || selectedTools.includes("read");
+		if (customPromptHasSkill && skills.length > 0) {
 			prompt += formatSkillsForPrompt(skills);
 		}
 
@@ -160,8 +160,9 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += "</project_context>\n";
 	}
 
-	// Append skills section (only if read tool is available)
-	if (hasRead && skills.length > 0) {
+	// Append skills section (only if skill or read tool is available)
+	const hasSkill = tools.includes("skill");
+	if ((hasRead || hasSkill) && skills.length > 0) {
 		prompt += formatSkillsForPrompt(skills);
 	}
 
