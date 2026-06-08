@@ -27,8 +27,10 @@ import {
     CUSTOM_GUARD_PROMPT,
     TODO_CHECK_PROMPT,
     SPECS_CHECK_PROMPT,
+    REFINE_GOAL_SYSTEM_PROMPT,
+    REFINE_GOAL_USER_PROMPT,
 } from "./prompts.ts";
-import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const LOG_FILE = "/tmp/supervisor-debug.log";
@@ -158,6 +160,18 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         persistGoalRuntimeState();
         emitStatusChanged();
         channel.emit("supervisor.goalChanged", { goal: activeGoal });
+
+        // Trigger a new turn so the LLM immediately sees the goal in its
+        // system prompt (injected by the before_agent_start handler).
+        pi.sendMessage(
+            {
+                customType: "supervisor_goal_start",
+                content: `Goal activated: ${params.objective.trim()}`,
+                display: true,
+            },
+            { triggerTurn: true },
+        );
+
         return { goal: activeGoal };
     });
 
@@ -175,6 +189,43 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         persistGoalRuntimeState();
         emitStatusChanged();
         return { cleared: true };
+    });
+
+    channel.handle("refineGoal", async (params) => {
+        const objective = params.objective?.trim();
+        if (!objective) {
+            return { success: false, error: "No objective provided" };
+        }
+
+        try {
+            // Gather project context: directory structure + key MD files
+            const projectContext = gatherProjectContext(projectRoot);
+
+            const refinedObjective = await pi.callLLM({
+                systemPrompt: REFINE_GOAL_SYSTEM_PROMPT,
+                messages: [{ role: "user", content: REFINE_GOAL_USER_PROMPT(objective, projectContext) }],
+                maxTokens: 2048,
+            });
+
+            const trimmed = refinedObjective.trim();
+
+            // Update the active goal's objective with the refined version
+            if (activeGoal) {
+                activeGoal = {
+                    ...activeGoal,
+                    objective: trimmed,
+                    updatedAt: Date.now(),
+                };
+                persistGoalRuntimeState();
+                channel.emit("supervisor.goalChanged", { goal: activeGoal });
+            }
+
+            return { success: true, objective: trimmed };
+        } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log(`refineGoal failed: ${errMsg}`);
+            return { success: false, error: errMsg };
+        }
     });
 
     channel.handle("checkToolStatus", async (params) => {
@@ -313,6 +364,20 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 
         currentState = enabled ? "idle" : "disabled";
         emitStatusChanged();
+
+        // If a running goal was restored, resume it immediately by triggering
+        // a new turn so the LLM sees the goal in its system prompt.
+        if (enabled && activeGoal && (activeGoal.status === "running" || activeGoal.status === "checking")) {
+            log(`session_start: resuming goal '${activeGoal.objective.slice(0, 60)}'`);
+            pi.sendMessage(
+                {
+                    customType: "supervisor_goal_resume",
+                    content: `Resuming goal: ${activeGoal.objective}`,
+                    display: true,
+                },
+                { triggerTurn: true },
+            );
+        }
     });
 
     // ── agent_end: Guard loop ──
@@ -424,6 +489,28 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                 });
                 setGoalStatus("complete");
                 emitStatusChanged();
+
+                // Send a completion summary entry into the chat stream
+                if (activeGoal) {
+                    const durationMs = Date.now() - activeGoal.startedAt;
+                    pi.sendMessage(
+                        {
+                            customType: "supervisor_goal_complete",
+                            content: "Goal completed",
+                            display: true,
+                            data: {
+                                goalId: activeGoal.id,
+                                objective: activeGoal.objective,
+                                verdict: "complete",
+                                continuationCount: activeGoal.continuationCount,
+                                durationMs,
+                                evidence: lastGoldResult?.evidence?.map((e) => e.summary) ?? [],
+                            },
+                        },
+                        { triggerTurn: false },
+                    );
+                }
+
                 return;
             }
 
@@ -978,5 +1065,63 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             }
         }
         return "";
+    }
+
+    function gatherProjectContext(root: string, maxDepth = 2): string {
+        const MAX_CHARS = 4000;
+        const parts: string[] = [];
+        let totalLen = 0;
+
+        function walkDir(dir: string, depth: number, prefix: string): void {
+            if (depth > maxDepth || totalLen > MAX_CHARS) return;
+            let entries: string[];
+            try {
+                entries = readdirSync(dir).sort();
+            } catch {
+                return;
+            }
+            // Filter out common noise
+            const skip = new Set(["node_modules", ".git", "dist", ".next", ".turbo", "coverage", ".cache", "__pycache__", ".yalc"]);
+            for (const name of entries) {
+                if (skip.has(name) || name.startsWith(".")) continue;
+                const full = join(dir, name);
+                let isDir: boolean;
+                try {
+                    isDir = statSync(full).isDirectory();
+                } catch {
+                    continue;
+                }
+                const line = `${prefix}${isDir ? name + "/" : name}\n`;
+                if (totalLen + line.length > MAX_CHARS) return;
+                parts.push(line);
+                totalLen += line.length;
+                if (isDir) walkDir(full, depth + 1, prefix + "  ");
+            }
+        }
+
+        parts.push("## Directory Structure\n```\n");
+        walkDir(root, 0, "");
+        parts.push("```\n");
+
+        // Read key documentation files
+        const docFiles = ["README.md", "specs.md", "CLAUDE.md", "AGENTS.md", "TODO.md", "package.json"];
+        for (const docFile of docFiles) {
+            const docPath = join(root, docFile);
+            if (!existsSync(docPath)) continue;
+            try {
+                const content = readFileSync(docPath, "utf-8");
+                if (content.length > 1500) {
+                    parts.push(`## ${docFile} (first 1500 chars)\n${content.slice(0, 1500)}\n\n`);
+                } else {
+                    parts.push(`## ${docFile}\n${content}\n\n`);
+                }
+                totalLen += content.length;
+            } catch {
+                // skip unreadable files
+            }
+            if (totalLen > MAX_CHARS) break;
+        }
+
+        return parts.join("").slice(0, MAX_CHARS);
     }
 }

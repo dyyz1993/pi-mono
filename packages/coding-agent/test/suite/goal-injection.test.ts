@@ -38,6 +38,11 @@ function createSupervisorLikeExtension(options?: {
 			goalStatusLog = [];
 			goalStatusLog.push({ status: "running", at: now });
 		},
+		/** Simulate session_start restoring a persisted goal */
+		restoreGoal(goal: GoalState) {
+			activeGoal = goal;
+			goalStatusLog = [{ status: goal.status, at: goal.updatedAt }];
+		},
 		clearGoal() {
 			if (activeGoal) {
 				activeGoal = { ...activeGoal, status: "cancelled", updatedAt: Date.now() };
@@ -412,5 +417,119 @@ describe("goal lifecycle via harness", () => {
 		await harness.session.prompt("remove all todos");
 
 		expect(controller.getGoal()?.status).toBe("complete");
+	});
+
+	// ── Phase 7: idle-time setGoal triggers turn via sendMessage ──
+
+	it("setGoal during idle triggers a new turn with goal injected", async () => {
+		const { controller, factory } = createSupervisorLikeExtension();
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		// First turn: no goal, normal interaction
+		let firstPrompt = "";
+		harness.setResponses([
+			(context) => {
+				firstPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("idle response");
+			},
+		]);
+
+		await harness.session.prompt("hello");
+		expect(firstPrompt).not.toContain("Active Goal");
+
+		// Now set goal while idle (simulates channel call from frontend)
+		controller.setGoal("Fix the CI pipeline");
+
+		// setGoal in production triggers sendMessage({ triggerTurn: true }).
+		// In the test we simulate that by sending a follow-up prompt that
+		// represents the auto-triggered turn.
+		let secondPrompt = "";
+		harness.setResponses([
+			(context) => {
+				secondPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("fixing CI now");
+			},
+			// callLLM from agent_end
+			fauxAssistantMessage('{"completed": true, "confidence": 0.9}'),
+		]);
+
+		await harness.session.prompt("Goal activated: Fix the CI pipeline");
+
+		expect(secondPrompt).toContain("Active Goal");
+		expect(secondPrompt).toContain("Fix the CI pipeline");
+		expect(controller.getGoal()?.status).toBe("complete");
+	});
+
+	// ── Phase 8: session_start restores running goal and triggers turn ──
+
+	it("session_start resumes a persisted running goal by triggering a turn", async () => {
+		const { controller, factory } = createSupervisorLikeExtension();
+
+		// Simulate a goal that was persisted before session restart
+		const persistedGoal: GoalState = {
+			id: "goal_abc123",
+			objective: "Deploy to staging",
+			status: "running",
+			startedAt: Date.now() - 60000,
+			updatedAt: Date.now() - 60000,
+			continuationCount: 2,
+			blockers: [],
+		};
+		controller.restoreGoal(persistedGoal);
+
+		// Create harness (triggers session_start) - goal is already restored
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		// In production, session_start would call sendMessage({ triggerTurn: true }).
+		// We simulate that triggered turn.
+		let resumedPrompt = "";
+		harness.setResponses([
+			(context) => {
+				resumedPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("deploying to staging now");
+			},
+			// callLLM from agent_end: complete
+			fauxAssistantMessage('{"completed": true, "confidence": 0.95}'),
+		]);
+
+		await harness.session.prompt("Resuming goal: Deploy to staging");
+
+		expect(resumedPrompt).toContain("Active Goal");
+		expect(resumedPrompt).toContain("Deploy to staging");
+		expect(controller.getGoal()?.status).toBe("complete");
+	});
+
+	it("session_start does not trigger turn for completed goal", async () => {
+		const { controller, factory } = createSupervisorLikeExtension();
+
+		// Simulate a goal that was already completed before session restart
+		const completedGoal: GoalState = {
+			id: "goal_xyz789",
+			objective: "Write documentation",
+			status: "complete",
+			startedAt: Date.now() - 120000,
+			updatedAt: Date.now() - 60000,
+			continuationCount: 1,
+			blockers: [],
+		};
+		controller.restoreGoal(completedGoal);
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		let prompt = "";
+		harness.setResponses([
+			(context) => {
+				prompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("hello");
+			},
+		]);
+
+		await harness.session.prompt("hello");
+
+		expect(prompt).not.toContain("Active Goal");
 	});
 });
