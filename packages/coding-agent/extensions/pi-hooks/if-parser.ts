@@ -40,7 +40,7 @@ function globMatch(pattern: string, text: string): boolean {
 	try {
 		return new RegExp(regex).test(text);
 	} catch (err) {
-		console.debug("[claude-hooks-compat] glob regex match failed:", err instanceof Error ? err.message : err);
+		console.debug("[pi-hooks] glob regex match failed:", err instanceof Error ? err.message : err);
 		return false;
 	}
 }

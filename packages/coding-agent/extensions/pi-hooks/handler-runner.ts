@@ -169,7 +169,7 @@ function runCommandHandler(handler: HookHandler, stdinData: HookStdinData, ctx: 
 				try {
 					result.parsed = JSON.parse(stdout.trim());
 				} catch (err) {
-					console.debug("[claude-hooks-compat] stdout JSON parse failed:", err instanceof Error ? err.message : err);
+					console.debug("[pi-hooks] stdout JSON parse failed:", err instanceof Error ? err.message : err);
 				}
 			}
 
@@ -194,7 +194,7 @@ async function runHttpHandler(handler: HookHandler, stdinData: HookStdinData): P
 		try {
 			parsedUrl = new URL(urlStr);
 		} catch (err) {
-			console.debug("[claude-hooks-compat] URL parse failed:", err instanceof Error ? err.message : err);
+			console.debug("[pi-hooks] URL parse failed:", err instanceof Error ? err.message : err);
 			return { exitCode: 1, stdout: "", stderr: `Invalid URL: ${urlStr}` };
 		}
 
@@ -224,14 +224,14 @@ async function runHttpHandler(handler: HookHandler, stdinData: HookStdinData): P
 			try {
 				parsed = JSON.parse(text);
 			} catch (err) {
-				console.debug("[claude-hooks-compat] HTTP response JSON parse failed:", err instanceof Error ? err.message : err);
+				console.debug("[pi-hooks] HTTP response JSON parse failed:", err instanceof Error ? err.message : err);
 			}
 			return { exitCode: 0, stdout: text, stderr: "", parsed };
 		}
 
 		if (resp.status === 403) {
 			const body = await resp.text().catch((err) => {
-				console.debug("[claude-hooks-compat] 403 body read failed:", err instanceof Error ? err.message : err);
+				console.debug("[pi-hooks] 403 body read failed:", err instanceof Error ? err.message : err);
 				return "";
 			});
 			return { exitCode: 2, stdout: "", stderr: body || `HTTP ${resp.status}` };
@@ -296,7 +296,7 @@ async function runPromptHandler(
 		try {
 			parsed = JSON.parse(response);
 		} catch (err) {
-			console.debug("[claude-hooks-compat] prompt handler JSON parse failed:", err instanceof Error ? err.message : err);
+			console.debug("[pi-hooks] prompt handler JSON parse failed:", err instanceof Error ? err.message : err);
 		}
 
 		return { exitCode: 0, stdout: response, stderr: "", parsed };
@@ -332,7 +332,7 @@ async function runAgentHandler(
 		try {
 			parsed = JSON.parse(response);
 		} catch (err) {
-			console.debug("[claude-hooks-compat] agent handler JSON parse failed:", err instanceof Error ? err.message : err);
+			console.debug("[pi-hooks] agent handler JSON parse failed:", err instanceof Error ? err.message : err);
 		}
 
 		return { exitCode: 0, stdout: response, stderr: "", parsed };

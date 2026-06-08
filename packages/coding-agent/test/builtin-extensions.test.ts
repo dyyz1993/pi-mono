@@ -279,16 +279,16 @@ describe("Built-in Extensions", () => {
 		});
 	});
 
-	// ─── 4. claude-hooks-compat ─────────────────────────────────────────
+	// ─── 4. pi-hooks ─────────────────────────────────────────
 
-	describe("claude-hooks-compat", () => {
+	describe("pi-hooks", () => {
 		it("registers hooks channel", async () => {
-			const { manager } = await loadExtension("claude-hooks-compat");
+			const { manager } = await loadExtension("pi-hooks");
 			expect(manager.has("hooks")).toBe(true);
 		});
 
 		it("hooks.getLog returns empty entries when no hooks configured", async () => {
-			const { manager, outputs } = await loadExtension("claude-hooks-compat");
+			const { manager, outputs } = await loadExtension("pi-hooks");
 
 			const data = await invokeChannelMethod(manager, outputs, "hooks", "hooks.getLog");
 			expect(data).toBeDefined();
@@ -299,11 +299,11 @@ describe("Built-in Extensions", () => {
 		});
 	});
 
-	// ─── 5. compaction-manager ──────────────────────────────────────────
+	// ─── 5. multi-compaction ──────────────────────────────────────────
 
-	describe("compaction-manager", () => {
+	describe("multi-compaction", () => {
 		it("loads without errors", async () => {
-			await loadExtension("compaction-manager");
+			await loadExtension("multi-compaction");
 		});
 	});
 

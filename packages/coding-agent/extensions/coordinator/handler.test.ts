@@ -636,7 +636,7 @@ describe("no double store operations in tool handlers (Bug 3/4/6 fix)", () => {
   });
 });
 
-// ── TDD tests for hooks-engine agent param passthrough (P0) ──
+// ── TDD tests for pi-hooks agent param passthrough (P0) ──
 
 describe("Bug: session_delegate_sync handler missing (hooks not activated in subagent)", () => {
   it("handler.ts registers session_delegate_sync handler", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { interpretHookOutput } from "../extensions/claude-hooks-compat/handler-runner.ts";
+import { interpretHookOutput } from "../extensions/pi-hooks/handler-runner.ts";
 
-describe("claude-hooks-compat hook output interpretation", () => {
+describe("pi-hooks hook output interpretation", () => {
 	it("uses stdout echo as the block reason for exit code 2", () => {
 		const result = interpretHookOutput({
 			exitCode: 2,

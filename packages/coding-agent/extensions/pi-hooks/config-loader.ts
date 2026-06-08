@@ -5,7 +5,7 @@ import type { ClaudeHookConfig, MatcherGroup } from "./types.ts";
 
 export interface ConfigSource {
 	path: string;
-	scope: "policy" | "global" | "project" | "local";
+	scope: "policy" | "global" | "project" | "local" | "pi-global" | "pi-project";
 	exists: boolean;
 	disabled: boolean;
 }
@@ -43,6 +43,8 @@ export function loadConfigs(projectDir: string): Map<string, MatcherGroup[]> {
 		{ path: join(homedir(), ".claude/settings.json"), name: "global" },
 		{ path: join(projectDir, ".claude/settings.json"), name: "project" },
 		{ path: join(projectDir, ".claude/settings.local.json"), name: "local" },
+		{ path: join(homedir(), ".pi", "agent", "settings.json"), name: "pi-global" },
+		{ path: join(projectDir, ".pi", "settings.json"), name: "pi-project" },
 	];
 
 	for (const source of sources) {
@@ -78,6 +80,8 @@ export function loadConfigSources(projectDir: string): ConfigSource[] {
 		{ path: join(homedir(), ".claude/settings.json"), scope: "global" as const },
 		{ path: join(projectDir, ".claude/settings.json"), scope: "project" as const },
 		{ path: join(projectDir, ".claude/settings.local.json"), scope: "local" as const },
+		{ path: join(homedir(), ".pi", "agent", "settings.json"), scope: "pi-global" as const },
+		{ path: join(projectDir, ".pi", "settings.json"), scope: "pi-project" as const },
 	];
 
 	for (const f of files) {

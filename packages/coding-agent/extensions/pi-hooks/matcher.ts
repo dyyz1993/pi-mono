@@ -11,7 +11,7 @@ export function matchesMatcher(matcher: string | undefined, toolName: string): b
 	try {
 		return new RegExp(matcher).test(toolName);
 	} catch (err) {
-		console.debug("[claude-hooks-compat] matcher regex failed:", err instanceof Error ? err.message : err);
+		console.debug("[pi-hooks] matcher regex failed:", err instanceof Error ? err.message : err);
 		return false;
 	}
 }
