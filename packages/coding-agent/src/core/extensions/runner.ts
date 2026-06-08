@@ -255,7 +255,7 @@ export class ExtensionRunner {
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
-	private getPermissionModeFn: () => string = () => "auto";
+	private getPermissionModeFn: () => string = () => "normal";
 	private _currentExtensionName = "";
 	private getProjectRootFn: () => string = () => this.cwd;
 	private getSessionDataDirFn: () => string = () => "";
@@ -720,6 +720,7 @@ export class ExtensionRunner {
 				multiple: opts?.multiple,
 				signal: opts?.signal,
 				timeout: opts?.timeout,
+				permissionMeta: opts?.permissionMeta,
 			}),
 			(result) => result.value,
 		);

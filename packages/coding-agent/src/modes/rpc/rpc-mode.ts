@@ -64,7 +64,7 @@ export type {
 	RpcSessionState,
 } from "./rpc-types.ts";
 
-const PERMISSION_MODES = ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"] as const;
+const PERMISSION_MODES = ["normal", "yolo", "auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"] as const;
 
 function isPermissionMode(mode: string): mode is PermissionMode {
 	return (PERMISSION_MODES as readonly string[]).includes(mode);
@@ -210,6 +210,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					multiple: opts?.multiple,
 					timeout: opts?.timeout,
 					toolCallId: opts?.toolCallId,
+					permissionMeta: opts?.permissionMeta,
 				},
 				(r) => ("cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
 			),

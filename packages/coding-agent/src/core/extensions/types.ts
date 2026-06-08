@@ -108,6 +108,15 @@ export interface ExtensionUIDialogOptions {
 		source?: string;
 		reason?: string;
 	};
+	/** Path permission metadata for rendering approval cards in RPC clients. */
+	permissionMeta?: {
+		type: "path_boundary";
+		path: string;
+		cwd: string;
+		toolName: string;
+		scope: "read" | "write";
+		relativeTo: string;
+	};
 }
 
 /** Placement for extension widgets. */
@@ -392,6 +401,14 @@ export interface UIEvent {
 		eventName?: string;
 		source?: string;
 		reason?: string;
+	};
+	permissionMeta?: {
+		type: "path_boundary";
+		path: string;
+		cwd: string;
+		toolName: string;
+		scope: "read" | "write";
+		relativeTo: string;
 	};
 	signal?: AbortSignal;
 	timeout?: number;

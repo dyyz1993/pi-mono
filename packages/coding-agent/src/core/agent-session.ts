@@ -86,7 +86,7 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.ts";
 import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
-import { PathPermissionStore, matchPathGlob } from "./path-permission-store.ts";
+import { matchPathGlob, PathPermissionStore } from "./path-permission-store.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
@@ -1127,12 +1127,7 @@ export class AgentSession {
 		}
 	}
 
-	private static readonly _SYSTEM_PATH_ALLOWLIST = [
-		"/tmp/**",
-		"/private/tmp/**",
-		"/var/folders/**",
-		"/dev/null",
-	];
+	private static readonly _SYSTEM_PATH_ALLOWLIST = ["/tmp/**", "/private/tmp/**", "/var/folders/**", "/dev/null"];
 
 	private async _checkPathBoundary(
 		toolName: string,
@@ -1148,7 +1143,7 @@ export class AgentSession {
 		const normalizedPath = normalizeAgentPath(rawPath);
 
 		// Is path inside cwd?
-		if (normalizedPath.startsWith(this._cwd + "/") || normalizedPath === this._cwd) {
+		if (normalizedPath.startsWith(`${this._cwd}/`) || normalizedPath === this._cwd) {
 			return undefined;
 		}
 

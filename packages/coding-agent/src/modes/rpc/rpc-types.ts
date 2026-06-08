@@ -155,7 +155,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_all_tools" }
 
 	// Permission mode
-	| { id?: string; type: "set_permission_mode"; mode: PermissionMode }
+	| { id?: string; type: "set_permission_mode"; mode: PermissionMode | string }
 
 	// MCP
 	| { id?: string; type: "get_mcp_servers" }
@@ -574,7 +574,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "get_all_tools"; success: true; data: { tools: RpcAllTool[] } }
 
 	// Permission mode
-	| { id?: string; type: "response"; command: "set_permission_mode"; success: true; data: { mode: PermissionMode } }
+	| { id?: string; type: "response"; command: "set_permission_mode"; success: true; data: { mode: string } }
 
 	// MCP
 	| { id?: string; type: "response"; command: "get_mcp_servers"; success: true; data: { servers: RpcMcpServer[] } }
@@ -603,6 +603,14 @@ export type RpcExtensionUIRequest =
 			multiple?: boolean;
 			timeout?: number;
 			toolCallId?: string;
+			permissionMeta?: {
+				type: "path_boundary";
+				path: string;
+				cwd: string;
+				toolName: string;
+				scope: "read" | "write";
+				relativeTo: string;
+			};
 	  }
 	| {
 			type: "extension_ui_request";

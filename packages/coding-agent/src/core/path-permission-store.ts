@@ -31,7 +31,7 @@ function normalizeFilePath(filePath: string): string {
 		}
 	}
 	if (normalized.startsWith("/")) {
-		return "/" + resolved.filter((p) => p !== "").join("/");
+		return `/${resolved.filter((p) => p !== "").join("/")}`;
 	}
 	return resolved.join("/") || ".";
 }

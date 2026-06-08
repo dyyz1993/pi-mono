@@ -743,8 +743,8 @@ export class RpcClient {
 		return this.getData<{ tools: RpcAllTool[] }>(response).tools;
 	}
 
-	async setPermissionMode(mode: "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny"): Promise<{
-		mode: "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+	async setPermissionMode(mode: string): Promise<{
+		mode: string;
 	}> {
 		const response = await this.send({ type: "set_permission_mode", mode });
 		return this.getData(response);

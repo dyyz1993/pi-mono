@@ -67,7 +67,7 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: AgentSource;
 	filePath: string;
-	permissionMode?: "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+	permissionMode?: "normal" | "yolo" | "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
 	maxTurns?: number;
 	effort?: string;
 	color?: AgentColor;

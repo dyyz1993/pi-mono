@@ -5,10 +5,12 @@
  * Works with AgentConfig.permissionMode to control tool access.
  *
  * Modes:
- *   auto         — default behavior, all tools allowed
- *   acceptEdits  — auto-allow edit/write, block dangerous bash
- *   dontAsk      — auto-allow everything (no blocking)
- *   always-allow — same as dontAsk
+ *   normal       — default behavior, all tools allowed, dangerous bash blocked
+ *   yolo         — auto-allow everything (no blocking)
+ *   auto         — (legacy) same as normal
+ *   acceptEdits  — (legacy) same as normal
+ *   dontAsk      — (legacy) same as yolo
+ *   always-allow — (legacy) same as yolo
  *   always-deny  — block everything
  */
 
@@ -35,6 +37,18 @@ interface PermissionRule {
 }
 
 const RULES: Record<string, PermissionRule> = {
+  normal: {
+    mode: "normal",
+    allowedTools: null,
+    blockedTools: null,
+    blockBashPatterns: DANGEROUS_BASH_PATTERNS,
+  },
+  yolo: {
+    mode: "yolo",
+    allowedTools: null,
+    blockedTools: null,
+    blockBashPatterns: null,
+  },
   auto: {
     mode: "auto",
     allowedTools: null,
@@ -140,7 +154,10 @@ function matchesDisallowedTool(
 }
 
 export function createPermissionHandler(agentConfig: AgentConfig) {
-  const mode = agentConfig.permissionMode ?? "auto";
+  const rawMode = agentConfig.permissionMode ?? "normal";
+  const mode = rawMode === "dontAsk" || rawMode === "always-allow" ? "yolo"
+    : rawMode === "auto" || rawMode === "acceptEdits" ? "normal"
+    : rawMode;
   const rule = RULES[mode];
   if (!rule) return null;
 
@@ -225,14 +242,14 @@ export default function agentPermissions(pi: ExtensionAPI, ctx: ExtensionContext
       }
     }
 
-    // Permission mode-based rules (only for non-auto modes)
-    if (!mode || mode === "auto" || mode === "dontAsk" || mode === "always-allow") {
+    // Permission mode-based rules (only for non-auto/yolo modes)
+    if (!mode || mode === "auto" || mode === "normal" || mode === "dontAsk" || mode === "always-allow" || mode === "yolo") {
       // Still check allowedTools/disallowedTools even in auto mode
       if (allowedTools && allowedTools.length > 0) {
         const handler = createPermissionHandler({
           name: agentName,
           description: "",
-          permissionMode: "auto",
+          permissionMode: "normal",
           disallowedTools,
           tools: allowedTools,
         } as AgentConfig);
@@ -246,7 +263,7 @@ export default function agentPermissions(pi: ExtensionAPI, ctx: ExtensionContext
         const handler = createPermissionHandler({
           name: agentName,
           description: "",
-          permissionMode: "auto",
+          permissionMode: "normal",
           disallowedTools,
         } as AgentConfig);
         if (handler) {
