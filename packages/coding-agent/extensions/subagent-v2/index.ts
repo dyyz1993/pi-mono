@@ -34,6 +34,8 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 const SubagentParams = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task instruction to delegate to the agent" }),
+	description: Type.Optional(Type.String({ description: "Short (3-5 word) summary of the task, shown in UI. If omitted, derived from the task parameter." })),
+	model: Type.Optional(Type.String({ description: "Model override for the subagent (e.g. 'claude-sonnet-4-20250514'). Takes precedence over the agent definition's model. If omitted, inherits from the agent definition or parent." })),
 	background: Type.Optional(Type.Boolean({ description: "Run in background mode. Default: false.", default: false })),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds. Default: 300.", default: 300 })),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
@@ -140,12 +142,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
+				const title = params.description ?? `${params.agent}: ${params.task.slice(0, 40)}`;
 				const result = await coordinatorClient.call(
 					"session_delegate_sync",
 					{
 						task: params.task,
-						title: `${params.agent}: ${params.task.slice(0, 40)}`,
+						title,
 						agent: params.agent,
+						model: params.model,
 						timeoutMs,
 						projectPath: params.cwd ?? ctx.cwd,
 					},
@@ -156,7 +160,7 @@ export default function (pi: ExtensionAPI) {
 					toolCallId,
 					sessionId: result.sessionId,
 					sessionPath: "",
-					description: params.agent,
+					description: params.description ?? params.agent,
 					instruction: params.task,
 					startedAt,
 					completedAt: Date.now(),
@@ -198,11 +202,13 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args, theme, _context) {
 			const scope: AgentScope = args.agentScope ?? "user";
 			const agentName = args.agent || "...";
+			const desc = args.description || "";
 			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
 			let text =
 				theme.fg("toolTitle", theme.bold("subagent ")) +
-				theme.fg("accent", agentName) +
-				theme.fg("muted", ` [${scope}]`);
+				theme.fg("accent", agentName);
+			if (desc) text += theme.fg("muted", ` — ${desc}`);
+			text += theme.fg("muted", ` [${scope}]`);
 			text += `\n  ${theme.fg("dim", preview)}`;
 			return new Text(text, 0, 0);
 		},

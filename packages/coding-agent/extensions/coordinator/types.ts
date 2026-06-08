@@ -77,6 +77,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         task: string;
         title?: string;
         agent?: string;
+        model?: string;
         timeoutMs?: number;
         projectPath?: string;
       };

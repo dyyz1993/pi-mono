@@ -36,6 +36,7 @@ const DelegateSyncParams = Type.Object({
   task: Type.String({ description: "Task description to delegate synchronously" }),
   title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
   agent: Type.Optional(Type.String({ description: "Agent name to activate in the delegated session" })),
+  model: Type.Optional(Type.String({ description: "Model override for the delegated session. Takes precedence over the agent definition's model." })),
   timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds. Default: 180000." })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
 });
@@ -131,11 +132,11 @@ export function createServerProxy(client: { call: (method: string, params: Recor
       }
     },
 
-    async delegate_sync(task, agent, timeoutMs, projectPath) {
+    async delegate_sync(task, agent, timeoutMs, projectPath, model) {
       try {
         const result = await client.call(
           "session_delegate_sync",
-          { task, title: agent ? `${agent}: ${task.slice(0, 40)}` : undefined, agent, timeoutMs, projectPath },
+          { task, title: agent ? `${agent}: ${task.slice(0, 40)}` : undefined, agent, model, timeoutMs, projectPath },
           timeoutMs + 30_000,
         );
         return result as { sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string };
@@ -391,7 +392,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       const timeoutMs = params.timeoutMs ?? 180_000;
 
       try {
-        const result = await serverProxy.delegate_sync(params.task, params.agent, timeoutMs, projectPath);
+        const result = await serverProxy.delegate_sync(params.task, params.agent, timeoutMs, projectPath, params.model);
 
         pi.appendEntry("coordinator_delegate_sync", {
           sessionId: result.sessionId,

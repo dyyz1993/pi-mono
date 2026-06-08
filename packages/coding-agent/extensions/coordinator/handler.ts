@@ -13,7 +13,7 @@ export interface ProcessManagerApi {
   delegate_compact_status(sessionId: string): Promise<{ isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } }>;
   delegate_remove(sessionId: string): Promise<boolean>;
   delegate_clear_stopped(): Promise<number>;
-  delegate_sync(task: string, agent: string | undefined, timeoutMs: number, projectPath: string): Promise<{ sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string }>;
+  delegate_sync(task: string, agent: string | undefined, timeoutMs: number, projectPath: string, model?: string): Promise<{ sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string }>;
 }
 
 export class TaskStore {
@@ -319,11 +319,11 @@ export function createCoordinatorHandler(
   });
 
   channel.handle("session_delegate_sync", async (params) => {
-    const { task, title, agent, timeoutMs, projectPath: rawProjectPath } = params;
+    const { task, title, agent, model, timeoutMs, projectPath: rawProjectPath } = params;
     const projectPath = rawProjectPath || process.cwd();
 
     try {
-      const result = await pm.delegate_sync(task, agent, timeoutMs ?? 180_000, projectPath);
+      const result = await pm.delegate_sync(task, agent, timeoutMs ?? 180_000, projectPath, model);
 
       if (title) {
         getStore().add({
