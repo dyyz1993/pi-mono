@@ -401,13 +401,14 @@ export function buildSessionContext(
 		return { messages: [], thinkingLevel: "off", model: null };
 	}
 
-	// Walk from leaf to root, collecting path
+	// Walk from leaf to root, collecting path (push then reverse to avoid O(n²) unshift)
 	const path: SessionEntry[] = [];
 	let current: SessionEntry | undefined = leaf;
 	while (current) {
-		path.unshift(current);
+		path.push(current);
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
+	path.reverse();
 
 	// Extract settings and find compaction
 	let thinkingLevel = "off";
@@ -1443,9 +1444,10 @@ export class SessionManager {
 		const startId = fromId ?? this.leafId;
 		let current = startId ? this.byId.get(startId) : undefined;
 		while (current) {
-			path.unshift(current);
+			path.push(current);
 			current = current.parentId ? this.byId.get(current.parentId) : undefined;
 		}
+		path.reverse();
 		return path;
 	}
 

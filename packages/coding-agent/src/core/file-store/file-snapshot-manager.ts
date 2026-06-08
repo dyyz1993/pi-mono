@@ -228,10 +228,22 @@ export class FileSnapshotManager {
 		this.turnIndex = 0;
 		this.initialized = false;
 
-		const byId = new Map(entries.map((entry) => [entry.id, entry] as const));
+		// Build a Set of all entry IDs on the path from leaf to root (O(n) instead of O(n²))
+		const pathIdSet = new Set<string>();
+		if (leafId) {
+			const byId = new Map(entries.map((entry) => [entry.id, entry] as const));
+			let current: string | null = leafId;
+			while (current !== null) {
+				pathIdSet.add(current);
+				const entry = byId.get(current);
+				if (!entry) break;
+				current = entry.parentId;
+			}
+		}
+
 		for (const entry of entries) {
 			if (entry.type !== "custom" || entry.customType !== "step-snapshot") continue;
-			if (leafId && !isOnPathTo(byId, leafId, entry.id)) continue;
+			if (leafId && !pathIdSet.has(entry.id)) continue;
 
 			const data = entry.data as StepSnapshotData | undefined;
 			if (!data) continue;
@@ -248,11 +260,20 @@ export class FileSnapshotManager {
 
 	getLatestSnapshotOnPath(entries: SessionEntry[], leafId: string | null): StepSnapshotData | null {
 		if (!leafId) return null;
+		// Build path Set once (O(n)) instead of calling isOnPathTo for each snapshot
 		const byId = new Map(entries.map((entry) => [entry.id, entry] as const));
+		const pathIdSet = new Set<string>();
+		let cur: string | null = leafId;
+		while (cur !== null) {
+			pathIdSet.add(cur);
+			const e = byId.get(cur);
+			if (!e) break;
+			cur = e.parentId;
+		}
 		const snapshots: StepSnapshotData[] = [];
 		for (const entry of entries) {
 			if (entry.type !== "custom" || entry.customType !== "step-snapshot") continue;
-			if (!isOnPathTo(byId, leafId, entry.id)) continue;
+			if (!pathIdSet.has(entry.id)) continue;
 			snapshots.push(entry.data as StepSnapshotData);
 		}
 		if (snapshots.length > 0) return snapshots.at(-1) ?? null;
