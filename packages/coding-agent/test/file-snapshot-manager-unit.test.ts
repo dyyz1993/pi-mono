@@ -743,4 +743,115 @@ describe("FileSnapshotManager", () => {
 			expect(result).toBeDefined();
 		});
 	});
+
+	describe("getBatchDiffs oldContent regression", () => {
+		it("should return non-null oldContent for modified files when session starts empty", () => {
+			// Regression: when sessionStartTreeHash is null (empty working dir),
+			// getBatchFileContents reads from an empty tree, so oldContent is null
+			// even for "modified" files that exist in later snapshots.
+			// getFileDiff has a fallback, but getBatchDiffs does not.
+			const git = new InternalGit(storeDir);
+			// Simulate: first snapshot creates the file, second modifies it
+			const tree1 = git.writeTree(new Map([["Cargo.toml", 'version = "0.1.0"\n']]));
+			const tree2 = git.writeTree(new Map([["Cargo.toml", 'version = "0.2.0"\nedition = "2021"\n']]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["Cargo.toml"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["Cargo.toml"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// getModifiedFiles correctly reports "modified"
+			const modified = mgr.getModifiedFiles();
+			expect(modified).toHaveLength(1);
+			expect(modified[0]!.status).toBe("added"); // first seen as "added", so overall status is "added"
+
+			const batch = mgr.getBatchDiffs();
+			expect(batch.files).toHaveLength(1);
+			const fileDiff = batch.files[0]!.diff;
+			expect(fileDiff).not.toBeNull();
+			// The key assertion: oldContent should be available for diffing
+			expect(fileDiff!.oldContent).not.toBeNull();
+			expect(fileDiff!.newContent).toBe('version = "0.2.0"\nedition = "2021"\n');
+		});
+
+		it("should return valid diff when fromEntryId is provided to getBatchDiffs", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "original\n"]]));
+			const tree2 = git.writeTree(new Map([["a.txt", "modified\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["a.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// When using fromEntryId, oldContent should come from that snapshot's tree
+			const batch = mgr.getBatchDiffs({ fromEntryId: "snap-1", toEntryId: "snap-2" });
+			expect(batch.files).toHaveLength(1);
+			const fileDiff = batch.files[0]!.diff;
+			expect(fileDiff).not.toBeNull();
+			expect(fileDiff!.oldContent).toBe("original\n");
+			expect(fileDiff!.newContent).toBe("modified\n");
+			expect(fileDiff!.unifiedDiff).toContain("-original");
+			expect(fileDiff!.unifiedDiff).toContain("+modified");
+		});
+
+		it("unifiedDiff should contain removed lines when oldContent is non-null", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["config.yaml", "key: old\nother: value\n"]]));
+			const tree2 = git.writeTree(new Map([["config.yaml", "key: new\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["config.yaml"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["config.yaml"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// getFileDiff with explicit fromEntryId should give proper diff
+			const diff = mgr.getFileDiff({ filePath: "config.yaml", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			expect(diff).not.toBeNull();
+			expect(diff!.oldContent).toBe("key: old\nother: value\n");
+			expect(diff!.newContent).toBe("key: new\n");
+			expect(diff!.unifiedDiff).toContain("-key: old");
+			expect(diff!.unifiedDiff).toContain("-other: value");
+			expect(diff!.unifiedDiff).toContain("+key: new");
+		});
+	});
 });

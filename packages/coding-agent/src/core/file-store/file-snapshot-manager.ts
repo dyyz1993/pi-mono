@@ -483,6 +483,23 @@ export class FileSnapshotManager {
 			}
 		}
 
+		// Fallback: if oldContent is null for modified files, walk snapshots backwards
+		// to find the file. Start from second-to-last to skip the toTree snapshot.
+		for (const [filePath, content] of result) {
+			if (content.oldContent === null && content.newContent !== null) {
+				for (let i = snapshots.length - 2; i >= 0; i--) {
+					const snapshot = snapshots[i];
+					if (!snapshot) continue;
+					const tree = this.readTree(snapshot.snapshotTreeHash);
+					const found = tree.get(filePath);
+					if (found !== undefined) {
+						content.oldContent = found;
+						break;
+					}
+				}
+			}
+		}
+
 		return result;
 	}
 
@@ -510,14 +527,16 @@ export class FileSnapshotManager {
 
 		let oldContent = this.readTree(fromHash).get(options.filePath) ?? null;
 		const newContent = this.readTree(toHash).get(options.filePath) ?? null;
-		if (oldContent === null && newContent === null) {
+		// Fallback: walk snapshots backwards to find oldContent when not in fromTree.
+		// Only for modified files where oldContent is missing — search BEFORE toIdx.
+		if (oldContent === null && newContent !== null) {
 			const fromIdx = options.fromEntryId
 				? snapshots.findIndex((snapshot) => snapshot.entryId === options.fromEntryId)
 				: 0;
 			const toIdx = options.toEntryId
 				? snapshots.findIndex((snapshot) => snapshot.entryId === options.toEntryId)
 				: snapshots.length - 1;
-			for (let i = toIdx; i >= fromIdx; i--) {
+			for (let i = toIdx - 1; i >= fromIdx; i--) {
 				const snapshot = snapshots[i];
 				if (!snapshot) continue;
 				const content = this.readTree(snapshot.snapshotTreeHash).get(options.filePath);
@@ -526,8 +545,8 @@ export class FileSnapshotManager {
 					break;
 				}
 			}
-			if (oldContent === null) return null;
 		}
+		if (oldContent === null && newContent === null) return null;
 
 		return {
 			path: options.filePath,
