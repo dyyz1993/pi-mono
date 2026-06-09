@@ -864,11 +864,13 @@ describe("Multi-compaction extension harness", () => {
 		const deletionEntries = entries.filter((e) => e.type === "deletion");
 		expect(deletionEntries.length).toBeGreaterThan(0);
 
-		// Check that fold entries were created
+		// Check that fold entries were created — should be exactly 1 batch entry
 		const foldEntries = entries.filter(
 			(e) => e.type === "custom" && (e as { customType?: string }).customType === "compaction_fold",
 		);
-		expect(foldEntries.length).toBeGreaterThan(0);
+		expect(foldEntries.length).toBe(1);
+		const foldData = (foldEntries[0] as { data?: { count?: number } }).data;
+		expect(foldData?.count).toBeGreaterThan(0);
 	});
 
 	// === 15. Segment compaction strategy ===

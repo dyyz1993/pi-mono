@@ -169,18 +169,21 @@ export default function (pi: ExtensionAPI) {
 
 			if (foldable.length === 0) return;
 
+			// Batch all folds into a single custom entry instead of one per message
+			const foldSummaries: { id: string; summary: string }[] = [];
 			const foldIds: string[] = [];
 			for (const entry of foldable) {
 				const msg = entry.message as AssistantMessage;
 				const summary = extractFoldSummary(msg, config.contextFold.maxSummaryLength);
-				// Replace the original entry with a compact summary via deletion + custom entry
+				foldSummaries.push({ id: entry.id, summary });
 				foldIds.push(entry.id);
-				pi.appendEntry("compaction_fold", {
-					originalEntryId: entry.id,
-					summary,
-					timestamp: Date.now(),
-				});
 			}
+
+			pi.appendEntry("compaction_fold", {
+				count: foldSummaries.length,
+				folds: foldSummaries,
+				timestamp: foldable[0]!.message.timestamp,
+			});
 
 			pi.deleteEntries(foldIds);
 
