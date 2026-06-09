@@ -873,6 +873,95 @@ describe("Multi-compaction extension harness", () => {
 		expect(foldData?.count).toBeGreaterThan(0);
 	});
 
+	// === 14.5 Context fold does NOT re-fold already-deleted messages ===
+
+	it("context fold skips already-deleted messages (targetIds fix)", async () => {
+		const harness = await createHarness({
+			extensionFactories: [multiCompaction],
+		});
+		harnesses.push(harness);
+
+		const model = harness.getModel();
+		const runner = harness.session["_extensionRunner"] as ExtensionRunner;
+		const now = Date.now();
+
+		// Seed old assistant messages (older than maxAgeMs=30min, more than keepRecentCount=6)
+		const oldTimestamp = now - 60 * 60 * 1000; // 1 hour ago
+		for (let i = 0; i < 10; i++) {
+			harness.sessionManager.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: `prompt ${i}` }],
+				timestamp: oldTimestamp + i * 100,
+			});
+			harness.sessionManager.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: `Response ${i} with some content` }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: createUsage(50),
+				stopReason: "stop",
+				timestamp: oldTimestamp + i * 100 + 50,
+			} as AssistantMessage);
+		}
+
+		// First turn_end — should fold some messages
+		await runner.emit({
+			type: "turn_end",
+			turnIndex: 0,
+			message: { role: "user", content: [{ type: "text", text: "end turn" }], timestamp: now },
+			toolResults: [],
+		});
+
+		const entriesAfterFirst = harness.sessionManager.getEntries();
+		const foldAfterFirst = entriesAfterFirst.filter(
+			(e) => e.type === "custom" && (e as { customType?: string }).customType === "compaction_fold",
+		);
+		expect(foldAfterFirst.length).toBe(1);
+		const firstFoldCount = (foldAfterFirst[0] as { data?: { count?: number } }).data?.count ?? 0;
+		expect(firstFoldCount).toBeGreaterThan(0);
+
+		// Second turn_end — should NOT re-fold the same messages
+		await runner.emit({
+			type: "turn_end",
+			turnIndex: 1,
+			message: { role: "user", content: [{ type: "text", text: "end turn 2" }], timestamp: now },
+			toolResults: [],
+		});
+
+		const entriesAfterSecond = harness.sessionManager.getEntries();
+		const foldAfterSecond = entriesAfterSecond.filter(
+			(e) => e.type === "custom" && (e as { customType?: string }).customType === "compaction_fold",
+		);
+
+		// Should still be exactly 1 fold entry — no new folds
+		expect(foldAfterSecond.length).toBe(1);
+
+		// Third turn_end — still should not re-fold
+		await runner.emit({
+			type: "turn_end",
+			turnIndex: 2,
+			message: { role: "user", content: [{ type: "text", text: "end turn 3" }], timestamp: now },
+			toolResults: [],
+		});
+
+		const entriesAfterThird = harness.sessionManager.getEntries();
+		const foldAfterThird = entriesAfterThird.filter(
+			(e) => e.type === "custom" && (e as { customType?: string }).customType === "compaction_fold",
+		);
+		expect(foldAfterThird.length).toBe(1);
+
+		// Verify deletion entries have targetIds (not targets)
+		const deletionEntries = entriesAfterThird.filter((e) => e.type === "deletion");
+		expect(deletionEntries.length).toBeGreaterThan(0);
+		for (const del of deletionEntries) {
+			const targetIds = (del as { targetIds?: string[] }).targetIds;
+			expect(targetIds).toBeDefined();
+			expect(Array.isArray(targetIds)).toBe(true);
+			expect(targetIds!.length).toBeGreaterThan(0);
+		}
+	});
+
 	// === 15. Segment compaction strategy ===
 
 	it("segment compaction strategy generates multi-segment summary", async () => {
