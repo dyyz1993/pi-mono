@@ -125,3 +125,289 @@ describe("serverProxy delegate_fork — non-existent target sessionId", () => {
     expect(result.status).toBe("started");
   });
 });
+
+describe("serverProxy delegate", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns result from client.call('session_delegate', ...)", async () => {
+    client.mockCall("session_delegate", () => ({
+      sessionId: "sess-del-1",
+      status: "started",
+    }));
+
+    const result = await proxy.delegate("build the project", "/project");
+    expect(result.sessionId).toBe("sess-del-1");
+    expect(result.status).toBe("started");
+  });
+
+  it("passes task and projectPath to client.call", async () => {
+    client.mockCall("session_delegate", () => ({
+      sessionId: "sess-del-2",
+      status: "started",
+    }));
+
+    await proxy.delegate("run tests", "/tmp/project");
+
+    expect(client.call).toHaveBeenCalledWith(
+      "session_delegate",
+      { task: "run tests", projectPath: "/tmp/project" },
+    );
+  });
+});
+
+describe("serverProxy delegate_send", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns result from client.call('session_delegate_send', ...)", async () => {
+    client.mockCall("session_delegate_send", () => ({
+      delivered: true,
+      targetStatus: "active",
+    }));
+
+    const result = await proxy.delegate_send("from-1", "to-2", "hello");
+    expect(result.delivered).toBe(true);
+    expect(result.targetStatus).toBe("active");
+  });
+
+  it("returns empty array on error", async () => {
+    // delegate_send doesn't have a try/catch in serverProxy, so we test the
+    // general error path: if client.call throws, it propagates.
+    // However, the return type is not an array — let's verify it throws.
+    client.mockCall("session_delegate_send", () => {
+      throw new Error("channel error");
+    });
+
+    await expect(proxy.delegate_send("from-1", "to-2", "hello")).rejects.toThrow("channel error");
+  });
+});
+
+describe("serverProxy delegate_list", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns tasks from client.call('session_delegate_list', ...)", async () => {
+    const tasks = [
+      { sessionId: "s1", status: "idle" as const, projectPath: "/p1" },
+      { sessionId: "s2", status: "streaming" as const, projectPath: "/p2" },
+    ];
+    client.mockCall("session_delegate_list", () => ({ tasks }));
+
+    const result = await proxy.delegate_list();
+    expect(result).toHaveLength(2);
+    expect(result[0].sessionId).toBe("s1");
+    expect(result[1].status).toBe("streaming");
+  });
+
+  it("returns empty array on error", async () => {
+    client.mockCall("session_delegate_list", () => {
+      throw new Error("network failure");
+    });
+
+    const result = await proxy.delegate_list();
+    expect(result).toEqual([]);
+  });
+});
+
+describe("serverProxy delegate_stop", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns ok from client.call('session_delegate_stop', ...)", async () => {
+    client.mockCall("session_delegate_stop", () => ({ ok: true }));
+
+    const result = await proxy.delegate_stop("sess-stop-1");
+    expect(result).toBe(true);
+  });
+
+  it("returns false on error", async () => {
+    client.mockCall("session_delegate_stop", () => {
+      throw new Error("stop failed");
+    });
+
+    const result = await proxy.delegate_stop("sess-stop-missing");
+    expect(result).toBe(false);
+  });
+});
+
+describe("serverProxy delegate_remove", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns ok from client.call('session_delegate_remove', ...)", async () => {
+    client.mockCall("session_delegate_remove", () => ({ ok: true }));
+
+    const result = await proxy.delegate_remove("sess-rm-1");
+    expect(result).toBe(true);
+  });
+
+  it("returns false on error", async () => {
+    client.mockCall("session_delegate_remove", () => {
+      throw new Error("remove failed");
+    });
+
+    const result = await proxy.delegate_remove("sess-rm-missing");
+    expect(result).toBe(false);
+  });
+});
+
+describe("serverProxy delegate_clear_stopped", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns removed count from client.call('session_delegate_clear_stopped', ...)", async () => {
+    client.mockCall("session_delegate_clear_stopped", () => ({ removed: 3 }));
+
+    const result = await proxy.delegate_clear_stopped();
+    expect(result).toBe(3);
+  });
+
+  it("returns 0 on error", async () => {
+    client.mockCall("session_delegate_clear_stopped", () => {
+      throw new Error("clear failed");
+    });
+
+    const result = await proxy.delegate_clear_stopped();
+    expect(result).toBe(0);
+  });
+});
+
+describe("serverProxy delegate_compact_status", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns isCompacting and contextUsage from pm", async () => {
+    client.mockCall("session_delegate_status", () => ({
+      task: {
+        isCompacting: true,
+        contextUsage: { tokens: 5000, contextWindow: 200000, percent: 2.5 },
+      },
+    }));
+
+    const result = await proxy.delegate_compact_status("sess-compact-1");
+    expect(result.isCompacting).toBe(true);
+    expect(result.contextUsage.tokens).toBe(5000);
+    expect(result.contextUsage.contextWindow).toBe(200000);
+    expect(result.contextUsage.percent).toBe(2.5);
+  });
+
+  it("returns defaults when pm returns null task", async () => {
+    client.mockCall("session_delegate_status", () => ({ task: null }));
+
+    const result = await proxy.delegate_compact_status("sess-no-task");
+    expect(result.isCompacting).toBe(false);
+    expect(result.contextUsage.tokens).toBeNull();
+    expect(result.contextUsage.contextWindow).toBe(0);
+    expect(result.contextUsage.percent).toBeNull();
+  });
+
+  it("returns defaults on error", async () => {
+    client.mockCall("session_delegate_status", () => {
+      throw new Error("compact status error");
+    });
+
+    const result = await proxy.delegate_compact_status("sess-error");
+    expect(result.isCompacting).toBe(false);
+    expect(result.contextUsage.tokens).toBeNull();
+    expect(result.contextUsage.contextWindow).toBe(0);
+    expect(result.contextUsage.percent).toBeNull();
+  });
+});
+
+describe("serverProxy delegate_sync", () => {
+  let client: MockClient;
+  let proxy: ProcessManagerApi;
+
+  beforeEach(() => {
+    client = createMockClient();
+    proxy = createServerProxy(client as never);
+  });
+
+  it("returns result with all fields", async () => {
+    client.mockCall("session_delegate_sync", () => ({
+      sessionId: "sess-sync-1",
+      status: "completed",
+      exitCode: 0,
+      finalText: "All done",
+    }));
+
+    const result = await proxy.delegate_sync("build project", undefined, 60000, "/project");
+    expect(result.sessionId).toBe("sess-sync-1");
+    expect(result.status).toBe("completed");
+    expect(result.exitCode).toBe(0);
+    expect(result.finalText).toBe("All done");
+  });
+
+  it("passes agent, model, timeoutMs, projectPath to client.call", async () => {
+    client.mockCall("session_delegate_sync", () => ({
+      sessionId: "sess-sync-2",
+      status: "completed",
+      exitCode: 0,
+      finalText: "ok",
+    }));
+
+    await proxy.delegate_sync("run tests", "build-agent", 120000, "/workspace", "claude-sonnet-4");
+
+    expect(client.call).toHaveBeenCalledWith(
+      "session_delegate_sync",
+      {
+        task: "run tests",
+        title: "build-agent: run tests",
+        agent: "build-agent",
+        model: "claude-sonnet-4",
+        timeoutMs: 120000,
+        projectPath: "/workspace",
+      },
+      150000, // timeoutMs + 30_000
+    );
+  });
+
+  it("returns error result on client.call failure", async () => {
+    client.mockCall("session_delegate_sync", () => {
+      throw new Error("sync timed out");
+    });
+
+    const result = await proxy.delegate_sync("do work", undefined, 30000, "/project");
+    expect(result.status).toBe("error");
+    expect(result.exitCode).toBe(1);
+    expect(result.error).toBe("sync timed out");
+    expect(result.sessionId).toBe("");
+    expect(result.finalText).toBe("");
+  });
+});

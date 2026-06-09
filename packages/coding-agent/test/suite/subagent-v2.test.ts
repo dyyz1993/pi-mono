@@ -10,6 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
+import type { CoordinatorChannelContract } from "../../extensions/coordinator/types.ts";
+import { createTypedChannel } from "../../src/core/extensions/channel-factory.ts";
+import { ChannelManager } from "../../src/core/extensions/channel-manager.ts";
+import type { Channel, ChannelDataMessage } from "../../src/core/extensions/channel-types.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import type { ToolRenderContext } from "../../src/core/extensions/types.ts";
 import type { Theme } from "../../src/modes/interactive/theme/theme.ts";
@@ -347,5 +351,383 @@ describe("subagent tool error handling", () => {
 		expect(
 			resultText.includes("Agent failed") || resultText.includes("Unknown agent") || resultText.includes("error"),
 		).toBe(true);
+	});
+});
+
+// ── Cross-wired channel helpers for normal execution path tests ──
+
+type DelegateSyncHandler = (
+	params: CoordinatorChannelContract["methods"]["session_delegate_sync"]["params"],
+) =>
+	| CoordinatorChannelContract["methods"]["session_delegate_sync"]["return"]
+	| Promise<CoordinatorChannelContract["methods"]["session_delegate_sync"]["return"]>;
+
+function createCrossWiredChannels(delegateHandler: DelegateSyncHandler) {
+	let clientManager: ChannelManager;
+	let serverManager: ChannelManager;
+
+	// Server-side ChannelManager: its output (server responses) routes to client inbound
+	serverManager = new ChannelManager((msg: ChannelDataMessage) => {
+		// Use setImmediate to avoid synchronous re-entrancy
+		setImmediate(() => clientManager.handleInbound(msg));
+	});
+
+	// Client-side ChannelManager: its output (client requests) routes to server inbound
+	clientManager = new ChannelManager((msg: ChannelDataMessage) => {
+		setImmediate(() => serverManager.handleInbound(msg));
+	});
+
+	// Register "coordinator_client" on both sides
+	const serverRaw = serverManager.register("coordinator_client");
+	const clientRaw = clientManager.register("coordinator_client");
+
+	// Set up the server-side mock handler
+	const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
+	coordinatorServer.handle("session_delegate_sync", delegateHandler);
+
+	return {
+		clientManager,
+		serverManager,
+		clientCoordinatorRaw: clientRaw,
+		registerChannel: (name: string): Channel => {
+			if (name === "coordinator_client") {
+				return clientRaw;
+			}
+			return clientManager.register(name);
+		},
+	};
+}
+
+async function createHarnessWithCoordinator(delegateHandler: DelegateSyncHandler): Promise<{
+	harness: Harness;
+	channelInfo: ReturnType<typeof createCrossWiredChannels>;
+}> {
+	const channelInfo = createCrossWiredChannels(delegateHandler);
+
+	const h = await createHarness({
+		extensionFactories: [subagentV2Factory],
+	});
+	harnesses.push(h);
+
+	// Create a project agent in the harness's own cwd so discoverAgents finds it
+	const agentsDir = join(h.tempDir, ".pi", "agents");
+	mkdirSync(agentsDir, { recursive: true });
+	writeFileSync(
+		join(agentsDir, "test-worker.md"),
+		[
+			"---",
+			"name: test-worker",
+			"description: A test worker agent",
+			"mode: subagent",
+			"---",
+			"You are a test worker agent.",
+		].join("\n"),
+	);
+
+	await h.session.bindExtensions({
+		registerChannel: channelInfo.registerChannel,
+	});
+
+	return { harness: h, channelInfo };
+}
+
+// ── Normal execution path tests ──
+
+describe("subagent tool normal execution path", () => {
+	it("returns successful result when coordinator responds with exitCode 0", async () => {
+		const { harness } = await createHarnessWithCoordinator(async () => ({
+			sessionId: "sess-ok",
+			status: "completed" as const,
+			exitCode: 0,
+			finalText: "Task done!",
+		}));
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "do something useful",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("The subagent finished."),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
+		expect(toolResults.length).toBeGreaterThanOrEqual(1);
+
+		const resultText = toolResults[0]!.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("");
+
+		expect(resultText).toContain("Task done!");
+	});
+
+	it("returns error result when coordinator responds with non-zero exitCode", async () => {
+		const { harness } = await createHarnessWithCoordinator(async () => ({
+			sessionId: "sess-err",
+			status: "error" as const,
+			exitCode: 1,
+			finalText: "Oops",
+			error: "boom",
+		}));
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "do something",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("The subagent errored."),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
+		expect(toolResults.length).toBeGreaterThanOrEqual(1);
+
+		const resultText = toolResults[0]!.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("");
+
+		expect(resultText).toContain("boom");
+
+		// Verify details contain the error result with non-zero exitCode
+		const details = (toolResults[0] as { details?: { result?: { exitCode: number; status: string } } }).details;
+		expect(details?.result).toBeDefined();
+		expect(details!.result!.exitCode).toBe(1);
+		expect(details!.result!.status).toBe("error");
+	});
+
+	it("passes agent name to coordinator", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-agent",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "ok",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "check agent param",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.agent).toBe("test-worker");
+	});
+
+	it("passes model override to coordinator", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-model",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "ok",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "check model param",
+					model: "test-model",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.model).toBe("test-model");
+	});
+
+	it("passes timeout to coordinator as milliseconds", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-timeout",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "ok",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "check timeout param",
+					timeout: 60,
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.timeoutMs).toBe(60000);
+	});
+
+	it("appends subagent entry on success", async () => {
+		const { harness } = await createHarnessWithCoordinator(async () => ({
+			sessionId: "sess-entry",
+			status: "completed" as const,
+			exitCode: 0,
+			finalText: "entry test done",
+		}));
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "check entry",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		// Check that a custom_entry event was emitted for "subagent"
+		const customEntries = harness.eventsOfType("custom_entry");
+		expect(customEntries.length).toBeGreaterThanOrEqual(1);
+
+		const subagentEntry = customEntries.find((e) => e.customType === "subagent");
+		expect(subagentEntry).toBeDefined();
+		expect(subagentEntry!.data).toMatchObject({
+			sessionId: "sess-entry",
+			exitCode: 0,
+			finalText: "entry test done",
+		});
+	});
+});
+
+describe("subagent_resume tool normal execution path", () => {
+	it("resumes session with sessionPath", async () => {
+		const { harness } = await createHarnessWithCoordinator(async () => ({
+			sessionId: "sess-resume",
+			status: "completed" as const,
+			exitCode: 0,
+			finalText: "Resumed successfully!",
+		}));
+
+		// Create a temp session file
+		const sessionDir = join(tmpdir(), `pi-resume-test-${Date.now()}`);
+		mkdirSync(sessionDir, { recursive: true });
+		const sessionFile = join(sessionDir, "test-session.jsonl");
+		writeFileSync(sessionFile, '{"role":"user","content":"hello"}\n');
+		tempDirs.push(sessionDir);
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent_resume", {
+					sessionPath: sessionFile,
+					instruction: "Continue the task",
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Resumed."),
+		]);
+
+		await harness.session.prompt("resume a subagent");
+
+		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
+		expect(toolResults.length).toBeGreaterThanOrEqual(1);
+
+		const resultText = toolResults[0]!.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("");
+
+		expect(resultText).toContain("Resumed successfully!");
+	});
+
+	it("resumes session with sessionId via resolveSessionPath", async () => {
+		// resolveSessionPath looks for sessionId.jsonl under ~/.pi/agent/sessions or a custom base
+		// We'll create a session file structure that matches
+		const sessionBaseDir = join(tmpdir(), `pi-sessions-base-${Date.now()}`);
+		const subDir = join(sessionBaseDir, "sub-123");
+		mkdirSync(subDir, { recursive: true });
+		writeFileSync(join(subDir, "sess-abc.jsonl"), '{"role":"user","content":"hello"}\n');
+		tempDirs.push(sessionBaseDir);
+
+		// We need to test resolveSessionPath directly or set up the session file
+		// where resolveSessionPath can find it. Since the function scans directories,
+		// we import it and verify it finds our file, then use sessionPath in the tool call.
+		const { resolveSessionPath } = await import("../../extensions/subagent-v2/index.ts");
+		const foundPath = resolveSessionPath("sess-abc", sessionBaseDir);
+		expect(foundPath).toBeTruthy();
+
+		const { harness } = await createHarnessWithCoordinator(async () => ({
+			sessionId: "sess-resolved",
+			status: "completed" as const,
+			exitCode: 0,
+			finalText: "Resolved and resumed!",
+		}));
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent_resume", {
+					sessionPath: foundPath,
+					instruction: "Continue",
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Resumed."),
+		]);
+
+		await harness.session.prompt("resume a subagent");
+
+		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
+		expect(toolResults.length).toBeGreaterThanOrEqual(1);
+
+		const resultText = toolResults[0]!.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("");
+
+		expect(resultText).toContain("Resolved and resumed!");
 	});
 });
