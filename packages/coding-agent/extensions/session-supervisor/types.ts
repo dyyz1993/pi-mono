@@ -160,6 +160,10 @@ export interface SupervisorChannelContract extends ChannelContract {
             params: { objective: string };
             return: { success: boolean; objective?: string; error?: string };
         };
+        getTriggerHistory: {
+            params: { limit?: number };
+            return: { triggers: TriggerRecord[] };
+        };
     };
     events: {
         "supervisor.statusChanged": SupervisorStatus;
@@ -169,7 +173,46 @@ export interface SupervisorChannelContract extends ChannelContract {
         "supervisor.taskReport": { tasks: TaskReport[] };
         "supervisor.goalChanged": { goal?: GoalState; reason?: string };
         "supervisor.goldResult": GoldResult;
+        "supervisor.triggerRecord": TriggerRecord;
     };
+}
+
+// ── Trigger Record ──
+
+export interface TriggerRecord {
+    /** Sequential trigger number (1-based) */
+    seq: number;
+    /** Timestamp when this check started */
+    startedAt: number;
+    /** Timestamp when this check finished */
+    finishedAt: number;
+    /** Total duration of this check cycle in ms */
+    durationMs: number;
+    /** Verdict of this trigger */
+    verdict: "complete" | "incomplete" | "blocked" | "unsafe";
+    /** Overall confidence */
+    confidence: number;
+    /** Per-guard results */
+    guardResults: Array<{
+        guardName: string;
+        guardType: string;
+        passed: boolean;
+        confidence: number;
+        remainingItems: string[];
+        detail?: string;
+        durationMs: number;
+    }>;
+    /** Model check result (if run) */
+    modelCheck?: {
+        passed: boolean;
+        confidence: number;
+        response?: string;
+        durationMs: number;
+    };
+    /** Action taken after this trigger */
+    action: "continue" | "idle" | "paused" | "error";
+    /** Reason for the action */
+    reason: string;
 }
 
 // ── Status & Reporting ──

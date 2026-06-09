@@ -1,6 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import type { GoalState, GuardConfig } from "../../extensions/session-supervisor/types.ts";
+import type { GoalState, GuardConfig, TriggerRecord } from "../../extensions/session-supervisor/types.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 // ── Helpers ──
@@ -22,6 +22,8 @@ function createSupervisorLikeExtension(options?: {
 
 	let activeGoal: GoalState | undefined;
 	let goalStatusLog: Array<{ status: GoalState["status"]; at: number }> = [];
+	const triggerHistory: TriggerRecord[] = [];
+	let triggerSeq = 0;
 
 	const controller = {
 		setGoal(objective: string) {
@@ -51,6 +53,7 @@ function createSupervisorLikeExtension(options?: {
 		},
 		getGoal: () => activeGoal,
 		getGoalStatusLog: () => goalStatusLog,
+		getTriggerHistory: () => triggerHistory,
 	};
 
 	const factory = (pi: any) => {
@@ -119,6 +122,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 					return;
 				}
 
+				const triggerStartedAt = Date.now();
 				activeGoal = { ...activeGoal, status: "checking", updatedAt: Date.now() };
 				goalStatusLog.push({ status: "checking", at: Date.now() });
 
@@ -139,7 +143,28 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 					}
 				}
 
+				// Run keyword guard checks
+				const guardResults: TriggerRecord["guardResults"] = [];
+				for (const guard of guards) {
+					if (guard.type === "keyword") {
+						const guardStart = Date.now();
+						const found = guard.keywords.filter((kw) =>
+							lastAssistantText.toLowerCase().includes(kw.toLowerCase()),
+						);
+						guardResults.push({
+							guardName: guard.name,
+							guardType: "keyword",
+							passed: found.length === 0,
+							confidence: found.length === 0 ? 1 : 0.7,
+							remainingItems: found.length > 0 ? [`Keywords found: ${found.join(", ")}`] : [],
+							detail: found.length > 0 ? `Found: ${found.join(", ")}` : "No incomplete keywords",
+							durationMs: Date.now() - guardStart,
+						});
+					}
+				}
+
 				// Use callLLM for model-based completion check (same as real supervisor)
+				const modelCheckStart = Date.now();
 				const modelResponse = await pi.callLLM({
 					systemPrompt:
 						'You are a completion checker. Respond with JSON: {"completed": boolean, "confidence": number}',
@@ -151,6 +176,10 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 					],
 					maxTokens: 256,
 				});
+				const modelCheckDurationMs = Date.now() - modelCheckStart;
+
+				const triggerFinishedAt = Date.now();
+				const triggerDurationMs = triggerFinishedAt - triggerStartedAt;
 
 				try {
 					const cleaned = modelResponse
@@ -161,13 +190,70 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 					if (parsed.completed) {
 						activeGoal = { ...activeGoal, status: "complete", updatedAt: Date.now() };
 						goalStatusLog.push({ status: "complete", at: Date.now() });
+
+						triggerSeq++;
+						triggerHistory.push({
+							seq: triggerSeq,
+							startedAt: triggerStartedAt,
+							finishedAt: triggerFinishedAt,
+							durationMs: triggerDurationMs,
+							verdict: "complete",
+							confidence: parsed.confidence ?? 0.9,
+							guardResults,
+							modelCheck: {
+								passed: true,
+								confidence: parsed.confidence ?? 0.9,
+								response: modelResponse,
+								durationMs: modelCheckDurationMs,
+							},
+							action: "idle",
+							reason: "Model check passed",
+						});
 					} else {
 						activeGoal = { ...activeGoal, status: "running", updatedAt: Date.now() };
 						goalStatusLog.push({ status: "running", at: Date.now() });
+
+						triggerSeq++;
+						triggerHistory.push({
+							seq: triggerSeq,
+							startedAt: triggerStartedAt,
+							finishedAt: triggerFinishedAt,
+							durationMs: triggerDurationMs,
+							verdict: "incomplete",
+							confidence: parsed.confidence ?? 0.8,
+							guardResults,
+							modelCheck: {
+								passed: false,
+								confidence: parsed.confidence ?? 0.8,
+								response: modelResponse,
+								durationMs: modelCheckDurationMs,
+							},
+							action: "continue",
+							reason: "Model detected incomplete tasks",
+						});
 					}
 				} catch {
 					activeGoal = { ...activeGoal, status: "complete", updatedAt: Date.now() };
 					goalStatusLog.push({ status: "complete", at: Date.now() });
+
+					triggerSeq++;
+					triggerHistory.push({
+						seq: triggerSeq,
+						startedAt: triggerStartedAt,
+						finishedAt: triggerFinishedAt,
+						durationMs: triggerDurationMs,
+						verdict: "complete",
+						confidence: 0.5,
+						guardResults,
+						modelCheck: {
+							passed: true,
+							confidence: 0.5,
+							response: modelResponse,
+							durationMs: modelCheckDurationMs,
+						},
+						action: "idle",
+						reason: "Parse failed, assuming complete",
+					});
 				}
 			});
 		}
@@ -531,5 +617,157 @@ describe("goal lifecycle via harness", () => {
 		await harness.session.prompt("hello");
 
 		expect(prompt).not.toContain("Active Goal");
+	});
+
+	// ── Phase 9: trigger history ──
+
+	it("records trigger history with timing when goal completes", async () => {
+		const { controller, factory } = createSupervisorLikeExtension();
+		controller.setGoal("Write unit tests");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage("I wrote all the unit tests."),
+			fauxAssistantMessage('{"completed": true, "confidence": 0.9}'),
+		]);
+
+		await harness.session.prompt("write tests");
+
+		const history = controller.getTriggerHistory();
+		expect(history).toHaveLength(1);
+
+		const record = history[0]!;
+		expect(record.seq).toBe(1);
+		expect(record.verdict).toBe("complete");
+		expect(record.confidence).toBe(0.9);
+		expect(record.action).toBe("idle");
+		expect(record.durationMs).toBeGreaterThanOrEqual(0);
+		expect(record.startedAt).toBeLessThanOrEqual(record.finishedAt);
+		expect(record.finishedAt - record.startedAt).toBe(record.durationMs);
+		expect(record.modelCheck).toBeDefined();
+		expect(record.modelCheck!.passed).toBe(true);
+		expect(record.modelCheck!.durationMs).toBeGreaterThanOrEqual(0);
+	});
+
+	it("records trigger history with incomplete verdict", async () => {
+		const { controller, factory } = createSupervisorLikeExtension();
+		controller.setGoal("Fix all lint errors");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage("I fixed some of the lint errors."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.8}'),
+		]);
+
+		await harness.session.prompt("fix lint errors");
+
+		const history = controller.getTriggerHistory();
+		expect(history).toHaveLength(1);
+
+		const record = history[0]!;
+		expect(record.seq).toBe(1);
+		expect(record.verdict).toBe("incomplete");
+		expect(record.confidence).toBe(0.8);
+		expect(record.action).toBe("continue");
+		expect(record.reason).toBe("Model detected incomplete tasks");
+		expect(record.modelCheck).toBeDefined();
+		expect(record.modelCheck!.passed).toBe(false);
+	});
+
+	it("records keyword guard results in trigger history", async () => {
+		const { controller, factory } = createSupervisorLikeExtension({
+			guards: [{ name: "test-keyword", type: "keyword", enable: true, keywords: ["TODO"] }],
+		});
+		controller.setGoal("Remove all TODOs");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage("I still have some TODO items to handle."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.7}'),
+		]);
+
+		await harness.session.prompt("remove todos");
+
+		const history = controller.getTriggerHistory();
+		expect(history).toHaveLength(1);
+
+		const record = history[0]!;
+		expect(record.guardResults).toHaveLength(1);
+		expect(record.guardResults[0]!.guardName).toBe("test-keyword");
+		expect(record.guardResults[0]!.passed).toBe(false);
+		expect(record.guardResults[0]!.remainingItems).toHaveLength(1);
+		expect(record.guardResults[0]!.remainingItems[0]).toContain("TODO");
+		expect(record.guardResults[0]!.durationMs).toBeGreaterThanOrEqual(0);
+	});
+
+	it("records keyword guard passing in trigger history", async () => {
+		const { controller, factory } = createSupervisorLikeExtension({
+			guards: [{ name: "test-keyword", type: "keyword", enable: true, keywords: ["TODO", "FIXME"] }],
+		});
+		controller.setGoal("Remove all TODOs");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage("I have removed all the pending items from the codebase."),
+			fauxAssistantMessage('{"completed": true, "confidence": 0.9}'),
+		]);
+
+		await harness.session.prompt("remove all todos");
+
+		const history = controller.getTriggerHistory();
+		expect(history).toHaveLength(1);
+
+		const record = history[0]!;
+		expect(record.guardResults).toHaveLength(1);
+		expect(record.guardResults[0]!.passed).toBe(true);
+		expect(record.guardResults[0]!.remainingItems).toHaveLength(0);
+	});
+
+	it("accumulates multiple trigger records across turns", async () => {
+		const { controller, factory } = createSupervisorLikeExtension();
+		controller.setGoal("Multi-step task");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		// First turn: incomplete
+		harness.setResponses([
+			fauxAssistantMessage("Working on step 1."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.6}'),
+		]);
+
+		await harness.session.prompt("do the task");
+
+		// Second turn: complete
+		harness.setResponses([
+			fauxAssistantMessage("All steps done."),
+			fauxAssistantMessage('{"completed": true, "confidence": 0.95}'),
+		]);
+
+		await harness.session.prompt("continue");
+
+		const history = controller.getTriggerHistory();
+		expect(history).toHaveLength(2);
+
+		expect(history[0]!.seq).toBe(1);
+		expect(history[0]!.verdict).toBe("incomplete");
+		expect(history[0]!.action).toBe("continue");
+
+		expect(history[1]!.seq).toBe(2);
+		expect(history[1]!.verdict).toBe("complete");
+		expect(history[1]!.action).toBe("idle");
+
+		// Verify timing is non-negative and sequential
+		expect(history[0]!.durationMs).toBeGreaterThanOrEqual(0);
+		expect(history[1]!.durationMs).toBeGreaterThanOrEqual(0);
+		expect(history[1]!.startedAt).toBeGreaterThanOrEqual(history[0]!.finishedAt);
 	});
 });

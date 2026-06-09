@@ -9,6 +9,7 @@ import type {
     SupervisorStatus,
     CheckResult,
     TaskReport,
+    TriggerRecord,
     GuardConfig,
     GuardCheckResult,
     GoalState,
@@ -30,7 +31,7 @@ import {
     REFINE_GOAL_SYSTEM_PROMPT,
     REFINE_GOAL_USER_PROMPT,
 } from "./prompts.ts";
-import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const LOG_FILE = "/tmp/supervisor-debug.log";
@@ -63,6 +64,8 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     let specsIterationCount = 0;
     let projectRoot = "";
     let sessionDataDir = "";
+    let triggerHistory: TriggerRecord[] = [];
+    let triggerSeq = 0;
 
     // ── Flags ──
 
@@ -249,6 +252,11 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         }
     });
 
+    channel.handle("getTriggerHistory", async (params) => {
+        const limit = params.limit ?? 50;
+        return { triggers: triggerHistory.slice(-limit) };
+    });
+
     // ── Tool: supervisor_complete ──
     // LLM calls this to declare completion. Guards can reject it.
 
@@ -395,6 +403,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             return;
         }
 
+        const checkStartedAt = Date.now();
         currentState = "checking";
         setGoalStatus("checking");
         emitStatusChanged();
@@ -408,13 +417,17 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             const activeGuards = getActiveGuards();
             log(`activeGuards: [${activeGuards.map((g) => `${g.name}(${g.type})`).join(", ")}]`);
 
-            // Phase 1: Run all guard checks
+            // Phase 1: Run all guard checks with timing
             const guardResults: GuardCheckResult[] = [];
             const reports: TaskReport[] = [];
+            const guardTimings: Array<{ guardName: string; guardType: string; durationMs: number }> = [];
 
             for (const guard of activeGuards) {
+                const guardStart = Date.now();
                 const result = await runGuardCheck(guard, lastAssistantText);
+                const guardDuration = Date.now() - guardStart;
                 guardResults.push(result);
+                guardTimings.push({ guardName: guard.name, guardType: guard.type, durationMs: guardDuration });
 
                 reports.push({
                     guardName: guard.name,
@@ -424,7 +437,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                     remainingItems: result.remainingItems,
                 });
 
-                log(`guard[${guard.name}] completed=${result.completed}, remaining=${result.remainingItems.length}`);
+                log(`guard[${guard.name}] completed=${result.completed}, remaining=${result.remainingItems.length}, duration=${guardDuration}ms`);
             }
 
             lastTaskReports = reports;
@@ -443,6 +456,8 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                     null,
                 );
 
+                const checkDurationMs = Date.now() - checkStartedAt;
+
                 lastCheckResult = { completed: false, confidence: 0.9, incompleteTasks: [], guardResults };
                 recordGoldResult({
                     verdict: "incomplete",
@@ -454,24 +469,31 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                         passed: r.completed,
                     })),
                     continueMessage,
+                    durationMs: checkDurationMs,
                 });
+
+                const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "incomplete", 0.9, guardResults, guardTimings, undefined, "continue", "Active guards found remaining work");
+                appendTriggerRecord(record);
 
                 scheduleContinue(continueMessage);
                 return;
             }
 
             // Phase 3: All guards passed → run fallback model check
+            const modelCheckStart = Date.now();
             const modelCheck = await checkWithSmallModel(
                 event.messages as Array<{ role: string; content: unknown }>,
                 config,
                 pi.callLLM.bind(pi),
                 ctx.sessionSignal,
             );
+            const modelCheckDurationMs = Date.now() - modelCheckStart;
 
             const hasModelIncomplete = modelCheck.completed === false || modelCheck.incompleteTasks.length > 0;
 
             if (!hasModelIncomplete) {
                 log(`All guards passed + model check passed → idle`);
+                const checkDurationMs = Date.now() - checkStartedAt;
                 currentState = "idle";
                 lastCheckResult = { ...modelCheck, guardResults };
                 recordGoldResult({
@@ -490,7 +512,17 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                             passed: true,
                         },
                     ],
+                    durationMs: checkDurationMs,
                 });
+
+                const record = buildTriggerRecord(
+                    checkStartedAt, checkDurationMs, "complete", modelCheck.confidence,
+                    guardResults, guardTimings,
+                    { passed: true, confidence: modelCheck.confidence, response: modelCheck.modelResponse, durationMs: modelCheckDurationMs },
+                    "idle", "All guards and model check passed",
+                );
+                appendTriggerRecord(record);
+
                 setGoalStatus("complete");
                 emitStatusChanged();
 
@@ -520,6 +552,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 
             // Phase 4: Model detected incompleteness → continue with model's assessment
             log(`Model detected incomplete tasks`);
+            const checkDurationMs = Date.now() - checkStartedAt;
             const continueMessage = generateContinueMessage(
                 activeGuards,
                 guardResults,
@@ -544,21 +577,41 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                     })),
                 ],
                 continueMessage,
+                durationMs: checkDurationMs,
             });
+
+            const record = buildTriggerRecord(
+                checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
+                guardResults, guardTimings,
+                { passed: false, confidence: modelCheck.confidence, response: modelCheck.modelResponse, durationMs: modelCheckDurationMs },
+                "continue", modelCheck.modelResponse ?? "Model detected incomplete tasks",
+            );
+            appendTriggerRecord(record);
+
             scheduleContinue(continueMessage);
         } catch (err) {
             log(`agent_end error: ${err instanceof Error ? err.message : String(err)}`);
+            const checkDurationMs = Date.now() - checkStartedAt;
             currentState = "idle";
             recordGoldResult({
                 verdict: "blocked",
                 confidence: 0,
                 reason: err instanceof Error ? err.message : String(err),
                 evidence: [{ kind: "runtime", summary: "Gold check failed.", passed: false }],
+                durationMs: checkDurationMs,
             });
             setGoalStatus("blocked", {
                 kind: "runtime",
                 summary: err instanceof Error ? err.message : String(err),
             });
+
+            const record = buildTriggerRecord(
+                checkStartedAt, checkDurationMs, "blocked", 0,
+                [], [], undefined,
+                "error", err instanceof Error ? err.message : String(err),
+            );
+            appendTriggerRecord(record);
+
             emitStatusChanged();
         }
     });
@@ -1043,7 +1096,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         channel.emit("supervisor.goalChanged", { goal: activeGoal });
     }
 
-    function recordGoldResult(result: Omit<GoldResult, "goalId" | "checkedAt">): void {
+    function recordGoldResult(result: Omit<GoldResult, "goalId" | "checkedAt"> & { durationMs?: number }): void {
         lastGoldResult = {
             ...result,
             goalId: activeGoal?.id,
@@ -1051,6 +1104,61 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         };
         persistGoalRuntimeState();
         channel.emit("supervisor.goldResult", lastGoldResult);
+    }
+
+    function buildTriggerRecord(
+        startedAt: number,
+        durationMs: number,
+        verdict: TriggerRecord["verdict"],
+        confidence: number,
+        guardResults: GuardCheckResult[],
+        guardTimings: Array<{ guardName: string; guardType: string; durationMs: number }>,
+        modelCheck: TriggerRecord["modelCheck"],
+        action: TriggerRecord["action"],
+        reason: string,
+    ): TriggerRecord {
+        triggerSeq++;
+        return {
+            seq: triggerSeq,
+            startedAt,
+            finishedAt: startedAt + durationMs,
+            durationMs,
+            verdict,
+            confidence,
+            guardResults: guardResults.map((r, i) => ({
+                guardName: r.guardName,
+                guardType: guardTimings[i]?.guardType ?? "unknown",
+                passed: r.completed,
+                confidence: r.confidence,
+                remainingItems: r.remainingItems,
+                detail: r.detail,
+                durationMs: guardTimings[i]?.durationMs ?? 0,
+            })),
+            modelCheck,
+            action,
+            reason,
+        };
+    }
+
+    function appendTriggerRecord(record: TriggerRecord): void {
+        triggerHistory.push(record);
+        channel.emit("supervisor.triggerRecord", record);
+        writeStructuredLog(record);
+        log(`trigger #${record.seq}: verdict=${record.verdict}, action=${record.action}, duration=${record.durationMs}ms`);
+    }
+
+    function writeStructuredLog(record: TriggerRecord): void {
+        if (!sessionDataDir) return;
+        const logDir = join(sessionDataDir, "supervisor-logs");
+        try {
+            if (!existsSync(logDir)) {
+                mkdirSync(logDir, { recursive: true });
+            }
+            const logFile = join(logDir, `trigger-${new Date(record.startedAt).toISOString().replace(/[:.]/g, "-")}.json`);
+            writeFileSync(logFile, JSON.stringify(record, null, 2), "utf-8");
+        } catch (err) {
+            log(`writeStructuredLog failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 
     function extractLastAssistantText(
