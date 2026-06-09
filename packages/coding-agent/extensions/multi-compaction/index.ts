@@ -154,7 +154,7 @@ export default function (pi: ExtensionAPI) {
 			const deletedIds = new Set<string>();
 			for (const entry of entries) {
 				if (entry.type === "deletion") {
-					for (const targetId of (entry as { targets?: string[] }).targets ?? []) {
+					for (const targetId of (entry as { targetIds?: string[] }).targetIds ?? []) {
 						deletedIds.add(targetId);
 					}
 				}
