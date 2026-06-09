@@ -48,6 +48,12 @@ export interface PendingChange {
 	oldContent: string | null;
 	/** For added: current content. For modified: current content. For deleted: null. */
 	newContent: string | null;
+	/** Unified diff text for frontend rendering. Empty string if no diff. */
+	unifiedDiff: string;
+	/** Number of added lines in the diff. */
+	addedLines: number;
+	/** Number of deleted lines in the diff. */
+	deletedLines: number;
 }
 
 export interface FileReviewChannelContract extends ChannelContract {

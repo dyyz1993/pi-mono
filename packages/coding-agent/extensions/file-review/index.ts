@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent, CustomEntry } from "@dyyz1993/pi-coding-agent";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
+import * as Diff from "diff";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { LiveChange } from "../../src/core/file-store/file-snapshot-manager.ts";
@@ -11,12 +12,61 @@ import {
 	type TurnChangeRecord,
 } from "./contract.ts";
 
+function computeDiffInfo(oldContent: string | null, newContent: string | null) {
+	if (oldContent === null && newContent === null) {
+		return { unifiedDiff: "", addedLines: 0, deletedLines: 0 };
+	}
+
+	const oldText = oldContent ?? "";
+	const newText = newContent ?? "";
+
+	if (oldContent === null) {
+		const lines = newText.split("\n");
+		const trailing = newText.endsWith("\n") ? 1 : 0;
+		return {
+			unifiedDiff: Diff.createTwoFilesPatch("", "", "", newText, undefined, undefined, { context: 3 }),
+			addedLines: lines.length - trailing,
+			deletedLines: 0,
+		};
+	}
+
+	if (newContent === null) {
+		const lines = oldText.split("\n");
+		const trailing = oldText.endsWith("\n") ? 1 : 0;
+		return {
+			unifiedDiff: Diff.createTwoFilesPatch("", "", oldText, "", undefined, undefined, { context: 3 }),
+			addedLines: 0,
+			deletedLines: lines.length - trailing,
+		};
+	}
+
+	const changes = Diff.diffLines(oldText, newText);
+	let addedLines = 0;
+	let deletedLines = 0;
+
+	for (const part of changes) {
+		if (part.added) {
+			const lines = part.value.split("\n");
+			addedLines += lines.length - (part.value.endsWith("\n") ? 1 : 0);
+		} else if (part.removed) {
+			const lines = part.value.split("\n");
+			deletedLines += lines.length - (part.value.endsWith("\n") ? 1 : 0);
+		}
+	}
+
+	const unifiedDiff = Diff.createTwoFilesPatch("", "", oldText, newText, undefined, undefined, { context: 3 });
+
+	return { unifiedDiff, addedLines, deletedLines };
+}
+
 function approvalKey(path: string): string {
 	return path;
 }
 
 export default function fileReview(pi: ExtensionAPI) {
 	let ctx: ExtensionContext | null = null;
+
+	const MAX_TURNS_RETAINED = 50;
 
 	const turnLog: TurnChangeRecord[] = [];
 	let currentTurnChanges: LiveChange[] = [];
@@ -39,6 +89,8 @@ export default function fileReview(pi: ExtensionAPI) {
 
 	function setApproval(path: string, status: "approved" | "rejected"): boolean {
 		const key = approvalKey(path);
+		const existing = approvals.get(key);
+		if (existing && existing.status === status) return true;
 		const entry: FileApproval = { turnIndex: -1, path, status, timestamp: Date.now() };
 		approvals.set(key, entry);
 		if (status === "approved") {
@@ -156,7 +208,9 @@ export default function fileReview(pi: ExtensionAPI) {
 				for (const [path, content] of batchResult) {
 					diffMap.set(path, content);
 				}
-			} catch {}
+			} catch (error) {
+				console.error("[file-review] getBatchFileContents failed:", error);
+			}
 		}
 
 		const result: PendingChange[] = [];
@@ -170,14 +224,20 @@ export default function fileReview(pi: ExtensionAPI) {
 			}
 
 			const diffInfo = diffMap.get(path);
+			const oldContent = diffInfo?.oldContent ?? null;
+			const newContent = diffInfo?.newContent ?? null;
+			const { unifiedDiff, addedLines, deletedLines } = computeDiffInfo(oldContent, newContent);
 			result.push({
 				turnIndex: meta.latestTurnIndex,
 				path,
 				fileStatus: meta.latestFileStatus,
 				status: "pending",
 				timestamp: meta.latestTimestamp,
-				oldContent: diffInfo?.oldContent ?? null,
-				newContent: diffInfo?.newContent ?? null,
+				oldContent,
+				newContent,
+				unifiedDiff,
+				addedLines,
+				deletedLines,
 			});
 		}
 		return result;
@@ -198,8 +258,8 @@ export default function fileReview(pi: ExtensionAPI) {
 		try {
 			const approvedEntryId = approvedSnapshotEntry.get(params.path);
 			const diff = approvedEntryId
-				? mgr.getFileDiff({ filePath: params.path, fromEntryId: approvedEntryId, cwd: ctx.cwd })
-				: mgr.getFileDiff({ filePath: params.path, cwd: ctx.cwd });
+				? mgr.getFileDiff({ filePath: params.path, fromEntryId: approvedEntryId })
+				: mgr.getFileDiff({ filePath: params.path });
 			if (diff) {
 				diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
 			}
@@ -285,8 +345,8 @@ export default function fileReview(pi: ExtensionAPI) {
 					try {
 						const approvedEntryId = approvedSnapshotEntry.get(path);
 						const diff = approvedEntryId
-							? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId, cwd: ctx.cwd })
-							: mgr.getFileDiff({ filePath: path, cwd: ctx.cwd });
+							? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId })
+							: mgr.getFileDiff({ filePath: path });
 						if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
 					} catch {}
 
@@ -360,6 +420,7 @@ export default function fileReview(pi: ExtensionAPI) {
 			} else if (entry.customType === "file-review-turn") {
 				const data = entry.data as { turnIndex: number; timestamp: number; changes: Array<{ path: string; status: string }> } | undefined;
 				if (!data) continue;
+				if (turnLog.length >= MAX_TURNS_RETAINED) turnLog.shift();
 				turnLog.push({
 					turnIndex: data.turnIndex,
 					timestamp: data.timestamp,
@@ -398,13 +459,15 @@ export default function fileReview(pi: ExtensionAPI) {
 				timestamp,
 				changes,
 			});
+			if (turnLog.length > MAX_TURNS_RETAINED) {
+				turnLog.splice(0, turnLog.length - MAX_TURNS_RETAINED);
+			}
 			pi.appendEntry("file-review-turn", {
 				turnIndex: event.turnIndex,
 				timestamp,
 				changes: changes.map((c) => ({ path: c.path, status: c.status })),
 			});
 
-			// Reset approval to pending for any file that changed after being approved/rejected
 			for (const change of changes) {
 				const existing = approvals.get(approvalKey(change.path));
 				if (existing && (existing.status === "approved" || existing.status === "rejected")) {
