@@ -60,19 +60,43 @@ import {
 
 type CallLLMFn = (options: CallLLMOptions) => Promise<string>;
 
+function extractMessageText(msg: AgentMessage): string {
+	if ("content" in msg) {
+		const content = (msg as { content: unknown }).content;
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("");
+		}
+	}
+	return "";
+}
+
+function findExistingMemoryContext(messages: AgentMessage[]): string | null {
+	for (const msg of messages) {
+		const text = extractMessageText(msg);
+		const match = text.match(/<memory_context\s+fingerprint="([^"]+)"/);
+		if (match) return match[1]!;
+	}
+	return null;
+}
+
 function serializeMessages(messages: AgentMessage[], options?: { lastN?: number }): string {
 	const slice = options?.lastN ? messages.slice(-options.lastN) : messages;
 	return slice
 		.map((m) => {
-			if (m.role === "user" || m.role === "assistant") {
-				const text = Array.isArray(m.content)
-					? (m.content as Array<{ type: string; text?: string }>)
+			if ((m.role === "user" || m.role === "assistant") && "content" in m) {
+				const content = (m as { content: unknown }).content;
+				const text = Array.isArray(content)
+					? (content as Array<{ type: string; text?: string }>)
 							.filter(
 								(c: { type: string; text?: string }): c is { type: "text"; text: string } => c.type === "text",
 							)
 							.map((c: { type: "text"; text: string }) => c.text)
 							.join("\n")
-					: String(m.content);
+					: String(content);
 				return `[${m.role}]: ${text}`;
 			}
 			return null;
@@ -131,6 +155,10 @@ class MemoryPrefetch {
 
 	get debugInfo(): PrefetchDebugInfo | null {
 		return this._debugInfo;
+	}
+
+	get selectedFiles(): string[] {
+		return this.lastSelected;
 	}
 
 	markResultEntryWritten(): boolean {
@@ -882,6 +910,8 @@ export {
 	serializeMessages,
 	updateMemoryIndex,
 	type CallLLMFn,
+	extractMessageText,
+	findExistingMemoryContext,
 };
 
 export default function autoMemoryExtension(pi: ExtensionAPI): void {
@@ -897,11 +927,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 
 	const callLLMWithRetry: CallLLMFn = async (opts) => {
 		try {
-			return await pi.callLLM({
-				...opts,
-				timeoutMs: 30_000,
-				retry: { maxRetries: 3, baseDelayMs: 3000 },
-			});
+			return await pi.callLLM(opts);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (/stale/i.test(msg)) throw err;
@@ -1019,12 +1045,37 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 
 		if (!memoryText) return;
 
+		const selectedFiles = prefetch.selectedFiles;
+		const fingerprint = selectedFiles.slice().sort().join(",") + "|" + memoryText.length;
+
+		const existingMemory = findExistingMemoryContext(event.messages);
+		if (existingMemory && existingMemory === fingerprint) {
+			return;
+		}
+
+		const xmlContent = `<memory_context fingerprint="${fingerprint}">
+<files count="${selectedFiles.length}" source="auto-memory">
+${memoryText}
+</files>
+</memory_context>`;
+
+		pi.sendMessage({
+			customType: "memory_relevant",
+			content: xmlContent,
+			display: false,
+			details: { fingerprint, filenames: selectedFiles, source: "auto-memory" },
+		});
+
 		const memoryMessage = {
 			role: "user" as const,
-			content: [{ type: "text" as const, text: `[Memory context — relevant memories]\n\n${memoryText}` }],
+			content: [{ type: "text" as const, text: xmlContent }],
 			timestamp: Date.now(),
 		};
 		return { messages: [...event.messages, memoryMessage] };
+	});
+
+	pi.on("session_compact", () => {
+		prefetch.markDirty();
 	});
 
 	pi.on("tool_call", (event) => {
@@ -1207,8 +1258,8 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		try {
 			const lockPath = join(memoryDir, ".consolidate-lock");
 			if (existsSync(lockPath)) {
-				const stat = await import("node:fs/promises").then((fs) => fs.stat(lockPath));
-				lastDreamAt = stat.mtimeMs;
+				const lockStat = await stat(lockPath);
+				lastDreamAt = lockStat.mtimeMs;
 			}
 		} catch {}
 
