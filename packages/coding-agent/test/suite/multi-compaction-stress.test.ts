@@ -473,4 +473,94 @@ describe("Multi-compaction stress tests", () => {
 		console.log(`[stress] Fail count before circuit breaker: ${failCount}`);
 		console.log(`[stress] Recovery success: ${recoveryResult}`);
 	});
+
+	it("context-fold custom entries stay O(turns) not O(messages)", async () => {
+		const harness = await createHarness({
+			extensionFactories: [multiCompaction],
+		});
+		harnesses.push(harness);
+
+		const model = harness.getModel();
+		const runner = harness.session["_extensionRunner"] as ExtensionRunner;
+		const now = Date.now();
+		const turnCount = 50;
+
+		// Simulate 50 turns, each with 5 assistant messages
+		for (let turn = 0; turn < turnCount; turn++) {
+			const oldTimestamp = now - (turnCount - turn) * 60 * 1000; // 1 hour ago → now
+
+			for (let j = 0; j < 5; j++) {
+				harness.sessionManager.appendMessage({
+					role: "user",
+					content: [{ type: "text", text: `Turn ${turn} prompt ${j}` }],
+					timestamp: oldTimestamp + j * 10,
+				});
+				harness.sessionManager.appendMessage({
+					role: "assistant",
+					content: [{ type: "text", text: `Response turn ${turn} msg ${j}` }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: createUsage(50),
+					stopReason: "stop",
+					timestamp: oldTimestamp + j * 10 + 5,
+				} as AssistantMessage);
+			}
+
+			// Trigger turn_end to activate context-fold
+			await runner.emit({
+				type: "turn_end",
+				turnIndex: turn,
+				message: { role: "user", content: [{ type: "text", text: "end turn" }], timestamp: now },
+				toolResults: [],
+			});
+		}
+
+		const entries = harness.sessionManager.getEntries();
+
+		// Count compaction_fold custom entries
+		const foldEntries = entries.filter(
+			(e) => e.type === "custom" && (e as { customType?: string }).customType === "compaction_fold",
+		);
+
+		// Count all compaction-related custom entries
+		const compactionCustomEntries = entries.filter((e) => {
+			if (e.type !== "custom") return false;
+			const ct = (e as { customType?: string }).customType ?? "";
+			return ct.startsWith("compaction_");
+		});
+
+		// Count message entries
+		const messageEntries = entries.filter((e) => e.type === "message");
+
+		// Key assertion: fold entries should be O(turns), not O(messages)
+		// With 50 turns and 5 messages each = 250 total assistant messages
+		// Old behavior: ~250 fold entries (one per message)
+		// New behavior: <= 50 fold entries (one batch per turn)
+		expect(foldEntries.length).toBeLessThanOrEqual(turnCount);
+
+		// Verify each fold entry has batch data
+		for (const entry of foldEntries) {
+			const data = (entry as { data?: { count?: number; folds?: unknown[] } }).data;
+			expect(data).toBeDefined();
+			expect(data!.count).toBeGreaterThan(0);
+			expect(data!.folds).toBeDefined();
+			expect(data!.folds!.length).toBe(data!.count);
+		}
+
+		// Verify total compaction custom entries are bounded
+		expect(compactionCustomEntries.length).toBeLessThan(200);
+
+		// Simulate serialized size estimate
+		const totalSize = JSON.stringify(entries).length;
+		const sizeKb = totalSize / 1024;
+
+		// Session should be bounded (old behavior would be 10x+ larger)
+		expect(sizeKb).toBeLessThan(500); // 500KB budget for 250 messages
+
+		console.log(`[stress] ${turnCount} turns, ${messageEntries.length} messages`);
+		console.log(`[stress] Fold entries: ${foldEntries.length} (batched, <= turns)`);
+		console.log(`[stress] Total compaction custom: ${compactionCustomEntries.length}`);
+		console.log(`[stress] Serialized size: ${sizeKb.toFixed(0)}KB`);
+	});
 });
