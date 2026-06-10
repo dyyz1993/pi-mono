@@ -484,9 +484,10 @@ export class FileSnapshotManager {
 		}
 
 		// Fallback: if oldContent is null for modified files, walk snapshots backwards
-		// to find the file. Start from second-to-last to skip the toTree snapshot.
+		// to find the file. Only when we have a valid baseline (sessionStartTreeHash).
+		// Skip if session started from empty directory — file is genuinely new.
 		for (const [filePath, content] of result) {
-			if (content.oldContent === null && content.newContent !== null) {
+			if (content.oldContent === null && content.newContent !== null && this.sessionStartTreeHash !== null) {
 				for (let i = snapshots.length - 2; i >= 0; i--) {
 					const snapshot = snapshots[i];
 					if (!snapshot) continue;
@@ -528,8 +529,10 @@ export class FileSnapshotManager {
 		let oldContent = this.readTree(fromHash).get(options.filePath) ?? null;
 		const newContent = this.readTree(toHash).get(options.filePath) ?? null;
 		// Fallback: walk snapshots backwards to find oldContent when not in fromTree.
-		// Only for modified files where oldContent is missing — search BEFORE toIdx.
-		if (oldContent === null && newContent !== null) {
+		// Only when we have a valid baseline (fromHash or sessionStartTreeHash).
+		// If session started from an empty directory (sessionStartTreeHash === null),
+		// the file didn't exist before — skip fallback to avoid finding newContent as oldContent.
+		if (oldContent === null && newContent !== null && (fromHash !== null || this.sessionStartTreeHash !== null)) {
 			const fromIdx = options.fromEntryId
 				? snapshots.findIndex((snapshot) => snapshot.entryId === options.fromEntryId)
 				: 0;
