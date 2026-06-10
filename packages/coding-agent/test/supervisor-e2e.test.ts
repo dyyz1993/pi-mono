@@ -73,9 +73,9 @@ All tests pass. No remaining lint errors.
 		expect(response.content).toBeTruthy();
 		const raw = Array.isArray(response.content)
 			? (response.content as Array<{ type: string; text?: string }>)
-				.filter((p) => p.type === "text")
-				.map((p) => p.text ?? "")
-				.join("\n")
+					.filter((p) => p.type === "text")
+					.map((p) => p.text ?? "")
+					.join("\n")
 			: String(response.content);
 		const cleaned = raw
 			.replace(/^```(?:json)?\s*\n?/m, "")
