@@ -43,10 +43,6 @@ function loadConfig(): CompactionManagerConfig {
 }
 
 export default function (pi: ExtensionAPI) {
-	// Disabled — causing JSONL growth issues. Re-enable after fixing.
-	// See: compaction_fold targetIds typo, context hook appendEntry, Date.now() determinism
-	return;
-
 	const config = loadConfig();
 
 	let compactMetrics = {
@@ -253,12 +249,13 @@ export default function (pi: ExtensionAPI) {
 					timestamp: Date.now(),
 				});
 
-				// Append recovery messages as custom entries so they appear in context
+				// Inject recovery messages into LLM context via sendMessage
 				for (const msg of recoveryMessages) {
-					const content = (msg as { content: Array<{ type: string; text: string }> }).content;
-					pi.appendEntry("compaction_recovery", {
-						fileContent: content.map((b) => b.text).join("\n"),
-						timestamp: Date.now(),
+					if (msg.role !== "user" || typeof msg.content !== "string") continue;
+					pi.sendMessage({
+						customType: "compaction_recovery",
+						content: msg.content,
+						display: false,
 					});
 				}
 
