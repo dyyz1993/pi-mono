@@ -378,7 +378,6 @@ function createMockContext(cwd: string, mgr: FileSnapshotManager): ExtensionCont
 }
 
 describe("file-review extension - diff and count accuracy", () => {
-
 	it("captures changes from turn_end and produces correct summary counts", async () => {
 		const cwd = makeTempDir();
 		const storeDir = makeTempDir();

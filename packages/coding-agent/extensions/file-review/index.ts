@@ -192,6 +192,22 @@ export default function fileReview(pi: ExtensionAPI) {
 				}
 			}
 		}
+		// Also include current turn's live changes (before turn_end fires)
+		for (const change of currentTurnChanges) {
+			const existing = pathMeta.get(change.path);
+			if (!existing) {
+				pathMeta.set(change.path, {
+					firstStatus: change.status,
+					latestTurnIndex: currentTurnIndex,
+					latestFileStatus: change.status,
+					latestTimestamp: Date.now(),
+				});
+			} else {
+				existing.latestTurnIndex = currentTurnIndex;
+				existing.latestFileStatus = change.status;
+				existing.latestTimestamp = Date.now();
+			}
+		}
 
 		// Build diff data for pending files.
 		// For files with an approved baseline, compare approved snapshot → live disk.
