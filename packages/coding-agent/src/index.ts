@@ -3,7 +3,7 @@
 export { type Args, parseArgs } from "./cli/args.ts";
 
 // Config paths
-export { getAgentDir, VERSION } from "./config.ts";
+export { getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION } from "./config.ts";
 export {
 	AgentSession,
 	type AgentSessionConfig,
@@ -124,6 +124,11 @@ export type {
 	MethodKeys,
 	MethodParams,
 	MethodReturn,
+	ProjectTrustContext,
+	ProjectTrustEvent,
+	ProjectTrustEventDecision,
+	ProjectTrustEventResult,
+	ProjectTrustHandler,
 	ProviderConfig,
 	ProviderModelConfig,
 	ReadToolCallEvent,
@@ -253,6 +258,7 @@ export {
 } from "./core/session-manager.ts";
 export {
 	type CompactionSettings,
+	type DefaultProjectTrust,
 	type ImageSettings,
 	type PackageSource,
 	type RetrySettings,
@@ -336,7 +342,13 @@ export {
 	type WriteToolOptions,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
-export { hasProjectTrustInputs, type ProjectTrustDecision, ProjectTrustStore } from "./core/trust-manager.ts";
+export {
+	hasProjectTrustInputs,
+	type ProjectTrustDecision,
+	ProjectTrustStore,
+	type ProjectTrustStoreEntry,
+	type ProjectTrustUpdate,
+} from "./core/trust-manager.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
@@ -360,6 +372,8 @@ export {
 	type RpcClientSurface,
 	type RpcCommand,
 	type RpcEventListener,
+	type RpcExtensionUIRequest,
+	type RpcExtensionUIResponse,
 	type RpcResponse,
 	type RpcSessionState,
 	runPrintMode,

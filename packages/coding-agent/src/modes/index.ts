@@ -23,4 +23,10 @@ export type {
 	TreeWithLeaf,
 } from "./rpc/rpc-client-types.ts";
 export { runRpcMode } from "./rpc/rpc-mode.ts";
-export type { RpcCommand, RpcResponse, RpcSessionState } from "./rpc/rpc-types.ts";
+export type {
+	RpcCommand,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcResponse,
+	RpcSessionState,
+} from "./rpc/rpc-types.ts";

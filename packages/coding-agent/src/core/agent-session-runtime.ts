@@ -7,7 +7,12 @@ import {
 	type AgentSessionServices,
 	createAgentSessionFromServices,
 } from "./agent-session-services.ts";
-import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } from "./extensions/index.ts";
+import type {
+	ProjectTrustContext,
+	ReplacedSessionContext,
+	SessionShutdownEvent,
+	SessionStartEvent,
+} from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
@@ -36,6 +41,7 @@ export type CreateAgentSessionRuntimeFactory = (options: {
 	agentDir: string;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
+	projectTrustContext?: ProjectTrustContext;
 }) => Promise<CreateAgentSessionRuntimeResult>;
 
 /**
@@ -190,7 +196,11 @@ export class AgentSessionRuntime {
 
 	async switchSession(
 		sessionPath: string,
-		options?: { cwdOverride?: string; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
+		options?: {
+			cwdOverride?: string;
+			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
+		},
 	): Promise<{ cancelled: boolean }> {
 		const beforeResult = await this.emitBeforeSwitch("resume", sessionPath);
 		if (beforeResult.cancelled) {
@@ -211,6 +221,7 @@ export class AgentSessionRuntime {
 				model: this.session.model,
 				thinkingLevel: this.session.thinkingLevel,
 				scopedModels: [...this.session.scopedModels],
+				projectTrustContext: options?.projectTrustContextFactory?.(sessionManager.getCwd()),
 			});
 			this.apply({
 				...created,
@@ -224,6 +235,7 @@ export class AgentSessionRuntime {
 					agentDir: this.services.agentDir,
 					sessionManager,
 					sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+					projectTrustContext: options?.projectTrustContextFactory?.(sessionManager.getCwd()),
 				}),
 			);
 		}
@@ -243,7 +255,9 @@ export class AgentSessionRuntime {
 
 		const previousSessionFile = this.session.sessionFile;
 		const sessionDir = this.session.sessionManager.getSessionDir();
-		const sessionManager = SessionManager.create(this.cwd, sessionDir);
+		const sessionManager = this.session.sessionManager.isPersisted()
+			? SessionManager.create(this.cwd, sessionDir)
+			: SessionManager.inMemory(this.cwd);
 		if (options?.parentSession) {
 			sessionManager.newSession({ parentSession: options.parentSession });
 		}

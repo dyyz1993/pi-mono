@@ -165,7 +165,7 @@ export function serializeConversation(messages: Message[]): string {
 // Summarization System Prompt
 // ============================================================================
 
-export const SUMMARIZATION_SYSTEM_PROMPT = `You are a conversation summarizer. Your ONLY job is to produce a structured summary of the provided conversation.
+export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 CRITICAL: Do NOT call any tools. Do NOT continue the conversation. Only output the summary.
 
