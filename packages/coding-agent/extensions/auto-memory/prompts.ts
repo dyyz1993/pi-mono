@@ -3,24 +3,43 @@ export const MEMORY_SYSTEM_PROMPT = (memoryDir: string, memoryContent: string): 
 You have a persistent memory system at \`${memoryDir}\`.
 
 ## Types of memory
-- user     — user's role, goals, preferences, knowledge
-- feedback — guidance about how to approach work (both corrections AND confirmations)
-- project  — ongoing work, deadlines, decisions not derivable from code
-- reference — pointers to external systems (dashboards, issue trackers)
-- bookmark — user-bookmarked chat messages with LLM summaries (user-managed, never auto-delete)
+
+### user — user's role, goals, preferences, knowledge
+- **When to save:** When you learn about the user's role, preferences, responsibilities, or knowledge level.
+- **How to use:** Tailor explanations and suggestions to the user's profile. Frame answers in terms of domain knowledge they already have.
+- Avoid writing memories that could be viewed as negative judgments.
+
+### feedback — guidance about how to approach work
+- **When to save:** When the user corrects your approach OR confirms a non-obvious approach worked. Both corrections and confirmations matter — only saving corrections makes you overly cautious.
+- **How to use:** Let these guide your behavior so the user doesn't need to repeat the same guidance.
+- **Body structure:** Lead with the rule, then **Why:** (the reason), then **How to apply:** (when/where it kicks in).
+
+### project — ongoing work, goals, decisions not derivable from code
+- **When to save:** When you learn who is doing what, why, or by when. Convert relative dates to absolute dates (e.g. "Thursday" → "2026-03-05").
+- **How to use:** Understand the broader context and motivation behind the user's request.
+- **Body structure:** Lead with the fact/decision, then **Why:** (the motivation), then **How to apply:** (how this should shape suggestions).
+
+### reference — pointers to external systems
+- **When to save:** When you learn about resources in external systems (dashboards, issue trackers, Slack channels).
+- **How to use:** When the user references an external system or information that may be in an external system.
+
+### bookmark — user-bookmarked chat messages (user-managed, never auto-delete)
+- Created only via the create_bookmark tool. Do not create bookmark files manually.
 
 ## What NOT to save
 - Code patterns, architecture, file paths (derivable from code)
 - Git history (derivable from git)
 - Debug solutions (the fix is in the code)
 - Anything already in CLAUDE.md or system instructions
+- Ephemeral task details: in-progress work, temporary state, current conversation context
+- These exclusions apply even when the user explicitly asks you to save. If they ask you to save a PR list or activity summary, ask what was *surprising* or *non-obvious* — that is the part worth keeping.
 
 ## How to save
 Step 1 — Write memory file with frontmatter:
 ---
 name: {{memory name}}
 description: {{one-line description}}
-type: {{user, feedback, project, reference}}
+type: {{user, feedback, project, reference, bookmark}}
 ---
 {{content with Why: and How to apply: lines for feedback/project types}}
 
@@ -30,6 +49,14 @@ Step 2 — Add pointer in MEMORY.md (one line, ~150 chars):
 ## When to access
 - Read memory files when you need user context or project history
 - Proactively save important information you learn about the user or project
+- If the user says to *ignore* or *not use* memory: proceed as if MEMORY.md were empty. Do not apply, cite, compare against, or mention memory content.
+
+## Before recommending from memory
+A memory that names a specific function, file, or flag is a claim that it existed *when the memory was written*. It may have been renamed, removed, or never merged.
+- If the memory names a file path: check the file exists.
+- If the memory names a function or flag: grep for it.
+- "The memory says X exists" is not the same as "X exists now."
+- Memory records can become stale over time. If a recalled memory conflicts with current information, trust what you observe now — and update or remove the stale memory.
 
 ## MEMORY.md
 ${memoryContent || "Your memory is currently empty."}`;
@@ -112,16 +139,19 @@ ${manifest}
 Check this list — update existing rather than creating duplicates.
 
 ## Types of memory
-user     — user's role, goals, preferences, knowledge
-feedback — guidance about how to approach work (corrections AND confirmations)
-project  — ongoing work, deadlines, decisions not derivable from code
-reference — pointers to external systems
+user     — user's role, goals, preferences, knowledge. Save when you learn about the user's role, preferences, or knowledge level.
+feedback — guidance about how to approach work (corrections AND confirmations). Save both corrections and validated approaches. Include **Why:** and **How to apply:**.
+project  — ongoing work, deadlines, decisions not derivable from code. Convert relative dates to absolute. Include **Why:** and **How to apply:**.
+reference — pointers to external systems (dashboards, issue trackers, channels).
+bookmark — DO NOT create bookmark files via extraction. Bookmarks are user-managed only.
 
 ## What NOT to save
 - Code patterns, architecture, file paths (derivable from code)
 - Git history (derivable from git)
 - Debug solutions (the fix is in the code)
 - Anything obvious from reading the codebase
+- Ephemeral task details: in-progress work, temporary state, current conversation context
+- Activity logs or PR lists — ask what was surprising instead
 
 Respond with JSON only:
 {
@@ -159,8 +189,9 @@ Understand the current MEMORY.md index and existing topic files.
 Check for:
 - Duplicated information across files
 - Contradicted facts (old info vs new)
-- Stale information (outdated deadlines, completed projects)
+- Stale information (outdated deadlines, completed projects, renamed/removed files)
 - Related topics that should be merged
+- Memories that reference specific functions/files that may no longer exist
 
 ## Phase 3 — Consolidate
 Decide what to merge, delete, or update.
