@@ -43,6 +43,10 @@ function loadConfig(): CompactionManagerConfig {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Disabled — causing JSONL growth issues. Re-enable after fixing.
+	// See: compaction_fold targetIds typo, context hook appendEntry, Date.now() determinism
+	return;
+
 	const config = loadConfig();
 
 	let compactMetrics = {
