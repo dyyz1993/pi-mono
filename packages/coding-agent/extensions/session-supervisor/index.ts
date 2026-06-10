@@ -66,6 +66,8 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     let sessionDataDir = "";
     let triggerHistory: TriggerRecord[] = [];
     let triggerSeq = 0;
+    let stagnationCount = 0;
+    let lastIncompleteSignature = "";
 
     // ── Flags ──
 
@@ -160,6 +162,8 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             blockers: [],
         };
         lastGoldResult = undefined;
+        stagnationCount = 0;
+        lastIncompleteSignature = "";
         persistGoalRuntimeState();
         emitStatusChanged();
         channel.emit("supervisor.goalChanged", { goal: activeGoal });
@@ -349,6 +353,8 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         config = loadConfig(ctx.sessionDataDir, ctx.projectDataDir);
         enabled = config.enable;
         specsIterationCount = 0;
+        stagnationCount = 0;
+        lastIncompleteSignature = "";
         loadGoalRuntimeState();
 
         log(`session_start: enabled=${enabled}, guards=${config.guards.length}, smallModel=${config.smallModel}`);
@@ -449,6 +455,61 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             if (hasIncompleteGuards) {
                 log(`Guards detected incomplete tasks`);
                 specsIterationCount++;
+
+                // Stagnation detection: compare this round's incomplete signature
+                // with the previous round. If identical, the guard results have
+                // not changed and the agent is stuck.
+                const currentSignature = guardResults
+                    .filter((r) => !r.completed)
+                    .map((r) => `${r.guardName}:${r.remainingItems.sort().join(",")}`)
+                    .join("|");
+
+                if (currentSignature === lastIncompleteSignature) {
+                    stagnationCount++;
+                    log(`Stagnation detected (count=${stagnationCount}), signature=${currentSignature}`);
+                } else {
+                    stagnationCount = 0;
+                }
+                lastIncompleteSignature = currentSignature;
+
+                if (stagnationCount >= 2) {
+                    log(`Stagnation threshold reached (${stagnationCount} consecutive identical results), stopping loop`);
+
+                    const checkDurationMs = Date.now() - checkStartedAt;
+                    currentState = "idle";
+                    setGoalStatus("blocked", {
+                        kind: "runtime",
+                        summary: `Stagnation: same guard results for ${stagnationCount + 1} consecutive checks (${currentSignature})`,
+                    });
+                    emitStatusChanged();
+
+                    lastCheckResult = { completed: false, confidence: 0.5, incompleteTasks: [], guardResults };
+                    recordGoldResult({
+                        verdict: "blocked",
+                        confidence: 0.5,
+                        reason: `Stagnation detected: same incomplete guard results for ${stagnationCount + 1} consecutive checks.`,
+                        evidence: guardResults.map((r) => ({
+                            kind: "guard" as const,
+                            summary: `${r.guardName}: ${r.detail ?? r.remainingItems.join(", ")}`,
+                            passed: r.completed,
+                        })),
+                        durationMs: checkDurationMs,
+                    });
+
+                    const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "blocked", 0.5, guardResults, guardTimings, undefined, "idle", "Stagnation detected, stopping loop");
+                    appendTriggerRecord(record);
+
+                    pi.sendMessage(
+                        {
+                            customType: "supervisor_stagnation",
+                            content: `Goal stalled: same incomplete items detected for ${stagnationCount + 1} consecutive checks. Stopping auto-continue.`,
+                            display: true,
+                        },
+                        { triggerTurn: false },
+                    );
+
+                    return;
+                }
 
                 const continueMessage = generateContinueMessage(
                     activeGuards,
@@ -635,17 +696,9 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             });
         }
 
-        pi.background(async (signal) => {
-            await new Promise<void>((resolve) => {
-                const timer = setTimeout(resolve, delayMs);
-                signal.addEventListener("abort", () => {
-                    clearTimeout(timer);
-                    resolve();
-                });
-            });
-
-            if (signal.aborted) return;
-
+        const seq = schedulerInstance.getContinueCount();
+        const id = `auto-continue-${seq}`;
+        const result = schedulerInstance.scheduleContinue(id, delayMs, () => {
             currentState = "continuing";
             setGoalStatus("running");
             emitStatusChanged();
@@ -664,6 +717,10 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                 throw err;
             }
         });
+
+        if (!result.scheduled) {
+            log(`scheduleContinue: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}), not scheduling`);
+        }
     }
 
     function getActiveGuards(): GuardConfig[] {

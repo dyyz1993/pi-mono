@@ -24,6 +24,8 @@ function createSupervisorLikeExtension(options?: {
 	let goalStatusLog: Array<{ status: GoalState["status"]; at: number }> = [];
 	const triggerHistory: TriggerRecord[] = [];
 	let triggerSeq = 0;
+	let stagnationCount = 0;
+	let lastIncompleteSignature = "";
 
 	const controller = {
 		setGoal(objective: string) {
@@ -39,6 +41,8 @@ function createSupervisorLikeExtension(options?: {
 			};
 			goalStatusLog = [];
 			goalStatusLog.push({ status: "running", at: now });
+			stagnationCount = 0;
+			lastIncompleteSignature = "";
 		},
 		/** Simulate session_start restoring a persisted goal */
 		restoreGoal(goal: GoalState) {
@@ -161,6 +165,44 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 							durationMs: Date.now() - guardStart,
 						});
 					}
+				}
+
+				// Stagnation detection (mirrors production session-supervisor logic)
+				const hasIncompleteGuards = guardResults.some((r) => !r.passed && r.remainingItems.length > 0);
+				if (hasIncompleteGuards) {
+					const currentSignature = guardResults
+						.filter((r) => !r.passed)
+						.map((r) => `${r.guardName}:${r.remainingItems.sort().join(",")}`)
+						.join("|");
+
+					if (currentSignature === lastIncompleteSignature) {
+						stagnationCount++;
+					} else {
+						stagnationCount = 0;
+					}
+					lastIncompleteSignature = currentSignature;
+
+					if (stagnationCount >= 2) {
+						activeGoal = { ...activeGoal!, status: "blocked", updatedAt: Date.now() };
+						goalStatusLog.push({ status: "blocked", at: Date.now() });
+
+						triggerSeq++;
+						triggerHistory.push({
+							seq: triggerSeq,
+							startedAt: triggerStartedAt,
+							finishedAt: Date.now(),
+							durationMs: Date.now() - triggerStartedAt,
+							verdict: "blocked",
+							confidence: 0.5,
+							guardResults,
+							action: "idle",
+							reason: `Stagnation detected: same incomplete guard results for ${stagnationCount + 1} consecutive checks.`,
+						});
+						return;
+					}
+				} else {
+					stagnationCount = 0;
+					lastIncompleteSignature = "";
 				}
 
 				// Use callLLM for model-based completion check (same as real supervisor)
@@ -769,5 +811,107 @@ describe("goal lifecycle via harness", () => {
 		expect(history[0]!.durationMs).toBeGreaterThanOrEqual(0);
 		expect(history[1]!.durationMs).toBeGreaterThanOrEqual(0);
 		expect(history[1]!.startedAt).toBeGreaterThanOrEqual(history[0]!.finishedAt);
+	});
+
+	// ── Phase 10: Stagnation detection ──
+
+	it("detects stagnation when same guard results repeat and stops loop", async () => {
+		const { controller, factory } = createSupervisorLikeExtension({
+			guards: [{ name: "test-keyword", type: "keyword", enable: true, keywords: ["TODO"] }],
+		});
+		controller.setGoal("Remove all TODOs");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		// Turn 1: keyword guard finds "TODO", stagnationCount = 0 (first occurrence)
+		harness.setResponses([
+			fauxAssistantMessage("I still have TODO items to fix."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.7}'),
+		]);
+		await harness.session.prompt("remove todos");
+
+		let history = controller.getTriggerHistory();
+		expect(history).toHaveLength(1);
+		expect(history[0]!.verdict).toBe("incomplete");
+		expect(history[0]!.action).toBe("continue");
+
+		// Turn 2: same keyword guard finds "TODO" again, stagnationCount = 1
+		harness.setResponses([
+			fauxAssistantMessage("I still have TODO items to fix."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.7}'),
+		]);
+		await harness.session.prompt("continue");
+
+		history = controller.getTriggerHistory();
+		expect(history).toHaveLength(2);
+		expect(history[1]!.verdict).toBe("incomplete");
+		expect(history[1]!.action).toBe("continue");
+
+		// Turn 3: same keyword guard finds "TODO" again, stagnationCount = 2 → blocked
+		harness.setResponses([
+			fauxAssistantMessage("I still have TODO items to fix."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.6}'),
+		]);
+		await harness.session.prompt("continue");
+
+		history = controller.getTriggerHistory();
+		expect(history).toHaveLength(3);
+		expect(history[2]!.verdict).toBe("blocked");
+		expect(history[2]!.action).toBe("idle");
+		expect(history[2]!.reason).toContain("Stagnation");
+		expect(controller.getGoal()?.status).toBe("blocked");
+	});
+
+	it("resets stagnation count when guard results change", async () => {
+		const { controller, factory } = createSupervisorLikeExtension({
+			guards: [{ name: "test-keyword", type: "keyword", enable: true, keywords: ["TODO", "FIXME"] }],
+		});
+		controller.setGoal("Remove all TODOs and FIXMEs");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		// Turn 1: finds TODO + FIXME
+		harness.setResponses([
+			fauxAssistantMessage("I have TODO and FIXME items to fix."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.7}'),
+		]);
+		await harness.session.prompt("remove all");
+
+		expect(controller.getTriggerHistory()).toHaveLength(1);
+		expect(controller.getTriggerHistory()[0]!.verdict).toBe("incomplete");
+
+		// Turn 2: finds only TODO (progress!), stagnation resets
+		harness.setResponses([
+			fauxAssistantMessage("I still have TODO items to fix."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.8}'),
+		]);
+		await harness.session.prompt("continue");
+
+		expect(controller.getTriggerHistory()).toHaveLength(2);
+		expect(controller.getTriggerHistory()[1]!.verdict).toBe("incomplete");
+
+		// Turn 3: finds only TODO again, stagnationCount = 1 (not blocked yet)
+		harness.setResponses([
+			fauxAssistantMessage("I still have TODO items to fix."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.8}'),
+		]);
+		await harness.session.prompt("continue");
+
+		expect(controller.getTriggerHistory()).toHaveLength(3);
+		expect(controller.getTriggerHistory()[2]!.verdict).toBe("incomplete");
+		expect(controller.getGoal()?.status).toBe("running"); // not blocked yet
+
+		// Turn 4: same again, stagnationCount = 2 → blocked
+		harness.setResponses([
+			fauxAssistantMessage("I still have TODO items to fix."),
+			fauxAssistantMessage('{"completed": false, "confidence": 0.7}'),
+		]);
+		await harness.session.prompt("continue");
+
+		expect(controller.getTriggerHistory()).toHaveLength(4);
+		expect(controller.getTriggerHistory()[3]!.verdict).toBe("blocked");
+		expect(controller.getGoal()?.status).toBe("blocked");
 	});
 });
