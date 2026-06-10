@@ -1,5 +1,28 @@
 # Development Rules
 
+## Project Architecture
+
+```
+packages/
+  ai/          # LLM toolkit: providers, streaming, model definitions
+  tui/         # Terminal UI (ink-based)
+  agent/       # Agent orchestration framework
+  coding-agent/ # Main CLI + interactive agent
+    src/core/  # Session, tools, extensions, permissions
+    extensions/ # Built-in extensions (agent-permissions, subagent-v2, etc.)
+    test/      # Unit tests
+    test/suite/ # Integration tests (harness-based)
+```
+
+**Key packages:**
+- `@dyyz1993/pi-agent-core`: Agent loop, tool dispatch, message types
+- `@dyyz1993/pi-ai`: Provider registry, streaming, model metadata
+- `@dyyz1993/pi-tui`: Terminal UI components
+- `@dyyz1993/pi-coding-agent`: The `pi` CLI binary
+
+**Core permission system** (`packages/coding-agent/src/core/permissions.ts`):
+Enforces `AgentConfig.permissionMode`, `tools` (allowlist), `disallowedTools` (blocklist with input globs), and `paths` (read/write glob constraints) in `beforeToolCall`. Works independently of the `agent-permissions` extension. See `docs/security.md#sub-agent-permission-gating`.
+
 ## Conversational Style
 
 - Keep answers short and concise
@@ -27,10 +50,14 @@
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
 - Never run `npm run build` or `npm test` unless requested by the user.
-- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
-- If you create or modify a test file, run it and iterate on test or implementation until it passes.
+- **Test commands:**
+  - Full non-e2e suite: `./test.sh` from repo root (strips API keys to avoid e2e activation).
+  - Single test file: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts` from the package root.
+  - After creating or modifying a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
+- For ad-hoc scripts, write them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
+- Never commit unless the user asks.
 
 ### Test Harness Guide
 
@@ -43,7 +70,7 @@ import { createHarness, type Harness } from "./harness.ts";
 import { myExtension } from "../../extensions/my-extension/index.ts";
 
 const harnesses: Harness[] = [];
-afterEach(() => harnesses.forEach(h => h.cleanup()));
+afterEach(() => harnesses.forEach((h) => h.cleanup()));
 
 it("does something", async () => {
   const harness = await createHarness({
@@ -71,11 +98,39 @@ it("does something", async () => {
 });
 ```
 
+**Testing agent config and permissions:**
+
+```typescript
+import type { AgentConfig } from "../../src/core/agent-types.ts";
+
+it("enforces agent permission mode", async () => {
+  const harness = await createHarness({ tools: [readTool, editTool] });
+  harnesses.push(harness);
+
+  const config: AgentConfig = {
+    name: "read-only",
+    description: "Read-only agent",
+    permissionMode: "normal",
+    tools: ["read", "grep"],
+  };
+  harness.session.applyAgentConfig(config);
+
+  harness.setResponses([
+    fauxAssistantMessage([fauxToolCall("edit", {})], { stopReason: "toolUse" }),
+    fauxAssistantMessage("done"),
+  ]);
+
+  await harness.session.prompt("edit something");
+  // edit should be blocked by core permission check
+});
+```
+
 **Key harness APIs:**
 
 | API | Purpose |
 |---|---|
 | `harness.session` | The `AgentSession` instance |
+| `harness.session.applyAgentConfig(config)` | Apply agent config (permissions, tools, paths) |
 | `harness.sessionManager` | Append/query messages and entries |
 | `harness.setResponses(steps)` | Control faux LLM responses |
 | `harness.getModel()` | Get the default faux model |
@@ -100,13 +155,14 @@ await runner.emit({ type: "turn_end", turnIndex: 0, message, toolResults: [] });
 await runner.emit({ type: "session_compact", summary: "...", messages: [...] });
 ```
 
-**Three test tiers:**
+**Four test tiers:**
 
-1. **Unit tests** (pure functions, no harness): test individual functions directly. Fast, isolated.
-2. **Harness integration tests** (faux provider): test extension loading, event hooks, context pipeline. No real API calls.
+1. **Unit tests** (pure functions, no harness): test individual functions directly. Fast, isolated. Put under `test/`.
+2. **Harness integration tests** (faux provider): test extension loading, event hooks, context pipeline, agent config. Put under `test/suite/`. No real API calls.
 3. **Stress tests**: long-running scenarios (200+ turns, burst messages, repeated compaction cycles). Use harness with synthetic data.
-- For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
-- Never commit unless the user asks.
+4. **Regression tests**: issue-specific fixes. Put under `test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
+
+**Extension development reference:** See `docs/extensions.md` for the full extension API and `examples/extensions/` for working examples.
 
 ### Directory System and Storage Paths
 
@@ -193,11 +249,12 @@ Committing:
 - Stage explicit paths (`git add <path1> <path2>`); never `git add -A` / `git add .`.
 - Before committing, run `git status` and verify you are only staging your files.
 - `packages/ai/src/models.generated.ts` may always be included alongside your files.
-- Message format: `{feat,fix,docs}[(ai,tui,agent,coding-agent)]: <commit message> (optionally multiple lines)`. Message is informative and concise.
+- Message format: `{feat,fix,docs}[(scope)]: <description>`. Scopes: `ai`, `tui`, `agent`, `coding-agent`. Examples: `fix(coding-agent): enforce tool allowlist in beforeToolCall` or `docs: update test harness guide`.
 
 Never run (destroys other agents' work or bypasses checks):
 
 - `git reset --hard`, `git checkout .`, `git clean -fd`, `git stash`, `git add -A`, `git add .`, `git commit --no-verify`.
+- Do not use `git stash` to work around the above restrictions. If you need to save work, commit to a branch instead.
 
 If rebase conflicts occur:
 
@@ -223,7 +280,7 @@ When posting issue/PR comments:
 
 - Write the comment to a temp file and post with `gh issue/pr comment --body-file` (never multi-line markdown via `--body`).
 - Keep comments concise, technical, in the user's tone.
-- End every AI-posted comment with the AI-generated disclaimer line specified by the originating prompt (e.g. `This comment is AI-generated by `/wr``).
+- End every AI-posted comment with the AI-generated disclaimer line specified by the originating prompt.
 
 When closing issues via commit:
 
@@ -260,43 +317,12 @@ Attribution:
 
 ## Releasing
 
-**Lockstep versioning**: all packages share one version; every release updates all together. `patch` = fixes + additions, `minor` = breaking changes. No major releases.
+See `docs/releasing.md` for the full release workflow. Summary:
 
-1. **Update CHANGELOGs**: ask the user whether they ran the `/cl` prompt on the latest commit on `main`. If not, they must run `/cl` first to audit and update each package's `[Unreleased]` section before releasing.
-
-2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
-   ```bash
-   npm run release:local -- --out /tmp/pi-local-release --force
-   cd /tmp
-
-   # Node package install smoke tests
-   /tmp/pi-local-release/node/pi --help
-   /tmp/pi-local-release/node/pi --version
-   /tmp/pi-local-release/node/pi --list-models
-   /tmp/pi-local-release/node/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/node/pi
-
-   # Bun binary smoke tests
-   /tmp/pi-local-release/bun/pi --help
-   /tmp/pi-local-release/bun/pi --version
-   /tmp/pi-local-release/bun/pi --list-models
-   /tmp/pi-local-release/bun/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/bun/pi
-   ```
-   Verify both Node and Bun startup, model/account listing, interactive startup, and at least one real prompt with the intended default provider. The bare commands `/tmp/pi-local-release/node/pi` and `/tmp/pi-local-release/bun/pi` start interactive mode; run each in tmux, submit a prompt, and wait for the model reply before considering the interactive smoke test passed. Failures are release blockers unless the user explicitly accepts the risk.
-
-3. **Run the release script**:
-   ```bash
-   PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:patch    # fixes + additions
-   PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:minor    # breaking changes
-   ```
-   Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or shrinkwrap diffs the release creates before push.
-
-   The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check`, commits `Release vX.Y.Z`, tags `vX.Y.Z`, adds fresh `## [Unreleased]` changelog sections, commits `Add [Unreleased] section for next cycle`, then pushes `main` and the tag. Do not rerun the release script after a tag was pushed.
-
-4. **CI publishes npm packages**: pushing the `vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The `publish-npm` job uses npm trusted publishing through GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, or WebAuthn flow is required.
-
-5. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
+- **Lockstep versioning**: all packages share one version. `patch` = fixes + additions, `minor` = breaking changes.
+- Run `PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:patch` (or `release:minor`).
+- CI publishes via npm trusted publishing on tag push. No local `npm publish`.
+- Do not rerun the release script after a tag was pushed.
 
 ## User Override
 
