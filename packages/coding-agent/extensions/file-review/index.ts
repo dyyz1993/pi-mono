@@ -250,10 +250,12 @@ export default function fileReview(pi: ExtensionAPI) {
 
 				if (liveDiff) {
 					// File has live changes on disk
-					// Always use batchDiff.oldContent (correct baseline) + liveDiff.newContent (disk)
+					// Use batchDiff.oldContent as baseline, but for "added" files oldContent
+					// must be null (the file didn't exist before the session)
 					if (batchDiff) {
+						const oldContent = meta.firstStatus === "added" ? null : batchDiff.oldContent;
 						diffMap.set(path, {
-							oldContent: batchDiff.oldContent,
+							oldContent,
 							newContent: liveDiff.newContent,
 						});
 					} else {
