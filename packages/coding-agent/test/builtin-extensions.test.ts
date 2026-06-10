@@ -119,6 +119,7 @@ const extensionActions: ExtensionActions = {
 const extensionContextActions: ExtensionContextActions = {
 	getModel: () => undefined,
 	isIdle: () => true,
+	isProjectTrusted: () => true,
 	getSignal: () => undefined,
 	abort: () => {},
 	hasPendingMessages: () => false,

@@ -32,6 +32,18 @@ This is intentional. Pi is designed to operate on local source trees, invoke pro
 
 Project trust is only an input-loading guard. It prevents a repository from silently changing pi's settings or extensions before you approve it. It does not make untrusted code, untrusted prompts, or untrusted model output safe. Prompt injection from repository files, comments, documentation, context files, or build output is expected local-agent risk and cannot be reliably prevented by pi.
 
+## Sub-agent Permission Gating
+
+The core agent session enforces tool permissions for sub-agents declared in agent markdown files. These checks run in `beforeToolCall` and apply regardless of which extensions are loaded:
+
+- `permissionMode: "normal"` (default) blocks dangerous bash patterns: `rm -rf`, `sudo`, `git push --force`, `chmod 777`, `.env`, `credentials`, `--no-verify`.
+- `permissionMode: "yolo"` skips dangerous-bash blocking but still respects allowlist and blocklist.
+- `tools: [...]` is an allowlist. Tools not listed are blocked even if registered.
+- `disallowedTools: [...]` is a blocklist. Supports `tool` and `tool(glob)` patterns matched against the tool's input fields (e.g. `bash(rm*)` blocks any `bash` call whose command starts with `rm`).
+- `paths.write: [...]` and `paths.read: [...]` restrict write and read tools to matching glob patterns relative to the project root. `grep`, `glob`, `find`, and `ls` are not path-checked. `bash` is not path-checked.
+
+These checks are independent of the `agent-permissions` extension. Loading the extension adds a second layer (UI approval, `event.variables` injection) but is no longer required for the core safeguards to apply.
+
 ## Running Untrusted or Unmonitored Work
 
 For untrusted repositories, generated code you do not intend to monitor closely, or unattended automation, run pi in a contained environment. Use a container, VM, micro-VM, remote sandbox, or policy-controlled sandbox with only the files and credentials required for the task.

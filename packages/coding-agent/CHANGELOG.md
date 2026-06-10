@@ -4,6 +4,7 @@
 
 ### Added
 
+- Core-enforced tool permission gating for sub-agents: `AgentConfig.permissionMode`, `tools` (allowlist), `disallowedTools` (blocklist, supports `tool(glob)` patterns), and `paths` (write/read) are now enforced in `agent-session.ts` `beforeToolCall`, so sub-agents are sandboxed even when no permission extension is loaded. In `normal` mode, dangerous bash patterns (`rm -rf`, `sudo`, `git push --force`, `chmod 777`, `.env`, `credentials`, `--no-verify`) are blocked. The legacy `agent-permissions` extension remains as a compatibility layer.
 - Added an experimental first-time setup flow behind `PI_EXPERIMENTAL=1` that asks for a dark/light theme choice (preselecting the detected appearance) and opt-in analytics data sharing on first launch with the default agent directory; opting in stores a `trackingId` in `settings.json`.
 
 ## [0.79.1] - 2026-06-09

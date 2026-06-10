@@ -87,6 +87,7 @@ import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { matchPathGlob, PathPermissionStore } from "./path-permission-store.ts";
+import { checkToolPermission } from "./permissions.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
@@ -510,6 +511,8 @@ export class AgentSession {
 	private _currentAgentName = "build";
 	private _agentSystemPromptOverride: string | undefined;
 	private _currentAgentPaths: PathConfig | undefined;
+	private _currentAgentTools: string[] | undefined;
+	private _currentAgentDisallowedTools: string[] | undefined;
 	private _pathPermissionStore: PathPermissionStore;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
@@ -616,6 +619,21 @@ export class AgentSession {
 	 */
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			// Core permission check: allowlist, blocklist, path constraints, dangerous bash.
+			// This runs in addition to (not instead of) extension tool_call handlers, so
+			// permissions are enforced even when no permission extension is loaded.
+			const permissionResult = checkToolPermission({
+				toolName: toolCall.name,
+				input: args,
+				permissionMode: this._permissionMode,
+				allowedTools: this._currentAgentTools,
+				disallowedTools: this._currentAgentDisallowedTools,
+				paths: this._currentAgentPaths,
+			});
+			if (permissionResult?.block) {
+				return { block: true, reason: permissionResult.reason };
+			}
+
 			this._assertAgentPathAllowed(toolCall.name, args);
 
 			// Path boundary check with interactive approval
@@ -1218,6 +1236,9 @@ export class AgentSession {
 	applyAgentConfig(agent: AgentConfig): void {
 		this._currentAgentName = agent.name;
 		this._currentAgentPaths = agent.paths;
+		this._currentAgentTools = agent.tools && agent.tools.length > 0 ? agent.tools : undefined;
+		this._currentAgentDisallowedTools =
+			agent.disallowedTools && agent.disallowedTools.length > 0 ? agent.disallowedTools : undefined;
 
 		if (agent.permissionMode && isPermissionMode(agent.permissionMode)) {
 			this.setPermissionMode(agent.permissionMode);
