@@ -42,57 +42,28 @@ function loadConfig(): CompactionManagerConfig {
 	return DEFAULT_CONFIG;
 }
 
-let compactMetrics = {
-	foldCount: 0,
-	memoryCompactCount: 0,
-	forceCompactCount: 0,
-	rateLimitHits: 0,
-	serverErrors: 0,
-	strategyCompactCount: 0,
-	slidingWindowTruncations: 0,
-	toolResultBudgetPersisted: 0,
-	snipCompactCount: 0,
-	recoveryCount: 0,
-};
-
-let lastToolResultBudgetTs = 0;
-let lastSnipCompactTs = 0;
-
 export default function (pi: ExtensionAPI) {
 	const config = loadConfig();
 
-	pi.on("session_start", () => {
-		compactMetrics = {
-			foldCount: 0,
-			memoryCompactCount: 0,
-			forceCompactCount: 0,
-			rateLimitHits: 0,
-			serverErrors: 0,
-			strategyCompactCount: 0,
-			slidingWindowTruncations: 0,
-			toolResultBudgetPersisted: 0,
-			snipCompactCount: 0,
-			recoveryCount: 0,
-		};
-		lastToolResultBudgetTs = 0;
-		lastSnipCompactTs = 0;
-	});
+	let compactMetrics = {
+		foldCount: 0,
+		memoryCompactCount: 0,
+		forceCompactCount: 0,
+		rateLimitHits: 0,
+		serverErrors: 0,
+		strategyCompactCount: 0,
+		slidingWindowTruncations: 0,
+		toolResultBudgetPersisted: 0,
+		snipCompactCount: 0,
+		recoveryCount: 0,
+	};
 
 	// === L0: Tool result budget — persist oversized tool results to disk ===
 	if (config.toolResultBudget.enabled) {
 		pi.on("context", (event, _ctx) => {
-			const now = Date.now();
-			if (lastToolResultBudgetTs && now - lastToolResultBudgetTs < config.toolResultBudget.minIntervalMs) {
-				return undefined;
-			}
 			const result = budgetToolResults(event.messages, config.toolResultBudget);
 			if (result) {
-				lastToolResultBudgetTs = now;
 				compactMetrics.toolResultBudgetPersisted++;
-				pi.appendEntry("compaction_tool_result_budget", {
-					total: compactMetrics.toolResultBudgetPersisted,
-					timestamp: now,
-				});
 				return result;
 			}
 		});
@@ -101,18 +72,9 @@ export default function (pi: ExtensionAPI) {
 	// === L1: Snip compact — trim middle of long conversations ===
 	if (config.snipCompact.enabled) {
 		pi.on("context", (event, _ctx) => {
-			const now = Date.now();
-			if (lastSnipCompactTs && now - lastSnipCompactTs < config.snipCompact.minIntervalMs) {
-				return undefined;
-			}
 			const result = snipCompact(event.messages, config.snipCompact);
 			if (result) {
-				lastSnipCompactTs = now;
 				compactMetrics.snipCompactCount++;
-				pi.appendEntry("compaction_snip", {
-					total: compactMetrics.snipCompactCount,
-					timestamp: now,
-				});
 				return result;
 			}
 		});
@@ -131,10 +93,6 @@ export default function (pi: ExtensionAPI) {
 			const result = applySlidingWindow(event.messages, config.slidingWindow);
 			if (result) {
 				compactMetrics.slidingWindowTruncations++;
-				pi.appendEntry("compaction_sliding_window", {
-					total: compactMetrics.slidingWindowTruncations,
-					timestamp: Date.now(),
-				});
 				return result;
 			}
 		});
