@@ -16,6 +16,14 @@ import {
 	type ToolCall,
 } from "@dyyz1993/pi-ai";
 
+type ToolCallWithPartialJson = ToolCall & { partialJson: string };
+
+function assertToolCallWithPartialJson(content: unknown): asserts content is ToolCallWithPartialJson {
+	if (typeof content !== "object" || content === null || !("partialJson" in content)) {
+		throw new Error("Expected toolCall content with partialJson");
+	}
+}
+
 // Create stream class matching ProxyMessageEventStream
 class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
@@ -314,14 +322,15 @@ function processProxyEvent(
 				name: proxyEvent.toolName,
 				arguments: {},
 				partialJson: "",
-			} satisfies ToolCall & { partialJson: string } as ToolCall;
+			} satisfies ToolCallWithPartialJson as ToolCall;
 			return { type: "toolcall_start", contentIndex: proxyEvent.contentIndex, partial };
 
 		case "toolcall_delta": {
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
-				(content as any).partialJson += proxyEvent.delta;
-				content.arguments = parseStreamingJson((content as any).partialJson) || {};
+				assertToolCallWithPartialJson(content);
+				content.partialJson += proxyEvent.delta;
+				content.arguments = parseStreamingJson(content.partialJson) || {};
 				partial.content[proxyEvent.contentIndex] = { ...content }; // Trigger reactivity
 				return {
 					type: "toolcall_delta",
@@ -336,7 +345,8 @@ function processProxyEvent(
 		case "toolcall_end": {
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
-				delete (content as any).partialJson;
+				assertToolCallWithPartialJson(content);
+				delete (content as Partial<ToolCallWithPartialJson>).partialJson;
 				return {
 					type: "toolcall_end",
 					contentIndex: proxyEvent.contentIndex,
@@ -360,7 +370,7 @@ function processProxyEvent(
 
 		default: {
 			const _exhaustiveCheck: never = proxyEvent;
-			console.warn(`Unhandled proxy event type: ${(proxyEvent as any).type}`);
+			console.warn(`Unhandled proxy event type: ${(_exhaustiveCheck as { type: string }).type}`);
 			return undefined;
 		}
 	}

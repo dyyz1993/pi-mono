@@ -9,6 +9,7 @@ import type { ImageContent, Model } from "@dyyz1993/pi-ai";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import type { FileSnapshotManager } from "../file-store/file-snapshot-manager.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -35,6 +36,7 @@ import type {
 	ExtensionRuntime,
 	ExtensionShortcut,
 	ExtensionUIContext,
+	ExtensionUIDialogOptions,
 	InputEvent,
 	InputEventResult,
 	InputSource,
@@ -262,9 +264,8 @@ export class ExtensionRunner {
 	private getProjectDataDirFn: () => string = () => "";
 	private getCwdDataDirFn: () => string = () => "";
 	private getGlobalDataDirFn: () => string = () => "";
-	private getFileSnapshotManagerFn: () => import("../file-store/file-snapshot-manager.ts").FileSnapshotManager | null =
-		() => null;
-	private respondUIFn: (id: string, result: import("./types.ts").UIEventResult) => () => void = () => () => {};
+	private getFileSnapshotManagerFn: () => FileSnapshotManager | null = () => null;
+	private respondUIFn: (id: string, result: UIEventResult) => () => void = () => () => {};
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -305,13 +306,11 @@ export class ExtensionRunner {
 		if (fns.getGlobalDataDir) this.getGlobalDataDirFn = () => fns.getGlobalDataDir!(getExtName());
 	}
 
-	setFileSnapshotManagerFn(
-		fn: () => import("../file-store/file-snapshot-manager.ts").FileSnapshotManager | null,
-	): void {
+	setFileSnapshotManagerFn(fn: () => FileSnapshotManager | null): void {
 		this.getFileSnapshotManagerFn = fn;
 	}
 
-	setRespondUIFn(fn: (id: string, result: import("./types.ts").UIEventResult) => () => void): void {
+	setRespondUIFn(fn: (id: string, result: UIEventResult) => () => void): void {
 		this.respondUIFn = fn;
 	}
 
@@ -688,7 +687,7 @@ export class ExtensionRunner {
 			uiContext.confirm.bind(uiContext) as (
 				title: string,
 				message: string,
-				opts?: import("./types.ts").ExtensionUIDialogOptions,
+				opts?: ExtensionUIDialogOptions,
 			) => Promise<boolean>,
 			(id, [title, message, opts]) => ({
 				type: "ui" as const,
@@ -709,7 +708,7 @@ export class ExtensionRunner {
 			uiContext.select.bind(uiContext) as (
 				title: string,
 				options: string[],
-				opts?: import("./types.ts").ExtensionUIDialogOptions,
+				opts?: ExtensionUIDialogOptions,
 			) => Promise<string | undefined>,
 			(id, [title, options, opts]) => ({
 				type: "ui" as const,
@@ -730,7 +729,7 @@ export class ExtensionRunner {
 			uiContext.input.bind(uiContext) as (
 				title: string,
 				placeholder?: string,
-				opts?: import("./types.ts").ExtensionUIDialogOptions,
+				opts?: ExtensionUIDialogOptions,
 			) => Promise<string | undefined>,
 			(id, [title, placeholder, opts]) => ({
 				type: "ui" as const,
