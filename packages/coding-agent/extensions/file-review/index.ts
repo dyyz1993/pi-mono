@@ -240,22 +240,24 @@ export default function fileReview(pi: ExtensionAPI) {
 				console.error("[file-review] getBatchFileContents failed:", error);
 			}
 
-			// Merge: prefer live disk content for newContent, use batch oldContent
-			// as the approved-snapshot baseline when available.
+			// Merge: use batchDiff.oldContent as baseline (session start or approved snapshot),
+			// liveDiff.newContent as the current disk content.
+			// getLiveChanges uses lastCommittedTreeHash which already includes changes from
+			// previous turns, so its oldContent is wrong for unapproved files.
 			for (const [path, meta] of pathMeta) {
 				const batchDiff = diffMap.get(path);
 				const liveDiff = liveMap.get(path);
 
 				if (liveDiff) {
 					// File has live changes on disk
-					// For approved files: oldContent from approved snapshot (batchDiff)
-					// For unapproved files: oldContent from live changes (session start baseline)
-					if (approvedSnapshotEntry.has(path) && batchDiff) {
+					// Always use batchDiff.oldContent (correct baseline) + liveDiff.newContent (disk)
+					if (batchDiff) {
 						diffMap.set(path, {
 							oldContent: batchDiff.oldContent,
 							newContent: liveDiff.newContent,
 						});
 					} else {
+						// No batch result — use liveDiff as-is (oldContent may be null for truly new files)
 						diffMap.set(path, liveDiff);
 					}
 				} else if (meta.latestFileStatus === "deleted") {
@@ -264,7 +266,10 @@ export default function fileReview(pi: ExtensionAPI) {
 					diffMap.set(path, { oldContent, newContent: null });
 				} else if (batchDiff) {
 					// No live change but batch has data (file unchanged since last snapshot)
-					// Keep batch data as-is
+					// This means oldContent == newContent in batch — use null for oldContent
+					// based on fileStatus to get correct diff
+					const oldContent = meta.firstStatus === "added" ? null : batchDiff.oldContent;
+					diffMap.set(path, { oldContent, newContent: batchDiff.newContent });
 				}
 			}
 		}
