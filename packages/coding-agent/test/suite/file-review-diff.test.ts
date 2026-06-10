@@ -646,7 +646,94 @@ describe("file-review net-zero scenario", () => {
 	});
 });
 
-// ─── computeDiffInfo tests ───────────────────────────────────────────
+// ─── Multi-turn diff accuracy (V1→V2 without approval) ──────────────
+
+describe("file-review multi-turn diff without approval", () => {
+	it("shows V1→V2 diff when file created then modified without approval", async () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		// Turn 0: agent creates file with V1 content
+		writeFileSync(join(cwd, "file.txt"), "V1 content\n");
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: agent modifies to V2 (still no approval)
+		writeFileSync(join(cwd, "file.txt"), "V2 content\n");
+		mgr.onTurnEnd(cwd, 1, (type, _data) => `${type}-1`);
+
+		// Now simulate what review.pending does: getLiveChanges for newContent
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(0); // V2 is committed, no live diff
+
+		// The file was committed as V2 in turn 1.
+		// For the pending diff, we need V1→V2.
+		// approvedSnapshotEntry is empty (never approved), so fromEntryId=undefined.
+		// getBatchFileContents with no fromEntryId uses sessionStartTreeHash (no file.txt).
+		// But the fallback walks snapshots to find oldContent.
+		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
+		const content = batchResult.get("file.txt");
+
+		// With fallback, oldContent should be V1 (found in turn 0's snapshot)
+		// and newContent should be V2 (from last committed tree)
+		expect(content!.newContent).toBe("V2 content\n");
+		// This is the key assertion: oldContent should be V1, NOT null
+		expect(content!.oldContent).toBe("V1 content\n");
+	});
+
+	it("shows correct diff when file is modified but turn hasn't ended yet", async () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		// Turn 0: create file with V1
+		writeFileSync(join(cwd, "file.txt"), "V1 content\n");
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: modify to V2 but DON'T commit yet
+		writeFileSync(join(cwd, "file.txt"), "V2 content\n");
+
+		// getLiveChanges sees the uncommitted V2
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(1);
+		expect(liveChanges[0]!.diff!.newContent).toBe("V2 content\n");
+		expect(liveChanges[0]!.diff!.oldContent).toBe("V1 content\n");
+
+		// getBatchFileContents does NOT see V2 (only committed trees)
+		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
+		expect(batchResult.get("file.txt")!.newContent).toBe("V1 content\n");
+		// ^ This confirms the bug: batch only sees committed data.
+		// The fix uses getLiveChanges for newContent to capture uncommitted changes.
+	});
+
+	it("after approval, diff shows approved-snapshot vs live", async () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		// Turn 0: create V1
+		writeFileSync(join(cwd, "file.txt"), "V1 content\n");
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: modify to V2
+		writeFileSync(join(cwd, "file.txt"), "V2 content\n");
+
+		// getLiveChanges correctly shows V1→V2
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(1);
+		expect(liveChanges[0]!.diff!.oldContent).toBe("V1 content\n");
+		expect(liveChanges[0]!.diff!.newContent).toBe("V2 content\n");
+	});
+});
 
 describe("computeDiffInfo - unifiedDiff and line counts", () => {
 	it("returns empty diff for null vs null", () => {

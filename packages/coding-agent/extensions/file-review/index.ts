@@ -193,12 +193,24 @@ export default function fileReview(pi: ExtensionAPI) {
 			}
 		}
 
-		// Batch-optimized: read each tree ONCE for all files.
-		// Previously called getFileDiff() per file → O(N×M) disk reads.
-		// Now uses getBatchFileContents() → O(M) total.
+		// Build diff data for pending files.
+		// For files with an approved baseline, compare approved snapshot → live disk.
+		// For never-approved files, compare session start → live disk.
+		// getBatchFileContents only reads committed snapshots (not live disk),
+		// so we use getLiveChanges for newContent to capture uncommitted changes.
 		const mgr = ctx?.fileSnapshotManager;
 		const diffMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
-		if (mgr && pathMeta.size > 0) {
+		if (mgr && ctx && pathMeta.size > 0) {
+			// Get live (disk) content for all pending files
+			const liveChanges = mgr.getLiveChanges(ctx.cwd);
+			const liveMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
+			for (const change of liveChanges) {
+				if (change.diff) {
+					liveMap.set(change.path, change.diff);
+				}
+			}
+
+			// Get oldContent from the correct baseline (approved snapshot or session start)
 			try {
 				const fileRequests = [...pathMeta.keys()].map((path) => ({
 					filePath: path,
@@ -210,6 +222,34 @@ export default function fileReview(pi: ExtensionAPI) {
 				}
 			} catch (error) {
 				console.error("[file-review] getBatchFileContents failed:", error);
+			}
+
+			// Merge: prefer live disk content for newContent, use batch oldContent
+			// as the approved-snapshot baseline when available.
+			for (const [path, meta] of pathMeta) {
+				const batchDiff = diffMap.get(path);
+				const liveDiff = liveMap.get(path);
+
+				if (liveDiff) {
+					// File has live changes on disk
+					// For approved files: oldContent from approved snapshot (batchDiff)
+					// For unapproved files: oldContent from live changes (session start baseline)
+					if (approvedSnapshotEntry.has(path) && batchDiff) {
+						diffMap.set(path, {
+							oldContent: batchDiff.oldContent,
+							newContent: liveDiff.newContent,
+						});
+					} else {
+						diffMap.set(path, liveDiff);
+					}
+				} else if (meta.latestFileStatus === "deleted") {
+					// File was deleted from disk — oldContent from baseline
+					const oldContent = batchDiff?.oldContent ?? null;
+					diffMap.set(path, { oldContent, newContent: null });
+				} else if (batchDiff) {
+					// No live change but batch has data (file unchanged since last snapshot)
+					// Keep batch data as-is
+				}
 			}
 		}
 
