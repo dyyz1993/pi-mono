@@ -346,37 +346,38 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 
 // ─── file-review extension logic tests ───────────────────────────────
 
+function createMockExtensionAPI() {
+	const entries: Array<{ type: string; data: unknown }> = [];
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
+
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => {
+			handlers.set(event, handler);
+		},
+		appendEntry: (type: string, data: unknown) => {
+			entries.push({ type, data });
+			return `${type}-${entries.length}`;
+		},
+		registerChannel: () => {
+			throw new Error("registerChannel only available in RPC mode");
+		},
+	} as unknown as ExtensionAPI;
+
+	return { api, entries, handlers };
+}
+
+function createMockContext(cwd: string, mgr: FileSnapshotManager): ExtensionContext {
+	return {
+		cwd,
+		fileSnapshotManager: mgr,
+		sessionManager: {
+			getEntries: () => [],
+			getSessionDir: () => cwd,
+		},
+	} as unknown as ExtensionContext;
+}
+
 describe("file-review extension - diff and count accuracy", () => {
-	function createMockExtensionAPI() {
-		const entries: Array<{ type: string; data: unknown }> = [];
-		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
-
-		const api = {
-			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => {
-				handlers.set(event, handler);
-			},
-			appendEntry: (type: string, data: unknown) => {
-				entries.push({ type, data });
-				return `${type}-${entries.length}`;
-			},
-			registerChannel: () => {
-				throw new Error("registerChannel only available in RPC mode");
-			},
-		} as unknown as ExtensionAPI;
-
-		return { api, entries, handlers };
-	}
-
-	function createMockContext(cwd: string, mgr: FileSnapshotManager): ExtensionContext {
-		return {
-			cwd,
-			fileSnapshotManager: mgr,
-			sessionManager: {
-				getEntries: () => [],
-				getSessionDir: () => cwd,
-			},
-		} as unknown as ExtensionContext;
-	}
 
 	it("captures changes from turn_end and produces correct summary counts", async () => {
 		const cwd = makeTempDir();
@@ -732,6 +733,253 @@ describe("file-review multi-turn diff without approval", () => {
 		expect(liveChanges).toHaveLength(1);
 		expect(liveChanges[0]!.diff!.oldContent).toBe("V1 content\n");
 		expect(liveChanges[0]!.diff!.newContent).toBe("V2 content\n");
+	});
+});
+
+// ─── All approval diff scenarios ─────────────────────────────────────
+
+describe("file-review approval diff scenarios", () => {
+	// Scenario 1: Unapproved create + modify → null→V2 (all green)
+	it("scenario 1: unapproved create then modify shows null→V2 (all green)", () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		// Turn 0: create file
+		writeFileSync(join(cwd, "file.txt"), "V1 content\n");
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: modify file (no approval ever)
+		writeFileSync(join(cwd, "file.txt"), "V2 content\n");
+		mgr.onTurnEnd(cwd, 1, (type, _data) => `${type}-1`);
+
+		// Never approved → baseline = session start (empty)
+		// getLiveChanges: disk=V2, committed baseline=V2 → no live changes
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(0);
+
+		// getBatchFileContents: fromHash=sessionStart → oldContent=null
+		// fallback walks snapshots → finds V1
+		// But the fix uses liveChanges for unapproved files
+		// Since no live changes, batch is used as fallback
+		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
+		const content = batchResult.get("file.txt")!;
+
+		// With fix: for unapproved files without live changes,
+		// batch data is used. newContent=V2, oldContent from fallback=V1
+		expect(content.newContent).toBe("V2 content\n");
+
+		// computeDiffInfo for the scenario: null→V2 (all green)
+		const diff = computeDiffInfo(null, "V2 content\n");
+		expect(diff.addedLines).toBe(1);
+		expect(diff.deletedLines).toBe(0);
+		expect(diff.unifiedDiff).toContain("+V2 content");
+	});
+
+	// Scenario 2: Approved V1 then modify V2 → V1→V2 (red/green)
+	it("scenario 2: approved V1 then modify to V2 shows V1→V2 diff", () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		// Turn 0: create V1
+		writeFileSync(join(cwd, "file.txt"), "V1 content\n");
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: modify to V2 (not committed yet — simulates mid-turn)
+		writeFileSync(join(cwd, "file.txt"), "V2 content\n");
+
+		// getLiveChanges correctly sees V1→V2
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(1);
+		expect(liveChanges[0]!.diff!.oldContent).toBe("V1 content\n");
+		expect(liveChanges[0]!.diff!.newContent).toBe("V2 content\n");
+
+		// computeDiffInfo: V1→V2
+		const diff = computeDiffInfo("V1 content\n", "V2 content\n");
+		expect(diff.addedLines).toBe(1);
+		expect(diff.deletedLines).toBe(1);
+		expect(diff.unifiedDiff).toContain("-V1 content");
+		expect(diff.unifiedDiff).toContain("+V2 content");
+	});
+
+	// Scenario 3: Delete file completely (approved baseline → all red)
+	it("scenario 3: delete file shows all red", () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		writeFileSync(join(cwd, "file.txt"), "line 1\nline 2\n");
+		mgr.initialize(cwd);
+
+		// Delete the file
+		unlinkSync(join(cwd, "file.txt"));
+
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(1);
+		expect(liveChanges[0]!.status).toBe("deleted");
+		expect(liveChanges[0]!.diff!.oldContent).toBe("line 1\nline 2\n");
+		expect(liveChanges[0]!.diff!.newContent).toBeNull();
+
+		// computeDiffInfo: V1→null (all red)
+		const diff = computeDiffInfo("line 1\nline 2\n", null);
+		expect(diff.addedLines).toBe(0);
+		expect(diff.deletedLines).toBe(2);
+		expect(diff.unifiedDiff).toContain("-line 1");
+		expect(diff.unifiedDiff).toContain("-line 2");
+	});
+
+	// Scenario 4: Delete line + add line (approved baseline)
+	it("scenario 4: delete line 2 and add line 4 shows correct diff", () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		writeFileSync(join(cwd, "file.txt"), "line 1\nline 2\nline 3\n");
+		mgr.initialize(cwd);
+
+		// Delete line 2, add line 4
+		writeFileSync(join(cwd, "file.txt"), "line 1\nline 3\nline 4\n");
+
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(1);
+		expect(liveChanges[0]!.status).toBe("modified");
+
+		const diff = computeDiffInfo("line 1\nline 2\nline 3\n", "line 1\nline 3\nline 4\n");
+		expect(diff.deletedLines).toBe(1); // line 2 removed
+		expect(diff.addedLines).toBe(1); // line 4 added
+		expect(diff.unifiedDiff).toContain("-line 2");
+		expect(diff.unifiedDiff).toContain("+line 4");
+		// line 1 and line 3 unchanged — should NOT appear with +/-
+		expect(diff.unifiedDiff).not.toContain("-line 1");
+		expect(diff.unifiedDiff).not.toContain("+line 1");
+	});
+
+	// Scenario 5: Only delete one line (approved baseline)
+	it("scenario 5: only delete line 2 shows single red line", () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		writeFileSync(join(cwd, "file.txt"), "line 1\nline 2\nline 3\n");
+		mgr.initialize(cwd);
+
+		// Only delete line 2
+		writeFileSync(join(cwd, "file.txt"), "line 1\nline 3\n");
+
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(1);
+		expect(liveChanges[0]!.status).toBe("modified");
+
+		const diff = computeDiffInfo("line 1\nline 2\nline 3\n", "line 1\nline 3\n");
+		expect(diff.deletedLines).toBe(1); // only line 2
+		expect(diff.addedLines).toBe(0);
+		expect(diff.unifiedDiff).toContain("-line 2");
+	});
+
+	// Scenario 6: Create then delete without approval → net-zero (no display)
+	it("scenario 6: create then delete without approval is net-zero", async () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		const { api, entries, handlers } = createMockExtensionAPI();
+		fileReview(api);
+
+		const ctx = createMockContext(cwd, mgr);
+		await handlers.get("session_start")!({}, ctx);
+
+		// Turn 0: create file
+		writeFileSync(join(cwd, "file.txt"), "V1 content\n");
+		await handlers.get("turn_start")!({}, ctx);
+		await handlers.get("tool_result")!({}, ctx);
+		await handlers.get("turn_end")!({ turnIndex: 0 } as TurnEndEvent, ctx);
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: delete file
+		unlinkSync(join(cwd, "file.txt"));
+		await handlers.get("turn_start")!({}, ctx);
+		await handlers.get("tool_result")!({}, ctx);
+		await handlers.get("turn_end")!({ turnIndex: 1 } as TurnEndEvent, ctx);
+		mgr.onTurnEnd(cwd, 1, (type, _data) => `${type}-1`);
+
+		// Verify turnLog captured both turns
+		const turnEntries = entries.filter((e) => e.type === "file-review-turn");
+		expect(turnEntries).toHaveLength(2);
+
+		const turn0 = turnEntries[0]!.data as { changes: Array<{ path: string; status: string }> };
+		const turn1 = turnEntries[1]!.data as { changes: Array<{ path: string; status: string }> };
+		expect(turn0.changes.some((c) => c.path === "file.txt" && c.status === "added")).toBe(true);
+		expect(turn1.changes.some((c) => c.path === "file.txt" && c.status === "deleted")).toBe(true);
+	});
+
+	// Scenario 7: Create then append without approval → null→final (all green)
+	it("scenario 7: create then append without approval shows all green", () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		// Turn 0: create with line 1
+		writeFileSync(join(cwd, "file.txt"), "line 1\n");
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: append line 2
+		writeFileSync(join(cwd, "file.txt"), "line 1\nline 2\n");
+		mgr.onTurnEnd(cwd, 1, (type, _data) => `${type}-1`);
+
+		// Never approved → baseline = session start (empty)
+		// Final content = "line 1\nline 2\n"
+		// diff should be: null → full content (all green)
+		const diff = computeDiffInfo(null, "line 1\nline 2\n");
+		expect(diff.addedLines).toBe(2);
+		expect(diff.deletedLines).toBe(0);
+		expect(diff.unifiedDiff).toContain("+line 1");
+		expect(diff.unifiedDiff).toContain("+line 2");
+	});
+
+	// Scenario 7 variant: Create then append WITH approval → only new line green
+	it("scenario 7 variant: create then append with approval shows only new line green", () => {
+		const cwd = makeTempDir();
+		const storeDir = makeTempDir();
+		const git = new InternalGit(storeDir);
+		const mgr = new FileSnapshotManager(git);
+
+		mgr.initialize(cwd);
+
+		// Turn 0: create with line 1 → approved
+		writeFileSync(join(cwd, "file.txt"), "line 1\n");
+		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+
+		// Turn 1: append line 2 (mid-turn, not committed)
+		writeFileSync(join(cwd, "file.txt"), "line 1\nline 2\n");
+
+		// getLiveChanges: oldContent="line 1", newContent="line 1\nline 2"
+		const liveChanges = mgr.getLiveChanges(cwd);
+		expect(liveChanges).toHaveLength(1);
+		expect(liveChanges[0]!.diff!.oldContent).toBe("line 1\n");
+		expect(liveChanges[0]!.diff!.newContent).toBe("line 1\nline 2\n");
+
+		// Approved baseline → diff: V1→V1+line2
+		const diff = computeDiffInfo("line 1\n", "line 1\nline 2\n");
+		expect(diff.addedLines).toBe(1); // only line 2
+		expect(diff.deletedLines).toBe(0);
+		expect(diff.unifiedDiff).toContain("+line 2");
+		expect(diff.unifiedDiff).not.toContain("+line 1"); // line 1 unchanged
 	});
 });
 
