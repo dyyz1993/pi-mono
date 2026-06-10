@@ -18,12 +18,16 @@ export interface SnipCompactConfig {
 	maxMessages: number;
 	/** Number of leading messages to always keep (default: 3) */
 	keepHeadCount: number;
+	/** Minimum interval between snip operations in ms (default: 600_000 = 10 min).
+	 *  Prevents cache-busting mid-conversation; runs only when the cache is likely cold. */
+	minIntervalMs: number;
 }
 
 export const DEFAULT_SNIP_COMPACT_CONFIG: SnipCompactConfig = {
 	enabled: true,
 	maxMessages: 50,
 	keepHeadCount: 3,
+	minIntervalMs: 10 * 60 * 1000,
 };
 
 /**

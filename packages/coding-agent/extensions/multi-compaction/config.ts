@@ -62,11 +62,13 @@ export const DEFAULT_CONFIG: CompactionManagerConfig = {
 		enabled: true,
 		maxResultChars: 200_000,
 		previewChars: 2000,
+		minIntervalMs: 10 * 60 * 1000,
 	},
 	snipCompact: {
 		enabled: true,
 		maxMessages: 50,
 		keepHeadCount: 3,
+		minIntervalMs: 10 * 60 * 1000,
 	},
 	lineFold: {
 		enabled: true,

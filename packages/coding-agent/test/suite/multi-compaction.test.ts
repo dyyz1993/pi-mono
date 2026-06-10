@@ -167,6 +167,7 @@ describe("tool-result-budget", () => {
 			enabled: true,
 			maxResultChars: 200_000,
 			previewChars: 2000,
+			minIntervalMs: 0,
 		};
 		expect(budgetToolResults(messages, config)).toBeUndefined();
 	});
@@ -183,6 +184,7 @@ describe("tool-result-budget", () => {
 			enabled: true,
 			maxResultChars: 100_000,
 			previewChars: 500,
+			minIntervalMs: 0,
 		};
 		const result = budgetToolResults(messages, config);
 		expect(result).toBeDefined();
@@ -202,6 +204,7 @@ describe("tool-result-budget", () => {
 			enabled: true,
 			maxResultChars: 100,
 			previewChars: 50,
+			minIntervalMs: 0,
 		};
 		// Error results are skipped, so total non-error chars = 0, under budget
 		expect(budgetToolResults(messages, config)).toBeUndefined();
@@ -219,6 +222,7 @@ describe("tool-result-budget", () => {
 			enabled: true,
 			maxResultChars: 150,
 			previewChars: 200,
+			minIntervalMs: 0,
 		};
 		// Total is 300 > 150, but each result is 100 < 200 previewChars, so none persisted
 		expect(budgetToolResults(messages, config)).toBeUndefined();
@@ -234,6 +238,7 @@ describe("snip-compact", () => {
 		enabled: true,
 		maxMessages: 10,
 		keepHeadCount: 3,
+		minIntervalMs: 0,
 	};
 
 	it("returns undefined when message count is under max", () => {
@@ -296,7 +301,7 @@ describe("snip-compact", () => {
 		// messages[5] is assistant with toolCalls, messages[6] is toolResult
 		// adjustTailBoundary: messages[5].role === "assistant" (not toolResult), so no adjustment
 		// But if tailStart=6, messages[6].role === "toolResult", so we walk back to 5
-		const config: SnipCompactConfig = { enabled: true, maxMessages: 8, keepHeadCount: 3 };
+		const config: SnipCompactConfig = { enabled: true, maxMessages: 8, keepHeadCount: 3, minIntervalMs: 0 };
 		const adjusted = adjustTailBoundary(messages2, 6);
 		// messages[6] is toolResult, walk back: messages[5] is assistant with toolCalls
 		expect(adjusted).toBe(5);
@@ -306,12 +311,12 @@ describe("snip-compact", () => {
 		const messages: AgentMessage[] = Array.from({ length: 5 }, (_, i) => createUser(`msg ${i}`));
 		// maxMessages=4, keepHeadCount=3 => keepTailCount=1, tailStart=4
 		// tailStart=4 > keepHeadCount=3, so it should work
-		const config: SnipCompactConfig = { enabled: true, maxMessages: 4, keepHeadCount: 3 };
+		const config: SnipCompactConfig = { enabled: true, maxMessages: 4, keepHeadCount: 3, minIntervalMs: 0 };
 		const result = snipCompact(messages, config);
 		expect(result).toBeDefined();
 		// But if keepHeadCount >= tailStart, it returns undefined
 		// Let's test that overlap case
-		const config2: SnipCompactConfig = { enabled: true, maxMessages: 4, keepHeadCount: 10 };
+		const config2: SnipCompactConfig = { enabled: true, maxMessages: 4, keepHeadCount: 10, minIntervalMs: 0 };
 		expect(snipCompact(messages, config2)).toBeUndefined();
 	});
 

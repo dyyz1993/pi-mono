@@ -31,8 +31,149 @@
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
+
+### Test Harness Guide
+
+The harness (`test/suite/harness.ts`) provides a full in-memory AgentSession with a faux LLM provider. Use it for integration tests that need extension loading, event emission, or context hooks.
+
+**Creating a harness:**
+
+```typescript
+import { createHarness, type Harness } from "./harness.ts";
+import { myExtension } from "../../extensions/my-extension/index.ts";
+
+const harnesses: Harness[] = [];
+afterEach(() => harnesses.forEach(h => h.cleanup()));
+
+it("does something", async () => {
+  const harness = await createHarness({
+    extensionFactories: [myExtension],
+  });
+  harnesses.push(harness);
+
+  // Access the faux provider to control LLM responses
+  harness.setResponses([{ type: "text", text: "ok" }]);
+
+  // Access session internals
+  const model = harness.getModel();
+  const runner = harness.session["_extensionRunner"];
+
+  // Seed messages via sessionManager
+  harness.sessionManager.appendMessage({ role: "user", content: [...], timestamp: Date.now() });
+
+  // Emit extension events
+  await runner.emit({ type: "turn_end", turnIndex: 0, message: {...}, toolResults: [] });
+
+  // Assert on entries
+  const entries = harness.sessionManager.getEntries();
+  // Assert on events
+  const events = harness.eventsOfType("session_compact");
+});
+```
+
+**Key harness APIs:**
+
+| API | Purpose |
+|---|---|
+| `harness.session` | The `AgentSession` instance |
+| `harness.sessionManager` | Append/query messages and entries |
+| `harness.setResponses(steps)` | Control faux LLM responses |
+| `harness.getModel()` | Get the default faux model |
+| `harness.eventsOfType(type)` | Get emitted session events by type |
+| `harness.session["_extensionRunner"]` | Access extension runner for `emit()` |
+| `harness.cleanup()` | Dispose session + temp dir (call in afterEach) |
+
+**Testing context hooks (transformContext):**
+
+```typescript
+// Context hooks run through the agent's transformContext pipeline
+const messages = [userMsg, assistantMsg, toolResultMsg];
+const runner = harness.session["_extensionRunner"];
+const transformed = await runner.emitContext(messages);
+// Assert on transformed messages
+```
+
+**Testing session events (turn_end, session_compact, etc.):**
+
+```typescript
+await runner.emit({ type: "turn_end", turnIndex: 0, message, toolResults: [] });
+await runner.emit({ type: "session_compact", summary: "...", messages: [...] });
+```
+
+**Three test tiers:**
+
+1. **Unit tests** (pure functions, no harness): test individual functions directly. Fast, isolated.
+2. **Harness integration tests** (faux provider): test extension loading, event hooks, context pipeline. No real API calls.
+3. **Stress tests**: long-running scenarios (200+ turns, burst messages, repeated compaction cycles). Use harness with synthetic data.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Never commit unless the user asks.
+
+### Directory System and Storage Paths
+
+```
+os.tmpdir()/                           # System temp (auto-reclaimed on reboot)
+  pi-bash-<id>.log                     # Bash output overflow
+  pi-input-<uuid>.txt                  # Large input overflow
+  pi-tool-results/<slug>/              # Tool-result-budget overflow
+  pi-clipboard-<uuid>.<ext>            # Clipboard paste images
+
+~/.pi/agent/                           # Global agent dir (getAgentDir())
+  settings.json                        # Global settings
+  auth.json                            # Auth credentials
+  models.json                          # Model config
+  pi-debug.log                         # Debug log
+  sessions/--<encoded-cwd>--/          # Session storage
+    *.jsonl                            # Session history
+    data/<sessionId>/<extName>/        # Session-level extension data
+  extensions/                          # Global extensions
+  skills/                              # Global skills
+  prompts/                             # Global prompt templates
+  themes/                              # Global themes
+  cache/                               # Cache directory
+  tmp/extensions/                      # Extension temp files
+  extensions-data/<ext>/               # Global extension data (globalDataDir)
+  project-data/<enc>/<ext>/            # Project extension data (projectDataDir)
+  cwd-data/<enc>/<ext>/                # CWD extension data (cwdDataDir)
+
+<project>/.pi/                         # Project-level dir (CONFIG_DIR_NAME)
+  settings.json                        # Project settings
+  extensions/                          # Project extensions
+  skills/                              # Project skills
+  prompts/                             # Project prompts
+  rules/                               # Rule files
+  rules-config.json                    # Rule config
+  memory/                              # Session memory
+
+~/.agents/skills/                      # Agents protocol compat (global)
+<project>/.agents/skills/              # Agents protocol compat (project)
+```
+
+**Extension DataDir API** (via `pi.storage.*` in extension context):
+
+| API | Path | Scope | Lifetime |
+|---|---|---|---|
+| `sessionDataDir` | `sessions/<enc>/data/<sid>/<ext>/` | Session | Deleted with session |
+| `projectDataDir` | `project-data/<enc>/<ext>/` | Project | Persistent across sessions |
+| `cwdDataDir` | `cwd-data/<enc>/<ext>/` | Working directory | Persistent |
+| `globalDataDir` | `extensions-data/<ext>/` | Global | Persistent across projects |
+
+**When to use which:**
+
+| Scenario | Use | Why |
+|---|---|---|
+| Bash output overflow | `os.tmpdir()` | Reclaimable, not persistent |
+| Tool result overflow | `os.tmpdir()` | Reclaimable, not persistent |
+| Session-scoped temp data | `sessionDataDir` | Cleaned up with session |
+| Project-level cache/config | `projectDataDir` | Persistent across sessions |
+| Global settings/credentials | `globalDataDir` | Persistent across projects |
+| User-editable project files | `<project>/.pi/` | Visible and editable by users |
+
+**Key config functions** (in `src/config.ts`):
+
+- `getAgentDir()` -> `~/.pi/agent/` (override via `PI_CODING_AGENT_DIR` env var)
+- `getSessionsDir()` -> `~/.pi/agent/sessions/`
+- `CONFIG_DIR_NAME` -> `.pi` (project-level config dir name)
+- Session dir override: `PI_CODING_AGENT_SESSION_DIR` env var or `--session-dir` CLI arg
 
 ## Dependency and Install Security
 

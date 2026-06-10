@@ -9,12 +9,16 @@ export interface ToolResultBudgetConfig {
 	enabled: boolean;
 	maxResultChars: number;
 	previewChars: number;
+	/** Minimum interval between budget operations in ms (default: 600_000 = 10 min).
+	 *  Prevents cache-busting mid-conversation; runs only when the cache is likely cold. */
+	minIntervalMs: number;
 }
 
 export const DEFAULT_TOOL_RESULT_BUDGET_CONFIG: ToolResultBudgetConfig = {
 	enabled: true,
 	maxResultChars: 200_000,
 	previewChars: 2000,
+	minIntervalMs: 10 * 60 * 1000,
 };
 
 function getOutputDir(): string {

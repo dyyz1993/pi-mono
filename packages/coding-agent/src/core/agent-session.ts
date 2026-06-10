@@ -357,42 +357,45 @@ function buildAgentSystemPrompt(agent: AgentConfig): string | undefined {
 }
 
 function normalizeAgentPath(filePath: string): string {
-		let normalized = filePath.startsWith("file://") ? filePath.slice("file://".length) : filePath;
-		normalized = normalized.replace(/\\/g, "/");
-		const parts = normalized.split("/");
-		const resolved: string[] = [];
-		for (const part of parts) {
-			if (part === "..") {
-				if (resolved.length > 0 && resolved[resolved.length - 1] !== "") {
-					resolved.pop();
-				}
-			} else if (part !== "." && part !== "") {
-				resolved.push(part);
-			} else if (part === "" && resolved.length === 0) {
-				resolved.push("");
+	let normalized = filePath.startsWith("file://") ? filePath.slice("file://".length) : filePath;
+	normalized = normalized.replace(/\\/g, "/");
+	const parts = normalized.split("/");
+	const resolved: string[] = [];
+	for (const part of parts) {
+		if (part === "..") {
+			if (resolved.length > 0 && resolved[resolved.length - 1] !== "") {
+				resolved.pop();
 			}
+		} else if (part !== "." && part !== "") {
+			resolved.push(part);
+		} else if (part === "" && resolved.length === 0) {
+			resolved.push("");
 		}
-		if (normalized.startsWith("/")) {
-			return `/${resolved.filter((part) => part !== "").join("/")}`;
-		}
-		return resolved.join("/") || ".";
 	}
+	if (normalized.startsWith("/")) {
+		return `/${resolved.filter((part) => part !== "").join("/")}`;
+	}
+	return resolved.join("/") || ".";
+}
 
-	/** Resolve a path (relative or absolute) against cwd, returning an absolute path. */
-	function resolvePathAgainstCwd(filePath: string, cwd: string): string {
-		if (filePath.startsWith("/")) return filePath;
-		// Relative path — join with cwd
-		const parts = [...cwd.split("/").filter((p) => p !== ""), ...filePath.split("/").filter((p) => p !== "." && p !== "")];
-		const resolved: string[] = [];
-		for (const part of parts) {
-			if (part === "..") {
-				if (resolved.length > 0) resolved.pop();
-			} else {
-				resolved.push(part);
-			}
+/** Resolve a path (relative or absolute) against cwd, returning an absolute path. */
+function resolvePathAgainstCwd(filePath: string, cwd: string): string {
+	if (filePath.startsWith("/")) return filePath;
+	// Relative path — join with cwd
+	const parts = [
+		...cwd.split("/").filter((p) => p !== ""),
+		...filePath.split("/").filter((p) => p !== "." && p !== ""),
+	];
+	const resolved: string[] = [];
+	for (const part of parts) {
+		if (part === "..") {
+			if (resolved.length > 0) resolved.pop();
+		} else {
+			resolved.push(part);
 		}
-		return `/${resolved.join("/")}`;
 	}
+	return `/${resolved.join("/")}`;
+}
 
 function matchesAgentPath(filePath: string, pattern: string): boolean {
 	if (pattern === "**") return true;
