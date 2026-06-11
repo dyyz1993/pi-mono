@@ -1,7 +1,46 @@
 import { describe, expect, it } from "vitest";
 import { checkToolPermission } from "../src/core/permissions.ts";
 
-describe("checkToolPermission: allowlist (AgentConfig.tools)", () => {
+describe("permissionMode field", () => {
+	it("allows normal mode by default", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "/project/src/app.ts" },
+			permissionMode: "normal",
+		});
+		expect(result).toBeNull();
+	});
+
+	it("yolo mode skips dangerous-bash blocking", () => {
+		const result = checkToolPermission({
+			toolName: "bash",
+			input: { command: "rm -rf /tmp/data" },
+			permissionMode: "yolo",
+		});
+		expect(result).toBeNull();
+	});
+
+	it("yolo mode still enforces blocklist", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/x" },
+			permissionMode: "yolo",
+			disallowedTools: ["edit"],
+		});
+		expect(result?.block).toBe(true);
+	});
+
+	it("undefined permissionMode does not block dangerous bash", () => {
+		const result = checkToolPermission({
+			toolName: "bash",
+			input: { command: "rm -rf /tmp/data" },
+			permissionMode: undefined as unknown as "normal" | "yolo",
+		});
+		expect(result).toBeNull();
+	});
+});
+
+describe("tools field", () => {
 	it("allows listed tools", () => {
 		const result = checkToolPermission({
 			toolName: "read",
@@ -54,7 +93,6 @@ describe("checkToolPermission: allowlist (AgentConfig.tools)", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	// GAP 3: empty allowedTools array
 	it("treats empty allowedTools array as no allowlist", () => {
 		const result = checkToolPermission({
 			toolName: "write",
@@ -64,9 +102,19 @@ describe("checkToolPermission: allowlist (AgentConfig.tools)", () => {
 		});
 		expect(result).toBeNull();
 	});
+
+	it("undefined allowedTools is treated as no allowlist", () => {
+		const result = checkToolPermission({
+			toolName: "write",
+			input: { file_path: "/x" },
+			permissionMode: "normal",
+			allowedTools: undefined,
+		});
+		expect(result).toBeNull();
+	});
 });
 
-describe("checkToolPermission: blocklist (AgentConfig.disallowedTools)", () => {
+describe("disallowedTools field", () => {
 	it("blocks tools in the blocklist", () => {
 		const result = checkToolPermission({
 			toolName: "edit",
@@ -97,7 +145,6 @@ describe("checkToolPermission: blocklist (AgentConfig.disallowedTools)", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	// GAP 4: empty disallowedTools array
 	it("treats empty disallowedTools array as no blocklist", () => {
 		const result = checkToolPermission({
 			toolName: "edit",
@@ -107,9 +154,288 @@ describe("checkToolPermission: blocklist (AgentConfig.disallowedTools)", () => {
 		});
 		expect(result).toBeNull();
 	});
+
+	it("undefined disallowedTools is treated as no blocklist", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/x" },
+			permissionMode: "normal",
+			disallowedTools: undefined,
+		});
+		expect(result).toBeNull();
+	});
 });
 
-describe("checkToolPermission: dangerous bash (normal mode)", () => {
+describe("paths.write field", () => {
+	it("blocks write to path not in write patterns", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("write");
+		expect(result?.reason).toContain("src/index.ts");
+	});
+
+	it("allows write to path matching write pattern", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/docs/readme.md" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("accepts filePath parameter name", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { filePath: "/project/docs/readme.md" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("accepts path parameter name", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { path: "/project/docs/readme.md" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("blocks path traversal that escapes allowed dir", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/docs/../../etc/passwd" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result?.block).toBe(true);
+	});
+
+	it("does not block when file_path is empty", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("blocks write tool outside allowed write paths", () => {
+		const result = checkToolPermission({
+			toolName: "write",
+			input: { file_path: "/project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result?.block).toBe(true);
+	});
+
+	it("allows write tool inside allowed write paths", () => {
+		const result = checkToolPermission({
+			toolName: "write",
+			input: { file_path: "/project/docs/readme.md" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("blocks multiedit tool outside allowed write paths", () => {
+		const result = checkToolPermission({
+			toolName: "multiedit",
+			input: { file_path: "/project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks patch tool outside allowed write paths", () => {
+		const result = checkToolPermission({
+			toolName: "patch",
+			input: { file_path: "/project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result?.block).toBe(true);
+	});
+
+	it("allows write tool with no path argument in input", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: {},
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("allows write when paths.write is empty array", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: [] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("allows write when paths.write is undefined", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: undefined },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("normalizes file:// URLs for path checking", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "file:///project/docs/readme.md" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("blocks file:// URLs outside allowed paths", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "file:///project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result?.block).toBe(true);
+	});
+
+	it("does not crash on invalid glob pattern", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/docs/readme.md" },
+			permissionMode: "normal",
+			paths: { write: ["[invalid"] },
+		});
+		// Should not throw; minimatch error is caught, treated as no match → block
+		expect(result?.block).toBe(true);
+	});
+
+	it("paths.write ** wildcard allows all write paths", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/src/index.ts" },
+			permissionMode: "normal",
+			paths: { write: ["**"] },
+		});
+		expect(result).toBeNull();
+	});
+});
+
+describe("paths.read field", () => {
+	it("blocks read to path not in read patterns", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "/project/src/secret.ts" },
+			permissionMode: "normal",
+			paths: { read: ["docs/**"] },
+		});
+		expect(result?.block).toBe(true);
+	});
+
+	it("allows read to path matching read pattern", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "/project/src/app.ts" },
+			permissionMode: "normal",
+			paths: { read: ["src/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("allows read when paths.read is undefined", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "/project/src/app.ts" },
+			permissionMode: "normal",
+			paths: { read: undefined },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("handles relative paths for read constraints", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "docs/readme.md" },
+			permissionMode: "normal",
+			paths: { read: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("paths.read empty array allows all reads", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "/project/src/secret.ts" },
+			permissionMode: "normal",
+			paths: { read: [] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("paths.read ** wildcard allows all read paths", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "/project/src/secret.ts" },
+			permissionMode: "normal",
+			paths: { read: ["**"] },
+		});
+		expect(result).toBeNull();
+	});
+});
+
+describe("paths.bash field", () => {
+	it("paths.bash undefined does not block bash", () => {
+		const result = checkToolPermission({
+			toolName: "bash",
+			input: { command: "cat /etc/passwd" },
+			permissionMode: "normal",
+			paths: { bash: undefined },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("paths.bash empty array does not block bash", () => {
+		const result = checkToolPermission({
+			toolName: "bash",
+			input: { command: "cat /etc/passwd" },
+			permissionMode: "normal",
+			paths: { bash: [] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("paths.bash with specific glob does not block bash (bash is not path-checked)", () => {
+		const result = checkToolPermission({
+			toolName: "bash",
+			input: { command: "cat /etc/passwd" },
+			permissionMode: "normal",
+			paths: { bash: ["/tmp/**"] },
+		});
+		expect(result).toBeNull();
+	});
+});
+
+describe("dangerous bash patterns", () => {
 	it("blocks rm -rf in normal mode", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -146,7 +472,6 @@ describe("checkToolPermission: dangerous bash (normal mode)", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	// GAP 5a: --no-verify
 	it("blocks --no-verify in normal mode", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -156,7 +481,6 @@ describe("checkToolPermission: dangerous bash (normal mode)", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	// GAP 5b: chmod 777
 	it("blocks chmod 777 in normal mode", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -166,7 +490,6 @@ describe("checkToolPermission: dangerous bash (normal mode)", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	// GAP 5c: credentials
 	it("blocks credentials in normal mode", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -176,7 +499,6 @@ describe("checkToolPermission: dangerous bash (normal mode)", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	// GAP 1: safe bash command in normal mode
 	it("allows safe bash command in normal mode", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -186,7 +508,6 @@ describe("checkToolPermission: dangerous bash (normal mode)", () => {
 		expect(result).toBeNull();
 	});
 
-	// GAP 2: non-string command
 	it("allows bash with undefined command", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -214,25 +535,6 @@ describe("checkToolPermission: dangerous bash (normal mode)", () => {
 		expect(result).toBeNull();
 	});
 
-	it("yolo mode skips dangerous-bash blocking", () => {
-		const result = checkToolPermission({
-			toolName: "bash",
-			input: { command: "rm -rf /tmp/data" },
-			permissionMode: "yolo",
-		});
-		expect(result).toBeNull();
-	});
-
-	it("yolo mode still enforces blocklist", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "/x" },
-			permissionMode: "yolo",
-			disallowedTools: ["edit"],
-		});
-		expect(result?.block).toBe(true);
-	});
-
 	it("non-bash tools are not dangerous-bash checked", () => {
 		const result = checkToolPermission({
 			toolName: "read",
@@ -241,243 +543,70 @@ describe("checkToolPermission: dangerous bash (normal mode)", () => {
 		});
 		expect(result).toBeNull();
 	});
-});
 
-describe("checkToolPermission: path constraints", () => {
-	it("blocks write to path not in write patterns", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "/project/src/index.ts" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result?.block).toBe(true);
-		expect(result?.reason).toContain("write");
-		expect(result?.reason).toContain("src/index.ts");
-	});
-
-	it("allows write to path matching write pattern", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "/project/docs/readme.md" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("blocks read to path not in read patterns", () => {
-		const result = checkToolPermission({
-			toolName: "read",
-			input: { file_path: "/project/src/secret.ts" },
-			permissionMode: "normal",
-			paths: { read: ["docs/**"] },
-		});
-		expect(result?.block).toBe(true);
-	});
-
-	it("allows read to path matching read pattern", () => {
-		const result = checkToolPermission({
-			toolName: "read",
-			input: { file_path: "/project/src/app.ts" },
-			permissionMode: "normal",
-			paths: { read: ["src/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("accepts filePath parameter name", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { filePath: "/project/docs/readme.md" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("accepts path parameter name", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { path: "/project/docs/readme.md" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("allows grep/find/ls without path check", () => {
-		const result = checkToolPermission({
-			toolName: "grep",
-			input: { pattern: "secret" },
-			permissionMode: "normal",
-			paths: { read: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("bash is not path-checked", () => {
+	it("path check does not interfere with dangerous bash blocking", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
-			input: { command: "cat /etc/passwd" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("blocks path traversal that escapes allowed dir", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "/project/docs/../../etc/passwd" },
+			input: { command: "rm -rf /" },
 			permissionMode: "normal",
 			paths: { write: ["docs/**"] },
 		});
 		expect(result?.block).toBe(true);
-	});
-
-	it("does not block when file_path is empty", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	// GAP 6: "write" tool
-	it("blocks write tool outside allowed write paths", () => {
-		const result = checkToolPermission({
-			toolName: "write",
-			input: { file_path: "/project/src/index.ts" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result?.block).toBe(true);
-	});
-
-	it("allows write tool inside allowed write paths", () => {
-		const result = checkToolPermission({
-			toolName: "write",
-			input: { file_path: "/project/docs/readme.md" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	// GAP 7: "multiedit" and "patch" tools
-	it("blocks multiedit tool outside allowed write paths", () => {
-		const result = checkToolPermission({
-			toolName: "multiedit",
-			input: { file_path: "/project/src/index.ts" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result?.block).toBe(true);
-	});
-
-	it("blocks patch tool outside allowed write paths", () => {
-		const result = checkToolPermission({
-			toolName: "patch",
-			input: { file_path: "/project/src/index.ts" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result?.block).toBe(true);
-	});
-
-	// GAP 8: write tool with no path arg
-	it("allows write tool with no path argument in input", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: {},
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	// GAP 9: paths.write is empty array
-	it("allows write when paths.write is empty array", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "/project/src/index.ts" },
-			permissionMode: "normal",
-			paths: { write: [] },
-		});
-		expect(result).toBeNull();
-	});
-
-	// GAP 10: paths.write is undefined
-	it("allows write when paths.write is undefined", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "/project/src/index.ts" },
-			permissionMode: "normal",
-			paths: { write: undefined },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("allows read when paths.read is undefined", () => {
-		const result = checkToolPermission({
-			toolName: "read",
-			input: { file_path: "/project/src/app.ts" },
-			permissionMode: "normal",
-			paths: { read: undefined },
-		});
-		expect(result).toBeNull();
-	});
-
-	// GAP 15: file:// URL normalization
-	it("normalizes file:// URLs for path checking", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "file:///project/docs/readme.md" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	it("blocks file:// URLs outside allowed paths", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "file:///project/src/index.ts" },
-			permissionMode: "normal",
-			paths: { write: ["docs/**"] },
-		});
-		expect(result?.block).toBe(true);
-	});
-
-	// GAP 16: relative paths
-	it("handles relative paths for read constraints", () => {
-		const result = checkToolPermission({
-			toolName: "read",
-			input: { file_path: "docs/readme.md" },
-			permissionMode: "normal",
-			paths: { read: ["docs/**"] },
-		});
-		expect(result).toBeNull();
-	});
-
-	// GAP 17: minimatch invalid pattern resilience
-	it("does not crash on invalid glob pattern", () => {
-		const result = checkToolPermission({
-			toolName: "edit",
-			input: { file_path: "/project/docs/readme.md" },
-			permissionMode: "normal",
-			paths: { write: ["[invalid"] },
-		});
-		// Should not throw; minimatch error is caught, treated as no match → block
-		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("dangerous bash");
 	});
 });
 
-describe("checkToolPermission: tool pattern matching", () => {
-	// GAP 11: wildcard tool name with paren glob
+describe("tools vs disallowedTools conflict", () => {
+	it("allowlist check runs before blocklist", () => {
+		const result = checkToolPermission({
+			toolName: "bash",
+			input: { command: "echo hi" },
+			permissionMode: "normal",
+			allowedTools: ["read"],
+			disallowedTools: ["write"],
+		});
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("not in allowed tools");
+	});
+
+	it("blocklist wins when tool is in both allowlist and blocklist", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/x" },
+			permissionMode: "normal",
+			allowedTools: ["edit", "write"],
+			disallowedTools: ["edit"],
+		});
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("disallowed");
+	});
+
+	it("blocklist still works when allowlist is empty (no allowlist)", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/x" },
+			permissionMode: "normal",
+			allowedTools: [],
+			disallowedTools: ["edit"],
+		});
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("disallowed");
+	});
+
+	it("blocklist still works when allowlist is wildcard", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/x" },
+			permissionMode: "normal",
+			allowedTools: ["*"],
+			disallowedTools: ["edit"],
+		});
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("disallowed");
+	});
+});
+
+describe("matchToolName patterns", () => {
 	it("matches wildcard tool name *(rm*) against bash", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -488,7 +617,6 @@ describe("checkToolPermission: tool pattern matching", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	// GAP 12: multi-alternative pattern with |
 	it("blocks bash matching either alternative in git*|rm*", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -519,7 +647,6 @@ describe("checkToolPermission: tool pattern matching", () => {
 		expect(result).toBeNull();
 	});
 
-	// GAP 13a: tool() empty parens
 	it("allows tool() with empty parens", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -530,7 +657,6 @@ describe("checkToolPermission: tool pattern matching", () => {
 		expect(result).toBeNull();
 	});
 
-	// GAP 13b: tool(*) star glob
 	it("allows tool(*) with star glob", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -541,7 +667,6 @@ describe("checkToolPermission: tool pattern matching", () => {
 		expect(result).toBeNull();
 	});
 
-	// GAP 14: tool(glob) where input has no relevant fields
 	it("blocks when tool(glob) has no matching input fields", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
@@ -552,7 +677,6 @@ describe("checkToolPermission: tool pattern matching", () => {
 		expect(result).toBeNull();
 	});
 
-	// matchToolName branches
 	it("matches ** double-star pattern as wildcard", () => {
 		const result = checkToolPermission({
 			toolName: "read",
@@ -604,8 +728,7 @@ describe("checkToolPermission: tool pattern matching", () => {
 	});
 });
 
-describe("checkToolPermission: input edge cases", () => {
-	// inputToRecord with null
+describe("inputToRecord parsing", () => {
 	it("handles null input without crashing", () => {
 		const result = checkToolPermission({
 			toolName: "read",
@@ -615,7 +738,6 @@ describe("checkToolPermission: input edge cases", () => {
 		expect(result).toBeNull();
 	});
 
-	// inputToRecord with array
 	it("handles array input without crashing", () => {
 		const result = checkToolPermission({
 			toolName: "read",
@@ -625,7 +747,6 @@ describe("checkToolPermission: input edge cases", () => {
 		expect(result).toBeNull();
 	});
 
-	// inputToRecord with primitive
 	it("handles string input without crashing", () => {
 		const result = checkToolPermission({
 			toolName: "read",
@@ -652,38 +773,97 @@ describe("checkToolPermission: input edge cases", () => {
 		});
 		expect(result).toBeNull();
 	});
+
+	it("handles boolean input without crashing", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: false,
+			permissionMode: "normal",
+		});
+		expect(result).toBeNull();
+	});
 });
 
-describe("checkToolPermission: precedence", () => {
-	it("allowlist check runs before blocklist", () => {
+describe("checkPathPermission", () => {
+	it("allows grep/find/ls without path check", () => {
 		const result = checkToolPermission({
-			toolName: "bash",
-			input: { command: "echo hi" },
+			toolName: "grep",
+			input: { pattern: "secret" },
 			permissionMode: "normal",
-			allowedTools: ["read"],
-			disallowedTools: ["write"],
+			paths: { read: ["docs/**"] },
 		});
-		expect(result?.block).toBe(true);
-		expect(result?.reason).toContain("not in allowed tools");
+		expect(result).toBeNull();
 	});
 
-	it("path check runs before dangerous-bash check", () => {
+	it("bash is not path-checked", () => {
 		const result = checkToolPermission({
 			toolName: "bash",
-			input: { command: "rm -rf /" },
+			input: { command: "cat /etc/passwd" },
 			permissionMode: "normal",
 			paths: { write: ["docs/**"] },
 		});
-		expect(result?.block).toBe(true);
-		expect(result?.reason).toContain("dangerous bash");
+		expect(result).toBeNull();
 	});
 
-	it("returns null when nothing blocks", () => {
+	it("write tool with no paths config is not blocked by path check", () => {
 		const result = checkToolPermission({
-			toolName: "read",
-			input: { file_path: "/project/src/app.ts" },
+			toolName: "edit",
+			input: { file_path: "/project/src/index.ts" },
 			permissionMode: "normal",
 		});
+		expect(result).toBeNull();
+	});
+
+	it("read tool with no paths config is not blocked by path check", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "/project/src/secret.ts" },
+			permissionMode: "normal",
+		});
+		expect(result).toBeNull();
+	});
+});
+
+describe("normalizeFilePath", () => {
+	it("normalizes relative path for path matching", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "docs/readme.md" },
+			permissionMode: "normal",
+			paths: { read: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("normalizes absolute path correctly", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/docs/readme.md" },
+			permissionMode: "normal",
+			paths: { write: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("normalizes CWD-prefixed path for path matching", () => {
+		const result = checkToolPermission({
+			toolName: "read",
+			input: { file_path: "./docs/readme.md" },
+			permissionMode: "normal",
+			paths: { read: ["docs/**"] },
+		});
+		expect(result).toBeNull();
+	});
+
+	it("normalizes trailing slash for path matching", () => {
+		const result = checkToolPermission({
+			toolName: "edit",
+			input: { file_path: "/project/docs/" },
+			permissionMode: "normal",
+			paths: { write: ["project/**"] },
+		});
+		// After normalization, trailing slash is removed.
+		// "/project/docs" matches "project/**" via subpath iteration.
 		expect(result).toBeNull();
 	});
 });
