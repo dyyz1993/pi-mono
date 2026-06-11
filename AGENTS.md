@@ -31,6 +31,7 @@ Enforces `AgentConfig.permissionMode`, `tools` (allowlist), `disallowedTools` (b
 - Technical prose only, be direct
 - When the user asks a question, answer it first before making edits or running implementation commands.
 - When responding to user feedback or an analysis, explicitly say whether you agree or disagree before saying what you changed.
+- **Respond in the same language as the user's latest message** (e.g., Chinese → Chinese, English → English).
 
 ## Code Quality
 
