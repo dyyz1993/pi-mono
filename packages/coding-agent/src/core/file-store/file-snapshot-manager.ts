@@ -460,7 +460,7 @@ export class FileSnapshotManager {
 	 * Complexity: O(M) disk reads for M wanted files (vs O(N) for all project files before).
 	 */
 	getBatchFileContents(
-		filePaths: Array<{ filePath: string; fromEntryId?: string }>,
+		filePaths: Array<{ filePath: string; fromEntryId?: string; fromHash?: string }>,
 		cwd: string,
 	): Map<string, { oldContent: string | null; newContent: string | null }> {
 		const result = new Map<string, { oldContent: string | null; newContent: string | null }>();
@@ -470,9 +470,17 @@ export class FileSnapshotManager {
 
 		// Group files by fromHash so we read each tree at most once
 		const fromHashGroups = new Map<string, string[]>();
-		for (const { filePath, fromEntryId } of filePaths) {
-			const fromSnap = fromEntryId ? snapshots.find((s) => s.entryId === fromEntryId) : undefined;
-			const fromHash = fromEntryId ? (fromSnap?.snapshotTreeHash ?? null) : this.sessionStartTreeHash;
+		for (const { filePath, fromEntryId, fromHash: directHash } of filePaths) {
+			// Prefer direct fromHash over entryId lookup (avoids entryId format mismatches)
+			let fromHash: string | null;
+			if (directHash) {
+				fromHash = directHash;
+			} else if (fromEntryId) {
+				const fromSnap = snapshots.find((s) => s.entryId === fromEntryId);
+				fromHash = fromSnap?.snapshotTreeHash ?? null;
+			} else {
+				fromHash = this.sessionStartTreeHash;
+			}
 			const key = fromHash ?? "";
 			const group = fromHashGroups.get(key);
 			if (group) {

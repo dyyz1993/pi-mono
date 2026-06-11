@@ -211,16 +211,17 @@ export default function fileReview(pi: ExtensionAPI) {
 			}
 		}
 
-		// Build a map of turnIndex → snapshot entry ID from session entries.
-		// This gives us the correct baseline for unapproved files with history.
-		const turnToEntryId = new Map<number, string>();
+		// Build a map of turnIndex → snapshot tree hash from session entries.
+		// This gives us the correct baseline for unapproved files with history,
+		// using tree hashes directly instead of entry IDs (avoids ID format mismatches).
+		const turnToTreeHash = new Map<number, string>();
 		const allEntries = ctx?.sessionManager.getEntries();
 		if (allEntries) {
 			for (const entry of allEntries) {
 				if (entry.type === "custom" && entry.customType === "step-snapshot") {
-					const data = entry.data as { turnIndex: number };
-					if (data && typeof data.turnIndex === "number") {
-						turnToEntryId.set(data.turnIndex, entry.id);
+					const data = entry.data as { turnIndex: number; snapshotTreeHash: string };
+					if (data && typeof data.turnIndex === "number" && data.snapshotTreeHash) {
+						turnToTreeHash.set(data.turnIndex, data.snapshotTreeHash);
 					}
 				}
 			}
@@ -244,10 +245,14 @@ export default function fileReview(pi: ExtensionAPI) {
 
 			// Get oldContent from the correct baseline
 			try {
-				const fileRequests = [...pathMeta.entries()].map(([path, meta]) => ({
-					filePath: path,
-					fromEntryId: approvedSnapshotEntry.get(path) ?? turnToEntryId.get(meta.firstTurnIndex),
-				}));
+				const fileRequests = [...pathMeta.entries()].map(([path, meta]) => {
+					const approvedEntry = approvedSnapshotEntry.get(path);
+					return {
+						filePath: path,
+						fromEntryId: approvedEntry,
+						fromHash: approvedEntry ? undefined : turnToTreeHash.get(meta.firstTurnIndex),
+					};
+				});
 				const batchResult = mgr.getBatchFileContents(fileRequests, ctx.cwd);
 				for (const [path, content] of batchResult) {
 					diffMap.set(path, content);
