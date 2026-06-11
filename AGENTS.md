@@ -47,6 +47,36 @@ Enforces `AgentConfig.permissionMode`, `tools` (allowlist), `disallowedTools` (b
 - Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
 - Never modify `packages/ai/src/models.generated.ts` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting `models.generated.ts` diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
 
+## Design Principles
+
+### Deterministic data sources -- no guessing
+
+Every data retrieval path must have a predictable, deterministic source:
+
+| Data | Source | Reason |
+|---|---|---|
+| `oldContent` (file diff) | Snapshot tree | Immutable, consistent, never "busy" |
+| `newContent` (file diff) | Disk (`readFileSync`) | Always reflects current filesystem state |
+
+No fallback logic that tries to "guess" missing data. If the caller does not provide a baseline (`fromEntryId` or `fromHash`), `oldContent` comes from `sessionStartTreeHash` (possibly `null` -- a valid deterministic result).
+
+### Read only what you need
+
+- `readTree(hash)` -- reads ALL file contents (O(N) disk IO)
+- `readTreeFiles(hash, wanted)` -- reads ONLY requested files (O(M) disk IO)
+- `listTreeFiles(hash)` -- path+hash metadata only (0 content IO)
+
+Use the narrowest API. If you only need paths, use `listTreeFiles`. If you need specific file contents, use `readTreeFiles`.
+
+### newContent always from disk
+
+- `getBatchFileContents` reads `newContent` via `readDiskFile(cwd, filePath)`
+- Not from the committed snapshot tree (`toHash`)
+- Eliminates the "snapshot is stale" problem entirely
+- No need for "busy agent detection" or "live-change merging" workarounds
+
+For more detail, see `docs/file-store-performance.md`.
+
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
