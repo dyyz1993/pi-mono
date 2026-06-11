@@ -701,6 +701,27 @@ export class FileSnapshotManager {
 		}
 
 		this.lastCommittedTreeHash = targetTreeHash;
+
+		// Clean snapshotIndex after a full rollback (not subset restore).
+		// Snapshot entries after the target tree are now inconsistent with disk state —
+		// keeping them causes getModifiedFiles() and getBatchFileContents() to report
+		// stale entries, leading to incorrect oldContent baselines in subsequent reviews.
+		if (!options.files) {
+			const targetEntry = [...this.snapshotIndex.values()].find((s) => s.snapshotTreeHash === targetTreeHash);
+			if (targetEntry) {
+				const targetTurn = targetEntry.turnIndex;
+				for (const [entryId, snap] of this.snapshotIndex) {
+					if (snap.turnIndex >= targetTurn) {
+						this.snapshotIndex.delete(entryId);
+					}
+				}
+			} else {
+				// Target tree not in snapshotIndex (e.g., sessionStartTreeHash).
+				// All entries are after the target — clear all.
+				this.snapshotIndex.clear();
+			}
+		}
+
 		return { restored: restore.sort(), deleted: deleted.sort(), skipped: [], dirty, forceRestored: dirty };
 	}
 

@@ -217,14 +217,14 @@ export default function fileSnapshot(pi: ExtensionAPI) {
     ctx = context;
     const mgr = ctx.fileSnapshotManager;
     if (!mgr) return;
-    await mgr.initialize(ctx.cwd);
+    mgr.initialize(ctx.cwd);
   });
 
   pi.on("turn_end", async (event: TurnEndEvent, _ctx: ExtensionContext) => {
     const mgr = _ctx.fileSnapshotManager;
     if (!mgr) return;
     mgr.onTurnEnd(_ctx.cwd, event.turnIndex, (type, data) => {
-      return pi.appendEntry(type, data, { display: false }) ?? undefined;
+      return pi.appendEntry(type, data, { display: false }) ?? "";
     });
   });
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -32,6 +32,148 @@ describe("FileSnapshotManager", () => {
 		storeDir = join(tmpdir(), `pi-fsm-store-${suffix}`);
 		mkdirSync(testDir, { recursive: true });
 		mkdirSync(storeDir, { recursive: true });
+	});
+
+	describe("restoreFiles snapshotIndex cleanup", () => {
+		it("full rollback removes entries after target from snapshotIndex", async () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["file.txt", "v1\n"]]));
+			const tree2 = git.writeTree(new Map([["file.txt", "v2\n"]]));
+			const tree3 = git.writeTree(new Map([["file.txt", "v3\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["file.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["file.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+				customSnapshotEntry("snap-3", "p3", "2026-01-01T00:02:00.000Z", {
+					baselineTreeHash: tree2.treeHash,
+					snapshotTreeHash: tree3.treeHash,
+					diff: { added: [], modified: ["file.txt"], deleted: [] },
+					turnIndex: 2,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+			writeFileSync(join(testDir, "file.txt"), "v3\n");
+
+			// Before rollback: 3 snapshots
+			expect(mgr.getModifiedFiles()).toHaveLength(1);
+
+			// Rollback to snap-1 (v1)
+			const result = await mgr.restoreFiles(testDir, {
+				targetEntryId: "snap-1",
+				entries,
+				preview: false,
+			});
+			expect(result.restored).toContain("file.txt");
+			expect(readFileSync(join(testDir, "file.txt"), "utf-8")).toBe("v1\n");
+
+			// After rollback: snap-2 and snap-3 are gone from snapshotIndex
+			const afterRollback = mgr.getModifiedFiles();
+			expect(afterRollback).toHaveLength(0);
+		});
+
+		it("full rollback to root (sessionStart) clears all entries", async () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["file.txt", "v1\n"]]));
+			const tree2 = git.writeTree(new Map([["file.txt", "v2\n"]]));
+
+			// Simulate: session starts files in tree1, then modified in tree2
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["file.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["file.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+			writeFileSync(join(testDir, "file.txt"), "v2\n");
+
+			// Rollback to root — pass targetEntryId that points to session start
+			const result = await mgr.restoreFiles(testDir, {
+				targetEntryId: "root",
+				entries,
+				preview: false,
+			});
+
+			// After rollback to root, snapshotIndex should be cleared
+			const afterRollback = mgr.getModifiedFiles();
+			expect(afterRollback).toHaveLength(0);
+		});
+
+		it("subset restore (options.files) does NOT clean snapshotIndex", async () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(
+				new Map([
+					["a.txt", "a1\n"],
+					["b.txt", "b1\n"],
+				]),
+			);
+			const tree2 = git.writeTree(
+				new Map([
+					["a.txt", "a2\n"],
+					["b.txt", "b2\n"],
+				]),
+			);
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt", "b.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["a.txt", "b.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			writeFileSync(join(testDir, "a.txt"), "a2\n");
+			writeFileSync(join(testDir, "b.txt"), "b2\n");
+
+			// Subset restore — only a.txt, not b.txt
+			await mgr.restoreFiles(testDir, {
+				targetEntryId: "snap-1",
+				files: ["a.txt"],
+				entries,
+				preview: false,
+			});
+
+			// getModifiedFiles returns both files from snapshotIndex (which wasn't cleaned)
+			// because subset restore intentionally preserves all history for non-restored files
+			const modified = mgr.getModifiedFiles();
+			expect(modified.find((f) => f.path === "a.txt")).toBeDefined();
+			expect(modified.find((f) => f.path === "b.txt")).toBeDefined();
+
+			// Verify on-disk state: a.txt was restored to v1, b.txt still at v2
+			expect(readFileSync(join(testDir, "a.txt"), "utf-8")).toBe("a1\n");
+			expect(readFileSync(join(testDir, "b.txt"), "utf-8")).toBe("b2\n");
+		});
 	});
 
 	afterEach(() => {
