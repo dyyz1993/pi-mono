@@ -1,4 +1,5 @@
 import { Type } from "@dyyz1993/pi-ai";
+import { asRecord } from "../../utils/type-helpers.ts";
 import { defineTool } from "../extensions/types.ts";
 import type { McpManager } from "./mcp-manager.ts";
 import type { DiscoveredTool } from "./types.ts";
@@ -14,7 +15,7 @@ export function createMcpToolDefinition(tool: DiscoveredTool, manager: McpManage
 		parameters: Type.Unsafe(tool.inputSchema),
 		async execute(_toolCallId, params) {
 			try {
-				const result = (await manager.callTool(tool.fullName, params as Record<string, unknown>)) as {
+				const result = (await manager.callTool(tool.fullName, asRecord(params))) as {
 					content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 				};
 				return formatResult(result);

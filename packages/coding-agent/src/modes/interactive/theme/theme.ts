@@ -14,6 +14,7 @@ import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
 import type { SourceInfo } from "../../../core/source-info.ts";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
 import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
+import type { UnknownRecord } from "../../../utils/type-helpers.ts";
 
 // ============================================================================
 // Types & Schema
@@ -576,8 +577,8 @@ function loadThemeJson(name: string): ThemeJson {
 function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string): Theme {
 	const colorMode = mode ?? (getCapabilities().trueColor ? "truecolor" : "256color");
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
-	const fgColors: Record<ThemeColor, string | number> = {} as Record<ThemeColor, string | number>;
-	const bgColors: Record<ThemeBg, string | number> = {} as Record<ThemeBg, string | number>;
+	const fgColors: Record<ThemeColor, string | number> = {} as UnknownRecord as Record<ThemeColor, string | number>;
+	const bgColors: Record<ThemeBg, string | number> = {} as UnknownRecord as Record<ThemeBg, string | number>;
 	const bgColorKeys: Set<string> = new Set([
 		"selectedBg",
 		"userMessageBg",

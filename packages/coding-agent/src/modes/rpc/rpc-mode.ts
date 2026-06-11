@@ -35,6 +35,7 @@ import {
 } from "../../core/output-guard.ts";
 import type { CompactionEntry, CustomEntry, SessionEntry, SessionMessageEntry } from "../../core/session-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import type { UnknownRecord } from "../../utils/type-helpers.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {

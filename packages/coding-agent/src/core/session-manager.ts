@@ -19,6 +19,7 @@ import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -641,7 +642,7 @@ function readSessionHeader(filePath: string): SessionHeader | null {
 		closeSync(fd);
 		const firstLine = buffer.toString("utf8", 0, bytesRead).split("\n")[0];
 		if (!firstLine) return null;
-		const header = JSON.parse(firstLine) as Record<string, unknown>;
+		const header = asRecord(JSON.parse(firstLine));
 		if (header.type !== "session" || typeof header.id !== "string") {
 			return null;
 		}

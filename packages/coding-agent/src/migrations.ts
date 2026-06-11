@@ -9,6 +9,7 @@ import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.ts";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
 import { isLegacyEnvVarNameConfigValue } from "./core/resolve-config-value.ts";
 import { stripJsonComments } from "./utils/json.ts";
+import { asRecord, type UnknownRecord } from "./utils/type-helpers.ts";
 
 const MIGRATION_GUIDE_URL =
 	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
@@ -101,7 +102,7 @@ function migrateStringProperty(
 
 function migrateHeadersConfig(headers: unknown, location: string, migrations: ConfigValueMigration[]): boolean {
 	if (typeof headers !== "object" || headers === null || Array.isArray(headers)) return false;
-	const headerRecord = headers as Record<string, unknown>;
+	const headerRecord = asRecord(headers);
 	let migrated = false;
 	for (const [key, value] of Object.entries(headerRecord)) {
 		if (typeof value !== "string") continue;
@@ -121,12 +122,12 @@ function migrateAuthJsonConfigValues(agentDir: string): ConfigValueMigration[] {
 	try {
 		const parsed = JSON.parse(readFileSync(authPath, "utf-8")) as unknown;
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
-		const authData = parsed as Record<string, unknown>;
+		const authData = asRecord(parsed);
 
 		const migrations: ConfigValueMigration[] = [];
 		for (const [provider, credential] of Object.entries(authData)) {
 			if (typeof credential !== "object" || credential === null || Array.isArray(credential)) continue;
-			const credentialRecord = credential as Record<string, unknown>;
+			const credentialRecord = asRecord(credential);
 			if (credentialRecord.type !== "api_key") continue;
 			migrateStringProperty(credentialRecord, "key", `auth.json[${JSON.stringify(provider)}].key`, migrations);
 		}
@@ -147,14 +148,14 @@ function migrateModelsJsonConfigValues(agentDir: string): ConfigValueMigration[]
 	try {
 		const parsed = JSON.parse(stripJsonComments(readFileSync(modelsPath, "utf-8"))) as unknown;
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
-		const modelsData = parsed as Record<string, unknown>;
+		const modelsData = asRecord(parsed);
 		const providers = modelsData.providers;
 		if (typeof providers !== "object" || providers === null || Array.isArray(providers)) return [];
 
 		const migrations: ConfigValueMigration[] = [];
 		for (const [provider, providerConfig] of Object.entries(providers)) {
 			if (typeof providerConfig !== "object" || providerConfig === null || Array.isArray(providerConfig)) continue;
-			const providerRecord = providerConfig as Record<string, unknown>;
+			const providerRecord = asRecord(providerConfig);
 			const providerLocation = `models.json.providers[${JSON.stringify(provider)}]`;
 			migrateStringProperty(providerRecord, "apiKey", `${providerLocation}.apiKey`, migrations);
 			migrateHeadersConfig(providerRecord.headers, `${providerLocation}.headers`, migrations);
@@ -163,7 +164,7 @@ function migrateModelsJsonConfigValues(agentDir: string): ConfigValueMigration[]
 				for (let index = 0; index < providerRecord.models.length; index++) {
 					const modelConfig = providerRecord.models[index];
 					if (typeof modelConfig !== "object" || modelConfig === null || Array.isArray(modelConfig)) continue;
-					const modelRecord = modelConfig as Record<string, unknown>;
+					const modelRecord = asRecord(modelConfig);
 					const modelKey = typeof modelRecord.id === "string" ? JSON.stringify(modelRecord.id) : String(index);
 					migrateHeadersConfig(modelRecord.headers, `${providerLocation}.models[${modelKey}].headers`, migrations);
 				}
@@ -174,7 +175,7 @@ function migrateModelsJsonConfigValues(agentDir: string): ConfigValueMigration[]
 				for (const [modelId, modelOverride] of Object.entries(modelOverrides)) {
 					if (typeof modelOverride !== "object" || modelOverride === null || Array.isArray(modelOverride))
 						continue;
-					const modelOverrideRecord = modelOverride as Record<string, unknown>;
+					const modelOverrideRecord = asRecord(modelOverride);
 					migrateHeadersConfig(
 						modelOverrideRecord.headers,
 						`${providerLocation}.modelOverrides[${JSON.stringify(modelId)}].headers`,
@@ -299,7 +300,7 @@ function migrateKeybindingsConfigFile(): void {
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 			return;
 		}
-		const { config, migrated } = migrateKeybindingsConfig(parsed as Record<string, unknown>);
+		const { config, migrated } = migrateKeybindingsConfig(asRecord(parsed));
 		if (!migrated) return;
 		writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
 	} catch {

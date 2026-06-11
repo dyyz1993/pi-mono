@@ -28,6 +28,7 @@ import { getAgentDir } from "../config.ts";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import { stripJsonComments } from "../utils/json.ts";
 import { normalizePath } from "../utils/paths.ts";
+import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
@@ -904,7 +905,7 @@ export class ModelRegistry {
 		}
 		for (const k of Object.keys(config) as (keyof ProviderConfigInput)[]) {
 			if (config[k] !== undefined) {
-				(existing as Record<string, unknown>)[k] = config[k];
+				(existing as UnknownRecord)[k] = config[k];
 			}
 		}
 	}

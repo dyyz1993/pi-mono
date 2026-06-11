@@ -33,6 +33,7 @@ import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
+import { asRecord, getPathArg, type UnknownRecord } from "../utils/type-helpers.ts";
 import type { AgentConfig, PathConfig } from "./agent-types.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
@@ -415,18 +416,6 @@ function matchesAnyAgentPath(filePath: string, patterns: string[] | undefined): 
 	return patterns?.some((pattern) => matchesAgentPath(filePath, pattern)) ?? false;
 }
 
-function getPathArg(args: unknown): string | undefined {
-	if (typeof args !== "object" || args === null) return undefined;
-	const record = args as Record<string, unknown>;
-	for (const key of ["file_path", "filePath", "path"]) {
-		const value = record[key];
-		if (typeof value === "string" && value.length > 0) {
-			return value;
-		}
-	}
-	return undefined;
-}
-
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -653,7 +642,7 @@ export class AgentSession {
 					type: "tool_call",
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
-					input: args as Record<string, unknown>,
+					input: asRecord(args),
 				});
 			} catch (err) {
 				if (err instanceof Error) {
@@ -673,7 +662,7 @@ export class AgentSession {
 				type: "tool_result",
 				toolName: toolCall.name,
 				toolCallId: toolCall.id,
-				input: args as Record<string, unknown>,
+				input: asRecord(args),
 				content: result.content,
 				details: result.details,
 				isError,
@@ -888,7 +877,7 @@ export class AgentSession {
 			return;
 		}
 
-		const targetRecord = target as unknown as Record<string, unknown>;
+		const targetRecord = target as unknown as UnknownRecord;
 		for (const key of Object.keys(targetRecord)) {
 			delete targetRecord[key];
 		}
@@ -2643,7 +2632,7 @@ export class AgentSession {
 			},
 		});
 
-		await this._mcpManager.connectAll(servers as Record<string, McpServerConfig>);
+		await this._mcpManager.connectAll(servers as UnknownRecord as Record<string, McpServerConfig>);
 
 		// Register discovered tools into the extension system
 		this._registerMcpTools();

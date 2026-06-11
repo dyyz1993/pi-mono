@@ -14,6 +14,7 @@
  */
 
 import { minimatch } from "minimatch";
+import { asRecord, getPathArg as getPathArgFromHelpers, type UnknownRecord } from "../utils/type-helpers.ts";
 import type { PathConfig } from "./agent-types.ts";
 
 export type CorePermissionMode = "normal" | "yolo";
@@ -105,7 +106,7 @@ function checkPathPermission(toolName: string, rawInput: unknown, paths: PathCon
 	if (WRITE_TOOLS.has(toolName)) {
 		const writePaths = paths.write;
 		if (writePaths && writePaths.length > 0) {
-			const rawPath = readPathArg(input);
+			const rawPath = getPathArgFromHelpers(input);
 			if (rawPath !== undefined && rawPath.length > 0) {
 				const normalized = normalizeFilePath(rawPath);
 				if (!matchesAnyPattern(normalized, writePaths)) {
@@ -122,7 +123,7 @@ function checkPathPermission(toolName: string, rawInput: unknown, paths: PathCon
 	if (READ_TOOLS.has(toolName)) {
 		const readPaths = paths.read;
 		if (readPaths && readPaths.length > 0) {
-			const rawPath = readPathArg(input);
+			const rawPath = getPathArgFromHelpers(input);
 			if (rawPath !== undefined && rawPath.length > 0) {
 				const normalized = normalizeFilePath(rawPath);
 				if (!matchesAnyPattern(normalized, readPaths)) {
@@ -141,16 +142,8 @@ function checkPathPermission(toolName: string, rawInput: unknown, paths: PathCon
 	return null;
 }
 
-function readPathArg(input: Record<string, unknown>): string | undefined {
-	const value = input.file_path ?? input.filePath ?? input.path;
-	return typeof value === "string" ? value : undefined;
-}
-
-function inputToRecord(input: unknown): Record<string, unknown> {
-	if (input && typeof input === "object" && !Array.isArray(input)) {
-		return input as Record<string, unknown>;
-	}
-	return {};
+function inputToRecord(input: unknown): UnknownRecord {
+	return asRecord(input);
 }
 
 /**
@@ -159,7 +152,7 @@ function inputToRecord(input: unknown): Record<string, unknown> {
  * the glob matches against `command`, `file_path`/`filePath`/`path`, or
  * the JSON-stringified input.
  */
-function matchesToolPattern(toolName: string, input: Record<string, unknown>, pattern: string): boolean {
+function matchesToolPattern(toolName: string, input: UnknownRecord, pattern: string): boolean {
 	const parenIdx = pattern.indexOf("(");
 	if (parenIdx === -1) {
 		return matchToolName(toolName, pattern);
@@ -173,7 +166,7 @@ function matchesToolPattern(toolName: string, input: Record<string, unknown>, pa
 
 	const parts = globPattern.split("|");
 	const command = typeof input.command === "string" ? input.command : "";
-	const filePath = readPathArg(input) ?? "";
+	const filePath = getPathArgFromHelpers(input) ?? "";
 	const inputStr = JSON.stringify(input);
 	const targets = [command, filePath, inputStr].filter((t) => t.length > 0);
 

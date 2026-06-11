@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { asRecord } from "../../utils/type-helpers.ts";
 import type { Channel, ChannelDataMessage, ChannelEntry, ChannelOutputFn } from "./channel-types.ts";
 
 const DEFAULT_INVOKE_TIMEOUT = 30_000;
@@ -35,7 +36,7 @@ export class ChannelManager {
 				this.outputFn({
 					type: "channel_data",
 					name,
-					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+					data: { ...(asRecord(data) ?? {}), invokeId },
 				});
 			});
 		};
@@ -63,7 +64,7 @@ export class ChannelManager {
 		const entry = this.channels.get(message.name);
 		if (!entry) return;
 
-		const data = message.data as Record<string, unknown>;
+		const data = asRecord(message.data);
 		if (data && typeof data === "object" && typeof data.invokeId === "string") {
 			const pending = entry.pendingInvokes.get(data.invokeId);
 			if (pending) {

@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
+import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -186,12 +187,12 @@ function isStringRecord(raw: unknown): raw is Record<string, string> {
 function parseHooks(raw: unknown): AgentHooks | undefined {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
 	const hooks: AgentHooks = {};
-	for (const [event, handlers] of Object.entries(raw as Record<string, unknown>)) {
+	for (const [event, handlers] of Object.entries(asRecord(raw))) {
 		if (!Array.isArray(handlers)) continue;
 		const parsed: AgentHookEntry[] = [];
 		for (const handler of handlers) {
 			if (!handler || typeof handler !== "object" || Array.isArray(handler)) continue;
-			const obj = handler as Record<string, unknown>;
+			const obj = asRecord(handler);
 			if (Array.isArray(obj.hooks)) {
 				const groupHooks = obj.hooks
 					.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
@@ -221,7 +222,7 @@ function sanitizePatternArray(raw: unknown): string[] | undefined {
 
 function parsePathConfig(raw: unknown): PathConfig | undefined {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-	const obj = raw as Record<string, unknown>;
+	const obj = asRecord(raw);
 	const paths: PathConfig = {
 		write: sanitizePatternArray(obj.write),
 		read: sanitizePatternArray(obj.read),

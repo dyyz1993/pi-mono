@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport as McpTransport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import { McpConnectionError, McpError, McpTimeoutError, McpToolCallError } from "./errors.ts";
 import { McpLogger } from "./logger.ts";
 import type {
@@ -513,7 +514,7 @@ export class McpManager {
 				env: config.env
 					? (Object.fromEntries(
 							Object.entries({ ...process.env, ...config.env }).filter(([, v]) => v !== undefined),
-						) as Record<string, string>)
+						) as UnknownRecord as Record<string, string>)
 					: undefined,
 				stderr: "pipe",
 			});

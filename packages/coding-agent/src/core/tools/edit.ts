@@ -5,6 +5,7 @@ import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } 
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import { asRecord } from "../../utils/type-helpers.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {
 	applyEditsToNormalizedContent,
@@ -96,7 +97,7 @@ function prepareEditArguments(input: unknown): EditToolInput {
 		return input as EditToolInput;
 	}
 
-	const args = input as Record<string, unknown>;
+	const args = asRecord(input);
 
 	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array
 	if (typeof args.edits === "string") {

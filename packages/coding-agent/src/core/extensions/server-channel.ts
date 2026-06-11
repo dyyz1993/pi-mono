@@ -1,3 +1,4 @@
+import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import type { Channel } from "./channel-types.ts";
 
 export interface ChannelContract {
@@ -31,7 +32,7 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 		this.raw = raw;
 
 		this.raw.onReceive((data: unknown) => {
-			const msg = data as Record<string, unknown>;
+			const msg = asRecord(data);
 			if (!("__call" in msg)) return;
 
 			const method = msg.__call as string;
@@ -47,7 +48,7 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 				if (Array.isArray(res)) {
 					this.raw.send({ result: res, invokeId });
 				} else {
-					this.raw.send({ ...((res as Record<string, unknown>) ?? {}), invokeId });
+					this.raw.send({ ...(asRecord(res) ?? {}), invokeId });
 				}
 			};
 

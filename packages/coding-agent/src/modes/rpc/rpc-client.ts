@@ -14,6 +14,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.ts";
 import type { Settings } from "../../core/settings-manager.ts";
+import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcAgentMessage,
@@ -812,7 +813,7 @@ export class RpcClient {
 				const invokeId = `inv_${randomUUID().slice(0, 8)}`;
 				let timer: ReturnType<typeof setTimeout>;
 				const handler = (responseData: unknown) => {
-					const payload = responseData as Record<string, unknown> | undefined;
+					const payload = responseData as UnknownRecord | undefined;
 					if (payload?.invokeId !== invokeId) return;
 					clearTimeout(timer);
 					const handlers = this.channelHandlers.get(name);
@@ -837,7 +838,7 @@ export class RpcClient {
 				this.writeLine({
 					type: "channel_data",
 					name,
-					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+					data: { ...((data as UnknownRecord) ?? {}), invokeId },
 				} as ChannelDataMessage);
 			});
 		};
@@ -891,12 +892,12 @@ export class RpcClient {
 				const handlers = this.channelHandlers.get(data.name as string);
 				if (handlers) {
 					for (const handler of handlers) {
-						const payload = data.data as Record<string, unknown> | undefined;
+						const payload = data.data as UnknownRecord | undefined;
 						const invokeId = payload?.invokeId as string | undefined;
 						const result = handler(data.data);
 						if (invokeId && result !== undefined) {
 							const responseData =
-								result && typeof result === "object" ? (result as Record<string, unknown>) : { value: result };
+								result && typeof result === "object" ? (result as UnknownRecord) : { value: result };
 							this.writeLine({
 								type: "channel_data",
 								name: data.name,
@@ -1068,12 +1069,12 @@ export class RpcClient {
 	}
 
 	onRemoteToolCall(
-		handler: (call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void,
+		handler: (call: { toolCallId: string; toolName: string; args: UnknownRecord }) => void,
 	): () => void {
 		const wrapped = (event: AgentEvent) => {
-			const raw = event as unknown as Record<string, unknown>;
+			const raw = event as unknown as UnknownRecord;
 			if (raw.type === "remote_tool_call") {
-				handler(raw as unknown as { toolCallId: string; toolName: string; args: Record<string, unknown> });
+				handler(raw as unknown as { toolCallId: string; toolName: string; args: UnknownRecord });
 			}
 		};
 		return this.onEvent(wrapped);

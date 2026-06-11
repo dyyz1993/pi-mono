@@ -95,6 +95,7 @@ import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
+import type { UnknownRecord } from "../../utils/type-helpers.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -2287,7 +2288,7 @@ export class InteractiveMode {
 
 			// If extending CustomEditor, copy app-level handlers
 			// Use duck typing since instanceof fails across jiti module boundaries
-			const customEditor = newEditor as unknown as Record<string, unknown>;
+			const customEditor = newEditor as unknown as UnknownRecord;
 			if ("actionHandlers" in customEditor && customEditor.actionHandlers instanceof Map) {
 				if (!customEditor.onEscape) {
 					customEditor.onEscape = () => this.defaultEditor.onEscape?.();

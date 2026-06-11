@@ -756,8 +756,8 @@ export async function main(args: string[], options?: MainOptions) {
 				process.exit(1);
 			}
 			const agent: AgentConfig = {
-				name: frontmatter.name as string,
-				description: (frontmatter.description as string) ?? "",
+				name: `${frontmatter.name}`,
+				description: `${frontmatter.description ?? ""}`,
 				tools: Array.isArray(frontmatter.tools) ? (frontmatter.tools as string[]) : undefined,
 				disallowedTools: Array.isArray(frontmatter.disallowedTools)
 					? (frontmatter.disallowedTools as string[])
