@@ -6,7 +6,7 @@
  */
 
 import * as fs from "node:fs";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -358,6 +358,91 @@ describe("Extension Channel Integration", () => {
 			const data = findResponse(outputs, "file-review", "test-aa-1");
 			expect(data).toBeDefined();
 			expect(data!.count).toBe(0);
+		});
+	});
+
+	// ─── file-review reject flow tests (need real snapshot context) ──────
+
+	describe("file-review reject flows", () => {
+		const appendEntry = ((type: string) => `entry-${type}-${Date.now()}`) as unknown as (type: string, data: unknown) => string;
+
+		async function setupFileReviewChannel() {
+			const extPath = builtinExtensionPath("file-review");
+			const result = await discoverAndLoadExtensions([extPath], tempDir, tempDir);
+			expect(result.errors).toEqual([]);
+
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore(extensionActions, extensionContextActions);
+
+			const { manager, outputs } = createCapturingChannelManager();
+			runner.flushPendingChannels((name) => manager.register(name));
+
+			const storeDir = path.join(tempDir, ".pi-review-store");
+			mkdirSync(storeDir, { recursive: true });
+			const git = new InternalGit(storeDir);
+			const snapshotManager = new FileSnapshotManager(git);
+			snapshotManager.initialize(tempDir);
+
+			// Wire into runner context + fire session_start to capture ctx
+			runner.setFileSnapshotManagerFn(() => snapshotManager);
+			runner.setContextDirFns({
+				getProjectRoot: () => tempDir,
+				getSessionDataDir: () => tempDir,
+				getProjectDataDir: () => tempDir,
+				getCwdDataDir: () => tempDir,
+				getGlobalDataDir: () => tempDir,
+			});
+			await runner.emit({ type: "session_start", reason: "startup" });
+
+			return { manager, outputs, runner, snapshotManager, tempDir };
+		}
+
+		it("review.reject deletes an added file from disk", async () => {
+			const { manager, outputs, snapshotManager, runner } = await setupFileReviewChannel();
+
+			writeFileSync(path.join(tempDir, "add.txt"), "v1\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+			await runner.emit({ type: "turn_end", turnIndex: 0, message: {} as never, toolResults: [] });
+
+			manager.handleInbound({
+				type: "channel_data",
+				name: "file-review",
+				data: { __call: "review.reject", path: "add.txt", invokeId: "rr-1" },
+			});
+			await new Promise((r) => setTimeout(r, 50));
+			const rejectData = findResponse(outputs, "file-review", "rr-1");
+			expect(rejectData).toBeDefined();
+			expect(rejectData!.ok).toBe(true);
+			expect(existsSync(path.join(tempDir, "add.txt"))).toBe(false);
+		});
+
+		it("reject then re-create — file is on disk and discoverable", async () => {
+			const { manager, outputs, snapshotManager, runner } = await setupFileReviewChannel();
+
+			writeFileSync(path.join(tempDir, "again.txt"), "v1\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+			await runner.emit({ type: "turn_end", turnIndex: 0, message: {} as never, toolResults: [] });
+
+			// Reject → file deleted from disk
+			manager.handleInbound({
+				type: "channel_data",
+				name: "file-review",
+				data: { __call: "review.reject", path: "again.txt", invokeId: "rr-2" },
+			});
+			await new Promise((r) => setTimeout(r, 50));
+			const rejectData = findResponse(outputs, "file-review", "rr-2");
+			expect(rejectData).toBeDefined();
+			expect(rejectData!.ok).toBe(true);
+			expect(existsSync(path.join(tempDir, "again.txt"))).toBe(false);
+
+			// Re-create the file in a new turn
+			writeFileSync(path.join(tempDir, "again.txt"), "v2-again\n");
+			snapshotManager.onTurnEnd(tempDir, 1, appendEntry);
+			await runner.emit({ type: "turn_end", turnIndex: 1, message: {} as never, toolResults: [] });
+
+			// File should be on disk and discoverable via getLiveChanges
+			expect(existsSync(path.join(tempDir, "again.txt"))).toBe(true);
+			expect(readFileSync(path.join(tempDir, "again.txt"), "utf-8")).toBe("v2-again\n");
 		});
 	});
 
