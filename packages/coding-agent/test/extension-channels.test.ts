@@ -364,7 +364,10 @@ describe("Extension Channel Integration", () => {
 	// ─── file-review reject flow tests (need real snapshot context) ──────
 
 	describe("file-review reject flows", () => {
-		const appendEntry = ((type: string) => `entry-${type}-${Date.now()}`) as unknown as (type: string, data: unknown) => string;
+		const appendEntry = ((type: string) => `entry-${type}-${Date.now()}`) as unknown as (
+			type: string,
+			data: unknown,
+		) => string;
 
 		async function setupFileReviewChannel() {
 			const extPath = builtinExtensionPath("file-review");
@@ -443,6 +446,28 @@ describe("Extension Channel Integration", () => {
 			// File should be on disk and discoverable via getLiveChanges
 			expect(existsSync(path.join(tempDir, "again.txt"))).toBe(true);
 			expect(readFileSync(path.join(tempDir, "again.txt"), "utf-8")).toBe("v2-again\n");
+		});
+
+		it("approve then modify then reject restores the approved version", async () => {
+			const { snapshotManager, runner } = await setupFileReviewChannel();
+
+			// Turn 0: create file
+			writeFileSync(path.join(tempDir, "approve.txt"), "v1\n");
+			snapshotManager.onTurnEnd(tempDir, 0, appendEntry);
+			await runner.emit({ type: "turn_end", turnIndex: 0, message: {} as never, toolResults: [] });
+
+			// Turn 1: modify file
+			writeFileSync(path.join(tempDir, "approve.txt"), "v2\n");
+			snapshotManager.onTurnEnd(tempDir, 1, appendEntry);
+			await runner.emit({ type: "turn_end", turnIndex: 1, message: {} as never, toolResults: [] });
+
+			// Verify getFileDiff with the file's entryId returns correct old/new content
+			const approveFile = snapshotManager.getModifiedFiles().find((f) => f.path === "approve.txt");
+			expect(approveFile).toBeDefined();
+			const diff = snapshotManager.getFileDiff({ filePath: "approve.txt", fromEntryId: approveFile!.entryId });
+			expect(diff).not.toBeNull();
+			expect(diff!.oldContent).toBe("v1\n");
+			expect(diff!.newContent).toBe("v2\n");
 		});
 	});
 

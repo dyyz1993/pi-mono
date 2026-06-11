@@ -318,6 +318,17 @@ export default function fileReview(pi: ExtensionAPI) {
 	});
 
 	channel?.handle("review.approve", (params) => {
+		// Record the approved snapshot entry for correct rollback baseline.
+		// Use the latest snapshot entry ID from fileSnapshotManager.
+		if (ctx?.fileSnapshotManager) {
+			const modifiedFiles = ctx.fileSnapshotManager.getModifiedFiles();
+			if (modifiedFiles.length > 0) {
+				const lastEntryId = modifiedFiles[modifiedFiles.length - 1]!.entryId;
+				if (lastEntryId) {
+					approvedSnapshotEntry.set(params.path, lastEntryId);
+				}
+			}
+		}
 		return { ok: setApproval(params.path, "approved") };
 	});
 
@@ -330,13 +341,36 @@ export default function fileReview(pi: ExtensionAPI) {
 		// Get the diff data for this file
 		let diffInfo: { oldContent: string | null; newContent: string | null } | null = null;
 		try {
-			const approvedEntryId = approvedSnapshotEntry.get(params.path);
-			const diff = approvedEntryId
-				? mgr.getFileDiff({ filePath: params.path, fromEntryId: approvedEntryId })
-				: mgr.getFileDiff({ filePath: params.path });
-			if (diff) {
-				diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+			let fromEntryId = approvedSnapshotEntry.get(params.path);
+
+			// For unapproved files or live sessions (approvedSnapshotEntry not populated),
+			// find the first snapshot where the file appeared from the turnLog
+			if (!fromEntryId) {
+				const turnToEntryId = new Map<number, string>();
+				const entries = ctx?.sessionManager.getEntries();
+				if (entries) {
+					for (const entry of entries) {
+						if (entry.type === "custom" && entry.customType === "step-snapshot") {
+							const data = entry.data as { turnIndex: number };
+							if (data && typeof data.turnIndex === "number") {
+								turnToEntryId.set(data.turnIndex, entry.id);
+							}
+						}
+					}
+				}
+				for (const record of turnLog) {
+					if (record.changes.some((c) => c.path === params.path)) {
+						fromEntryId = turnToEntryId.get(record.turnIndex) ?? fromEntryId;
+						break;
+					}
+				}
 			}
+
+			const diff = mgr.getFileDiff({
+				filePath: params.path,
+				fromEntryId,
+			});
+			if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
 		} catch {}
 		if (!diffInfo) return { ok: false, error: "No diff data for file" };
 
