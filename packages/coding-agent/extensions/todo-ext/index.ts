@@ -49,7 +49,7 @@ const TodoParams = Type.Object({
 });
 
 function persistEntry(pi: ExtensionAPI, action: string, todos: Todo[], nextId: number): void {
-	pi.appendEntry("todo", { action, todos: [...todos], nextId, timestamp: Date.now() });
+	pi.appendEntry("todo", { action, todos: deepCloneTodos(todos), nextId, timestamp: Date.now() });
 }
 
 function updateWidget(ctx: ExtensionContext | undefined, todos: Todo[]): void {
@@ -116,19 +116,20 @@ export default function (pi: ExtensionAPI) {
 	let nextId = 1;
 	let channel: ServerChannel<TodoChannelContract> | null = null;
 
-	pi.on("session_start", async (_event, ctx) => {
-		try {
-			const rawChannel = pi.registerChannel(TODO_CHANNEL_NAME);
-			const typed = createTypedChannel<TodoChannelContract>(rawChannel);
-			channel = typed.server;
-		} catch {
-			// registerChannel only available in RPC mode — skip in interactive mode
-		}
+	try {
+		const rawChannel = pi.registerChannel(TODO_CHANNEL_NAME);
+		const typed = createTypedChannel<TodoChannelContract>(rawChannel);
+		channel = typed.server;
+	} catch {
+		// registerChannel only available in RPC mode — skip in interactive mode
+	}
 
-		todos = [];
-		nextId = 1;
+	function deepCloneTodos(src: Todo[]): Todo[] {
+		return JSON.parse(JSON.stringify(src)) as Todo[];
+	}
 
-		for (const entry of ctx.sessionManager.getBranch()) {
+	function restoreFromEntries(entries: Iterable<{ type: string; customType?: string; data?: unknown; message?: { role: string; toolName: string; details: unknown } }>): void {
+		for (const entry of entries) {
 			if (entry.type === "custom" && entry.customType === "todo") {
 				const data = entry.data as { action: string; todos: Todo[]; nextId: number } | undefined;
 				if (data?.todos) {
@@ -139,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (entry.type !== "message") continue;
 			const msg = entry.message;
-			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
+			if (!msg || msg.role !== "toolResult" || msg.toolName !== "todo") continue;
 
 			const details = msg.details as TodoDetails | undefined;
 			if (details?.todos) {
@@ -147,34 +148,20 @@ export default function (pi: ExtensionAPI) {
 				nextId = details.nextId;
 			}
 		}
-		updateWidget(ctx, todos);
+	}
 
+	pi.on("session_start", async (_event, ctx) => {
+		todos = [];
+		nextId = 1;
+		restoreFromEntries(ctx.sessionManager.getBranch());
+		updateWidget(ctx, todos);
 		channel?.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
 		todos = [];
 		nextId = 1;
-
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "custom" && entry.customType === "todo") {
-				const data = entry.data as { action: string; todos: Todo[]; nextId: number } | undefined;
-				if (data?.todos) {
-					todos = data.todos;
-					nextId = data.nextId;
-				}
-				continue;
-			}
-			if (entry.type !== "message") continue;
-			const msg = entry.message;
-			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
-
-			const details = msg.details as TodoDetails | undefined;
-			if (details?.todos) {
-				todos = details.todos;
-				nextId = details.nextId;
-			}
-		}
+		restoreFromEntries(ctx.sessionManager.getBranch());
 		updateWidget(ctx, todos);
 		channel?.emit("restored", { action: "restored", todos, timestamp: Date.now() } satisfies TodoChannelEvent);
 	});
@@ -373,22 +360,23 @@ IMPORTANT: For creating a plan with multiple steps, use a SINGLE add call with n
 				return `${check} ${label} ${txt}${" ".repeat(Math.max(1, 20 - t.text.length))}${badge}`;
 			};
 
-			switch (details.action) {
-				case "list": {
-					if (todoList.length === 0) {
-						return new Text(theme.fg("dim", "No todos"), 0, 0);
-					}
-					const header = theme.fg("toolTitle", `${todoList.length} todos`);
-					const display = expanded ? todoList : todoList.slice(0, 5);
-					let listText = header;
-					for (const t of display) {
-						listText += `\n${formatRow(t)}`;
-					}
-					if (!expanded && todoList.length > 5) {
-						listText += `\n${theme.fg("dim", `... ${todoList.length - 5} more`)}`;
-					}
-					return new Text(listText, 0, 0);
+			const renderTodoList = (): Text => {
+				if (todoList.length === 0) return new Text(theme.fg("dim", "No todos"), 0, 0);
+				const header = theme.fg("toolTitle", `${todoList.length} todos`);
+				const display = expanded ? todoList : todoList.slice(0, 5);
+				let listText = header;
+				for (const t of display) {
+					listText += `\n${formatRow(t)}`;
 				}
+				if (!expanded && todoList.length > 5) {
+					listText += `\n${theme.fg("dim", `... ${todoList.length - 5} more`)}`;
+				}
+				return new Text(listText, 0, 0);
+			};
+
+			switch (details.action) {
+				case "list":
+					return renderTodoList();
 
 				case "add":
 				case "add_batch": {
@@ -398,31 +386,9 @@ IMPORTANT: For creating a plan with multiple steps, use a SINGLE add call with n
 					return new Text(`${header}\n${formatRow(added)}`, 0, 0);
 				}
 
-				case "toggle": {
-					const header = theme.fg("toolTitle", `${todoList.length} todos`);
-					const display = expanded ? todoList : todoList.slice(0, 5);
-					let listText = header;
-					for (const t of display) {
-						listText += `\n${formatRow(t)}`;
-					}
-					if (!expanded && todoList.length > 5) {
-						listText += `\n${theme.fg("dim", `... ${todoList.length - 5} more`)}`;
-					}
-					return new Text(listText, 0, 0);
-				}
-
-				case "remove": {
-					const header = theme.fg("toolTitle", `${todoList.length} todos`);
-					const display = expanded ? todoList : todoList.slice(0, 5);
-					let listText = header;
-					for (const t of display) {
-						listText += `\n${formatRow(t)}`;
-					}
-					if (!expanded && todoList.length > 5) {
-						listText += `\n${theme.fg("dim", `... ${todoList.length - 5} more`)}`;
-					}
-					return new Text(listText, 0, 0);
-				}
+				case "toggle":
+				case "remove":
+					return renderTodoList();
 
 				case "clear":
 					return new Text(theme.fg("success", "☑ Cleared all todos"), 0, 0);
