@@ -334,7 +334,14 @@ export default function fileReview(pi: ExtensionAPI) {
 				}
 			}
 		}
-		return { ok: setApproval(params.path, "approved") };
+		setApproval(params.path, "approved");
+		// Persist approval so it survives session reload
+		pi.appendEntry("file-approval", {
+			path: params.path,
+			status: "approved",
+			timestamp: Date.now(),
+		});
+		return { ok: true };
 	});
 
 	channel?.handle("review.reject", (params) => {
@@ -413,6 +420,12 @@ export default function fileReview(pi: ExtensionAPI) {
 		}
 
 		setApproval(params.path, "rejected");
+		// Persist rejection so it survives session reload
+		pi.appendEntry("file-approval", {
+			path: params.path,
+			status: "rejected",
+			timestamp: Date.now(),
+		});
 		return { ok: true, rolledBack };
 	});
 
@@ -425,10 +438,12 @@ export default function fileReview(pi: ExtensionAPI) {
 				latestByPath.set(change.path, { turnIndex: record.turnIndex, timestamp: record.timestamp });
 			}
 		}
+		const now = Date.now();
 		for (const [path] of latestByPath) {
 			const approval = getApproval(path);
 			if (approval.status === "pending") {
 				setApproval(path, "approved");
+				pi.appendEntry("file-approval", { path, status: "approved", timestamp: now });
 				count++;
 			}
 		}
@@ -482,6 +497,7 @@ export default function fileReview(pi: ExtensionAPI) {
 					}
 				}
 				setApproval(path, "rejected");
+				pi.appendEntry("file-approval", { path, status: "rejected", timestamp: Date.now() });
 				count++;
 			}
 		}
