@@ -173,7 +173,7 @@ export default function fileReview(pi: ExtensionAPI) {
 	channel?.handle("review.pending", () => {
 		// Aggregate by path: track FIRST and LATEST status for each file.
 		// Net-zero rule: if first=added AND latest=deleted (never approved), skip it.
-		type PathMeta = { firstStatus: LiveChange["status"]; latestTurnIndex: number; latestFileStatus: LiveChange["status"]; latestTimestamp: number };
+		type PathMeta = { firstStatus: LiveChange["status"]; firstTurnIndex: number; latestTurnIndex: number; latestFileStatus: LiveChange["status"]; latestTimestamp: number };
 		const pathMeta = new Map<string, PathMeta>();
 		for (const record of turnLog) {
 			for (const change of record.changes) {
@@ -181,6 +181,7 @@ export default function fileReview(pi: ExtensionAPI) {
 				if (!existing) {
 					pathMeta.set(change.path, {
 						firstStatus: change.status,
+						firstTurnIndex: record.turnIndex,
 						latestTurnIndex: record.turnIndex,
 						latestFileStatus: change.status,
 						latestTimestamp: record.timestamp,
@@ -198,6 +199,7 @@ export default function fileReview(pi: ExtensionAPI) {
 			if (!existing) {
 				pathMeta.set(change.path, {
 					firstStatus: change.status,
+					firstTurnIndex: currentTurnIndex,
 					latestTurnIndex: currentTurnIndex,
 					latestFileStatus: change.status,
 					latestTimestamp: Date.now(),
@@ -209,11 +211,25 @@ export default function fileReview(pi: ExtensionAPI) {
 			}
 		}
 
+		// Build a map of turnIndex → snapshot entry ID from session entries.
+		// This gives us the correct baseline for unapproved files with history.
+		const turnToEntryId = new Map<number, string>();
+		const allEntries = ctx?.sessionManager.getEntries();
+		if (allEntries) {
+			for (const entry of allEntries) {
+				if (entry.type === "custom" && entry.customType === "step-snapshot") {
+					const data = entry.data as { turnIndex: number };
+					if (data && typeof data.turnIndex === "number") {
+						turnToEntryId.set(data.turnIndex, entry.id);
+					}
+				}
+			}
+		}
+
 		// Build diff data for pending files.
-		// For files with an approved baseline, compare approved snapshot → live disk.
-		// For never-approved files, compare session start → live disk.
-		// getBatchFileContents only reads committed snapshots (not live disk),
-		// so we use getLiveChanges for newContent to capture uncommitted changes.
+		// oldContent: for approved files → approved snapshot; for unapproved files with history → first snapshot;
+		//   for genuinely new files → null (sessionStartTreeHash)
+		// newContent: always from disk (live)
 		const mgr = ctx?.fileSnapshotManager;
 		const diffMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
 		if (mgr && ctx && pathMeta.size > 0) {
@@ -226,13 +242,13 @@ export default function fileReview(pi: ExtensionAPI) {
 				}
 			}
 
-			// Get oldContent from the correct baseline (approved snapshot or session start)
+			// Get oldContent from the correct baseline
 			try {
-				const fileRequests = [...pathMeta.keys()].map((path) => ({
+				const fileRequests = [...pathMeta.entries()].map(([path, meta]) => ({
 					filePath: path,
-					fromEntryId: approvedSnapshotEntry.get(path),
+					fromEntryId: approvedSnapshotEntry.get(path) ?? turnToEntryId.get(meta.firstTurnIndex),
 				}));
-				const batchResult = mgr.getBatchFileContents(fileRequests);
+				const batchResult = mgr.getBatchFileContents(fileRequests, ctx.cwd);
 				for (const [path, content] of batchResult) {
 					diffMap.set(path, content);
 				}
@@ -240,26 +256,23 @@ export default function fileReview(pi: ExtensionAPI) {
 				console.error("[file-review] getBatchFileContents failed:", error);
 			}
 
-			// Merge: use batchDiff.oldContent as baseline (session start or approved snapshot),
-			// liveDiff.newContent as the current disk content.
-			// getLiveChanges uses lastCommittedTreeHash which already includes changes from
-			// previous turns, so its oldContent is wrong for unapproved files.
+			// Merge: use batchDiff.oldContent as baseline.
+			// newContent is already live from getBatchFileContents (disk).
+			// Only force oldContent=null when the file is genuinely new (still in "added" state).
 			for (const [path, meta] of pathMeta) {
 				const batchDiff = diffMap.get(path);
 				const liveDiff = liveMap.get(path);
 
 				if (liveDiff) {
 					// File has live changes on disk
-					// Use batchDiff.oldContent as baseline, but for "added" files oldContent
-					// must be null (the file didn't exist before the session)
 					if (batchDiff) {
-						const oldContent = meta.firstStatus === "added" ? null : batchDiff.oldContent;
+						const oldContent = meta.latestFileStatus === "added" ? null : batchDiff.oldContent;
 						diffMap.set(path, {
 							oldContent,
 							newContent: liveDiff.newContent,
 						});
 					} else {
-						// No batch result — use liveDiff as-is (oldContent may be null for truly new files)
+						// No batch result — use liveDiff as-is
 						diffMap.set(path, liveDiff);
 					}
 				} else if (meta.latestFileStatus === "deleted") {
@@ -268,9 +281,7 @@ export default function fileReview(pi: ExtensionAPI) {
 					diffMap.set(path, { oldContent, newContent: null });
 				} else if (batchDiff) {
 					// No live change but batch has data (file unchanged since last snapshot)
-					// This means oldContent == newContent in batch — use null for oldContent
-					// based on fileStatus to get correct diff
-					const oldContent = meta.firstStatus === "added" ? null : batchDiff.oldContent;
+					const oldContent = meta.latestFileStatus === "added" ? null : batchDiff.oldContent;
 					diffMap.set(path, { oldContent, newContent: batchDiff.newContent });
 				}
 			}

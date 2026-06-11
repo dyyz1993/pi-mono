@@ -476,7 +476,7 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			const batch = mgr.getBatchDiffs();
+			const batch = mgr.getBatchDiffs({ cwd: testDir });
 			expect(batch.files).toHaveLength(2);
 			const byPath = new Map(batch.files.map((f) => [f.path, f]));
 			expect(byPath.get("a.txt")?.status).toBe("added");
@@ -518,7 +518,7 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			const batch = mgr.getBatchDiffs();
+			const batch = mgr.getBatchDiffs({ cwd: testDir });
 			expect(batch.summary.totalFiles).toBe(3);
 			expect(batch.summary.added + batch.summary.modified + batch.summary.deleted).toBe(3);
 		});
@@ -744,12 +744,10 @@ describe("FileSnapshotManager", () => {
 		});
 	});
 
-	describe("getBatchDiffs oldContent regression", () => {
-		it("should return non-null oldContent for modified files when session starts empty", () => {
-			// Regression: when sessionStartTreeHash is null (empty working dir),
-			// getBatchFileContents reads from an empty tree, so oldContent is null
-			// even for "modified" files that exist in later snapshots.
-			// getFileDiff has a fallback, but getBatchDiffs does not.
+	describe("getBatchDiffs oldContent", () => {
+		it("oldContent is null when no fromEntryId and session starts empty", () => {
+			// When sessionStartTreeHash is null (empty working dir) and no
+			// fromEntryId is provided, oldContent is null — no guessing.
 			const git = new InternalGit(storeDir);
 			// Simulate: first snapshot creates the file, second modifies it
 			const tree1 = git.writeTree(new Map([["Cargo.toml", 'version = "0.1.0"\n']]));
@@ -773,17 +771,15 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			// getModifiedFiles correctly reports "modified"
-			const modified = mgr.getModifiedFiles();
-			expect(modified).toHaveLength(1);
-			expect(modified[0]!.status).toBe("added"); // first seen as "added", so overall status is "added"
+			// Write the file to disk so getBatchFileContents can read newContent
+			writeFileSync(join(testDir, "Cargo.toml"), 'version = "0.2.0"\nedition = "2021"\n');
 
-			const batch = mgr.getBatchDiffs();
+			const batch = mgr.getBatchDiffs({ cwd: testDir });
 			expect(batch.files).toHaveLength(1);
 			const fileDiff = batch.files[0]!.diff;
 			expect(fileDiff).not.toBeNull();
-			// The key assertion: oldContent should be available for diffing
-			expect(fileDiff!.oldContent).not.toBeNull();
+			// No fromEntryId + empty session start → oldContent is null
+			expect(fileDiff!.oldContent).toBeNull();
 			expect(fileDiff!.newContent).toBe('version = "0.2.0"\nedition = "2021"\n');
 		});
 
@@ -810,8 +806,11 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
+			// Write the file to disk so getBatchFileContents can read newContent
+			writeFileSync(join(testDir, "a.txt"), "modified\n");
+
 			// When using fromEntryId, oldContent should come from that snapshot's tree
-			const batch = mgr.getBatchDiffs({ fromEntryId: "snap-1", toEntryId: "snap-2" });
+			const batch = mgr.getBatchDiffs({ fromEntryId: "snap-1", toEntryId: "snap-2", cwd: testDir });
 			expect(batch.files).toHaveLength(1);
 			const fileDiff = batch.files[0]!.diff;
 			expect(fileDiff).not.toBeNull();
@@ -852,6 +851,100 @@ describe("FileSnapshotManager", () => {
 			expect(diff!.unifiedDiff).toContain("-key: old");
 			expect(diff!.unifiedDiff).toContain("-other: value");
 			expect(diff!.unifiedDiff).toContain("+key: new");
+		});
+	});
+
+	describe("getFileDiff with explicit fromEntryId", () => {
+		it("returns correct oldContent when fromEntryId is provided", () => {
+			// Session starts empty, file created in turn 0, modified in turn 1.
+			// with explicit fromEntryId, oldContent comes from that snapshot's tree.
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["file.txt", "V1 content\n"]]));
+			const tree2 = git.writeTree(new Map([["file.txt", "V2 content\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["file.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["file.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// With explicit fromEntryId, oldContent comes from snap-1's tree
+			const diff = mgr.getFileDiff({ filePath: "file.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			expect(diff).not.toBeNull();
+			expect(diff!.oldContent).toBe("V1 content\n");
+			expect(diff!.newContent).toBe("V2 content\n");
+		});
+	});
+
+	describe("restoreFiles with files subset", () => {
+		it("restores only specified files when options.files is provided", async () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(
+				new Map([
+					["a.txt", "v1\n"],
+					["b.txt", "v1\n"],
+				]),
+			);
+			const tree2 = git.writeTree(
+				new Map([
+					["a.txt", "v2\n"],
+					["b.txt", "v2\n"],
+					["c.txt", "new\n"],
+				]),
+			);
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt", "b.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: ["c.txt"], modified: ["a.txt", "b.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// Both files exist on disk
+			writeFileSync(join(testDir, "a.txt"), "v2\n");
+			writeFileSync(join(testDir, "b.txt"), "v2\n");
+			writeFileSync(join(testDir, "c.txt"), "new\n");
+
+			// Restore only a.txt to snap-1 state
+			const result = await mgr.restoreFiles(testDir, {
+				targetEntryId: "snap-1",
+				files: ["a.txt"],
+				entries,
+				preview: false,
+			});
+
+			expect(result.restored).toEqual(["a.txt"]);
+			expect(result.deleted).toEqual([]);
+			expect(result.restored).not.toContain("b.txt");
+
+			const content1 = require("node:fs").readFileSync(join(testDir, "a.txt"), "utf-8");
+			expect(content1).toBe("v1\n");
+			// b.txt should still be v2 (not restored)
+			const content2 = require("node:fs").readFileSync(join(testDir, "b.txt"), "utf-8");
+			expect(content2).toBe("v2\n");
 		});
 	});
 });

@@ -81,6 +81,17 @@ function readFilteredWorkingDir(git: InternalGit, cwd: string): Map<string, stri
 	return filtered;
 }
 
+function readDiskFile(cwd: string, filePath: string): string | null {
+	try {
+		const absolutePath = join(cwd, filePath);
+		const stat = lstatSync(absolutePath);
+		if (stat.size > FILE_SIZE_LIMIT) return null;
+		return readFileSync(absolutePath, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
 function generateUnifiedDiff(oldContent: string | null, newContent: string | null, filePath: string): string {
 	const oldLines = oldContent === null ? [] : oldContent.split("\n");
 	const newLines = newContent === null ? [] : newContent.split("\n");
@@ -150,6 +161,8 @@ export class FileSnapshotManager {
 	private snapshotIndex = new Map<string, SnapshotWithEntryId>();
 	private turnIndexMap = new Map<number, string>();
 	private initialized = false;
+	private treeCache = new Map<string, { tree: Map<string, string>; at: number }>();
+	private readonly MAX_CACHED_TREES = 10;
 
 	constructor(git: InternalGit) {
 		this.git = git;
@@ -350,21 +363,23 @@ export class FileSnapshotManager {
 		const currentTreeHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
 		if (targetTreeHash === currentTreeHash) return [];
 
+		// Use listTreeFiles (path → hash) instead of readTree (path → content).
+		// Disk IO: 2 tree reads, 0 file content reads (vs 2N file content reads before).
 		const emptyFiles = new Map<string, string>();
-		const targetFiles = targetTreeHash ? (this.git.readTree(targetTreeHash) ?? emptyFiles) : emptyFiles;
-		const currentFiles = currentTreeHash ? (this.git.readTree(currentTreeHash) ?? emptyFiles) : emptyFiles;
+		const targetEntries = targetTreeHash ? (this.git.listTreeFiles(targetTreeHash) ?? emptyFiles) : emptyFiles;
+		const currentEntries = currentTreeHash ? (this.git.listTreeFiles(currentTreeHash) ?? emptyFiles) : emptyFiles;
 		const files: ModifiedFileInfo[] = [];
 
-		for (const [path, content] of currentFiles) {
-			const targetContent = targetFiles.get(path);
-			if (targetContent === undefined) {
+		for (const [path, hash] of currentEntries) {
+			const targetHash = targetEntries.get(path);
+			if (targetHash === undefined) {
 				files.push({ path, status: "added", turnIndex: -1, entryId: "" });
-			} else if (targetContent !== content) {
+			} else if (targetHash !== hash) {
 				files.push({ path, status: "modified", turnIndex: -1, entryId: "" });
 			}
 		}
-		for (const path of targetFiles.keys()) {
-			if (!currentFiles.has(path)) {
+		for (const path of targetEntries.keys()) {
+			if (!currentEntries.has(path)) {
 				files.push({ path, status: "deleted", turnIndex: -1, entryId: "" });
 			}
 		}
@@ -439,21 +454,19 @@ export class FileSnapshotManager {
 	/**
 	 * Batch-optimized: get old/new content for multiple files in a single pass.
 	 *
-	 * Reads each unique tree hash ONCE instead of once per file.
-	 * Complexity: O(M + N) instead of O(N × M) where N = files, M = project size.
+	 * oldContent comes from the relevant baseline snapshot tree.
+	 * newContent comes from disk (always live, never stale).
 	 *
-	 * Typical usage: review.pending needs content for ~50 modified files.
-	 * With getFileDiff() that's 50 × 2 readTree() calls (each reading ALL project files).
-	 * With this method it's typically just 2 readTree() calls total.
+	 * Complexity: O(M) disk reads for M wanted files (vs O(N) for all project files before).
 	 */
 	getBatchFileContents(
 		filePaths: Array<{ filePath: string; fromEntryId?: string }>,
+		cwd: string,
 	): Map<string, { oldContent: string | null; newContent: string | null }> {
 		const result = new Map<string, { oldContent: string | null; newContent: string | null }>();
 		if (filePaths.length === 0) return result;
 
 		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
-		const toHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
 
 		// Group files by fromHash so we read each tree at most once
 		const fromHashGroups = new Map<string, string[]>();
@@ -469,35 +482,17 @@ export class FileSnapshotManager {
 			}
 		}
 
-		// Read toTree ONCE (shared by all files)
-		const toTree = this.readTree(toHash);
-
-		// For each unique fromHash, read tree once and extract all files in that group
+		// oldContent from snapshot baseline; newContent from disk
 		for (const [fromHashKey, paths] of fromHashGroups) {
-			const fromTree = this.readTree(fromHashKey || null);
+			const pathsSet = new Set(paths);
+			const fromTree = fromHashKey
+				? (this.git.readTreeFiles(fromHashKey, pathsSet) ?? new Map<string, string>())
+				: new Map<string, string>();
 			for (const filePath of paths) {
 				result.set(filePath, {
 					oldContent: fromTree.get(filePath) ?? null,
-					newContent: toTree.get(filePath) ?? null,
+					newContent: readDiskFile(cwd, filePath),
 				});
-			}
-		}
-
-		// Fallback: if oldContent is null for modified files, walk snapshots backwards
-		// to find the file. Only when we have a valid baseline (sessionStartTreeHash).
-		// Skip if session started from empty directory — file is genuinely new.
-		for (const [filePath, content] of result) {
-			if (content.oldContent === null && content.newContent !== null && this.sessionStartTreeHash !== null) {
-				for (let i = snapshots.length - 2; i >= 0; i--) {
-					const snapshot = snapshots[i];
-					if (!snapshot) continue;
-					const tree = this.readTree(snapshot.snapshotTreeHash);
-					const found = tree.get(filePath);
-					if (found !== undefined) {
-						content.oldContent = found;
-						break;
-					}
-				}
 			}
 		}
 
@@ -526,29 +521,13 @@ export class FileSnapshotManager {
 			? (toSnap?.snapshotTreeHash ?? null)
 			: (this.lastCommittedTreeHash ?? this.sessionStartTreeHash);
 
-		let oldContent = this.readTree(fromHash).get(options.filePath) ?? null;
-		const newContent = this.readTree(toHash).get(options.filePath) ?? null;
-		// Fallback: walk snapshots backwards to find oldContent when not in fromTree.
-		// Only when we have a valid baseline (fromHash or sessionStartTreeHash).
-		// If session started from an empty directory (sessionStartTreeHash === null),
-		// the file didn't exist before — skip fallback to avoid finding newContent as oldContent.
-		if (oldContent === null && newContent !== null && (fromHash !== null || this.sessionStartTreeHash !== null)) {
-			const fromIdx = options.fromEntryId
-				? snapshots.findIndex((snapshot) => snapshot.entryId === options.fromEntryId)
-				: 0;
-			const toIdx = options.toEntryId
-				? snapshots.findIndex((snapshot) => snapshot.entryId === options.toEntryId)
-				: snapshots.length - 1;
-			for (let i = toIdx - 1; i >= fromIdx; i--) {
-				const snapshot = snapshots[i];
-				if (!snapshot) continue;
-				const content = this.readTree(snapshot.snapshotTreeHash).get(options.filePath);
-				if (content !== undefined) {
-					oldContent = content;
-					break;
-				}
-			}
-		}
+		const targetFilePath = new Set([options.filePath]);
+		const oldContent = fromHash
+			? (this.git.readTreeFiles(fromHash, targetFilePath)?.get(options.filePath) ?? null)
+			: null;
+		const newContent = toHash
+			? (this.git.readTreeFiles(toHash, targetFilePath)?.get(options.filePath) ?? null)
+			: null;
 		if (oldContent === null && newContent === null) return null;
 
 		return {
@@ -561,7 +540,7 @@ export class FileSnapshotManager {
 		};
 	}
 
-	getBatchDiffs(options?: { fromEntryId?: string; toEntryId?: string }): BatchDiffResult {
+	getBatchDiffs(options: { fromEntryId?: string; toEntryId?: string; cwd: string }): BatchDiffResult {
 		const files = this.getModifiedFiles(options);
 		let added = 0;
 		let modified = 0;
@@ -578,7 +557,7 @@ export class FileSnapshotManager {
 			filePath: file.path,
 			fromEntryId: options?.fromEntryId,
 		}));
-		const batchContents = this.getBatchFileContents(fileRequests);
+		const batchContents = this.getBatchFileContents(fileRequests, options.cwd);
 
 		return {
 			files: files.map((file) => {
@@ -671,19 +650,21 @@ export class FileSnapshotManager {
 		if (targetTreeHash === currentTreeHash) return empty;
 		if (targetTreeHash === null && !targetIsEmpty) return empty;
 
-		const targetFiles = this.readTree(targetTreeHash);
-		const currentFiles = this.readTree(currentTreeHash);
 		const actualDiskFiles = readFilteredWorkingDir(this.git, cwd);
-		let restore = [...targetFiles.entries()]
-			.filter(([path, content]) => actualDiskFiles.get(path) !== content)
-			.map(([path]) => path);
-		let deleted = [...currentFiles.keys()].filter((path) => !targetFiles.has(path));
-
+		let targetFiles: Map<string, string>;
+		let currentFiles: Map<string, string>;
 		if (options.files) {
 			const fileSet = new Set(options.files);
-			restore = restore.filter((path) => fileSet.has(path));
-			deleted = deleted.filter((path) => fileSet.has(path));
+			targetFiles = targetTreeHash ? (this.git.readTreeFiles(targetTreeHash, fileSet) ?? new Map()) : new Map();
+			currentFiles = currentTreeHash ? (this.git.readTreeFiles(currentTreeHash, fileSet) ?? new Map()) : new Map();
+		} else {
+			targetFiles = this.readTree(targetTreeHash);
+			currentFiles = this.readTree(currentTreeHash);
 		}
+		const restore = [...targetFiles.entries()]
+			.filter(([path, content]) => actualDiskFiles.get(path) !== content)
+			.map(([path]) => path);
+		const deleted = [...currentFiles.keys()].filter((path) => !targetFiles.has(path));
 		if (restore.length === 0 && deleted.length === 0) return empty;
 
 		const dirty = this.findDirtyFiles(cwd, currentFiles, restore);
@@ -763,6 +744,23 @@ export class FileSnapshotManager {
 	}
 
 	private readTree(treeHash: string | null): Map<string, string> {
-		return treeHash ? (this.git.readTree(treeHash) ?? new Map<string, string>()) : new Map<string, string>();
+		if (!treeHash) return new Map();
+		const cached = this.treeCache.get(treeHash);
+		if (cached) return cached.tree;
+		const tree = this.git.readTree(treeHash) ?? new Map<string, string>();
+		// LRU eviction
+		if (this.treeCache.size >= this.MAX_CACHED_TREES) {
+			let oldest = Infinity;
+			let oldestKey = "";
+			for (const [k, v] of this.treeCache) {
+				if (v.at < oldest) {
+					oldest = v.at;
+					oldestKey = k;
+				}
+			}
+			this.treeCache.delete(oldestKey);
+		}
+		this.treeCache.set(treeHash, { tree, at: Date.now() });
+		return tree;
 	}
 }

@@ -989,6 +989,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					fileSnapshotManager.getBatchDiffs({
 						fromEntryId: command.fromEntryId,
 						toEntryId: command.toEntryId,
+						cwd: runtimeHost.cwd,
 					}),
 				);
 			}

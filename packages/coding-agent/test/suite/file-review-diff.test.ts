@@ -237,7 +237,7 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 
 		// Without fromEntryId, getBatchFileContents compares
 		// sessionStartTreeHash -> lastCommittedTreeHash
-		const result = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
+		const result = mgr.getBatchFileContents([{ filePath: "file.txt" }], cwd);
 		const content = result.get("file.txt");
 
 		expect(content).toBeDefined();
@@ -247,7 +247,7 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 		expect(content!.newContent).toBe("after-turn-0");
 	});
 
-	it("does NOT reflect uncommitted disk changes", () => {
+	it("reflects live disk changes (not just committed trees)", () => {
 		const cwd = makeTempDir();
 		const storeDir = makeTempDir();
 		const git = new InternalGit(storeDir);
@@ -262,13 +262,12 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 		// Uncommitted change on disk
 		writeFileSync(join(cwd, "file.txt"), "uncommitted");
 
-		const result = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
+		const result = mgr.getBatchFileContents([{ filePath: "file.txt" }], cwd);
 		const content = result.get("file.txt");
 
-		// getBatchFileContents compares trees, not disk
+		// getBatchFileContents reads newContent from disk (always live)
 		expect(content!.oldContent).toBe("original");
-		expect(content!.newContent).toBe("committed");
-		// NOT "uncommitted" - this is important!
+		expect(content!.newContent).toBe("uncommitted");
 	});
 
 	it("returns null oldContent for newly added file", () => {
@@ -282,7 +281,7 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 		writeFileSync(join(cwd, "new.txt"), "brand new");
 		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
 
-		const result = mgr.getBatchFileContents([{ filePath: "new.txt" }]);
+		const result = mgr.getBatchFileContents([{ filePath: "new.txt" }], cwd);
 		const content = result.get("new.txt");
 
 		expect(content).toBeDefined();
@@ -302,7 +301,7 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 		unlinkSync(join(cwd, "to-delete.txt"));
 		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
 
-		const result = mgr.getBatchFileContents([{ filePath: "to-delete.txt" }]);
+		const result = mgr.getBatchFileContents([{ filePath: "to-delete.txt" }], cwd);
 		const content = result.get("to-delete.txt");
 
 		expect(content).toBeDefined();
@@ -325,7 +324,10 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 		unlinkSync(join(cwd, "b.txt"));
 		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
 
-		const result = mgr.getBatchFileContents([{ filePath: "a.txt" }, { filePath: "b.txt" }, { filePath: "c.txt" }]);
+		const result = mgr.getBatchFileContents(
+			[{ filePath: "a.txt" }, { filePath: "b.txt" }, { filePath: "c.txt" }],
+			cwd,
+		);
 
 		expect(result.get("a.txt")).toEqual({ oldContent: "original-a", newContent: "modified-a" });
 		expect(result.get("b.txt")).toEqual({ oldContent: "original-b", newContent: null });
@@ -339,7 +341,7 @@ describe("FileSnapshotManager.getBatchFileContents - diff accuracy", () => {
 		const mgr = new FileSnapshotManager(git);
 
 		mgr.initialize(cwd);
-		const result = mgr.getBatchFileContents([]);
+		const result = mgr.getBatchFileContents([], cwd);
 		expect(result.size).toBe(0);
 	});
 });
@@ -532,7 +534,7 @@ describe("file-review pending change - diff data accuracy", () => {
 		writeFileSync(join(cwd, "new.txt"), "brand new");
 		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
 
-		const result = mgr.getBatchFileContents([{ filePath: "existing.txt" }, { filePath: "new.txt" }]);
+		const result = mgr.getBatchFileContents([{ filePath: "existing.txt" }, { filePath: "new.txt" }], cwd);
 
 		const existing = result.get("existing.txt");
 		expect(existing!.oldContent).toBe("original");
@@ -555,7 +557,7 @@ describe("file-review pending change - diff data accuracy", () => {
 		unlinkSync(join(cwd, "doomed.txt"));
 		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
 
-		const result = mgr.getBatchFileContents([{ filePath: "doomed.txt" }]);
+		const result = mgr.getBatchFileContents([{ filePath: "doomed.txt" }], cwd);
 		const content = result.get("doomed.txt");
 
 		expect(content!.oldContent).toBe("about to be deleted");
@@ -587,11 +589,9 @@ describe("file-review pending change - diff data accuracy", () => {
 		expect(change.diff!.oldContent).not.toBe(change.diff!.newContent);
 	});
 
-	it("getBatchFileContents mismatch with getLiveChanges - uncommitted changes not reflected", () => {
-		// This test documents a potential issue: review.pending uses getBatchFileContents
-		// which compares committed trees, but the turnLog is populated from getLiveChanges
-		// which compares disk vs committed tree. If there are uncommitted changes on disk,
-		// the turnLog may list changes that getBatchFileContents doesn't reflect.
+	it("getBatchFileContents reflects live disk changes (uncommitted)", () => {
+		// getBatchFileContents now reads newContent from disk, so it reflects
+		// uncommitted changes without needing getLiveChanges.
 		const cwd = makeTempDir();
 		const storeDir = makeTempDir();
 		const git = new InternalGit(storeDir);
@@ -612,10 +612,9 @@ describe("file-review pending change - diff data accuracy", () => {
 		expect(liveChanges).toHaveLength(1);
 		expect(liveChanges[0]!.diff!.newContent).toBe("v2-uncommitted");
 
-		// But getBatchFileContents only sees committed trees
-		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
-		expect(batchResult.get("file.txt")!.newContent).toBe("v1");
-		// ^ This is "v1", NOT "v2-uncommitted"
+		// getBatchFileContents now also sees the disk change (always live)
+		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }], cwd);
+		expect(batchResult.get("file.txt")!.newContent).toBe("v2-uncommitted");
 	});
 });
 
@@ -669,19 +668,26 @@ describe("file-review multi-turn diff without approval", () => {
 		const liveChanges = mgr.getLiveChanges(cwd);
 		expect(liveChanges).toHaveLength(0); // V2 is committed, no live diff
 
-		// The file was committed as V2 in turn 1.
-		// For the pending diff, we need V1→V2.
-		// approvedSnapshotEntry is empty (never approved), so fromEntryId=undefined.
-		// getBatchFileContents with no fromEntryId uses sessionStartTreeHash (no file.txt).
-		// But the fallback walks snapshots to find oldContent.
-		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
+		// getBatchFileContents with no fromEntryId uses sessionStartTreeHash (null = empty).
+		// Without fromEntryId, oldContent is null — the caller must provide
+		// fromEntryId to get a specific baseline.
+		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }], cwd);
 		const content = batchResult.get("file.txt");
 
-		// With fallback, oldContent should be V1 (found in turn 0's snapshot)
-		// and newContent should be V2 (from last committed tree)
+		// newContent from disk = V2
 		expect(content!.newContent).toBe("V2 content\n");
-		// This is the key assertion: oldContent should be V1, NOT null
-		expect(content!.oldContent).toBe("V1 content\n");
+		// oldContent is null — no fromEntryId was provided
+		expect(content!.oldContent).toBeNull();
+
+		// To get V1→V2 diff, call with explicit fromEntryId:
+		// The entry ID for turn 0 is "step-snapshot-0" (from appendEntry callback)
+		const batchWithBaseline = mgr.getBatchFileContents(
+			[{ filePath: "file.txt", fromEntryId: "step-snapshot-0" }],
+			cwd,
+		);
+		const withBaseline = batchWithBaseline.get("file.txt");
+		expect(withBaseline!.oldContent).toBe("V1 content\n");
+		expect(withBaseline!.newContent).toBe("V2 content\n");
 	});
 
 	it("shows correct diff when file is modified but turn hasn't ended yet", async () => {
@@ -705,11 +711,9 @@ describe("file-review multi-turn diff without approval", () => {
 		expect(liveChanges[0]!.diff!.newContent).toBe("V2 content\n");
 		expect(liveChanges[0]!.diff!.oldContent).toBe("V1 content\n");
 
-		// getBatchFileContents does NOT see V2 (only committed trees)
-		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
-		expect(batchResult.get("file.txt")!.newContent).toBe("V1 content\n");
-		// ^ This confirms the bug: batch only sees committed data.
-		// The fix uses getLiveChanges for newContent to capture uncommitted changes.
+		// getBatchFileContents reads newContent from disk, so it sees V2
+		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }], cwd);
+		expect(batchResult.get("file.txt")!.newContent).toBe("V2 content\n");
 	});
 
 	it("after approval, diff shows approved-snapshot vs live", async () => {
@@ -760,15 +764,13 @@ describe("file-review approval diff scenarios", () => {
 		const liveChanges = mgr.getLiveChanges(cwd);
 		expect(liveChanges).toHaveLength(0);
 
-		// getBatchFileContents: fromHash=sessionStart → oldContent=null
-		// fallback walks snapshots → finds V1
-		// But the fix uses liveChanges for unapproved files
+		// getBatchFileContents: fromHash=sessionStart → oldContent=null (no fromEntryId)
 		// Since no live changes, batch is used as fallback
-		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }]);
+		const batchResult = mgr.getBatchFileContents([{ filePath: "file.txt" }], cwd);
 		const content = batchResult.get("file.txt")!;
 
-		// With fix: for unapproved files without live changes,
-		// batch data is used. newContent=V2, oldContent from fallback=V1
+		// For unapproved files without live changes, batch data is used.
+		// newContent comes from disk (always live). oldContent is null (no fromEntryId).
 		expect(content.newContent).toBe("V2 content\n");
 
 		// computeDiffInfo for the scenario: null→V2 (all green)
