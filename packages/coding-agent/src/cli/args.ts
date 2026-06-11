@@ -273,7 +273,8 @@ ${chalk.bold("Options:")}
                                  Applies to built-in, extension, and custom tools
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
                                  Applies to built-in, extension, and custom tools
-  --agent <name>                 Start with a named agent (applies its tools, permissions, system prompt)
+  --agent <name|path>              Start with a named agent (applies its tools, permissions, system prompt)
+                                 Also accepts a path to a .md file (relative or absolute)
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -309,6 +310,12 @@ ${chalk.bold("Examples:")}
 
   # Non-interactive mode (process and exit)
   ${APP_NAME} -p "List all .ts files in src/"
+
+  # Start with a named agent
+  ${APP_NAME} --agent read-only
+
+  # Start with an agent from a file path
+  ${APP_NAME} --agent ./agent-configs/reviewer.md -p "Review commit history"
 
   # Multiple messages (interactive)
   ${APP_NAME} "Read package.json" "What dependencies do we have?"
