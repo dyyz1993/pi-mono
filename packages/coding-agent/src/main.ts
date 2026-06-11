@@ -28,6 +28,7 @@ import { AuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { discoverAgents } from "./core/index.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
@@ -736,6 +737,18 @@ export async function main(args: string[], options?: MainOptions) {
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRegistry, searchPattern);
 		process.exit(0);
+	}
+
+	// Apply --agent config if specified
+	if (parsed.agent) {
+		const discovery = discoverAgents(sessionManager.getCwd(), "both");
+		const agent = discovery.agents.find((candidate) => candidate.name === parsed.agent);
+		if (!agent) {
+			const available = discovery.agents.map((a) => a.name).join(", ");
+			process.stderr.write(`Agent "${parsed.agent}" not found. Available: ${available || "none"}\n`);
+			process.exit(1);
+		}
+		session.applyAgentConfig(agent);
 	}
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
