@@ -587,6 +587,42 @@ describe("FileSnapshotManager", () => {
 			const diff = mgr.getFileDiff({ filePath: "nope.txt" });
 			expect(diff).toBeNull();
 		});
+
+		it("without fromEntryId oldContent is null (deterministic, no fallback)", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["f.txt", "v1\n"]]));
+			const tree2 = git.writeTree(new Map([["f.txt", "v2\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["f.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["f.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// No fromEntryId → uses sessionStartTreeHash (= empty/null since session started empty)
+			// No fallback — oldContent is deterministically null
+			const diff = mgr.getFileDiff({ filePath: "f.txt" });
+			expect(diff).not.toBeNull();
+			expect(diff!.oldContent).toBeNull();
+			expect(diff!.newContent).toBe("v2\n");
+
+			// With explicit fromEntryId, oldContent IS found
+			const diffWithId = mgr.getFileDiff({ filePath: "f.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			expect(diffWithId).not.toBeNull();
+			expect(diffWithId!.oldContent).toBe("v1\n");
+		});
 	});
 
 	describe("getBatchDiffs", () => {
@@ -663,6 +699,59 @@ describe("FileSnapshotManager", () => {
 			const batch = mgr.getBatchDiffs({ cwd: testDir });
 			expect(batch.summary.totalFiles).toBe(3);
 			expect(batch.summary.added + batch.summary.modified + batch.summary.deleted).toBe(3);
+		});
+
+		it("newContent reads from disk, not from snapshot", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["a.txt", "snapshot-v1\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["a.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// Write different content to disk than what's in the snapshot
+			writeFileSync(join(testDir, "a.txt"), "disk-content\n");
+
+			const batch = mgr.getBatchDiffs({ fromEntryId: "snap-1", cwd: testDir });
+			expect(batch.files).toHaveLength(1);
+			expect(batch.files[0]!.diff).not.toBeNull();
+			// oldContent comes from snapshot
+			expect(batch.files[0]!.diff!.oldContent).toBe("snapshot-v1\n");
+			// newContent comes from disk (not snapshot)
+			expect(batch.files[0]!.diff!.newContent).toBe("disk-content\n");
+		});
+
+		it("newContent is null when file does not exist on disk", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["ghost.txt", "only-in-snapshot\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["ghost.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// File exists in snapshot but NOT on disk
+			const batch = mgr.getBatchDiffs({ fromEntryId: "snap-1", cwd: testDir });
+			expect(batch.files).toHaveLength(1);
+			const fileDiff = batch.files[0]!.diff;
+			expect(fileDiff).not.toBeNull();
+			expect(fileDiff!.oldContent).toBe("only-in-snapshot\n");
+			expect(fileDiff!.newContent).toBeNull();
 		});
 	});
 
@@ -1087,6 +1176,37 @@ describe("FileSnapshotManager", () => {
 			// b.txt should still be v2 (not restored)
 			const content2 = require("node:fs").readFileSync(join(testDir, "b.txt"), "utf-8");
 			expect(content2).toBe("v2\n");
+		});
+	});
+
+	describe("getBatchFileContents large file filtering", () => {
+		it("returns null newContent for files over FILE_SIZE_LIMIT (1MB)", () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(new Map([["big.txt", "small-in-snapshot\n"]]));
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["big.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+
+			// Write a file larger than FILE_SIZE_LIMIT (1024 * 1024 = 1MB)
+			const largeContent = "x".repeat(1024 * 1024 + 100);
+			writeFileSync(join(testDir, "big.txt"), largeContent);
+
+			const result = mgr.getBatchFileContents([{ filePath: "big.txt", fromEntryId: "snap-1" }], testDir);
+			const content = result.get("big.txt");
+			expect(content).toBeDefined();
+			// oldContent from snapshot (small file in tree)
+			expect(content!.oldContent).toBe("small-in-snapshot\n");
+			// newContent from disk — should be null because file exceeds limit
+			expect(content!.newContent).toBeNull();
 		});
 	});
 });
