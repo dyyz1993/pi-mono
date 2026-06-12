@@ -5,6 +5,40 @@ import {
 import { Type } from "typebox";
 import { COORDINATOR_CHANNEL_NAME, type CoordinatorChannelContract, type SessionStatus } from "./types.ts";
 import { createCoordinatorHandler, TaskStore, type ProcessManagerApi } from "./handler.ts";
+import { createServerProxy } from "./server-proxy.ts";
+
+/**
+ * Parse a structured completion signal from a delegated session message.
+ *
+ * Structured format: a line starting with `__COMPLETION_SIGNAL__` followed by
+ * a JSON payload: `__COMPLETION_SIGNAL__{"result":"..."}`
+ *
+ * Falls back to legacy text markers: `[completed]`, `[done]`, `task completed`.
+ * Returns `{ result }` on match, or `null` if no completion signal detected.
+ */
+function parseCompletionSignal(message: string): { result?: string } | null {
+  // Structured signal: __COMPLETION_SIGNAL__{"result":"..."}
+  for (const line of message.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("__COMPLETION_SIGNAL__")) {
+      try {
+        const payload = JSON.parse(trimmed.slice("__COMPLETION_SIGNAL__".length));
+        return { result: typeof payload.result === "string" ? payload.result : undefined };
+      } catch {
+        // Malformed JSON — treat as completion with no result
+        return { result: undefined };
+      }
+    }
+  }
+
+  // Legacy text markers (backward compat)
+  const lower = message.toLowerCase();
+  if (lower.includes("[completed]") || lower.includes("[done]") || lower.includes("task completed")) {
+    return { result: message };
+  }
+
+  return null;
+}
 
 const DelegateParams = Type.Object({
   task: Type.String({ description: "Task description to delegate to the background session" }),
@@ -39,119 +73,11 @@ const DelegateSyncParams = Type.Object({
   model: Type.Optional(Type.String({ description: "Model override for the delegated session. Takes precedence over the agent definition's model." })),
   timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds. Default: 180000." })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
+  depth: Type.Optional(Type.Number({ description: "Current subagent recursion depth" })),
+  variables: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Variables to pass to the delegated session, accessible via $variable in task templates" })),
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createServerProxy(client: { call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => Promise<any> }): ProcessManagerApi {
-  return {
-    async delegate(task, projectPath) {
-      return client.call("session_delegate", { task, projectPath });
-    },
-
-    async delegate_send(fromSessionId, toSessionId, message) {
-      return client.call("session_delegate_send", {
-        targetSessionId: toSessionId,
-        message,
-      });
-    },
-
-    async delegate_status(sessionId) {
-      try {
-        const result = await client.call("session_delegate_status", { sessionId }) as { task: { status: SessionStatus } | null; status?: string };
-        if (result.task) {
-          return { status: result.task.status as SessionStatus };
-        }
-        // Handler may return status: "not_found" | "stopped" when task is null
-        const rawStatus = (result as Record<string, unknown>).status as string | undefined;
-        return { status: (rawStatus ?? "stopped") as SessionStatus };
-      } catch (err) {
-        console.debug("[coordinator] delegate_status failed:", err instanceof Error ? err.message : err);
-        return { status: "stopped" as const };
-      }
-    },
-
-    async delegate_list() {
-      try {
-        const result = await client.call("session_delegate_list", {}) as { tasks: unknown };
-        return result.tasks as Array<{ sessionId: string; status: SessionStatus; projectPath: string }>;
-      } catch (err) {
-        console.debug("[coordinator] delegate_list failed:", err instanceof Error ? err.message : err);
-        return [];
-      }
-    },
-
-    async delegate_stop(sessionId) {
-      try {
-        const result = await client.call("session_delegate_stop", { sessionId }) as { ok: boolean };
-        return result.ok;
-      } catch (err) {
-        console.debug("[coordinator] delegate_stop failed:", err instanceof Error ? err.message : err);
-        return false;
-      }
-    },
-
-    async delegate_fork(sessionId, task, title, projectPath) {
-      const result = await client.call("session_delegate_fork", { sessionId, task, title, projectPath }) as Record<string, unknown>;
-      const errMsg = result.error as string | undefined;
-      if (errMsg) {
-        throw new Error(errMsg);
-      }
-      return result as unknown as { sessionId: string; status: "started" | "already_running" };
-    },
-
-    async delegate_compact_status(sessionId: string) {
-      try {
-        const result = await client.call("session_delegate_status", { sessionId }) as { task: { isCompacting?: boolean; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } } | null };
-        return {
-          isCompacting: result.task?.isCompacting ?? false,
-          contextUsage: result.task?.contextUsage ?? { tokens: null as number | null, contextWindow: 0, percent: null as number | null },
-        };
-      } catch (err) {
-        console.debug("[coordinator] delegate_compact_status failed:", err instanceof Error ? err.message : err);
-        return { isCompacting: false, contextUsage: { tokens: null as number | null, contextWindow: 0, percent: null as number | null } };
-      }
-    },
-
-    async delegate_remove(sessionId: string) {
-      try {
-        const result = await client.call("session_delegate_remove", { sessionId }) as { ok: boolean };
-        return result.ok;
-      } catch (err) {
-        console.debug("[coordinator] delegate_remove failed:", err instanceof Error ? err.message : err);
-        return false;
-      }
-    },
-
-    async delegate_clear_stopped() {
-      try {
-        const result = await client.call("session_delegate_clear_stopped", {}) as { removed: number };
-        return result.removed;
-      } catch (err) {
-        console.debug("[coordinator] delegate_clear_stopped failed:", err instanceof Error ? err.message : err);
-        return 0;
-      }
-    },
-
-    async delegate_sync(task, agent, timeoutMs, projectPath, model) {
-      try {
-        const result = await client.call(
-          "session_delegate_sync",
-          { task, title: agent ? `${agent}: ${task.slice(0, 40)}` : undefined, agent, model, timeoutMs, projectPath },
-          timeoutMs + 30_000,
-        );
-        return result as { sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string };
-      } catch (err) {
-        return {
-          sessionId: "",
-          status: "error" as const,
-          exitCode: 1,
-          finalText: "",
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-    },
-  };
-}
+export { createServerProxy } from "./server-proxy.ts";
 
 export default function coordinatorExtension(pi: ExtensionAPI) {
   const rawChannel = pi.registerChannel(COORDINATOR_CHANNEL_NAME);
@@ -392,7 +318,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       const timeoutMs = params.timeoutMs ?? 180_000;
 
       try {
-        const result = await serverProxy.delegate_sync(params.task, params.agent, timeoutMs, projectPath, params.model);
+        const result = await serverProxy.delegate_sync(params.task, params.agent, timeoutMs, projectPath, params.model, params.depth, params.variables);
 
         pi.appendEntry("coordinator_delegate_sync", {
           sessionId: result.sessionId,
@@ -431,11 +357,10 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 
     // Detect completion signals from delegated sessions
     if (store && task) {
-      const lowerMsg = d.message.toLowerCase();
-      const isCompletion = lowerMsg.includes("[completed]") || lowerMsg.includes("[done]") || lowerMsg.includes("task completed");
-      if (isCompletion) {
-        store.update(d.fromSessionId, { status: "completed", completedAt: Date.now(), result: d.message });
-        pi.appendEntry("coordinator_task_completed", { sessionId: d.fromSessionId, task: task.title, result: d.message.slice(0, 200) });
+      const completion = parseCompletionSignal(d.message);
+      if (completion) {
+        store.update(d.fromSessionId, { status: "completed", completedAt: Date.now(), result: completion.result ?? d.message });
+        pi.appendEntry("coordinator_task_completed", { sessionId: d.fromSessionId, task: task.title, result: (completion.result ?? d.message).slice(0, 200) });
       } else if (task.status !== "completed") {
         store.update(d.fromSessionId, { status: "streaming" });
       }

@@ -13,7 +13,7 @@ export interface ProcessManagerApi {
   delegate_compact_status(sessionId: string): Promise<{ isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } }>;
   delegate_remove(sessionId: string): Promise<boolean>;
   delegate_clear_stopped(): Promise<number>;
-  delegate_sync(task: string, agent: string | undefined, timeoutMs: number, projectPath: string, model?: string): Promise<{ sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string }>;
+  delegate_sync(task: string, agent: string | undefined, timeoutMs: number, projectPath: string, model?: string, depth?: number, variables?: Record<string, string>): Promise<{ sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string }>;
 }
 
 export class TaskStore {
@@ -43,23 +43,28 @@ export class TaskStore {
   private static readonly EVICT_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes (stopped/completed)
   private static readonly IDLE_EVICT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours (idle zombies)
 
+  /** Returns true if the task has expired and should be evicted/hidden. */
+  static isExpired(task: DelegatedTask, now: number = Date.now()): boolean {
+    if (
+      (task.status === "stopped" || task.status === "completed") &&
+      task.completedAt &&
+      now - task.completedAt > TaskStore.EVICT_MAX_AGE_MS
+    ) {
+      return true;
+    }
+    if (
+      task.status === "idle" &&
+      now - task.dispatchedAt > TaskStore.IDLE_EVICT_MAX_AGE_MS
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   private save(): void {
     const now = Date.now();
     for (const [id, task] of this.tasks) {
-      // Evict stopped/completed tasks older than 5 minutes
-      if (
-        (task.status === "stopped" || task.status === "completed") &&
-        task.completedAt &&
-        now - task.completedAt > TaskStore.EVICT_MAX_AGE_MS
-      ) {
-        this.tasks.delete(id);
-        continue;
-      }
-      // Evict idle tasks older than 24 hours (zombies whose process has vanished)
-      if (
-        task.status === "idle" &&
-        now - task.dispatchedAt > TaskStore.IDLE_EVICT_MAX_AGE_MS
-      ) {
+      if (TaskStore.isExpired(task, now)) {
         this.tasks.delete(id);
       }
     }
@@ -108,19 +113,8 @@ export class TaskStore {
   }
 
   buildPrompt(): string {
-    const FINISHED_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
     const now = Date.now();
-    const IDLE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-    const tasks = this.list().filter((t) => {
-      if ((t.status === "stopped" || t.status === "completed") && t.completedAt && now - t.completedAt > FINISHED_MAX_AGE_MS) {
-        return false;
-      }
-      // Filter out idle tasks older than 24 hours (zombies)
-      if (t.status === "idle" && now - t.dispatchedAt > IDLE_MAX_AGE_MS) {
-        return false;
-      }
-      return true;
-    });
+    const tasks = this.list().filter((t) => !TaskStore.isExpired(t, now));
     if (tasks.length === 0) return "";
 
     const lines = ["## Delegated Tasks", ""];
@@ -319,11 +313,11 @@ export function createCoordinatorHandler(
   });
 
   channel.handle("session_delegate_sync", async (params) => {
-    const { task, title, agent, model, timeoutMs, projectPath: rawProjectPath } = params;
+    const { task, title, agent, model, timeoutMs, projectPath: rawProjectPath, depth, variables } = params;
     const projectPath = rawProjectPath || process.cwd();
 
     try {
-      const result = await pm.delegate_sync(task, agent, timeoutMs ?? 180_000, projectPath, model);
+      const result = await pm.delegate_sync(task, agent, timeoutMs ?? 180_000, projectPath, model, depth, variables);
 
       if (title) {
         getStore().add({

@@ -638,7 +638,7 @@ describe("session_delegate_sync handler", () => {
 		expect(result.status).toBe("completed");
 		expect(result.exitCode).toBe(0);
 		expect(result.finalText).toBe("done");
-		expect(ctx.pm.delegate_sync).toHaveBeenCalledWith("sync task", undefined, 180_000, "/tmp/sync", undefined);
+		expect(ctx.pm.delegate_sync).toHaveBeenCalledWith("sync task", undefined, 180_000, "/tmp/sync", undefined, undefined, undefined);
 	});
 
 	it("adds task to store when title is provided", async () => {

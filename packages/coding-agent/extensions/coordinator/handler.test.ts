@@ -702,9 +702,8 @@ describe("message_received handler tracks task status (Bug 7 fix)", () => {
     expect(msgReceivedStart).toBeGreaterThan(-1);
 
     const msgReceivedBlock = indexSource.slice(msgReceivedStart);
-    // Should detect [completed], [done], or "task completed" signals
-    expect(msgReceivedBlock).toContain("[completed]");
-    expect(msgReceivedBlock).toContain("isCompletion");
+    // Should use parseCompletionSignal for structured + legacy completion detection
+    expect(msgReceivedBlock).toContain("parseCompletionSignal");
     expect(msgReceivedBlock).toContain("status: \"completed\"");
     // Should also update streaming status for regular messages
     expect(msgReceivedBlock).toContain("status: \"streaming\"");

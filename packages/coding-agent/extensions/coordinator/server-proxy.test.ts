@@ -16,7 +16,7 @@ vi.mock("console", () => ({
   // silence debug logs from serverProxy catch blocks
 }));
 
-import { createServerProxy } from "./index.ts";
+import { createServerProxy } from "./server-proxy.ts";
 import type { ProcessManagerApi } from "./handler.ts";
 
 // ── Mock client that simulates typed channel client.call() ──

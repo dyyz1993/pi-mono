@@ -43,6 +43,8 @@ const SubagentParams = Type.Object({
 	confirmProjectAgents: Type.Optional(
 		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
 	),
+	maxDepth: Type.Optional(Type.Number({ description: "Max recursion depth for subagent chain. Default: 5.", default: 5 })),
+	variables: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Variables to pass to the subagent. Use $variable_name in task to reference them." })),
 });
 
 const SubagentResumeParams = Type.Object({
@@ -87,6 +89,20 @@ export default function (pi: ExtensionAPI) {
 	const coordinatorRaw = pi.registerChannel("coordinator_client");
 	const coordinatorClient = createTypedChannel<CoordinatorChannelContract>(coordinatorRaw).client;
 
+	/** Probe coordinator availability with a short timeout. Returns an error message or null. */
+	async function probeCoordinator(): Promise<string | null> {
+		try {
+			await coordinatorClient.call("session_delegate_list", {}, 5_000);
+			return null;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes("timed out") || msg.includes("timeout")) {
+				return "Coordinator extension is not available. Ensure the coordinator extension is loaded (it provides the Process Manager and session delegation).";
+			}
+			return `Coordinator channel error: ${msg}`;
+		}
+	}
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -104,6 +120,31 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const timeoutMs = (params.timeout ?? 300) * 1000;
+
+			// ── Recursion depth check ──
+			const maxDepth = params.maxDepth ?? 5;
+			const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10) || 0;
+			if (currentDepth >= maxDepth) {
+				return {
+					content: [{
+						type: "text",
+						text: `Max subagent recursion depth (${maxDepth}) reached. Current depth: ${currentDepth}. Refusing to delegate deeper.`,
+					}],
+					details: { agentScope, projectAgentsDir: discovery.projectAgentsDir, result: null },
+					isError: true,
+				};
+			}
+
+			// ── Variable template injection ──
+			let resolvedTask = params.task;
+			if (params.variables) {
+				// Sort keys longest-first to prevent shorter keys from matching
+				// inside longer ones (e.g. $foo inside $foobar).
+				const entries = Object.entries(params.variables).sort(([a], [b]) => b.length - a.length);
+				for (const [key, value] of entries) {
+					resolvedTask = resolvedTask.replaceAll(`$${key}`, value);
+				}
+			}
 
 			const details: SubagentDetails = {
 				agentScope,
@@ -141,17 +182,29 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			// ── Coordinator availability check (after agent discovery, before RPC) ──
+			const coordError = await probeCoordinator();
+			if (coordError) {
+				return {
+					content: [{ type: "text", text: coordError }],
+					details,
+					isError: true,
+				};
+			}
+
 			try {
 				const title = params.description ?? `${params.agent}: ${params.task.slice(0, 40)}`;
 				const result = await coordinatorClient.call(
 					"session_delegate_sync",
 					{
-						task: params.task,
+						task: resolvedTask,
 						title,
 						agent: params.agent,
 						model: params.model,
 						timeoutMs,
 						projectPath: params.cwd ?? ctx.cwd,
+						depth: currentDepth + 1,
+						variables: params.variables,
 					},
 					timeoutMs + 30_000,
 				);
@@ -204,11 +257,14 @@ export default function (pi: ExtensionAPI) {
 			const agentName = args.agent || "...";
 			const desc = args.description || "";
 			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
+			const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10) || 0;
+			const maxDepth = args.maxDepth ?? 5;
+			const depthTag = currentDepth > 0 ? ` [depth ${currentDepth + 1}/${maxDepth}]` : "";
 			let text =
 				theme.fg("toolTitle", theme.bold("subagent ")) +
 				theme.fg("accent", agentName);
 			if (desc) text += theme.fg("muted", ` — ${desc}`);
-			text += theme.fg("muted", ` [${scope}]`);
+			text += theme.fg("muted", ` [${scope}]${depthTag}`);
 			text += `\n  ${theme.fg("dim", preview)}`;
 			return new Text(text, 0, 0);
 		},
@@ -259,6 +315,17 @@ export default function (pi: ExtensionAPI) {
 			const startedAt = Date.now();
 			const resumePrompt =
 				params.instruction ?? "Continue the previous task from where you left off.";
+			const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10) || 0;
+
+			// ── Coordinator availability check (after session path validation, before RPC) ──
+			const coordError = await probeCoordinator();
+			if (coordError) {
+				return {
+					content: [{ type: "text", text: coordError }],
+					details,
+					isError: true,
+				};
+			}
 
 			try {
 				const result = await coordinatorClient.call(
@@ -268,6 +335,7 @@ export default function (pi: ExtensionAPI) {
 						title: `Resume: ${sPath.split("/").pop()}`,
 						timeoutMs,
 						projectPath: ctx.cwd,
+						depth: currentDepth,
 					},
 					timeoutMs + 30_000,
 				);

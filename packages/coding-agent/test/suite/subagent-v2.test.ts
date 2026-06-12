@@ -384,6 +384,7 @@ function createCrossWiredChannels(delegateHandler: DelegateSyncHandler) {
 	// Set up the server-side mock handler
 	const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
 	coordinatorServer.handle("session_delegate_sync", delegateHandler);
+	coordinatorServer.handle("session_delegate_list", async () => ({ tasks: [] }));
 
 	return {
 		clientManager,
