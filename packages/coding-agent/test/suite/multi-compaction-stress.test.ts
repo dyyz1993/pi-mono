@@ -18,7 +18,7 @@ import {
 	type ToolResultMessage,
 } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import multiCompaction from "../../extensions/multi-compaction/index.ts";
+import multiCompaction from "../../extensions/_multi-compaction/index.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
 

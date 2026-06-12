@@ -1,6 +1,5 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { AssistantMessage, Usage } from "@dyyz1993/pi-ai";
-import { getModel } from "@dyyz1993/pi-ai";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -495,15 +494,30 @@ describe("Large session fixture", () => {
 // LLM integration tests (skipped without API key)
 // ============================================================================
 
-describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
+// Use zhipuai GLM-4.7 for integration tests
+const ZHIPUAI_API_KEY = process.env.ZHIPUAI_API_KEY || "";
+const zhipuaiModel = {
+	id: "glm-4.7",
+	name: "GLM-4.7",
+	api: "openai-completions" as const,
+	provider: "zhipuai",
+	baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+	reasoning: true,
+	input: ["text" as const],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 204000,
+	maxTokens: 16384,
+};
+
+describe.skipIf(!ZHIPUAI_API_KEY)("LLM summarization", () => {
 	it("should generate a compaction result for the large session", async () => {
 		const entries = loadLargeSessionEntries();
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = zhipuaiModel;
 
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = await compact(preparation!, model, ZHIPUAI_API_KEY);
 
 		expect(compactionResult.summary.length).toBeGreaterThan(100);
 		expect(compactionResult.firstKeptEntryId).toBeTruthy();
@@ -514,17 +528,17 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		console.log("Tokens before:", compactionResult.tokensBefore);
 		console.log("\n--- SUMMARY ---\n");
 		console.log(compactionResult.summary);
-	}, 60000);
+	}, 120000);
 
 	it("should produce valid session after compaction", async () => {
 		const entries = loadLargeSessionEntries();
 		const loaded = buildSessionContext(entries);
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = zhipuaiModel;
 
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
 
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
+		const compactionResult = await compact(preparation!, model, ZHIPUAI_API_KEY);
 
 		// Simulate appending compaction to entries by creating a proper entry
 		const lastEntry = entries[entries.length - 1];
@@ -546,5 +560,5 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 
 		console.log("Original messages:", loaded.messages.length);
 		console.log("After compaction:", reloaded.messages.length);
-	}, 60000);
+	}, 120000);
 });

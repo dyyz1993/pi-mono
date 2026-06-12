@@ -42,7 +42,10 @@ import {
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	computeFileLists,
 	estimateContextTokens,
+	estimateTokens,
+	formatFileOperations,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -441,12 +444,15 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
-	private _overflowRecoveryAttempted = false;
+	private _overflowRecoveryAttempts = 0;
 	private _skipNextThresholdCheck = false;
 	private _consecutiveAutoCompactFailures = 0;
 
 	private static readonly MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES = 3;
 	private static readonly MAX_COMPACT_STREAMING_RETRIES = 2;
+	private static readonly MAX_OVERFLOW_RECOVERY_ROUNDS = 5;
+	/** Safety limit: max post-agent-run iterations before forcing the loop to stop. */
+	private static readonly MAX_POST_RUN_ITERATIONS = 10;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -458,6 +464,9 @@ export class AgentSession {
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
+
+	/** Set to true when abort() is called, checked by _handlePostAgentRun to break loops. */
+	private _aborted = false;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -755,7 +764,7 @@ export class AgentSession {
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
-			this._overflowRecoveryAttempted = false;
+			this._overflowRecoveryAttempts = 0;
 			const messageText = this._getUserMessageText(event.message);
 			if (messageText) {
 				// Check steering queue first
@@ -805,7 +814,7 @@ export class AgentSession {
 
 				const assistantMsg = event.message as AssistantMessage;
 				if (assistantMsg.stopReason !== "error") {
-					this._overflowRecoveryAttempted = false;
+					this._overflowRecoveryAttempts = 0;
 				}
 
 				// Reset retry counter immediately on successful assistant response
@@ -1394,15 +1403,28 @@ export class AgentSession {
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		try {
 			await this.agent.prompt(messages);
-			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
-			}
+			await this._runPostAgentLoop("Post-run");
 		} finally {
 			this._flushPendingBashMessages();
 		}
 	}
 
+	private async _runPostAgentLoop(label: string): Promise<void> {
+		let iterations = 0;
+		while (await this._handlePostAgentRun()) {
+			if (++iterations > AgentSession.MAX_POST_RUN_ITERATIONS) {
+				console.warn(
+					`[AgentSession] ${label} loop exceeded ${AgentSession.MAX_POST_RUN_ITERATIONS} iterations, breaking.`,
+				);
+				break;
+			}
+			await this.agent.continue();
+		}
+	}
+
 	private async _handlePostAgentRun(): Promise<boolean> {
+		if (this._aborted) return false;
+
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
 		if (!msg) {
@@ -1421,6 +1443,14 @@ export class AgentSession {
 				finalError: msg.errorMessage,
 			});
 			this._retryAttempt = 0;
+		}
+
+		// Non-retryable provider limit errors (billing/balance/quota) should not
+		// trigger compaction or continuation — the error is permanent until the
+		// user fixes their account. Without this, compaction succeeds on the
+		// summarized context and loops indefinitely on the same billing error.
+		if (msg.stopReason === "error" && msg.errorMessage && this._isNonRetryableProviderLimitError(msg.errorMessage)) {
+			return false;
 		}
 
 		if (await this._checkCompaction(msg)) {
@@ -1442,6 +1472,7 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		this._aborted = false;
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
@@ -1522,14 +1553,37 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
+			// Pre-flight: estimate current context size independently of stale usage data.
+			// After session resume or rollback, agent.state.messages may contain far more
+			// content than the last assistant message's usage reflects. Re-estimate from
+			// scratch so we compact before sending an oversized request.
+			const contextWindow = this.model?.contextWindow ?? 0;
+			const compactionSettings = this.settingsManager.getCompactionSettings();
+			if (compactionSettings.enabled && contextWindow > 0) {
+				const currentMessages = this.agent.state.messages;
+				let estimatedTotal = 0;
+				for (const msg of currentMessages) {
+					estimatedTotal += estimateTokens(msg);
+				}
+				if (shouldCompact(estimatedTotal, contextWindow, compactionSettings)) {
+					// When context is extremely large (>2x window), LLM summarization
+					// will also overflow. Use emergency truncation instead: find cut point
+					// and use a plain-text summary instead of calling the LLM.
+					const useEmergencyTruncation = estimatedTotal > contextWindow * 2;
+					if (useEmergencyTruncation) {
+						await this._emergencyTruncation(estimatedTotal);
+					} else {
+						await this._runAutoCompaction("threshold", false);
+					}
+				}
+			}
+
 			// Check if we need to compact before sending (catches aborted responses)
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant && (await this._checkCompaction(lastAssistant, false))) {
 				try {
 					await this.agent.continue();
-					while (await this._handlePostAgentRun()) {
-						await this.agent.continue();
-					}
+					await this._runPostAgentLoop("Pre-prompt post-run");
 				} finally {
 					this._flushPendingBashMessages();
 				}
@@ -1698,6 +1752,21 @@ export class AgentSession {
 
 		const { text: finalText } = handleLargeInput(expandedText);
 		await this._queueFollowUp(finalText, images);
+	}
+
+	/**
+	 * Continue from the current transcript without adding a new user message.
+	 * Calls the underlying agent.continue() then runs the post-agent-run loop
+	 * (compaction, retry, queued messages). Useful for re-prompting after a
+	 * model switch or billing error where the last message is already a valid
+	 * user/tool-result message.
+	 */
+	async continue(): Promise<void> {
+		this._aborted = false;
+		this._overflowRecoveryAttempts = 0;
+		await this.agent.continue();
+		await this._runPostAgentLoop("Continue post-run");
+		this._flushPendingBashMessages();
 	}
 
 	/**
@@ -1874,6 +1943,7 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		this._aborted = true;
 		this.abortRetry();
 		this.agent.abort();
 		await this.agent.waitForIdle();
@@ -2285,26 +2355,33 @@ export class AgentSession {
 		}
 
 		// Case 1: Overflow - LLM returned context overflow error
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
-			if (this._overflowRecoveryAttempted) {
+		// Note: we intentionally don't gate on sameModel here. The overflow
+		// happened because the current messages exceed *some* model's context
+		// window, and compaction reduces the context — this is always the
+		// right move regardless of which model last produced the error.
+		if (isContextOverflow(assistantMessage, contextWindow)) {
+			if (this._overflowRecoveryAttempts >= AgentSession.MAX_OVERFLOW_RECOVERY_ROUNDS) {
 				this._emit({
 					type: "compaction_end",
 					reason: "overflow",
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage:
-						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					errorMessage: `Context overflow recovery failed after ${AgentSession.MAX_OVERFLOW_RECOVERY_ROUNDS} compact-and-retry attempts. Try reducing context or switching to a larger-context model.`,
 				});
 				return false;
 			}
 
-			this._overflowRecoveryAttempted = true;
-			// Remove the error message from agent state (it IS saved to session for history,
-			// but we don't want it in context for the retry)
+			this._overflowRecoveryAttempts++;
+			// Remove trailing assistant error messages from agent state (they ARE saved
+			// to session for history, but we don't want them in context for the retry)
 			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.state.messages = messages.slice(0, -1);
+			while (
+				messages.length > 0 &&
+				messages[messages.length - 1].role === "assistant" &&
+				(messages[messages.length - 1] as AssistantMessage).stopReason === "error"
+			) {
+				messages.pop();
 			}
 			return await this._runAutoCompaction("overflow", true);
 		}
@@ -2339,6 +2416,90 @@ export class AgentSession {
 			return await this._runAutoCompaction("threshold", false);
 		}
 		return false;
+	}
+
+	/**
+	 * Emergency truncation: when context is so large that LLM summarization would also
+	 * overflow, skip the LLM call and use a plain-text summary. This handles the case
+	 * where session resume or rollback produces a context >>2x the model's window.
+	 */
+	private async _emergencyTruncation(estimatedTokens: number): Promise<void> {
+		const settings = this.settingsManager.getCompactionSettings();
+		const pathEntries = this.sessionManager.getBranch();
+
+		this._emit({ type: "compaction_start", reason: "overflow" });
+		this._autoCompactionAbortController = new AbortController();
+
+		try {
+			if (!this.model) {
+				this._emit({
+					type: "compaction_end",
+					reason: "overflow",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+				});
+				return;
+			}
+
+			const preparation = prepareCompaction(pathEntries, settings);
+			if (!preparation) {
+				this._emit({
+					type: "compaction_end",
+					reason: "overflow",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+				});
+				return;
+			}
+
+			// Build a plain-text summary instead of calling the LLM
+			const msgCount = preparation.messagesToSummarize.length;
+			const summary =
+				`[Emergency truncation] ${msgCount} messages (${Math.round(estimatedTokens / 1000)}k tokens) ` +
+				`were truncated to fit within the model's context window. ` +
+				`The conversation history has been preserved in the session file.`;
+
+			// Extract file operations from the discarded messages
+			const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
+			const summaryWithFiles = summary + formatFileOperations(readFiles, modifiedFiles);
+
+			this.sessionManager.appendCompaction(
+				summaryWithFiles,
+				preparation.firstKeptEntryId,
+				preparation.tokensBefore,
+				{ readFiles, modifiedFiles },
+				false,
+			);
+
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+			this._overflowRecoveryAttempts = 0;
+
+			this._emit({
+				type: "compaction_end",
+				reason: "overflow",
+				result: {
+					summary: summaryWithFiles,
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: preparation.tokensBefore,
+					details: { readFiles, modifiedFiles },
+				},
+				aborted: false,
+				willRetry: false,
+			});
+		} catch (err) {
+			this._consecutiveAutoCompactFailures++;
+			this._emit({
+				type: "compaction_end",
+				reason: "overflow",
+				result: undefined,
+				aborted: false,
+				willRetry: false,
+				errorMessage: `Emergency truncation failed: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		}
 	}
 
 	/**
@@ -2522,10 +2683,16 @@ export class AgentSession {
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
+				// Remove trailing assistant error messages so agent.continue() can proceed.
+				// buildSessionContext() may include multiple error messages from previous
+				// overflow attempts — we need to strip all of them.
 				const messages = this.agent.state.messages;
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
-					this.agent.state.messages = messages.slice(0, -1);
+				while (
+					messages.length > 0 &&
+					messages[messages.length - 1].role === "assistant" &&
+					(messages[messages.length - 1] as AssistantMessage).stopReason === "error"
+				) {
+					messages.pop();
 				}
 				return true;
 			}
@@ -3183,7 +3350,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private _isNonRetryableProviderLimitError(errorMessage: string): boolean {
-		return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing/i.test(
+		return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient[_ ]?balance|insufficient_quota|out of budget|quota exceeded|billing|\b402\b/i.test(
 			errorMessage,
 		);
 	}

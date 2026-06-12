@@ -210,7 +210,7 @@ export interface TriggerRecord {
         durationMs: number;
     };
     /** Action taken after this trigger */
-    action: "continue" | "idle" | "paused" | "error";
+    action: "continue" | "complete" | "paused" | "error" | "idle";
     /** Reason for the action */
     reason: string;
 }

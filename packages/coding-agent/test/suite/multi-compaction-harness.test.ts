@@ -10,10 +10,10 @@ import {
 	type ToolResultMessage,
 } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CompactionManagerConfig, DEFAULT_CONFIG } from "../../extensions/multi-compaction/config.ts";
-import multiCompaction from "../../extensions/multi-compaction/index.ts";
-import { prepareSegmentCompaction } from "../../extensions/multi-compaction/segment-compaction.ts";
-import { applySlidingWindow } from "../../extensions/multi-compaction/sliding-window.ts";
+import { type CompactionManagerConfig, DEFAULT_CONFIG } from "../../extensions/_multi-compaction/config.ts";
+import multiCompaction from "../../extensions/_multi-compaction/index.ts";
+import { prepareSegmentCompaction } from "../../extensions/_multi-compaction/segment-compaction.ts";
+import { applySlidingWindow } from "../../extensions/_multi-compaction/sliding-window.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/runner.ts";
 import { createHarness, type Harness } from "./harness.ts";
 

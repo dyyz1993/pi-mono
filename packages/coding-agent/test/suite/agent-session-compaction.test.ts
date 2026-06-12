@@ -257,7 +257,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.agent.hasQueuedMessages()).toBe(true);
 	});
 
-	it("does not retry overflow recovery more than once", async () => {
+	it("allows up to MAX_OVERFLOW_RECOVERY_ROUNDS overflow compaction attempts", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
@@ -274,12 +274,17 @@ describe("AgentSession compaction characterization", () => {
 			}
 		});
 
-		await sessionInternals._checkCompaction(overflowMessage);
-		await sessionInternals._checkCompaction({ ...overflowMessage, timestamp: Date.now() + 1 });
+		// First 5 calls should each trigger compaction (overflow recovery rounds 1-5)
+		for (let i = 0; i < 5; i++) {
+			await sessionInternals._checkCompaction({ ...overflowMessage, timestamp: Date.now() + i });
+		}
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(5);
 
-		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(1);
+		// 6th call should be rejected (max rounds exceeded)
+		await sessionInternals._checkCompaction({ ...overflowMessage, timestamp: Date.now() + 100 });
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(5); // still 5, not 6
 		expect(compactionErrors).toContain(
-			"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+			"Context overflow recovery failed after 5 compact-and-retry attempts. Try reducing context or switching to a larger-context model.",
 		);
 	});
 
@@ -438,5 +443,62 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(belowThresholdSpy).not.toHaveBeenCalled();
 		expect(disabledSpy).not.toHaveBeenCalled();
+	});
+
+	it("continue() resets overflow recovery so manual retry can re-attempt compaction", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		const overflowMessage = createAssistant(harness, {
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+			timestamp: Date.now(),
+		});
+
+		// Simulate the error message being saved so continue() has a transcript to work with
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "trigger overflow" }],
+			timestamp: Date.now() - 1000,
+		});
+		harness.sessionManager.appendMessage(overflowMessage);
+
+		// First _checkCompaction: overflow → increments _overflowRecoveryAttempts → compaction runs
+		const runAutoCompactionSpy = vi.spyOn(sessionInternals, "_runAutoCompaction").mockResolvedValue(false);
+		await sessionInternals._checkCompaction(overflowMessage);
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(1);
+
+		// Simulate 4 more rounds exhausting the budget
+		for (let i = 1; i < 5; i++) {
+			await sessionInternals._checkCompaction({ ...overflowMessage, timestamp: Date.now() + i });
+		}
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(5);
+
+		// Next call: _overflowRecoveryAttempts is at max → no compaction, returns false
+		runAutoCompactionSpy.mockClear();
+		await sessionInternals._checkCompaction({ ...overflowMessage, timestamp: Date.now() + 100 });
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(0);
+
+		// Now simulate user clicking "retry" → continue() resets _overflowRecoveryAttempts
+		// We need to seed a response for continue() to work
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		// The agent's state needs a user message as last message for continue() to work
+		// We override the agent messages to put a user message last
+		harness.session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "retry" }], timestamp: Date.now() },
+		];
+		await harness.session.continue();
+
+		// After continue(), _overflowRecoveryAttempted should be reset
+		// Verify by calling _checkCompaction again with an overflow message
+		runAutoCompactionSpy.mockClear();
+		runAutoCompactionSpy.mockResolvedValue(false);
+		const newOverflowMessage = createAssistant(harness, {
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+			timestamp: Date.now() + 100,
+		});
+		await sessionInternals._checkCompaction(newOverflowMessage);
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(1);
 	});
 });
