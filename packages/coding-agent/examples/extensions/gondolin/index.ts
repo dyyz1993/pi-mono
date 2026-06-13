@@ -20,7 +20,7 @@
  */
 
 import path from "node:path";
-import { RealFSProvider, VM } from "@dyyz1993/gondolin";
+import { RealFSProvider, VM } from "@earendil-works/gondolin";
 import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 import {
 	type BashOperations,
