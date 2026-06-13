@@ -12,7 +12,7 @@
 import { fauxAssistantMessage } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { assistantMsg, userMsg } from "../utilities.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { createHarness, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 describe("compaction + rollback interaction", () => {
 	const harnesses: Harness[] = [];
@@ -203,5 +203,252 @@ describe("compaction + rollback interaction", () => {
 		expect(contextText).toContain("Summary of first Q&A");
 		// Should NOT include third Q&A (that's after compaction in a different branch)
 		expect(contextText).not.toContain("third question");
+	});
+});
+
+/**
+ * End-to-end tests for rollback → continue chatting → verify message history.
+ *
+ * These tests verify the full chain:
+ * 1. Roll back to a previous point
+ * 2. Continue chatting (re-prompt)
+ * 3. Verify session.messages, buildSessionContext, and getBranch
+ *    all return the correct message history for the new branch.
+ */
+describe("rollback then continue chatting - message history verification", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) {
+			harnesses.pop()?.cleanup();
+		}
+	});
+
+	/**
+	 * Helper: extract text from context.messages for assertions.
+	 */
+	function contextTexts(harness: Harness): { users: string[]; all: string[] } {
+		const ctx = harness.sessionManager.buildSessionContext();
+		const users = ctx.messages.filter((m) => m.role === "user").map((m) => getMessageText(m));
+		const all = ctx.messages.map((m) => getMessageText(m));
+		return { users, all };
+	}
+
+	it("rollback to first message then re-prompt: session.messages contains only new branch", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// Build: u1 -> a1 -> u2 -> a2
+		const user1Id = harness.sessionManager.appendMessage(userMsg("original question 1"));
+		harness.sessionManager.appendMessage(assistantMsg("original answer 1"));
+		harness.sessionManager.appendMessage(userMsg("original question 2"));
+		harness.sessionManager.appendMessage(assistantMsg("original answer 2"));
+
+		// Roll back to user1 (root)
+		await harness.session.navigateTree(user1Id, { summarize: false, skipFiles: true });
+
+		// After rollback, session.messages should be empty (leaf is null)
+		expect(harness.session.messages).toEqual([]);
+
+		// Set up LLM response and re-prompt
+		harness.setResponses([fauxAssistantMessage("new answer after rollback")]);
+		await harness.session.prompt("new question after rollback");
+		await harness.session.agent.waitForIdle();
+
+		// session.messages should have exactly: new user + new assistant
+		expect(harness.session.messages).toHaveLength(2);
+		expect(harness.session.messages[0].role).toBe("user");
+		expect(harness.session.messages[1].role).toBe("assistant");
+		expect(getMessageText(harness.session.messages[0])).toBe("new question after rollback");
+		expect(getMessageText(harness.session.messages[1])).toBe("new answer after rollback");
+
+		// No traces of old messages
+		const allTexts = harness.session.messages.map((m) => getMessageText(m));
+		expect(allTexts).not.toContain("original question 1");
+		expect(allTexts).not.toContain("original answer 1");
+		expect(allTexts).not.toContain("original question 2");
+		expect(allTexts).not.toContain("original answer 2");
+	});
+
+	it("rollback to first message then re-prompt: buildSessionContext returns new branch only", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		const user1Id = harness.sessionManager.appendMessage(userMsg("first question"));
+		harness.sessionManager.appendMessage(assistantMsg("first answer"));
+		harness.sessionManager.appendMessage(userMsg("second question"));
+		harness.sessionManager.appendMessage(assistantMsg("second answer"));
+
+		await harness.session.navigateTree(user1Id, { summarize: false, skipFiles: true });
+
+		harness.setResponses([fauxAssistantMessage("fresh response")]);
+		await harness.session.prompt("fresh prompt");
+		await harness.session.agent.waitForIdle();
+
+		// buildSessionContext should return only the new branch
+		const { users, all } = contextTexts(harness);
+		expect(users).toEqual(["fresh prompt"]);
+		expect(all).toContain("fresh response");
+
+		// Old messages must not appear in context
+		expect(all).not.toContain("first question");
+		expect(all).not.toContain("first answer");
+		expect(all).not.toContain("second question");
+		expect(all).not.toContain("second answer");
+	});
+
+	it("rollback to first message then re-prompt: getBranch has correct ids", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		const user1Id = harness.sessionManager.appendMessage(userMsg("Q1"));
+		harness.sessionManager.appendMessage(assistantMsg("A1"));
+		harness.sessionManager.appendMessage(userMsg("Q2"));
+		harness.sessionManager.appendMessage(assistantMsg("A2"));
+
+		await harness.session.navigateTree(user1Id, { summarize: false, skipFiles: true });
+
+		harness.setResponses([fauxAssistantMessage("new A")]);
+		await harness.session.prompt("new Q");
+		await harness.session.agent.waitForIdle();
+
+		const branch = harness.sessionManager.getBranch();
+		// Should have exactly 2 entries (new user + new assistant), no old ones
+		expect(branch).toHaveLength(2);
+		expect(branch.every((e) => e.type === "message")).toBe(true);
+
+		// Old entries still exist in the full tree
+		const allEntries = harness.sessionManager.getEntries();
+		expect(allEntries.length).toBeGreaterThanOrEqual(6); // 4 old + 2 new
+	});
+
+	it("rollback to middle then re-prompt: preserves prior messages in path", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// Build: u1 -> a1 -> u2 -> a2 -> u3 -> a3
+		const u1 = harness.sessionManager.appendMessage(userMsg("question one"));
+		const a1 = harness.sessionManager.appendMessage(assistantMsg("answer one"));
+		harness.sessionManager.appendMessage(userMsg("question two"));
+		harness.sessionManager.appendMessage(assistantMsg("answer two"));
+		harness.sessionManager.appendMessage(userMsg("question three"));
+		harness.sessionManager.appendMessage(assistantMsg("answer three"));
+
+		// Roll back to a1 (middle of conversation)
+		await harness.session.navigateTree(a1, { summarize: false, skipFiles: true });
+
+		// After rollback, messages should be u1 -> a1
+		expect(harness.session.messages).toHaveLength(2);
+		expect(getMessageText(harness.session.messages[0])).toBe("question one");
+		expect(getMessageText(harness.session.messages[1])).toBe("answer one");
+
+		// Continue chatting
+		harness.setResponses([fauxAssistantMessage("redirected answer")]);
+		await harness.session.prompt("redirected question");
+		await harness.session.agent.waitForIdle();
+
+		// session.messages should be: u1 -> a1 -> new_u -> new_a
+		expect(harness.session.messages).toHaveLength(4);
+		expect(getMessageText(harness.session.messages[0])).toBe("question one");
+		expect(getMessageText(harness.session.messages[1])).toBe("answer one");
+		expect(getMessageText(harness.session.messages[2])).toBe("redirected question");
+		expect(getMessageText(harness.session.messages[3])).toBe("redirected answer");
+
+		// buildSessionContext must match
+		const { all } = contextTexts(harness);
+		expect(all).toEqual(["question one", "answer one", "redirected question", "redirected answer"]);
+
+		// Old branch messages must not leak
+		expect(all).not.toContain("question two");
+		expect(all).not.toContain("answer two");
+		expect(all).not.toContain("question three");
+		expect(all).not.toContain("answer three");
+	});
+
+	it("rollback to middle then re-prompt: getBranch path is correct", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		const u1 = harness.sessionManager.appendMessage(userMsg("msg-1"));
+		const a1 = harness.sessionManager.appendMessage(assistantMsg("resp-1"));
+		harness.sessionManager.appendMessage(userMsg("msg-2"));
+		harness.sessionManager.appendMessage(assistantMsg("resp-2"));
+
+		await harness.session.navigateTree(a1, { summarize: false, skipFiles: true });
+
+		harness.setResponses([fauxAssistantMessage("new-resp")]);
+		await harness.session.prompt("new-msg");
+		await harness.session.agent.waitForIdle();
+
+		const branch = harness.sessionManager.getBranch();
+		expect(branch).toHaveLength(4);
+		expect(branch[0].id).toBe(u1);
+		expect(branch[1].id).toBe(a1);
+		// New entries should not have the old ids
+		expect(branch[2].id).not.toBe(branch[0].id);
+		expect(branch[3].id).not.toBe(branch[1].id);
+	});
+
+	it("multiple rollbacks with re-prompt: no cross-branch message leakage", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// Initial conversation
+		const u1 = harness.sessionManager.appendMessage(userMsg("initial Q"));
+		harness.sessionManager.appendMessage(assistantMsg("initial A"));
+
+		// First rollback + re-prompt
+		await harness.session.navigateTree(u1, { summarize: false, skipFiles: true });
+		harness.setResponses([fauxAssistantMessage("branch1 A")]);
+		await harness.session.prompt("branch1 Q");
+		await harness.session.agent.waitForIdle();
+
+		expect(getUserTexts(harness)).toEqual(["branch1 Q"]);
+
+		// Second rollback + re-prompt
+		await harness.session.navigateTree(u1, { summarize: false, skipFiles: true });
+		harness.setResponses([fauxAssistantMessage("branch2 A")]);
+		await harness.session.prompt("branch2 Q");
+		await harness.session.agent.waitForIdle();
+
+		// Should only have branch2 messages, no branch1 leakage
+		expect(getUserTexts(harness)).toEqual(["branch2 Q"]);
+		const { all } = contextTexts(harness);
+		expect(all).not.toContain("branch1 Q");
+		expect(all).not.toContain("branch1 A");
+		expect(all).not.toContain("initial A");
+	});
+
+	it("rollback then multi-turn conversation: accumulates messages correctly", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// Build initial conversation
+		const u1 = harness.sessionManager.appendMessage(userMsg("old Q1"));
+		harness.sessionManager.appendMessage(assistantMsg("old A1"));
+		harness.sessionManager.appendMessage(userMsg("old Q2"));
+
+		// Roll back to start
+		await harness.session.navigateTree(u1, { summarize: false, skipFiles: true });
+
+		// Multi-turn conversation after rollback
+		harness.setResponses([fauxAssistantMessage("new A1"), fauxAssistantMessage("new A2")]);
+
+		await harness.session.prompt("new Q1");
+		await harness.session.agent.waitForIdle();
+		await harness.session.prompt("new Q2");
+		await harness.session.agent.waitForIdle();
+
+		// Should have 4 messages: new Q1, new A1, new Q2, new A2
+		expect(harness.session.messages).toHaveLength(4);
+		expect(getUserTexts(harness)).toEqual(["new Q1", "new Q2"]);
+		expect(getMessageText(harness.session.messages[1])).toBe("new A1");
+		expect(getMessageText(harness.session.messages[3])).toBe("new A2");
+
+		// No old messages
+		const { all } = contextTexts(harness);
+		expect(all).not.toContain("old Q1");
+		expect(all).not.toContain("old A1");
+		expect(all).not.toContain("old Q2");
 	});
 });
