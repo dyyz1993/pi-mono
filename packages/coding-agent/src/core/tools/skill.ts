@@ -2,9 +2,11 @@ import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { Text } from "@dyyz1993/pi-tui";
 import { readFileSync } from "fs";
 import { type Static, Type } from "typebox";
+import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../../utils/frontmatter.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import type { Skill } from "../skills.ts";
+import { runSubtask, type SubtaskContext } from "../subtask.ts";
 import { str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -24,6 +26,8 @@ export type SkillToolInput = Static<typeof skillSchema>;
 export interface SkillToolOptions {
 	/** Function to resolve skills by name. */
 	getSkills: () => Skill[];
+	/** Context for running forked subtasks. Required for context:fork skills. */
+	subtaskContext?: SubtaskContext;
 }
 
 function formatSkillCall(args: { name?: string; args?: string } | undefined, theme: any): string {
@@ -39,7 +43,7 @@ function formatSkillCall(args: { name?: string; args?: string } | undefined, the
 function formatSkillResult(
 	result: { content: { type: string; text?: string }[] },
 	options: ToolRenderResultOptions,
-	theme: any,
+	theme: Theme,
 ): string {
 	if (!options.expanded) {
 		return "";
@@ -53,7 +57,7 @@ function formatSkillResult(
 }
 
 export function createSkillToolDefinition(options: SkillToolOptions): ToolDefinition<typeof skillSchema, undefined> {
-	const { getSkills } = options;
+	const { getSkills, subtaskContext } = options;
 
 	return {
 		name: "skill",
@@ -83,6 +87,32 @@ export function createSkillToolDefinition(options: SkillToolOptions): ToolDefini
 			}
 
 			try {
+				// Fork mode: run in isolated subtask
+				if (skill.context === "fork" && subtaskContext) {
+					const rawContent = readFileSync(skill.filePath, "utf-8");
+					const body = stripFrontmatter(rawContent).trim();
+					const task = args ? `${body}\n\nAdditional context: ${args}` : body;
+
+					const result = await runSubtask({ task, inheritHistory: false }, subtaskContext);
+
+					if (result.success) {
+						return {
+							content: [{ type: "text" as const, text: result.text }],
+							details: undefined,
+						};
+					}
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Forked skill "${name}" failed: ${result.error || "unknown error"}`,
+							},
+						],
+						details: undefined,
+					};
+				}
+
+				// Inline mode (default): inject into main session
 				const rawContent = readFileSync(skill.filePath, "utf-8");
 				const body = stripFrontmatter(rawContent).trim();
 				const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
@@ -106,12 +136,12 @@ export function createSkillToolDefinition(options: SkillToolOptions): ToolDefini
 		},
 		renderCall(args, theme, _context) {
 			const text = (_context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatSkillCall(args as any, theme));
+			text.setText(formatSkillCall(args, theme));
 			return text;
 		},
 		renderResult(result, options, theme, _context) {
 			const text = (_context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatSkillResult(result as any, options, theme));
+			text.setText(formatSkillResult(result, options, theme));
 			return text;
 		},
 	};

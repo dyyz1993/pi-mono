@@ -630,7 +630,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					const index = blocks.findIndex((b) => b.index === event.index);
 					const block = blocks[index];
 					if (block) {
-						delete (block as any).index;
+						delete (block as { index?: number }).index;
 						if (block.type === "text") {
 							stream.push({
 								type: "text_end",
@@ -1156,16 +1156,16 @@ function convertMessages(
 					lastBlock &&
 					(lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
 				) {
-					(lastBlock as any).cache_control = cacheControl;
+					(lastBlock as unknown as Record<string, unknown>).cache_control = cacheControl;
 				}
 			} else if (typeof lastMessage.content === "string") {
 				lastMessage.content = [
 					{
-						type: "text",
+						type: "text" as const,
 						text: lastMessage.content,
 						cache_control: cacheControl,
 					},
-				] as any;
+				];
 			}
 		}
 	}

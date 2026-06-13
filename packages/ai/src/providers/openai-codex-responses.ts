@@ -834,7 +834,7 @@ async function getWebSocketConstructor(): Promise<WebSocketConstructor | null> {
 				}
 
 				const proxy = getProxyForUrl(url.toString().replace(/^wss:/, "https:").replace(/^ws:/, "http:"));
-				super(url, { ..._opts, ...(proxy ? { proxy } : {}) } as any);
+				super(url, { ..._opts, ...(proxy ? { proxy } : {}) } as ConstructorParameters<typeof WebSocket>[1]);
 			}
 		};
 		return _cachedWebsocket;

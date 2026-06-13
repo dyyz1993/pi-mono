@@ -17,7 +17,7 @@ export function StringEnum<T extends readonly string[]>(
 ): TUnsafe<T[number]> {
 	return Type.Unsafe<T[number]>({
 		type: "string",
-		enum: values as any,
+		enum: values as unknown as Record<string, unknown>,
 		...(options?.description && { description: options.description }),
 		...(options?.default && { default: options.default }),
 	});
