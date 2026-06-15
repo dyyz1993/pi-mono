@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import * as Diff from "diff";
 import type { SessionEntry } from "../session-manager.ts";
 import type { InternalGit, TreeEntry } from "./internal-git.ts";
 
@@ -93,53 +94,13 @@ function readDiskFile(cwd: string, filePath: string): string | null {
 }
 
 function generateUnifiedDiff(oldContent: string | null, newContent: string | null, filePath: string): string {
-	const oldLines = oldContent === null ? [] : oldContent.split("\n");
-	const newLines = newContent === null ? [] : newContent.split("\n");
-	const hunks: string[] = [];
-	let i = 0;
-	let j = 0;
-
-	while (i < oldLines.length || j < newLines.length) {
-		if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
-			i++;
-			j++;
-			continue;
-		}
-
-		const oldStart = i;
-		const newStart = j;
-		const contextStart = Math.max(0, oldStart - 2);
-		const lines: string[] = [];
-		for (let c = contextStart; c < oldStart; c++) {
-			lines.push(` ${oldLines[c]}`);
-		}
-
-		let changed = 0;
-		while ((i < oldLines.length || j < newLines.length) && changed < 8) {
-			if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
-				break;
-			}
-			if (i < oldLines.length) {
-				lines.push(`-${oldLines[i]}`);
-				i++;
-			}
-			if (j < newLines.length) {
-				lines.push(`+${newLines[j]}`);
-				j++;
-			}
-			changed++;
-		}
-
-		for (let c = j; c < Math.min(newLines.length, j + 2); c++) {
-			lines.push(` ${newLines[c]}`);
-		}
-
-		hunks.push(`@@ -${oldStart + 1},${Math.max(1, i - oldStart)} +${newStart + 1},${Math.max(1, j - newStart)} @@`);
-		hunks.push(...lines);
-	}
-
-	if (hunks.length === 0) return "";
-	return [`--- ${filePath}`, `+++ ${filePath}`, ...hunks].join("\n");
+	const oldStr = oldContent ?? "";
+	const newStr = newContent ?? "";
+	if (oldStr === newStr) return "";
+	return Diff.createTwoFilesPatch(filePath, filePath, oldStr, newStr, undefined, undefined, {
+		context: 3,
+		headerOptions: Diff.FILE_HEADERS_ONLY,
+	});
 }
 
 function isOnPathTo(byId: Map<string, SessionEntry>, startId: string, targetId: string): boolean {
