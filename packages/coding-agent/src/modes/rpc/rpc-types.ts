@@ -25,6 +25,7 @@ export type RpcCommand =
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
+	| { id?: string; type: "continue" }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "new_session"; parentSession?: string }
 
@@ -63,6 +64,7 @@ export type RpcCommand =
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
 	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
+	| { id?: string; type: "copy_fork"; entryId: string; compact?: boolean }
 	| {
 			id?: string;
 			type: "navigate_tree";
@@ -83,7 +85,7 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
-	| { id?: string; type: "get_full_messages"; afterEntryId?: string; limit?: number }
+	| { id?: string; type: "get_full_messages"; afterEntryId?: string; beforeEntryId?: string; limit?: number }
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_tree_with_leaf" }
 	| {
@@ -311,6 +313,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "prompt"; success: true }
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
+	| { id?: string; type: "response"; command: "continue"; success: true }
 	| { id?: string; type: "response"; command: "abort"; success: true }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
 

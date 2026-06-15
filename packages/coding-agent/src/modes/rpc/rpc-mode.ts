@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { PermissionMode } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
@@ -512,6 +513,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "follow_up");
 			}
 
+			case "continue": {
+				await session.continue();
+				return success(id, "continue");
+			}
+
 			case "abort": {
 				await session.abort();
 				return success(id, "abort");
@@ -704,6 +710,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
 			}
 
+			case "copy_fork": {
+				const newSessionFile = session.sessionManager.copyBranchedSession(command.entryId, {
+					compact: command.compact,
+				});
+				if (!newSessionFile) {
+					return success(id, "copy_fork", {});
+				}
+				// Extract sessionId from the JSONL header
+				const firstLine = readFileSync(newSessionFile, "utf-8").split("\n")[0];
+				const newSessionId = firstLine ? JSON.parse(firstLine).id : undefined;
+				return success(id, "copy_fork", { newSessionFile, newSessionId });
+			}
+
 			case "navigate_tree": {
 				const result = await session.navigateTree(command.targetId, {
 					summarize: command.summarize,
@@ -871,6 +890,37 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}));
 
 				if (command.limit !== undefined) {
+					// Backward pagination: load messages before a given entryId
+					// Used for "scroll up to load older history"
+					if (command.beforeEntryId) {
+						const endIndex = messageEntries.findIndex((entry) => entry.entryId === command.beforeEntryId);
+						if (endIndex === -1 || endIndex === 0) {
+							return success(id, "get_full_messages", {
+								messages: [],
+								hasMore: false,
+								totalCount,
+								nextCursor: null,
+								tree: { entries: treeEntries, leafId: session.sessionManager.getLeafId() },
+								customEntries,
+								compactionEntries,
+							});
+						}
+						const startIndex = Math.max(0, endIndex - command.limit);
+						const page = messages.slice(startIndex, endIndex);
+						const hasMore = startIndex > 0;
+						const prevCursorEntry = hasMore ? messageEntries[startIndex] : undefined;
+						return success(id, "get_full_messages", {
+							messages: page,
+							hasMore,
+							totalCount,
+							nextCursor: prevCursorEntry?.entryId ?? null,
+							tree: { entries: treeEntries, leafId: session.sessionManager.getLeafId() },
+							customEntries,
+							compactionEntries,
+						});
+					}
+
+					// Forward pagination: load messages after a given entryId (or from start)
 					const startIndex = command.afterEntryId
 						? Math.max(0, messageEntries.findIndex((entry) => entry.entryId === command.afterEntryId) + 1)
 						: 0;

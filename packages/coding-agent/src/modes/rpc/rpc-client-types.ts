@@ -90,6 +90,7 @@ export interface RpcClientSurface {
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;
 	abort(): Promise<void>;
+	continue(): Promise<void>;
 
 	newSession(parentSession?: string): Promise<SessionOperationResult>;
 	getState(): Promise<RpcSessionState>;
@@ -131,7 +132,7 @@ export interface RpcClientSurface {
 	getLastAssistantText(): Promise<string | null>;
 	setSessionName(name: string): Promise<void>;
 	getMessages(): Promise<AgentMessage[]>;
-	getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
+	getFullMessages(options?: { afterEntryId?: string; beforeEntryId?: string; limit?: number }): Promise<{
 		messages: RpcAgentMessage[];
 		hasMore: boolean;
 		totalCount: number;

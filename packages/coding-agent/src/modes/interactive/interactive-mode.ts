@@ -559,10 +559,12 @@ export class InteractiveMode {
 		const triggerCharacters: string[] = [];
 		for (const wrapProvider of this.autocompleteProviderWrappers) {
 			provider = wrapProvider(provider);
-			triggerCharacters.push(...(provider.triggerCharacters ?? []));
+			triggerCharacters.push(
+				...(((provider as unknown as Record<string, unknown>).triggerCharacters as string[]) ?? []),
+			);
 		}
 		if (triggerCharacters.length > 0) {
-			provider.triggerCharacters = [...new Set(triggerCharacters)];
+			(provider as unknown as Record<string, unknown>).triggerCharacters = [...new Set(triggerCharacters)];
 		}
 
 		this.autocompleteProvider = provider;

@@ -289,6 +289,14 @@ export class RpcClient {
 	}
 
 	/**
+	 * Continue the agent from where it stopped (e.g. after an error or abort).
+	 * Re-runs the agent loop on the current session state without adding a new user message.
+	 */
+	async continue(): Promise<void> {
+		await this.send({ type: "continue" });
+	}
+
+	/**
 	 * Start a new session, optionally with parent tracking.
 	 * @param parentSession - Optional parent session path for lineage tracking
 	 * @returns Object with `cancelled: true` if an extension cancelled the new session
@@ -453,6 +461,18 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	/**
+	 * Copy-fork: creates a branched session file without switching the current session.
+	 * The current CLI process remains untouched.
+	 */
+	async copyFork(
+		entryId: string,
+		options?: { compact?: boolean },
+	): Promise<{ newSessionFile?: string; newSessionId?: string }> {
+		const response = await this.send({ type: "copy_fork", entryId, compact: options?.compact });
+		return this.getData(response);
+	}
+
 	async navigateTree(
 		targetId: string,
 		options?: {
@@ -538,7 +558,7 @@ export class RpcClient {
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
 	}
 
-	async getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
+	async getFullMessages(options?: { afterEntryId?: string; beforeEntryId?: string; limit?: number }): Promise<{
 		messages: RpcAgentMessage[];
 		hasMore: boolean;
 		totalCount: number;
@@ -550,6 +570,7 @@ export class RpcClient {
 		const response = await this.send({
 			type: "get_full_messages",
 			afterEntryId: options?.afterEntryId,
+			beforeEntryId: options?.beforeEntryId,
 			limit: options?.limit,
 		});
 		return this.getData(response);
@@ -892,17 +913,26 @@ export class RpcClient {
 				const handlers = this.channelHandlers.get(data.name as string);
 				if (handlers) {
 					for (const handler of handlers) {
-						const payload = data.data as UnknownRecord | undefined;
-						const invokeId = payload?.invokeId as string | undefined;
-						const result = handler(data.data);
-						if (invokeId && result !== undefined) {
-							const responseData =
-								result && typeof result === "object" ? (result as UnknownRecord) : { value: result };
-							this.writeLine({
-								type: "channel_data",
-								name: data.name,
-								data: { ...responseData, invokeId },
-							} as ChannelDataMessage);
+						try {
+							const payload = data.data as UnknownRecord | undefined;
+							const invokeId = payload?.invokeId as string | undefined;
+							const result = handler(data.data);
+							if (invokeId && result !== undefined) {
+								const responseData =
+									result && typeof result === "object" ? (result as UnknownRecord) : { value: result };
+								this.writeLine({
+									type: "channel_data",
+									name: data.name,
+									data: { ...responseData, invokeId },
+								} as ChannelDataMessage);
+							}
+						} catch (handlerError: unknown) {
+							// Prevent one handler's error from breaking delivery to other handlers
+							// (e.g., invoke response handler must still run even if onReceive handler throws)
+							console.error(
+								`[rpc-client] channel handler error for "${data.name}":`,
+								handlerError instanceof Error ? handlerError.message : String(handlerError),
+							);
 						}
 					}
 				}
