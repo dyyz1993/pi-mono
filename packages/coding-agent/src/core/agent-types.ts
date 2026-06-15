@@ -16,6 +16,15 @@ export type MemoryScope = "user" | "project" | "local";
 
 export type IsolationMode = "worktree" | "remote";
 
+/**
+ * Discriminated avatar value parsed from the `avatar` frontmatter field.
+ * - `emoji`: short unicode/emoji text rendered as-is (e.g. "🧑‍💻").
+ * - `image`: anything that resolves to a loadable image source — http(s) URL,
+ *   `data:` URI, absolute path, or relative path (relative paths are resolved
+ *   against the agent .md file's directory at the consumer side).
+ */
+export type AgentAvatar = { type: "emoji"; value: string } | { type: "image"; src: string };
+
 export interface AgentHookCommand {
 	type: "command";
 	command: string;
@@ -84,6 +93,7 @@ export interface AgentConfig {
 	mode?: AgentMode;
 	hidden?: boolean;
 	paths?: PathConfig;
+	avatar?: AgentAvatar;
 }
 
 export type AgentSource = "builtin" | "plugin" | "user" | "project" | "flag" | "policy";
@@ -231,6 +241,20 @@ function parsePathConfig(raw: unknown): PathConfig | undefined {
 	return paths.write || paths.read || paths.bash ? paths : undefined;
 }
 
+const AVATAR_IMAGE_SCHEME = /^(https?:|data:|file:)/i;
+// Path-like: starts with `/`, `./`, `../`, or a Windows drive root (e.g. `C:\` or `C:/`).
+const AVATAR_PATH_PREFIX = /^(\/|\.\/|\.\.[/\\]|[A-Za-z]:[\\/])/;
+
+function parseAvatar(raw: unknown): AgentAvatar | undefined {
+	if (typeof raw !== "string") return undefined;
+	const trimmed = raw.trim();
+	if (!trimmed) return undefined;
+	if (AVATAR_IMAGE_SCHEME.test(trimmed) || AVATAR_PATH_PREFIX.test(trimmed)) {
+		return { type: "image", src: trimmed };
+	}
+	return { type: "emoji", value: trimmed };
+}
+
 export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	if (!fs.existsSync(dir)) return [];
 
@@ -256,6 +280,58 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 
 		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
 		if (!frontmatter.name || !frontmatter.description) continue;
+
+		// Validate: warn on unknown / deprecated fields so authors can fix them early
+		const KNOWN_FIELDS = new Set([
+			"name",
+			"description",
+			"tools",
+			"disallowedTools",
+			"model",
+			"permissionMode",
+			"maxTurns",
+			"effort",
+			"color",
+			"background",
+			"memory",
+			"isolation",
+			"initialPrompt",
+			"skills",
+			"hooks",
+			"variables",
+			"tier",
+			"thinkingLevel",
+			"mode",
+			"hidden",
+			"paths",
+			"avatar",
+		]);
+		const fmKeys = Object.keys(frontmatter);
+		const unknownFields = fmKeys.filter((k) => !KNOWN_FIELDS.has(k));
+		if (unknownFields.length > 0) {
+			console.warn(
+				`[agent] "${entry.name}" has unrecognized frontmatter field(s): ${unknownFields.join(", ")}. ` +
+					`Valid fields: ${[...KNOWN_FIELDS].join(", ")}`,
+			);
+		}
+		// Commonly forgotten but useful fields — hint only, not an error
+		const suggestedHints: string[] = [];
+		if (!frontmatter.tier && !frontmatter.model) suggestedHints.push("tier");
+		if (!frontmatter.thinkingLevel) suggestedHints.push("thinkingLevel");
+		if (!frontmatter.effort) suggestedHints.push("effort");
+		if (!frontmatter.tools && !frontmatter.disallowedTools) suggestedHints.push("tools");
+		if (!frontmatter.permissionMode && frontmatter.permission) {
+			console.warn(
+				`[agent] "${entry.name}" uses deprecated "permission" map format. ` +
+					`Use "permissionMode" with a single value like "always-allow" instead.`,
+			);
+		}
+		if (suggestedHints.length > 0) {
+			console.warn(
+				`[agent] "${entry.name}" is missing recommended field(s): ${suggestedHints.join(", ")}. ` +
+					`These affect the Agent panel display.`,
+			);
+		}
 
 		const tools = coerceField("tools", frontmatter.tools) as string[] | undefined;
 		const disallowedTools = coerceField("disallowedTools", frontmatter.disallowedTools) as string[] | undefined;

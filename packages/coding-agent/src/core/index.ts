@@ -26,6 +26,7 @@ export {
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
 export type {
+	AgentAvatar,
 	AgentConfig,
 	AgentDiscoveryResult,
 	AgentHook,
@@ -113,3 +114,9 @@ export {
 	resolveProjectRoot,
 	type StoragePaths,
 } from "./storage.ts";
+export {
+	runSubtask,
+	type SubtaskContext,
+	type SubtaskOptions,
+	type SubtaskResult,
+} from "./subtask.ts";

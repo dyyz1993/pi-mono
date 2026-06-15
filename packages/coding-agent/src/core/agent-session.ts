@@ -106,7 +106,16 @@ import {
 	getSessionDataDir,
 	resolveProjectIdentity,
 } from "./storage.ts";
+import type { SubtaskContext } from "./subtask.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import {
+	checkToolEnd,
+	createLoopDetectionState,
+	type LoopDetectionResult,
+	type LoopDetectionState,
+	recordToolStart,
+	resetLoopDetection,
+} from "./tool-loop-detector.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import {
 	createAllToolDefinitions,
@@ -211,6 +220,7 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "auto_continue"; reason: string; iteration: number }
 	| { type: "custom_entry"; customType: string; data?: unknown; id: string };
 
 /** Listener function for agent session events */
@@ -467,6 +477,12 @@ export class AgentSession {
 
 	/** Set to true when abort() is called, checked by _handlePostAgentRun to break loops. */
 	private _aborted = false;
+
+	// Tool-loop detection state
+	// Persists across compaction (in-memory, not in message stream) so loops
+	// are detected even after contextFold erases the message history.
+	private _loopState: LoopDetectionState = createLoopDetectionState();
+	private _loopAbortInProgress = false;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -765,6 +781,7 @@ export class AgentSession {
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempts = 0;
+			resetLoopDetection(this._loopState);
 			const messageText = this._getUserMessageText(event.message);
 			if (messageText) {
 				// Check steering queue first
@@ -953,6 +970,14 @@ export class AgentSession {
 				timestamp: event.timestamp,
 			};
 			await this._extensionRunner.emit(extensionEvent);
+
+			// Cache args for loop detection (tool_execution_end doesn't carry args)
+			recordToolStart(
+				this._loopState,
+				event.toolCallId,
+				event.toolName,
+				event.args as Record<string, unknown> | undefined,
+			);
 		} else if (event.type === "tool_execution_update") {
 			const extensionEvent: ToolExecutionUpdateEvent = {
 				type: "tool_execution_update",
@@ -973,6 +998,41 @@ export class AgentSession {
 				durationMs: event.durationMs,
 			};
 			await this._extensionRunner.emit(extensionEvent);
+
+			// Check for tool-call loops (consecutive identical calls with errors)
+			// Fire-and-forget: abort must happen after this handler returns to avoid
+			// deadlocking with agent.waitForIdle() inside the event emission chain.
+			void this._checkToolLoop(event.toolCallId, event.toolName, event.isError);
+		}
+	}
+
+	/**
+	 * Check for tool-call loops after each tool_execution_end.
+	 * If a loop is detected (consecutive identical calls with errors),
+	 * aborts the current run and injects a corrective message.
+	 */
+	private async _checkToolLoop(toolCallId: string, toolName: string, isError: boolean): Promise<void> {
+		const result: LoopDetectionResult | undefined = checkToolEnd(this._loopState, toolCallId, toolName, isError);
+		if (!result || !result.detected) return;
+		if (this._loopAbortInProgress) return; // Prevent re-entrant aborts
+
+		this._loopAbortInProgress = true;
+		try {
+			// Abort the current agent run
+			await this.abort();
+
+			// Inject corrective message that triggers a new turn
+			await this.sendCustomMessage(
+				{
+					customType: "tool_loop_detected",
+					content: result.message,
+					display: true,
+					details: { toolName: result.toolName, count: result.count, hadErrors: result.hadErrors },
+				},
+				{ triggerTurn: true },
+			);
+		} finally {
+			this._loopAbortInProgress = false;
 		}
 	}
 
@@ -1200,6 +1260,31 @@ export class AgentSession {
 		}
 
 		// No prior decision — ask user via UI
+
+		// PermissionRequest hook: let extensions decide before showing dialog
+		const runner = this._extensionRunner;
+		if (runner.hasPermissionRequestHandlers()) {
+			const hookResult = await runner.emitPermissionRequest({
+				type: "permission_request",
+				toolName,
+				toolCallId: "",
+				input: args as Record<string, unknown>,
+				reason: "path_boundary",
+				path: normalizedPath,
+			});
+			if (hookResult) {
+				if (hookResult.decision === "allow") {
+					// Hook approved — persist like "Always allow" for this path
+					const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
+					this._pathPermissionStore.allow(this._cwd, parentDir, scope);
+					return undefined;
+				}
+				if (hookResult.decision === "deny") {
+					return { block: true, reason: hookResult.message ?? `Permission denied by hook: ${normalizedPath}` };
+				}
+			}
+		}
+
 		if (!uiContext) {
 			return { block: true, reason: `Path ${normalizedPath} is outside the project directory (${this._cwd}).` };
 		}
@@ -1418,6 +1503,16 @@ export class AgentSession {
 				);
 				break;
 			}
+			// Notify user when a plugin/extension triggers an automatic continue.
+			// This makes implicit loops visible so users aren't confused by
+			// unexpected additional LLM turns.
+			if (this.agent.hasQueuedMessages()) {
+				this._emit({
+					type: "auto_continue",
+					reason: "queued messages",
+					iteration: iterations,
+				});
+			}
 			await this.agent.continue();
 		}
 	}
@@ -1473,6 +1568,7 @@ export class AgentSession {
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		this._aborted = false;
+		resetLoopDetection(this._loopState);
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
@@ -1764,6 +1860,7 @@ export class AgentSession {
 	async continue(): Promise<void> {
 		this._aborted = false;
 		this._overflowRecoveryAttempts = 0;
+		resetLoopDetection(this._loopState);
 		await this.agent.continue();
 		await this._runPostAgentLoop("Continue post-run");
 		this._flushPendingBashMessages();
@@ -3266,8 +3363,20 @@ export class AgentSession {
 		// Register skill tool with access to resource loader
 		const skills = this._resourceLoader.getSkills().skills;
 		if (skills.length > 0) {
+			const subtaskContext: SubtaskContext = {
+				modelRegistry: this._modelRegistry,
+				resourceLoader: this._resourceLoader,
+				model: this.model ?? this._modelRegistry.getAvailable()[0],
+				getApiKey: (provider: string) => {
+					const auth = this._modelRegistry.authStorage.get(provider);
+					return auth?.type === "api_key" ? auth.key : undefined;
+				},
+				cwd: this._cwd,
+				messages: this.agent.state.messages,
+			};
 			baseDefs.skill = createSkillToolDefinition({
 				getSkills: () => this._resourceLoader.getSkills().skills,
+				subtaskContext,
 			}) as ToolDefinition;
 		}
 

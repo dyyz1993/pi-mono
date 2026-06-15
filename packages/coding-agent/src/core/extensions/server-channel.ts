@@ -37,11 +37,23 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 
 			const method = msg.__call as string;
 			const handler = this.methodHandlers.get(method);
-			if (!handler) return;
+			if (!handler) {
+				console.error(`[server-channel] no handler for method "${method}" on channel "${this.raw.name}"`);
+				return;
+			}
 
 			const { invokeId, ...paramsWithCall } = msg;
 			delete paramsWithCall.__call;
-			const result = handler(paramsWithCall);
+			let result: unknown;
+			try {
+				result = handler(paramsWithCall);
+			} catch (err: unknown) {
+				console.error(
+					`[server-channel] handler error for "${method}":`,
+					err instanceof Error ? err.message : String(err),
+				);
+				return;
+			}
 
 			const sendResponse = (res: unknown) => {
 				if (!invokeId) return;
@@ -53,7 +65,12 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 			};
 
 			if (result instanceof Promise) {
-				result.then(sendResponse);
+				result.then(sendResponse).catch((err: unknown) => {
+					console.error(
+						`[server-channel] async handler error for "${method}":`,
+						err instanceof Error ? err.message : String(err),
+					);
+				});
 			} else {
 				sendResponse(result);
 			}

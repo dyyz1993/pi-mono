@@ -62,7 +62,10 @@ export class ChannelManager {
 
 	handleInbound(message: ChannelDataMessage): void {
 		const entry = this.channels.get(message.name);
-		if (!entry) return;
+		if (!entry) {
+			console.error(`[channel-manager] handleInbound: unknown channel "${message.name}"`);
+			return;
+		}
 
 		const data = asRecord(message.data);
 		if (data && typeof data === "object" && typeof data.invokeId === "string") {
@@ -78,8 +81,12 @@ export class ChannelManager {
 		for (const handler of entry.handlers) {
 			try {
 				handler(message.data);
-			} catch {
+			} catch (err: unknown) {
 				// Ignore channel handler errors so one subscriber cannot break delivery.
+				console.error(
+					`[channel-manager] handler error for "${message.name}":`,
+					err instanceof Error ? err.message : String(err),
+				);
 			}
 		}
 	}

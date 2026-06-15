@@ -661,6 +661,9 @@ function discoverExtensionsInDir(dir: string): string[] {
 		for (const entry of entries) {
 			const entryPath = path.join(dir, entry.name);
 
+			// Skip directories/files starting with _ (disabled extensions)
+			if (entry.name.startsWith("_")) continue;
+
 			// 1. Direct files: *.ts or *.js
 			if ((entry.isFile() || entry.isSymbolicLink()) && isExtensionFile(entry.name)) {
 				discovered.push(entryPath);

@@ -44,6 +44,8 @@ import type {
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
+	PermissionRequestEvent,
+	PermissionRequestResult,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
@@ -1179,6 +1181,42 @@ export class ExtensionRunner {
 		}
 
 		return result;
+	}
+
+	async emitPermissionRequest(event: PermissionRequestEvent): Promise<PermissionRequestResult | undefined> {
+		const ctx = this.createContext();
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("permission_request");
+			if (!handlers || handlers.length === 0) continue;
+
+			this._currentExtensionName = getExtensionName(ext.path);
+			for (const handler of handlers) {
+				try {
+					const handlerResult = await handler(event, ctx);
+					if (handlerResult) {
+						const result = handlerResult as PermissionRequestResult;
+						// First extension to return allow/deny wins
+						return result;
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "permission_request",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return undefined;
+	}
+
+	hasPermissionRequestHandlers(): boolean {
+		return this.extensions.some((ext) => (ext.handlers.get("permission_request")?.length ?? 0) > 0);
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {

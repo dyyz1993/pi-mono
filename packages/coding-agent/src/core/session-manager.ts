@@ -1596,7 +1596,7 @@ export class SessionManager {
 	 * Useful for extracting a single conversation path from a branched session.
 	 * Returns the new session file path, or undefined if not persisting.
 	 */
-	createBranchedSession(leafId: string): string | undefined {
+	createBranchedSession(leafId: string, options?: { compact?: boolean }): string | undefined {
 		const previousSessionFile = this.sessionFile;
 		const path = this.getBranch(leafId);
 		if (path.length === 0) {
@@ -1604,7 +1604,17 @@ export class SessionManager {
 		}
 
 		// Filter out LabelEntry from path - we'll recreate them from the resolved map
-		const pathWithoutLabels = path.filter((e) => e.type !== "label");
+		let pathWithoutLabels = path.filter((e) => e.type !== "label");
+
+		// Compact: truncate at the nearest compaction entry before the fork point
+		if (options?.compact) {
+			for (let i = pathWithoutLabels.length - 1; i >= 0; i--) {
+				if (pathWithoutLabels[i]!.type === "compaction") {
+					pathWithoutLabels = pathWithoutLabels.slice(i);
+					break;
+				}
+			}
+		}
 
 		const newSessionId = createSessionId();
 		const timestamp = new Date().toISOString();
@@ -1688,6 +1698,89 @@ export class SessionManager {
 		this.sessionId = newSessionId;
 		this._buildIndex();
 		return undefined;
+	}
+
+	/**
+	 * Create a branched session file without switching the current session.
+	 * Returns the path to the new session file, or undefined if not persisting.
+	 * Unlike createBranchedSession(), this does NOT modify the current SessionManager state.
+	 */
+	copyBranchedSession(leafId: string, options?: { compact?: boolean }): string | undefined {
+		const previousSessionFile = this.sessionFile;
+		const path = this.getBranch(leafId);
+		if (path.length === 0) {
+			throw new Error(`Entry ${leafId} not found`);
+		}
+
+		let pathWithoutLabels = path.filter((e) => e.type !== "label");
+
+		// Compact: truncate at the nearest compaction entry before the fork point
+		if (options?.compact) {
+			for (let i = pathWithoutLabels.length - 1; i >= 0; i--) {
+				if (pathWithoutLabels[i]!.type === "compaction") {
+					pathWithoutLabels = pathWithoutLabels.slice(i);
+					break;
+				}
+			}
+		}
+
+		if (!this.persist) {
+			return undefined;
+		}
+
+		const newSessionId = createSessionId();
+		const timestamp = new Date().toISOString();
+		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+		const newSessionFile = join(this.getSessionDir(), `${fileTimestamp}_${newSessionId}.jsonl`);
+
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: newSessionId,
+			timestamp,
+			cwd: this.cwd,
+			parentSession: previousSessionFile,
+		};
+
+		// Collect labels for entries in the path
+		const pathEntryIds = new Set(pathWithoutLabels.map((e) => e.id));
+		const labelsToWrite: Array<{ targetId: string; label: string; timestamp: string }> = [];
+		for (const [targetId, label] of this.labelsById) {
+			if (pathEntryIds.has(targetId)) {
+				labelsToWrite.push({ targetId, label, timestamp: this.labelTimestampsById.get(targetId)! });
+			}
+		}
+
+		// Build label entries
+		const lastEntryId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
+		let parentId = lastEntryId;
+		const labelEntries: LabelEntry[] = [];
+		for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
+			const labelEntry: LabelEntry = {
+				type: "label",
+				id: generateId(new Set([...pathEntryIds, ...labelEntries.map((e) => e.id)])),
+				parentId,
+				timestamp: labelTimestamp,
+				targetId,
+				label,
+			};
+			labelEntries.push(labelEntry);
+			parentId = labelEntry.id;
+		}
+
+		const entriesToWrite = [header, ...pathWithoutLabels, ...labelEntries];
+
+		// Write directly to file without modifying current session state
+		const fd = openSync(newSessionFile, "w");
+		try {
+			for (const entry of entriesToWrite) {
+				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+			}
+		} finally {
+			closeSync(fd);
+		}
+
+		return newSessionFile;
 	}
 
 	/**

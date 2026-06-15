@@ -1131,6 +1131,30 @@ export interface ToolCallEventResult {
 	reason?: string;
 }
 
+// ============================================================================
+// Permission Request Event (Claude Code PermissionRequest compat)
+// ============================================================================
+
+export interface PermissionRequestEvent {
+	type: "permission_request";
+	toolName: string;
+	toolCallId: string;
+	input: Record<string, unknown>;
+	/** What kind of permission is needed (e.g. "path_boundary"). */
+	reason: string;
+	/** The path or resource that needs approval (if applicable). */
+	path?: string;
+}
+
+export interface PermissionRequestResult {
+	/** "allow" = skip the user dialog and proceed. "deny" = block the tool call. */
+	decision: "allow" | "deny";
+	/** Reason shown to the model/user. */
+	message?: string;
+	/** Modified tool input (only for "allow"). */
+	updatedInput?: Record<string, unknown>;
+}
+
 /** Result from user_bash event handler */
 export interface UserBashEventResult {
 	/** Custom operations to use for execution */
@@ -1268,6 +1292,7 @@ export interface ExtensionAPI {
 	on(event: "thinking_level_select", handler: ExtensionHandler<ThinkingLevelSelectEvent>): void;
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
+	on(event: "permission_request", handler: ExtensionHandler<PermissionRequestEvent, PermissionRequestResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
 	on(event: "ui", handler: ExtensionHandler<UIEvent, UIEventResult>): void;
