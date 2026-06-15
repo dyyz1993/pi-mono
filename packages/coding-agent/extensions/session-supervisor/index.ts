@@ -34,11 +34,12 @@ import {
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-const LOG_FILE = "/tmp/supervisor-debug.log";
+const LOG_DIR = "/tmp/supervisor-debug";
+let logFile = `${LOG_DIR}/default.log`;
 function log(msg: string) {
     const ts = new Date().toISOString();
     const line = `[${ts}] ${msg}\n`;
-    appendFileSync(LOG_FILE, line);
+    try { appendFileSync(logFile, line); } catch { /* ignore write failures */ }
 }
 
 const DEFAULT_GUARDS: GuardConfig[] = [
@@ -50,6 +51,7 @@ const GOAL_RUNTIME_STATE_FILE = "supervisor-goal-runtime.json";
 interface GoalRuntimeState {
     activeGoal?: GoalState;
     lastGoldResult?: GoldResult;
+    enabled?: boolean;
 }
 
 export default function sessionSupervisorExtension(pi: ExtensionAPI) {
@@ -111,7 +113,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             },
         );
         if (result.scheduled) {
-            channel.emit("supervisor.pauseRequested", { delayMs, reason: params.reason });
+            channel.emit("supervisor.pauseRequested", { type: "pauseRequested" as const, delayMs, reason: params.reason });
         }
         return result;
     });
@@ -120,7 +122,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         if (!schedulerInstance) return { cancelled: false, error: "Not initialized" };
         const cancelled = schedulerInstance.cancelTimer("manual-pause");
         if (cancelled) {
-            channel.emit("supervisor.pauseCancelled", { reason: "Cancelled via channel" });
+            channel.emit("supervisor.pauseCancelled", { type: "pauseCancelled" as const, reason: "Cancelled via channel" });
         }
         return { cancelled };
     });
@@ -139,6 +141,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         schedulerInstance?.cancelAll();
         currentState = "disabled";
         emitStatusChanged();
+        persistGoalRuntimeState();
         return { disabled: true };
     });
 
@@ -146,6 +149,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         enabled = true;
         currentState = "idle";
         emitStatusChanged();
+        persistGoalRuntimeState();
         return { enabled: true };
     });
 
@@ -166,7 +170,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         lastIncompleteSignature = "";
         persistGoalRuntimeState();
         emitStatusChanged();
-        channel.emit("supervisor.goalChanged", { goal: activeGoal });
+        channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
 
         // Trigger a new turn so the LLM immediately sees the goal in its
         // system prompt (injected by the before_agent_start handler).
@@ -189,7 +193,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 status: "cancelled",
                 updatedAt: Date.now(),
             };
-            channel.emit("supervisor.goalChanged", { goal: activeGoal, reason: params.reason });
+            channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal, reason: params.reason });
         }
         activeGoal = undefined;
         lastGoldResult = undefined;
@@ -355,6 +359,10 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         specsIterationCount = 0;
         stagnationCount = 0;
         lastIncompleteSignature = "";
+        // Per-session log file to avoid concurrent write conflicts
+        const sessionId = ctx.sessionDataDir.split("/").pop() || "unknown";
+        try { mkdirSync(LOG_DIR, { recursive: true }); } catch { /* ignore */ }
+        logFile = `${LOG_DIR}/${sessionId}.log`;
         loadGoalRuntimeState();
 
         log(`session_start: enabled=${enabled}, guards=${config.guards.length}, smallModel=${config.smallModel}`);
@@ -447,7 +455,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             }
 
             lastTaskReports = reports;
-            channel.emit("supervisor.taskReport", { tasks: reports });
+            channel.emit("supervisor.taskReport", { type: "taskReport" as const, tasks: reports });
 
             // Phase 2: If any guard says incomplete → continue immediately
             const hasIncompleteGuards = guardResults.some((r) => !r.completed && r.remainingItems.length > 0);
@@ -472,8 +480,8 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                 }
                 lastIncompleteSignature = currentSignature;
 
-                if (stagnationCount >= 2) {
-                    log(`Stagnation threshold reached (${stagnationCount} consecutive identical results), stopping loop`);
+                if (stagnationCount >= 1) {
+                    log(`Stagnation threshold reached (${stagnationCount + 1} consecutive identical results), stopping loop`);
 
                     const checkDurationMs = Date.now() - checkStartedAt;
                     currentState = "idle";
@@ -496,7 +504,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                         durationMs: checkDurationMs,
                     });
 
-                    const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "blocked", 0.5, guardResults, guardTimings, undefined, "idle", "Stagnation detected, stopping loop");
+                    const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "blocked", 0.5, guardResults, guardTimings, undefined, "paused", "Stagnation detected, stopping loop");
                     appendTriggerRecord(record);
 
                     pi.sendMessage(
@@ -580,7 +588,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                     checkStartedAt, checkDurationMs, "complete", modelCheck.confidence,
                     guardResults, guardTimings,
                     { passed: true, confidence: modelCheck.confidence, response: modelCheck.modelResponse, durationMs: modelCheckDurationMs },
-                    "idle", "All guards and model check passed",
+                    "complete", "All guards and model check passed",
                 );
                 appendTriggerRecord(record);
 
@@ -691,6 +699,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             currentState = "paused";
             emitStatusChanged();
             channel.emit("supervisor.pauseRequested", {
+                type: "pauseRequested" as const,
                 delayMs,
                 reason: continueMessage.slice(0, 200),
             });
@@ -702,6 +711,11 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             currentState = "continuing";
             setGoalStatus("running");
             emitStatusChanged();
+            channel.emit("supervisor.continueTriggered", {
+                type: "continueTriggered" as const,
+                reason: continueMessage.slice(0, 200),
+                delayMs,
+            });
             try {
                 pi.sendMessage(
                     {
@@ -1056,7 +1070,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
     }
 
     function emitStatusChanged(): void {
-        channel.emit("supervisor.statusChanged", getStatus());
+        channel.emit("supervisor.statusChanged", { type: "statusChanged" as const, status: getStatus() });
     }
 
     function getGoalRuntimeStatePath(): string {
@@ -1097,6 +1111,12 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as GoalRuntimeState;
             activeGoal = isGoalState(parsed.activeGoal) ? parsed.activeGoal : undefined;
             lastGoldResult = isGoldResult(parsed.lastGoldResult) ? parsed.lastGoldResult : undefined;
+            // Restore enabled state from persisted runtime state
+            if (typeof parsed.enabled === "boolean" && parsed.enabled) {
+                enabled = true;
+                currentState = "idle";
+                log(`loadGoalRuntimeState: restored enabled=true`);
+            }
         } catch (err) {
             log(`loadGoalRuntimeState failed: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -1105,7 +1125,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
     function persistGoalRuntimeState(): void {
         if (!sessionDataDir) return;
         const filePath = getGoalRuntimeStatePath();
-        if (!activeGoal && !lastGoldResult) {
+        if (!activeGoal && !lastGoldResult && !enabled) {
             try {
                 if (existsSync(filePath)) unlinkSync(filePath);
             } catch (err) {
@@ -1113,7 +1133,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             }
             return;
         }
-        const state: GoalRuntimeState = { activeGoal, lastGoldResult };
+        const state: GoalRuntimeState = { activeGoal, lastGoldResult, enabled };
         try {
             writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
         } catch (err) {
@@ -1150,7 +1170,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             blockers: blocker ? [...activeGoal.blockers, blocker] : activeGoal.blockers,
         };
         persistGoalRuntimeState();
-        channel.emit("supervisor.goalChanged", { goal: activeGoal });
+        channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
     }
 
     function recordGoldResult(result: Omit<GoldResult, "goalId" | "checkedAt"> & { durationMs?: number }): void {
@@ -1160,7 +1180,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             checkedAt: Date.now(),
         };
         persistGoalRuntimeState();
-        channel.emit("supervisor.goldResult", lastGoldResult);
+        channel.emit("supervisor.goldResult", { type: "goldResult" as const, ...lastGoldResult });
     }
 
     function buildTriggerRecord(
@@ -1199,7 +1219,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 
     function appendTriggerRecord(record: TriggerRecord): void {
         triggerHistory.push(record);
-        channel.emit("supervisor.triggerRecord", record);
+        channel.emit("supervisor.triggerRecord", { type: "triggerRecord" as const, record });
         writeStructuredLog(record);
         log(`trigger #${record.seq}: verdict=${record.verdict}, action=${record.action}, duration=${record.durationMs}ms`);
     }

@@ -351,7 +351,20 @@ export function interpretHookOutput(output: HookOutput): {
 	retry?: boolean;
 } {
 	if (output.exitCode === 2) {
-		return { shouldBlock: true, reason: extractHookMessage(output, "Blocked by hook") };
+		// Claude Code compat: exit 2 uses stderr as block reason, stdout is ignored
+		// (source: hooks.ts:2648-2668). But parsed JSON from stdout is still checked
+		// for structured reason fields (permissionDecisionReason, reason, etc.)
+		const parsed = output.parsed ?? parseOutputJson(output.stdout);
+		const parsedMessage = parsed
+			? firstString(
+					parsed.hookSpecificOutput?.permissionDecisionReason,
+					parsed.reason,
+					parsed.question,
+					parsed.stopReason,
+				)
+			: "";
+		const reason = firstString(parsedMessage, output.stderr, "Blocked by hook") || "Blocked by hook";
+		return { shouldBlock: true, reason };
 	}
 
 	// Exit code 3 = ask user confirmation (treated as block in headless/RPC mode)

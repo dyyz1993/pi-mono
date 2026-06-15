@@ -14,6 +14,7 @@ import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ServerChannel, ContextEvent } from "@dyyz1993/pi-coding-agent";
+import type { SessionEntry } from "@dyyz1993/pi-coding-agent";
 import { TODO_CHANNEL_NAME, type TodoChannelContract, type TodoItem, type TodoChannelEvent } from "./contract.ts";
 
 export type Todo = TodoItem;
@@ -47,6 +48,10 @@ const TodoParams = Type.Object({
 	id: Type.Optional(Type.Number({ description: "Todo ID (for toggle / remove)" })),
 	priority: Type.Optional(StringEnum(["high", "medium", "low"] as const)),
 });
+
+function deepCloneTodos(src: Todo[]): Todo[] {
+	return JSON.parse(JSON.stringify(src)) as Todo[];
+}
 
 function persistEntry(pi: ExtensionAPI, action: string, todos: Todo[], nextId: number): void {
 	pi.appendEntry("todo", { action, todos: deepCloneTodos(todos), nextId, timestamp: Date.now() });
@@ -124,11 +129,7 @@ export default function (pi: ExtensionAPI) {
 		// registerChannel only available in RPC mode — skip in interactive mode
 	}
 
-	function deepCloneTodos(src: Todo[]): Todo[] {
-		return JSON.parse(JSON.stringify(src)) as Todo[];
-	}
-
-	function restoreFromEntries(entries: Iterable<{ type: string; customType?: string; data?: unknown; message?: { role: string; toolName: string; details: unknown } }>): void {
+	function restoreFromEntries(entries: Iterable<SessionEntry>): void {
 		for (const entry of entries) {
 			if (entry.type === "custom" && entry.customType === "todo") {
 				const data = entry.data as { action: string; todos: Todo[]; nextId: number } | undefined;
@@ -140,9 +141,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (entry.type !== "message") continue;
 			const msg = entry.message;
-			if (!msg || msg.role !== "toolResult" || msg.toolName !== "todo") continue;
+			if (!msg || msg.role !== "toolResult") continue;
+			const toolMsg = msg as { toolName?: string; details?: unknown };
+			if (toolMsg.toolName !== "todo") continue;
 
-			const details = msg.details as TodoDetails | undefined;
+			const details = toolMsg.details as TodoDetails | undefined;
 			if (details?.todos) {
 				todos = details.todos;
 				nextId = details.nextId;

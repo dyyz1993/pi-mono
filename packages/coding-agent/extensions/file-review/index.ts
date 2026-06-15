@@ -212,8 +212,8 @@ export default function fileReview(pi: ExtensionAPI) {
 		}
 
 		// Build a map of turnIndex → snapshot tree hash from session entries.
-		// This gives us the correct baseline for unapproved files with history,
-		// using tree hashes directly instead of entry IDs (avoids ID format mismatches).
+		// Use FIRST occurrence per turnIndex (rollback creates duplicate turn indices;
+		// the first one is the correct baseline before modification).
 		const turnToTreeHash = new Map<number, string>();
 		const allEntries = ctx?.sessionManager.getEntries();
 		if (allEntries) {
@@ -221,7 +221,10 @@ export default function fileReview(pi: ExtensionAPI) {
 				if (entry.type === "custom" && entry.customType === "step-snapshot") {
 					const data = entry.data as { turnIndex: number; snapshotTreeHash: string };
 					if (data && typeof data.turnIndex === "number" && data.snapshotTreeHash) {
-						turnToTreeHash.set(data.turnIndex, data.snapshotTreeHash);
+						// Only set if not already present (first occurrence wins)
+						if (!turnToTreeHash.has(data.turnIndex)) {
+							turnToTreeHash.set(data.turnIndex, data.snapshotTreeHash);
+						}
 					}
 				}
 			}
@@ -247,6 +250,12 @@ export default function fileReview(pi: ExtensionAPI) {
 			try {
 				const fileRequests = [...pathMeta.entries()].map(([path, meta]) => {
 					const approvedEntry = approvedSnapshotEntry.get(path);
+					// For "added" files (firstStatus=added), baseline should be sessionStart
+					// (file didn't exist), NOT turnToTreeHash (which already has the file).
+					// For "modified"/"deleted" files, use turnToTreeHash at firstTurnIndex.
+					if (meta.firstStatus === "added" && !approvedEntry) {
+						return { filePath: path, fromEntryId: undefined as string | undefined, fromHash: undefined as string | undefined };
+					}
 					return {
 						filePath: path,
 						fromEntryId: approvedEntry,
@@ -261,32 +270,38 @@ export default function fileReview(pi: ExtensionAPI) {
 				console.error("[file-review] getBatchFileContents failed:", error);
 			}
 
-			// Merge: use batchDiff.oldContent as baseline.
-			// newContent is already live from getBatchFileContents (disk).
-			// Only force oldContent=null when the file is genuinely new (still in "added" state).
+			// Merge: prefer liveDiff (getLiveChanges compares against lastCommittedTreeHash,
+			// giving the most accurate "what changed since last committed turn" diff).
+			// batchDiff provides baseline data from snapshots for files without live changes.
 			for (const [path, meta] of pathMeta) {
 				const batchDiff = diffMap.get(path);
 				const liveDiff = liveMap.get(path);
 
 				if (liveDiff) {
-					// File has live changes on disk
-					if (batchDiff) {
-						const oldContent = meta.latestFileStatus === "added" ? null : batchDiff.oldContent;
-						diffMap.set(path, {
-							oldContent,
-							newContent: liveDiff.newContent,
-						});
-					} else {
-						// No batch result — use liveDiff as-is
-						diffMap.set(path, liveDiff);
-					}
+					// File has live (uncommitted) changes on disk.
+					// Use liveDiff.oldContent as baseline — it's the most accurate
+					// (compares against lastCommittedTreeHash).
+					// For genuinely new files (oldContent=null in liveDiff), keep null.
+					diffMap.set(path, {
+						oldContent: liveDiff.oldContent,
+						newContent: liveDiff.newContent,
+					});
 				} else if (meta.latestFileStatus === "deleted") {
-					// File was deleted from disk — oldContent from baseline
-					const oldContent = batchDiff?.oldContent ?? null;
+					// File was deleted and the deletion was committed (no live change).
+					let oldContent = batchDiff?.oldContent ?? null;
+					if (oldContent === null) {
+						try {
+							const diff = mgr.getFileDiff({ filePath: path });
+							if (diff) oldContent = diff.oldContent;
+						} catch {}
+					}
 					diffMap.set(path, { oldContent, newContent: null });
 				} else if (batchDiff) {
-					// No live change but batch has data (file unchanged since last snapshot)
-					const oldContent = meta.latestFileStatus === "added" ? null : batchDiff.oldContent;
+					// No live change — file is committed. Use batchDiff as-is.
+					// For unapproved "added" files, oldContent should be null (file didn't exist before).
+					// For approved files, use batchDiff.oldContent (from approved snapshot).
+					const isApproved = !!approvedSnapshotEntry.get(path);
+					const oldContent = (meta.firstStatus === "added" && !isApproved) ? null : batchDiff.oldContent;
 					diffMap.set(path, { oldContent, newContent: batchDiff.newContent });
 				}
 			}
@@ -305,6 +320,13 @@ export default function fileReview(pi: ExtensionAPI) {
 			const diffInfo = diffMap.get(path);
 			const oldContent = diffInfo?.oldContent ?? null;
 			const newContent = diffInfo?.newContent ?? null;
+
+			// Skip phantom entries: file is in turnLog but doesn't exist on disk
+			// AND has no content in any snapshot (both null = no data to show)
+			if (oldContent === null && newContent === null) {
+				continue;
+			}
+
 			const { unifiedDiff, addedLines, deletedLines } = computeDiffInfo(oldContent, newContent);
 			result.push({
 				turnIndex: meta.latestTurnIndex,
@@ -344,7 +366,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		return { ok: true };
 	});
 
-	channel?.handle("review.reject", (params) => {
+		channel?.handle("review.reject", (params) => {
 		// Roll back the file to its pre-modification state
 		if (!ctx) return { ok: false, error: "No session context" };
 		const mgr = ctx.fileSnapshotManager;
@@ -358,6 +380,7 @@ export default function fileReview(pi: ExtensionAPI) {
 			// For unapproved files or live sessions (approvedSnapshotEntry not populated),
 			// find the first snapshot where the file appeared from the turnLog
 			if (!fromEntryId) {
+				// Use FIRST occurrence per turnIndex (rollback creates duplicates)
 				const turnToEntryId = new Map<number, string>();
 				const entries = ctx?.sessionManager.getEntries();
 				if (entries) {
@@ -365,7 +388,9 @@ export default function fileReview(pi: ExtensionAPI) {
 						if (entry.type === "custom" && entry.customType === "step-snapshot") {
 							const data = entry.data as { turnIndex: number };
 							if (data && typeof data.turnIndex === "number") {
-								turnToEntryId.set(data.turnIndex, entry.id);
+								if (!turnToEntryId.has(data.turnIndex)) {
+									turnToEntryId.set(data.turnIndex, entry.id);
+								}
 							}
 						}
 					}
@@ -384,6 +409,13 @@ export default function fileReview(pi: ExtensionAPI) {
 			});
 			if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
 		} catch {}
+		if (!diffInfo) {
+			// Fallback: try getFileDiff without fromEntryId (uses sessionStartTreeHash)
+			try {
+				const diff = mgr.getFileDiff({ filePath: params.path });
+				if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+			} catch {}
+		}
 		if (!diffInfo) return { ok: false, error: "No diff data for file" };
 
 		// Perform rollback based on file status
@@ -417,6 +449,11 @@ export default function fileReview(pi: ExtensionAPI) {
 			for (const record of turnLog) {
 				record.changes = record.changes.filter((c) => c.path !== params.path);
 			}
+			// Re-commit snapshot so lastCommittedTreeHash reflects the rolled-back disk state.
+			// Without this, subsequent getLiveChanges() would detect the rollback as a "new change".
+			try {
+				mgr.onTurnEnd(ctx.cwd, -1, (type, data) => { pi.appendEntry(type, data); return ""; });
+			} catch {}
 		}
 
 		setApproval(params.path, "rejected");

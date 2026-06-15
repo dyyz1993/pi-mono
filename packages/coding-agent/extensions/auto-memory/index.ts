@@ -1059,12 +1059,15 @@ ${memoryText}
 </files>
 </memory_context>`;
 
-		pi.sendMessage({
-			customType: "memory_relevant",
-			content: xmlContent,
-			display: false,
-			details: { fingerprint, filenames: selectedFiles, source: "auto-memory" },
-		});
+		pi.sendMessage(
+			{
+				customType: "memory_relevant",
+				content: xmlContent,
+				display: false,
+				details: { fingerprint, filenames: selectedFiles, source: "auto-memory" },
+			},
+			{ deliverAs: "nextTurn" },
+		);
 
 		const memoryMessage = {
 			role: "user" as const,

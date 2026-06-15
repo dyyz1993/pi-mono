@@ -80,6 +80,10 @@ export interface CoordinatorChannelContract extends ChannelContract {
         model?: string;
         timeoutMs?: number;
         projectPath?: string;
+        /** Current recursion depth. Starts at 1 for the first subagent call. */
+        depth?: number;
+        /** Variables passed down to the subagent, accessible via $variable in task templates. */
+        variables?: Record<string, string>;
       };
       return: {
         sessionId: string;

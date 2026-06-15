@@ -82,12 +82,38 @@ export default function (pi: ExtensionAPI) {
 		return { skipped: Array.from(skippedRules.values()) };
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		configs = loadConfigs(ctx.cwd);
 		configSources = loadConfigSources(ctx.cwd);
 		const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager;
 		currentSessionId = sm?.getSessionId?.()
 			?? (((ctx as unknown) as Record<string, unknown>).variables as Record<string, unknown> | undefined)?.session_id as string | undefined;
+
+		// Fire SessionStart hooks (Claude Code compat)
+		await processHookEvent("SessionStart", { toolName: "", input: { source: "startup" } }, ctx);
+
+		// Fire Setup hooks on first startup (Claude Code compat)
+		// Claude Code: Setup fires on --init or --maintenance
+		// pi: no --init flag yet, so we fire Setup on initial startup as approximation
+		const startEvent = event as { reason?: string };
+		if (startEvent.reason === "startup") {
+			await processHookEvent("Setup", { toolName: "", input: { trigger: "init" } }, ctx);
+		}
+	});
+
+	pi.on("permission_request", async (event, ctx) => {
+		// Claude Code compat: PermissionRequest hook fires when permission is needed
+		// Executes user-configured PermissionRequest hooks and returns allow/deny
+		const result = await processHookEvent("PermissionRequest", {
+			toolName: event.toolName,
+			input: event.input,
+			toolCallId: event.toolCallId,
+		}, ctx);
+		if (result?.block) {
+			return { decision: "deny" as const, message: result.reason };
+		}
+		// If hook exits 0 (no block), treat as allow
+		return { decision: "allow" as const };
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -141,11 +167,34 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		await processHookEvent("SubagentStop", { toolName: "", input: {} }, ctx);
+		const result = await processHookEvent("SubagentStop", { toolName: "", input: {} }, ctx);
+		// Claude Code compat: SubagentStop exit 2 continues subagent
+		if (result?.block && result.reason) {
+			pi.sendMessage(
+				{
+					customType: "hook_subagent_stop_block",
+					content: `SubagentStop hook blocked: ${result.reason}. Continue working.`,
+					display: true,
+				},
+				{ deliverAs: "followUp" },
+			);
+		}
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		await processHookEvent("Stop", { toolName: "", input: {} }, ctx);
+		const result = await processHookEvent("Stop", { toolName: "", input: {} }, ctx);
+		// Claude Code compat: Stop hook exit 2 continues conversation
+		// The block reason is injected as a user message so the model keeps running
+		if (result?.block && result.reason) {
+			pi.sendMessage(
+				{
+					customType: "hook_stop_block",
+					content: `Stop hook blocked: ${result.reason}. Continue working on the task.`,
+					display: true,
+				},
+				{ deliverAs: "followUp" },
+			);
+		}
 	});
 
 	async function processHookEvent(
@@ -178,6 +227,8 @@ export default function (pi: ExtensionAPI) {
 			((ctx as unknown as { permissionMode?: string }).permissionMode)
 			?? (ctxVars?.permission_mode as string | undefined)
 			?? (ctxVars?.permissionMode as string | undefined);
+		const sm = (ctx as unknown as { sessionManager?: { getSessionFile?: () => string | undefined } }).sessionManager;
+		const transcriptPath = sm?.getSessionFile?.() ?? "";
 		const stdinData = buildStdinData(hookEventName, {
 			toolName: event.toolName,
 			toolInput: event.input,
@@ -186,6 +237,8 @@ export default function (pi: ExtensionAPI) {
 			cwd: ctx.cwd,
 			agentType,
 			permissionMode,
+			transcriptPath,
+			sessionId: currentSessionId,
 		});
 
 		for (const group of groups) {
@@ -237,17 +290,23 @@ export default function (pi: ExtensionAPI) {
 							if (decision === "block") channel.emit("hook_blocked", entry);
 
 							if (output.exitCode === 3 && result.shouldBlock) {
-								pi.sendMessage({
-									customType: "hook_ask_no_ui",
-									content: `Hook requires confirmation but is running in async mode: ${result.reason}`,
-									display: true,
-								});
+								pi.sendMessage(
+									{
+										customType: "hook_ask_no_ui",
+										content: `Hook requires confirmation but is running in async mode: ${result.reason}`,
+										display: true,
+									},
+									{ deliverAs: "nextTurn" },
+								);
 							} else if (handler.asyncRewake && output.exitCode === 2 && result.reason) {
-								pi.sendMessage({
-									customType: "hook_async_block",
-									content: result.reason,
-									display: true,
-								});
+								pi.sendMessage(
+									{
+										customType: "hook_async_block",
+										content: result.reason,
+										display: true,
+									},
+									{ deliverAs: "nextTurn" },
+								);
 							}
 
 							// After prompt hook succeeds in async mode, inject the prompt text into conversation

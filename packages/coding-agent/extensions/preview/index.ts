@@ -71,6 +71,42 @@ function checkReachable(host: string, port: number, timeoutMs = 2000): Promise<b
 	});
 }
 
+// Content-Type prefix → ResourceType mapping (checked in order, first match wins)
+const CONTENT_TYPE_PREFIXES: [string, ResourceType][] = [
+	["text/html", "html"],
+	["image/", "image"],
+	["video/", "video"],
+	["audio/", "audio"],
+	["application/pdf", "pdf"],
+	["text/markdown", "markdown"],
+	["text/", "text"],
+];
+
+async function detectUrlContentType(url: string): Promise<{ resourceType: ResourceType; mimeType: string } | null> {
+	try {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 3000);
+
+		const resp = await fetch(url, { method: "HEAD", signal: controller.signal });
+		clearTimeout(timeout);
+
+		if (!resp.ok) return null;
+
+		const contentType = resp.headers.get("content-type") || "";
+		if (!contentType) return null;
+
+		for (const [prefix, type] of CONTENT_TYPE_PREFIXES) {
+			if (contentType.startsWith(prefix)) {
+				return { resourceType: type, mimeType: contentType };
+			}
+		}
+
+		return null;
+	} catch {
+		return null;
+	}
+}
+
 function isUrl(source: string): boolean {
 	return URL_PATTERN.test(source);
 }
@@ -134,17 +170,17 @@ export default function (pi: ExtensionAPI) {
 			const { resourceType, mimeType, absolutePath } = detectResource(params.source, cwd);
 
 			if (resourceType === "url") {
-				// 对本地/LAN 地址做 TCP 可达性检测
-				if (params.source.startsWith("http://")) {
+				// 对本地/LAN 地址做 TCP 可达性检测 + HTTP 内容类型探测
+				if (/^https?:\/\//i.test(params.source)) {
 					try {
 						const parsed = new URL(params.source);
 						if (isLocalAddress(parsed.hostname)) {
-							const port = parseInt(parsed.port || "80", 10);
+							const port = parseInt(parsed.port || (parsed.protocol === "https:" ? "443" : "80"), 10);
 							const reachable = await checkReachable(parsed.hostname, port);
 							if (!reachable) {
 								const msg = `Preview 失败：${parsed.host} 未在局域网开放，服务可能只监听 127.0.0.1。请将服务绑定到 0.0.0.0 后重试。`;
-								console.debug(`[preview] #${previewId} error: local address "${parsed.host}:${parsed.port || 80}" not reachable`);
-								pi.appendEntry("preview", { id: previewId, source: params.source, status: "error", error: "local address not reachable", host: parsed.host, port: parseInt(parsed.port || "80", 10) });
+								console.debug(`[preview] #${previewId} error: local address "${parsed.host}:${parsed.port || (parsed.protocol === "https:" ? "443" : "80")}" not reachable`);
+								pi.appendEntry("preview", { id: previewId, source: params.source, status: "error", error: "local address not reachable", host: parsed.host, port });
 								return {
 									content: [{ type: "text", text: msg }],
 									details: {
@@ -154,6 +190,24 @@ export default function (pi: ExtensionAPI) {
 										status: "error",
 										title: params.title,
 										error: `${parsed.host} 未在局域网开放，可能只监听 127.0.0.1`,
+									},
+								};
+							}
+
+							// 服务可达 → 探测实际内容类型
+							const detected = await detectUrlContentType(params.source);
+							if (detected) {
+								console.debug(`[preview] #${previewId} local url detected as ${detected.resourceType}: ${params.source} (${detected.mimeType})`);
+								pi.appendEntry("preview", { id: previewId, source: params.source, type: detected.resourceType, mimeType: detected.mimeType, status: "ok", title: params.title });
+								return {
+									content: [{ type: "text", text: `Preview: ${params.source} (${detected.resourceType}, ${detected.mimeType})` }],
+									details: {
+										source: params.source,
+										absolutePath: params.source,
+										resourceType: detected.resourceType,
+										mimeType: detected.mimeType,
+										status: "ok",
+										title: params.title,
 									},
 								};
 							}
