@@ -4,6 +4,7 @@
 
 ### Added
 
+- Optional `avatar` frontmatter field for agent definitions (`AgentConfig.avatar`). Parsed into a discriminated `AgentAvatar` (`{ type: "emoji", value }` or `{ type: "image", src }`); the loader auto-classifies the value as an emoji, http(s)/`data:`/`file:` URL, or an absolute/relative path so consumers can render the right format without re-parsing.
 - Core-enforced tool permission gating for sub-agents: `AgentConfig.permissionMode`, `tools` (allowlist), `disallowedTools` (blocklist, supports `tool(glob)` patterns), and `paths` (write/read) are now enforced in `agent-session.ts` `beforeToolCall`, so sub-agents are sandboxed even when no permission extension is loaded. In `normal` mode, dangerous bash patterns (`rm -rf`, `sudo`, `git push --force`, `chmod 777`, `.env`, `credentials`, `--no-verify`) are blocked. The legacy `agent-permissions` extension remains as a compatibility layer.
 - Added an experimental first-time setup flow behind `PI_EXPERIMENTAL=1` that asks for a dark/light theme choice (preselecting the detected appearance) and opt-in analytics data sharing on first launch with the default agent directory; opting in stores a `trackingId` in `settings.json`.
 

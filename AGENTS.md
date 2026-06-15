@@ -1,5 +1,9 @@
 # Development Rules
 
+> **本文件路径：** [`AGENTS.md`](AGENTS.md)（项目根目录）
+>
+> 这是项目的开发规范主文件。在必要时，可以往这里面追加新的规范条目。请保持追加内容**简要**：以简短的规则描述、大纲、以及相关文件的**相对路径**为主，避免冗长说明。
+
 ## Project Architecture
 
 ```
@@ -81,6 +85,7 @@ For more detail, see `docs/file-store-performance.md`.
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
 - Never run `npm run build` or `npm test` unless requested by the user.
+- **yalc push 必须先 build**：推送包到消费项目前，必须先在对应 package 目录运行 `npm run build`（或从根目录 `npm run build`），确保 `dist/` 是最新的。yalc push 推的是磁盘上的文件，不包含 TypeScript 源码编译产物。流程：`npm run build && yalc push`。
 - **Test commands:**
   - Full non-e2e suite: `./test.sh` from repo root (strips API keys to avoid e2e activation).
   - Single test file: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts` from the package root.
@@ -328,6 +333,71 @@ sleep 3 && tmux capture-pane -t pi-test -p     # capture after startup
 tmux send-keys -t pi-test "your prompt here" Enter
 tmux send-keys -t pi-test Escape               # special keys (also C-o for ctrl+o, etc.)
 tmux kill-session -t pi-test
+```
+
+## Testing Skill Fork with Real LLM
+
+End-to-end tests for the skill tool and `runSubtask()` fork mode. Requires a configured provider (check `~/.pi/agent/auth.json`). Uses `-p` (non-interactive) mode with `--skill` to preload skills.
+
+**Setup:**
+
+```bash
+# Create test fixtures
+mkdir -p /tmp/pi-e2e-test/.pi/skills/test-inline
+mkdir -p /tmp/pi-e2e-test/.pi/skills/test-fork
+mkdir -p /tmp/pi-e2e-test/.pi/agents
+
+# Inline skill (no context: fork)
+cat > /tmp/pi-e2e-test/.pi/skills/test-inline/SKILL.md << 'EOF'
+---
+name: test-inline
+description: A simple inline test skill
+---
+You are a test assistant. When activated, respond with exactly: "INLINE_SKILL_OK"
+EOF
+
+# Fork skill (context: fork)
+cat > /tmp/pi-e2e-test/.pi/skills/test-fork/SKILL.md << 'EOF'
+---
+name: test-fork
+description: A fork test skill
+context: fork
+---
+You are a test assistant running in a forked context. Respond with exactly: "FORK_SKILL_OK"
+EOF
+
+# Agent definition
+cat > /tmp/pi-e2e-test/.pi/agents/test-reviewer.md << 'EOF'
+---
+name: test-reviewer
+description: Test reviewer agent
+systemPrompt: You are a strict reviewer. Always respond with exactly "AGENT_REVIEW_OK"
+---
+EOF
+```
+
+**Run tests (from repo root, after `npm run build`):**
+
+```bash
+CLI=packages/coding-agent/dist/cli.js
+
+# D1: inline skill
+cd /tmp/pi-e2e-test && $CLI --skill .pi/skills/test-inline -p "Use the test-inline skill"
+# Expected: output contains INLINE_SKILL_OK
+
+# D2: fork skill
+cd /tmp/pi-e2e-test && $CLI --skill .pi/skills/test-fork -p "Use the test-fork skill"
+# Expected: output contains FORK_SKILL_OK
+
+# D3: fork skill + agent
+cd /tmp/pi-e2e-test && $CLI --skill .pi/skills/test-fork -a test-reviewer -p "Review the code"
+# Expected: output shows review results using the test-reviewer agent
+```
+
+**Cleanup:**
+
+```bash
+rm -rf /tmp/pi-e2e-test
 ```
 
 ## Changelog
