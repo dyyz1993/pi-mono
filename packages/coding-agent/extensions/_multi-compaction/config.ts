@@ -28,6 +28,9 @@ export interface CompactionManagerConfig {
 		clearableTools: string[];
 		/** Cached path: max recent tool results to keep full content (default: 3) */
 		maxCachedResults: number;
+		/** Minimum interval between compaction passes in ms (default: 600_000 = 10 min).
+		 *  Prevents cache-busting mid-conversation; runs only when the cache is likely cold. */
+		minIntervalMs: number;
 	};
 	sessionMemory: {
 		enabled: boolean;
@@ -44,6 +47,10 @@ export interface CompactionManagerConfig {
 		maxAgeMs: number;
 		keepRecentCount: number;
 		maxSummaryLength: number;
+		/** Minimum interval between fold passes in ms (default: 600_000 = 10 min).
+		 *  Without this, fold runs every turn_end, which can cause fold storms
+		 *  where rapid folding re-triggers the agent loop. */
+		minIntervalMs: number;
 	};
 	/** Compaction strategy selection (default: "full") */
 	strategy: CompactionStrategy;
@@ -80,6 +87,7 @@ export const DEFAULT_CONFIG: CompactionManagerConfig = {
 		keepRecentCount: 5,
 		clearableTools: ["read", "bash", "grep", "find", "glob", "webFetch"],
 		maxCachedResults: 3,
+		minIntervalMs: 10 * 60 * 1000,
 	},
 	sessionMemory: {
 		enabled: true,
@@ -96,6 +104,7 @@ export const DEFAULT_CONFIG: CompactionManagerConfig = {
 		maxAgeMs: 30 * 60 * 1000,
 		keepRecentCount: 6,
 		maxSummaryLength: 200,
+		minIntervalMs: 10 * 60 * 1000,
 	},
 	strategy: "full",
 	halfCompaction: {
