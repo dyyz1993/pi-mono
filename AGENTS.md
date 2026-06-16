@@ -161,6 +161,26 @@ it("enforces agent permission mode", async () => {
 });
 ```
 
+**Testing interactive UI tools (ask-confirm, ask-select, etc.):**
+
+Extensions like `ask-tools` use `ctx.ui.confirm/select/input/editor` which block until the user responds. In harness mode, the default `noOpUIContext` returns `false`/`undefined` for all calls. To simulate specific user responses, inject a mock UI context via `extensionRunner.setUIContext()`:
+
+```typescript
+harness.session.extensionRunner.setUIContext({
+  confirm: async () => true,           // user clicks "yes"
+  select: async () => "option B",      // user selects "option B"
+  input: async () => "typed text",     // user types text
+  editor: async () => "edited content", // user edits in editor
+  notify: () => {},                    // non-blocking, fire-and-forget
+  // Required no-op stubs for remaining ExtensionUIContext methods:
+  onTerminalInput: () => () => {},
+  setStatus: () => {}, setWorkingMessage: () => {}, setWorkingVisible: () => {},
+  setWorkingIndicator: () => {}, setHiddenThinkingLabel: () => {},
+  setWidget: () => {}, setFooter: () => {}, setHeader: () => {}, setTitle: () => {},
+  custom: async () => undefined as never,
+}, "interactive");
+```
+
 **Key harness APIs:**
 
 | API | Purpose |
