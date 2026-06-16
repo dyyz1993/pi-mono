@@ -2879,6 +2879,10 @@ export class AgentSession {
 	}
 
 	private async _initMcpServers(): Promise<void> {
+		// 子代理进程跳过 MCP 连接（环境变量 PI_SKIP_MCP=1）
+		// 避免 multiple CLI 进程竞争同一个 stdio MCP server 导致死锁
+		if (process.env.PI_SKIP_MCP === "1") return;
+
 		// Dispose any existing MCP manager (e.g., on reload)
 		if (this._mcpManager) {
 			await this._mcpManager.dispose();
@@ -3377,6 +3381,32 @@ export class AgentSession {
 			baseDefs.skill = createSkillToolDefinition({
 				getSkills: () => this._resourceLoader.getSkills().skills,
 				subtaskContext,
+				onSubtaskEvent: (subtaskId, label, inner) => {
+					const id = this.sessionManager.appendCustomEntry("subtask_progress", {
+						subtaskId,
+						label,
+						eventType: inner.type,
+						data: inner,
+					});
+					this._emit({
+						type: "custom_entry",
+						customType: "subtask_progress",
+						data: { subtaskId, label, eventType: inner.type, data: inner },
+						id,
+					});
+				},
+				onSubtaskComplete: (subtaskId, label, result) => {
+					const id = this.sessionManager.appendCustomEntry("subtask", {
+						subtaskId,
+						label,
+						success: result.success,
+						text: result.text,
+						error: result.error,
+						startedAt: result.startedAt,
+						completedAt: result.completedAt,
+					});
+					this._emit({ type: "custom_entry", customType: "subtask", data: { subtaskId, label, ...result }, id });
+				},
 			}) as ToolDefinition;
 		}
 

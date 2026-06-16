@@ -164,10 +164,15 @@ export class RpcClient {
 		});
 		this.process = childProcess;
 
-		// Collect stderr for debugging
+		// Collect stderr for debugging (limit accumulation to prevent backpressure)
+		let _stderrLen = 0;
 		childProcess.stderr?.on("data", (data) => {
-			this.stderr += data.toString();
-			process.stderr.write(data);
+			const str = data.toString();
+			if (_stderrLen < 10000) {
+				this.stderr += str;
+				_stderrLen += str.length;
+			}
+			// Do NOT forward to process.stderr — causes backpressure on the parent
 		});
 
 		childProcess.once("exit", (code, signal) => {
@@ -969,7 +974,7 @@ export class RpcClient {
 				this.readyResolve = null;
 				this.readyReject = null;
 				reject(new Error(`Agent process did not become ready. Stderr: ${this.stderr}`));
-			}, 15000);
+			}, 60000);
 
 			this.readyResolve = () => {
 				clearTimeout(timeout);
