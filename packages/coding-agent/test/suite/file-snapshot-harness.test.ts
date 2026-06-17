@@ -243,6 +243,51 @@ describe("snapshot/rollback harness integration", () => {
 		expect(readFileSync(join(cwd, "file.txt"), "utf-8")).toBe("v1");
 	});
 
+	it("navigateTree rollback restores multiple modified files from the same target snapshot", async () => {
+		const cwd = makeTempDir();
+		const writeTool = makeRealWriteTool(cwd);
+		const editTool = makeRealEditTool(cwd);
+		const harness = await createHarnessWithSnapshot(cwd, [writeTool, editTool]);
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("write", { path: "multi_a.txt", content: "A v1\n" }),
+					fauxToolCall("write", { path: "multi_b.txt", content: "B v1\n" }),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("created"),
+		]);
+		await harness.session.prompt("create two files");
+		await harness.session.agent.waitForIdle();
+
+		const snap0Id = getSnapshotEntryId(harness)!;
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("edit", { path: "multi_a.txt", oldText: "A v1", newText: "A v2" }),
+					fauxToolCall("edit", { path: "multi_b.txt", oldText: "B v1", newText: "B v2" }),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("modified"),
+		]);
+		await harness.session.prompt("modify both files");
+		await harness.session.agent.waitForIdle();
+
+		expect(readFileSync(join(cwd, "multi_a.txt"), "utf-8")).toBe("A v2\n");
+		expect(readFileSync(join(cwd, "multi_b.txt"), "utf-8")).toBe("B v2\n");
+
+		const result = await harness.session.navigateTree(snap0Id, { skipFiles: false });
+		expect(result.cancelled).toBe(false);
+
+		expect(readFileSync(join(cwd, "multi_a.txt"), "utf-8")).toBe("A v1\n");
+		expect(readFileSync(join(cwd, "multi_b.txt"), "utf-8")).toBe("B v1\n");
+	});
+
 	it("previewRollback shows what would change without modifying", async () => {
 		const cwd = makeTempDir();
 		writeFileSync(join(cwd, "file.txt"), "original");

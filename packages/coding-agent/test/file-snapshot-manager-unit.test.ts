@@ -174,6 +174,53 @@ describe("FileSnapshotManager", () => {
 			expect(readFileSync(join(testDir, "a.txt"), "utf-8")).toBe("a1\n");
 			expect(readFileSync(join(testDir, "b.txt"), "utf-8")).toBe("b2\n");
 		});
+
+		it("full rollback restores all modified files from the target snapshot", async () => {
+			const git = new InternalGit(storeDir);
+			const tree1 = git.writeTree(
+				new Map([
+					["multi_a.txt", "A v1\n"],
+					["multi_b.txt", "B v1\n"],
+				]),
+			);
+			const tree2 = git.writeTree(
+				new Map([
+					["multi_a.txt", "A v2\n"],
+					["multi_b.txt", "B v2\n"],
+				]),
+			);
+
+			const entries: SessionEntry[] = [
+				customSnapshotEntry("snap-1", "p1", "2026-01-01T00:00:00.000Z", {
+					baselineTreeHash: null,
+					snapshotTreeHash: tree1.treeHash,
+					diff: { added: ["multi_a.txt", "multi_b.txt"], modified: [], deleted: [] },
+					turnIndex: 0,
+				}),
+				customSnapshotEntry("snap-2", "p2", "2026-01-01T00:01:00.000Z", {
+					baselineTreeHash: tree1.treeHash,
+					snapshotTreeHash: tree2.treeHash,
+					diff: { added: [], modified: ["multi_a.txt", "multi_b.txt"], deleted: [] },
+					turnIndex: 1,
+				}),
+			];
+
+			const mgr = new FileSnapshotManager(git);
+			mgr.rebuildIndex(entries);
+			writeFileSync(join(testDir, "multi_a.txt"), "A v2\n");
+			writeFileSync(join(testDir, "multi_b.txt"), "B v2\n");
+
+			const result = await mgr.restoreFiles(testDir, {
+				targetEntryId: "snap-1",
+				entries,
+				preview: false,
+			});
+
+			expect(result.restored).toEqual(["multi_a.txt", "multi_b.txt"]);
+			expect(result.deleted).toEqual([]);
+			expect(readFileSync(join(testDir, "multi_a.txt"), "utf-8")).toBe("A v1\n");
+			expect(readFileSync(join(testDir, "multi_b.txt"), "utf-8")).toBe("B v1\n");
+		});
 	});
 
 	afterEach(() => {
