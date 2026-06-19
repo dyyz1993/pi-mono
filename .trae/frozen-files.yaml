@@ -24,3 +24,14 @@ frozen:
     changelog:
       - fix: "实现文件时间戳检查，防止 AI 覆盖外部修改"
         date: "2026-06-16"
+
+  - path: "packages/coding-agent/extensions/file-review/**"
+    reason: "file-review 扩展已完成"
+    frozenAt: "2026-06-16"
+    commit: "3a7897ede"
+    changelog:
+      - fix: "文件变更审批扩展，turn_end 事件中收集 live changes 并发送审批请求"
+        date: "2026-06-16"
+      - fix: "修复审批基线、pending diff 与回滚相关回归"
+        date: "2026-06-19"
+        commit: "3a7897ede"
