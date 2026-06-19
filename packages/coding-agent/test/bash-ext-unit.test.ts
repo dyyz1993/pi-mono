@@ -76,19 +76,27 @@ function createMockChannel() {
 function createMockExtensionAPI(channelObj: ReturnType<typeof createMockChannel>) {
 	let sendUserMessageFn: ((msg: string, opts?: { deliverAs?: string }) => void) | undefined;
 	const sentUserMessages: string[] = [];
+	const sentMessages: Array<{ message: Record<string, unknown>; options?: Record<string, unknown> }> = [];
+	const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 
 	const api = {
 		on: (_event: string, _handler: unknown) => {},
-		appendEntry: (_type: string, _data: unknown) => "",
+		appendEntry: (customType: string, data: unknown) => {
+			appendedEntries.push({ customType, data });
+			return "";
+		},
 		registerChannel: (_name: string) => channelObj.channel,
 		registerTool: (_config: unknown) => {},
+		sendMessage: (message: Record<string, unknown>, options?: Record<string, unknown>) => {
+			sentMessages.push({ message, options });
+		},
 		sendUserMessage: (msg: string, opts?: { deliverAs?: string }) => {
 			sentUserMessages.push(msg);
 			sendUserMessageFn?.(msg, opts);
 		},
 	} as unknown as ExtensionAPI;
 
-	return { api, sentUserMessages };
+	return { api, sentUserMessages, sentMessages, appendedEntries };
 }
 
 function createMockContext(cwd: string): ExtensionContext {
@@ -124,7 +132,7 @@ interface RegisteredTools {
 
 function setupExtension(cwd: string) {
 	const channelObj = createMockChannel();
-	const { api, sentUserMessages } = createMockExtensionAPI(channelObj);
+	const { api, sentUserMessages, sentMessages, appendedEntries } = createMockExtensionAPI(channelObj);
 	const ctx = createMockContext(cwd);
 	// biome-ignore lint/complexity/noBannedTypes: test mock
 	const tools: Record<string, { name: string; parameters: unknown; execute: Function }> = {};
@@ -145,7 +153,31 @@ function setupExtension(cwd: string) {
 	// But session_start is an event handler registered via pi.on which we stubbed.
 	// We need to find and invoke it.
 
-	return { api, ctx, tools, channelObj, sentUserMessages };
+	return {
+		api,
+		ctx,
+		tools: tools as unknown as RegisteredTools,
+		channelObj,
+		sentUserMessages,
+		sentMessages,
+		appendedEntries,
+	};
+}
+
+async function queryBackgroundProcessUntil(
+	tools: RegisteredTools,
+	toolCallId: string,
+	params: Record<string, unknown>,
+	predicate: (text: string) => boolean,
+): Promise<AgentToolResult<unknown>> {
+	let result = await tools.get_background_process.execute(toolCallId, params);
+	for (let i = 0; i < 50; i++) {
+		const text = (result.content[0] as { text: string }).text;
+		if (predicate(text)) return result;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		result = await tools.get_background_process.execute(toolCallId, params);
+	}
+	return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -442,6 +474,41 @@ describe("bash-ext tool execution paths", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("get_background_process tool", () => {
+	it("background completion emits structured custom event instead of user message", async () => {
+		const cwd = makeTempDir();
+		const { tools, ctx, sentUserMessages, sentMessages, appendedEntries } = setupExtension(cwd);
+
+		const bgResult = await tools.bash.execute(
+			"tc-bg-event",
+			{
+				command: "sleep 0.2 && echo structured_done",
+				description: "structured background event",
+				backgroundAfter: 0.01,
+				timeout: 5,
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect((bgResult.content[0] as { text: string }).text).toContain("<bashId>");
+
+		for (let i = 0; i < 30 && sentMessages.length === 0; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+
+		expect(sentUserMessages).toHaveLength(0);
+		expect(appendedEntries).toHaveLength(1);
+		expect(appendedEntries[0].customType).toBe("bash_background_process");
+		expect(sentMessages).toHaveLength(1);
+		expect(sentMessages[0].message).toMatchObject({
+			customType: "bash_background_process",
+			display: false,
+		});
+		expect(String(sentMessages[0].message.content)).toContain("<background_process");
+		expect(sentMessages[0].options).toMatchObject({ triggerTurn: true, deliverAs: "steer" });
+	});
+
 	it("returns 'No process found' for non-existent bashId", async () => {
 		const cwd = makeTempDir();
 		const { tools } = setupExtension(cwd);
@@ -554,7 +621,9 @@ describe("get_background_process tool", () => {
 
 		const bashId = (bgResult.content[0] as { text: string }).text.match(/<bashId>([^<]+)<\/bashId>/)![1];
 
-		const queryResult = await tools.get_background_process.execute("tc-gb-5q", { bashId, lastLines: 3 });
+		const queryResult = await queryBackgroundProcessUntil(tools, "tc-gb-5q", { bashId, lastLines: 3 }, (text) =>
+			text.includes("line_20"),
+		);
 
 		const queryText = (queryResult.content[0] as { text: string }).text;
 		// Last lines should be present

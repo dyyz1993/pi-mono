@@ -431,7 +431,7 @@ describe("ask-tools harness tests with mocked UI", () => {
 
 	it("ask-select multiple returns multiple choices", async () => {
 		const harness = await createAskHarnessWithUI({
-			select: async () => "red, blue" as string,
+			select: async () => ["red", "blue"] as unknown as string,
 		});
 
 		harness.setResponses([

@@ -46,6 +46,8 @@ export interface SubtaskOptions {
 	inheritHistory?: boolean;
 	/** Inherit parent session extensions (default: true). */
 	inheritExtensions?: boolean;
+	/** Optional callback invoked for every child session event (for transparency/streaming). */
+	onEvent?: (event: AgentSessionEvent) => void;
 }
 
 export interface SubtaskContext {
@@ -75,6 +77,10 @@ export interface SubtaskResult {
 	success: boolean;
 	/** Error message if failed. */
 	error?: string;
+	/** Start timestamp (epoch ms). */
+	startedAt: number;
+	/** Completion timestamp (epoch ms). */
+	completedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,10 +250,12 @@ export async function runSubtask(options: SubtaskOptions, context: SubtaskContex
 	const events: AgentSessionEvent[] = [];
 	session.subscribe((event) => {
 		events.push(event);
+		options.onEvent?.(event);
 	});
 
 	let inputTokens = 0;
 	let outputTokens = 0;
+	const startedAt = Date.now();
 
 	try {
 		await session.prompt(options.task);
@@ -269,10 +277,18 @@ export async function runSubtask(options: SubtaskOptions, context: SubtaskContex
 			? extractTextFromMessages(agentEndEvent.messages)
 			: extractTextFromMessages(session.messages);
 
-		return { text, inputTokens, outputTokens, success: true };
+		return { text, inputTokens, outputTokens, success: true, startedAt, completedAt: Date.now() };
 	} catch (err: unknown) {
 		const message = err instanceof Error ? err.message : String(err);
-		return { text: "", inputTokens, outputTokens, success: false, error: message };
+		return {
+			text: "",
+			inputTokens,
+			outputTokens,
+			success: false,
+			error: message,
+			startedAt,
+			completedAt: Date.now(),
+		};
 	} finally {
 		session.dispose();
 	}

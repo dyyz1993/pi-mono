@@ -79,7 +79,10 @@ describe("tool-loop detection: end-to-end", () => {
 			}),
 		};
 
-		const harness = await createHarness({ tools: [editTool] });
+		const harness = await createHarness({
+			tools: [editTool],
+			settings: { compaction: { enabled: true, keepRecentTokens: 0 } },
+		});
 		harnesses.push(harness);
 
 		// Agent calls edit with different paths each time — NOT a loop
@@ -151,7 +154,10 @@ describe("tool-loop detection: after compaction", () => {
 			}),
 		};
 
-		const harness = await createHarness({ tools: [editTool] });
+		const harness = await createHarness({
+			tools: [editTool],
+			settings: { compaction: { enabled: true, keepRecentTokens: 0 } },
+		});
 		harnesses.push(harness);
 
 		// First prompt: normal edit
@@ -236,7 +242,10 @@ describe("tool-loop detection: parallel tool calls", () => {
 			}),
 		};
 
-		const harness = await createHarness({ tools: [editTool] });
+		const harness = await createHarness({
+			tools: [editTool],
+			settings: { compaction: { enabled: true, keepRecentTokens: 0 } },
+		});
 		harnesses.push(harness);
 
 		harness.setResponses([
@@ -390,7 +399,7 @@ describe("tool-loop detection: after full compaction", () => {
 		// Build up some conversation history first
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("edit", { path: "/a.ts" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done first task"),
+			fauxAssistantMessage(`done first task ${"x".repeat(100_000)}`),
 		]);
 		await harness.session.prompt("edit a");
 

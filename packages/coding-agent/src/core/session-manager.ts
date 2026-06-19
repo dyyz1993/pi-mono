@@ -589,6 +589,15 @@ function parseSessionEntryLine(line: string): FileEntry | null {
 	}
 }
 
+function isValidLoadedFileEntry(entry: FileEntry): boolean {
+	if (entry.type === "session") return true;
+	const record = entry as unknown as Record<string, unknown>;
+	if (typeof record.id !== "string" || record.id.length === 0) return false;
+	if (!("parentId" in record)) return false;
+	if (record.parentId !== null && typeof record.parentId !== "string") return false;
+	return typeof record.timestamp === "string" && record.timestamp.length > 0;
+}
+
 /** Exported for testing */
 export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	const resolvedFilePath = normalizePath(filePath);
@@ -631,7 +640,7 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 		return [];
 	}
 
-	return entries;
+	return entries.filter(isValidLoadedFileEntry);
 }
 
 function readSessionHeader(filePath: string): SessionHeader | null {

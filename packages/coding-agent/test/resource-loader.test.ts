@@ -513,7 +513,7 @@ description: File URL skill
 Extra content`,
 			);
 
-			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			const loader = new DefaultResourceLoader({ cwd, agentDir, noSkills: true });
 			await loader.reload();
 
 			loader.extendResources({

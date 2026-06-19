@@ -1826,6 +1826,10 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const { text: finalText } = handleLargeInput(expandedText);
+		if (!this.isStreaming) {
+			await this.prompt(finalText, { images, expandPromptTemplates: false });
+			return;
+		}
 		await this._queueSteer(finalText, images);
 	}
 
@@ -1847,6 +1851,10 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const { text: finalText } = handleLargeInput(expandedText);
+		if (!this.isStreaming) {
+			await this.prompt(finalText, { images, expandPromptTemplates: false });
+			return;
+		}
 		await this._queueFollowUp(finalText, images);
 	}
 
@@ -3463,6 +3471,9 @@ export class AgentSession {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 		await this.settingsManager.reload();
+		this._modelRegistry.authStorage.reload();
+		this._modelRegistry.refresh();
+		this._refreshCurrentModelFromRegistry();
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();

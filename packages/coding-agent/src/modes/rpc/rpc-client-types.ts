@@ -114,6 +114,10 @@ export interface RpcClientSurface {
 	exportHtml(outputPath?: string): Promise<{ path: string }>;
 	switchSession(sessionPath: string): Promise<SessionOperationResult>;
 	fork(entryId: string, options?: { position?: "before" | "at" }): Promise<ForkResult>;
+	copyFork(
+		entryId: string,
+		options?: { compact?: boolean },
+	): Promise<{ newSessionFile?: string; newSessionId?: string }>;
 	navigateTree(
 		targetId: string,
 		options?: {

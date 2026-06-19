@@ -66,7 +66,6 @@ describe("coordinator tool registration", () => {
 		"session_delegate_stop",
 		"session_delegate_remove",
 		"session_delegate_clear_stopped",
-		"session_delegate_sync",
 	];
 
 	for (const toolName of expectedTools) {

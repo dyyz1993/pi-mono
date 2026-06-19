@@ -246,6 +246,8 @@ export interface RpcAgentSummary {
 	permissionMode?: string;
 	source: string;
 	filePath: string;
+	color?: AgentConfig["color"];
+	avatar?: AgentConfig["avatar"];
 }
 
 export interface RpcAllTool {
@@ -301,6 +303,7 @@ export interface RpcSessionState {
 	messageCount: number;
 	pendingMessageCount: number;
 	streamingMessage?: AgentMessage;
+	pendingUIRequests?: RpcExtensionUIRequest[];
 }
 
 // ============================================================================

@@ -83,7 +83,7 @@ describe("path boundary approval", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("write", { file_path: "/tmp/outside.txt", content: "data" }), {
+			fauxAssistantMessage(fauxToolCall("write", { file_path: "/etc/pi-outside.txt", content: "data" }), {
 				stopReason: "toolUse",
 			}),
 			fauxAssistantMessage("done"),

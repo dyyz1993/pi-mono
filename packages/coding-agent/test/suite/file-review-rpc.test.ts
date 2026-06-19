@@ -1709,24 +1709,198 @@ describe("multi-turn diff scenarios", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "step.txt"), "v1\n"));
-		fix.channel._invokeDirect("review.approve", { path: "step.txt" });
+		const firstApproval = fix.channel._invokeDirect("review.approve", { path: "step.txt" }) as {
+			ok: boolean;
+			snapshotEntryId?: string;
+		};
+		expect(firstApproval.ok).toBe(true);
+		expect(firstApproval.snapshotEntryId).toBe("step-snapshot-0");
 
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "step.txt"), "v1\nv2\n"));
-		fix.channel._invokeDirect("review.approve", { path: "step.txt" });
+		const secondApproval = fix.channel._invokeDirect("review.approve", { path: "step.txt" }) as {
+			ok: boolean;
+			snapshotEntryId?: string;
+		};
+		expect(secondApproval.ok).toBe(true);
+		expect(secondApproval.snapshotEntryId).toBe("step-snapshot-1");
+
+		// Simulate session reload: approval baseline must come from persisted snapshotEntryId,
+		// not from the in-memory approvedSnapshotEntry map.
+		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 2, () => writeFileSync(join(fix.cwd, "step.txt"), "v1\nv2\nv3\n"));
 
 		const pending = getPendingForPath(fix, "step.txt");
 		expect(pending).toBeDefined();
-		// Baseline is the last approved snapshot. In the mock environment,
-		// approvedSnapshotEntry may point to the first approved snapshot (v1)
-		// rather than the second (v1\nv2). Either way:
-		// - oldContent should be either "v1\n" or "v1\nv2\n"
-		// - newContent should be "v1\nv2\nv3\n"
-		// - The diff should show v3 as added
+		expect(pending!.oldContent).toBe("v1\nv2\n");
 		expect(pending!.newContent).toBe("v1\nv2\nv3\n");
-		expect(pending!.addedLines).toBeGreaterThanOrEqual(1);
+		expect(pending!.addedLines).toBe(1);
 		expect(pending!.deletedLines).toBe(0);
+		expect(pending!.unifiedDiff).not.toContain("+v1");
+		expect(pending!.unifiedDiff).not.toContain("+v2");
 		expect(pending!.unifiedDiff).toContain("+v3");
+	});
+
+	it("K: create → approve → reload → delete one line and add three lines reports -1/+3", async () => {
+		const fix = setupReviewFixture();
+		await fix.handlers.get("session_start")!({}, fix.ctx);
+
+		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "balanced.txt"), "keep A\nremove me\nkeep B\n"));
+		const approval = fix.channel._invokeDirect("review.approve", { path: "balanced.txt" }) as {
+			ok: boolean;
+			snapshotEntryId?: string;
+		};
+		expect(approval.ok).toBe(true);
+		expect(approval.snapshotEntryId).toBe("step-snapshot-0");
+
+		// Simulate RPC/extension restart. The approval list and baseline snapshot
+		// must be restored from persisted file-approval entries.
+		await fix.handlers.get("session_start")!({}, fix.ctx);
+		const approvals = fix.channel._invokeDirect("review.approvals", { status: "approved" }) as Array<{
+			path: string;
+			status: string;
+			snapshotEntryId?: string;
+		}>;
+		expect(approvals).toContainEqual(
+			expect.objectContaining({
+				path: "balanced.txt",
+				status: "approved",
+				snapshotEntryId: "step-snapshot-0",
+			}),
+		);
+
+		await runTurn(fix, 1, () =>
+			writeFileSync(join(fix.cwd, "balanced.txt"), "keep A\nnew 1\nnew 2\nnew 3\nkeep B\n"),
+		);
+
+		const pending = getPendingForPath(fix, "balanced.txt");
+		expect(pending).toBeDefined();
+		expect(pending!.oldContent).toBe("keep A\nremove me\nkeep B\n");
+		expect(pending!.newContent).toBe("keep A\nnew 1\nnew 2\nnew 3\nkeep B\n");
+		expect(pending!.deletedLines).toBe(1);
+		expect(pending!.addedLines).toBe(3);
+		expect(pending!.unifiedDiff).toContain("-remove me");
+		expect(pending!.unifiedDiff).toContain("+new 1");
+		expect(pending!.unifiedDiff).toContain("+new 2");
+		expect(pending!.unifiedDiff).toContain("+new 3");
+		expect(pending!.unifiedDiff).not.toContain("+keep A");
+		expect(pending!.unifiedDiff).not.toContain("-keep A");
+		expect(pending!.unifiedDiff).not.toContain("+keep B");
+		expect(pending!.unifiedDiff).not.toContain("-keep B");
+	});
+
+	it("L: approved baseline survives legacy approval without snapshotTreeHash and stale snapshotIndex", async () => {
+		const fix = setupReviewFixture();
+		await fix.handlers.get("session_start")!({}, fix.ctx);
+
+		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "legacy.txt"), "line 1\nremove me\nline 3\n"));
+		const snap0 = fix.mgr.getSnapshotAtEntry("step-snapshot-0");
+		expect(snap0?.snapshotTreeHash).toBeTruthy();
+		fix.entries.push({
+			type: "step-snapshot",
+			customType: "step-snapshot",
+			id: "step-snapshot-0",
+			data: {
+				turnIndex: 0,
+				snapshotTreeHash: snap0!.snapshotTreeHash,
+				baselineTreeHash: snap0!.baselineTreeHash,
+				diff: null,
+			},
+		});
+
+		const approval = fix.channel._invokeDirect("review.approve", { path: "legacy.txt" }) as {
+			ok: boolean;
+			snapshotEntryId?: string;
+		};
+		expect(approval.ok).toBe(true);
+		expect(approval.snapshotEntryId).toBe("step-snapshot-0");
+
+		for (const entry of fix.entries) {
+			if (entry.type !== "file-approval") continue;
+			const data = entry.data as { snapshotTreeHash?: string };
+			delete data.snapshotTreeHash;
+		}
+
+		(fix.mgr as unknown as { snapshotIndex: Map<string, unknown> }).snapshotIndex.clear();
+		await fix.handlers.get("session_start")!({}, fix.ctx);
+
+		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "legacy.txt"), "line 1\nnew A\nnew B\nline 3\n"));
+
+		const pending = getPendingForPath(fix, "legacy.txt");
+		expect(pending).toBeDefined();
+		expect(pending!.oldContent).toBe("line 1\nremove me\nline 3\n");
+		expect(pending!.newContent).toBe("line 1\nnew A\nnew B\nline 3\n");
+		expect(pending!.deletedLines).toBe(1);
+		expect(pending!.addedLines).toBe(2);
+		expect(pending!.unifiedDiff).toContain("-remove me");
+		expect(pending!.unifiedDiff).toContain("+new A");
+		expect(pending!.unifiedDiff).toContain("+new B");
+		expect(pending!.unifiedDiff).not.toContain("+line 1");
+		expect(pending!.unifiedDiff).not.toContain("-line 1");
+		expect(pending!.unifiedDiff).not.toContain("+line 3");
+		expect(pending!.unifiedDiff).not.toContain("-line 3");
+	});
+
+	it("M: session restart replays later file-review-turn as pending after approval", async () => {
+		const fix = setupReviewFixture();
+		await fix.handlers.get("session_start")!({}, fix.ctx);
+
+		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "restart.txt"), "keep\nremove\n"));
+		const snap0 = fix.mgr.getSnapshotAtEntry("step-snapshot-0");
+		expect(snap0?.snapshotTreeHash).toBeTruthy();
+		fix.entries.push({
+			type: "step-snapshot",
+			customType: "step-snapshot",
+			id: "step-snapshot-0",
+			data: {
+				turnIndex: 0,
+				snapshotTreeHash: snap0!.snapshotTreeHash,
+				baselineTreeHash: snap0!.baselineTreeHash,
+				diff: null,
+			},
+		});
+
+		const approval = fix.channel._invokeDirect("review.approve", { path: "restart.txt" }) as {
+			ok: boolean;
+			snapshotEntryId?: string;
+		};
+		expect(approval.ok).toBe(true);
+
+		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "restart.txt"), "keep\nadded\n"));
+		const snap1 = fix.mgr.getSnapshotAtEntry("step-snapshot-1");
+		expect(snap1?.snapshotTreeHash).toBeTruthy();
+		fix.entries.push({
+			type: "step-snapshot",
+			customType: "step-snapshot",
+			id: "step-snapshot-1",
+			data: {
+				turnIndex: 1,
+				snapshotTreeHash: snap1!.snapshotTreeHash,
+				baselineTreeHash: snap1!.baselineTreeHash,
+				diff: null,
+			},
+		});
+
+		await fix.handlers.get("session_start")!({}, fix.ctx);
+
+		const approvals = fix.channel._invokeDirect("review.approvals", {}) as Array<{
+			path: string;
+			status: string;
+			snapshotEntryId?: string;
+		}>;
+		expect(approvals).toContainEqual(
+			expect.objectContaining({
+				path: "restart.txt",
+				status: "pending",
+				snapshotEntryId: "step-snapshot-0",
+			}),
+		);
+
+		const pending = getPendingForPath(fix, "restart.txt");
+		expect(pending).toBeDefined();
+		expect(pending!.oldContent).toBe("keep\nremove\n");
+		expect(pending!.newContent).toBe("keep\nadded\n");
+		expect(pending!.deletedLines).toBe(1);
+		expect(pending!.addedLines).toBe(1);
 	});
 });

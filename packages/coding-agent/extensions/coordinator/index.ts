@@ -44,11 +44,20 @@ const DelegateParams = Type.Object({
   task: Type.String({ description: "Task description to delegate to the background session" }),
   title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
+  replyMode: Type.Optional(Type.Union([
+    Type.Literal("interrupt"),
+    Type.Literal("followUp"),
+    Type.Literal("auto"),
+  ], { description: "How delegate replies should be delivered to the parent session. interrupt = insert/steer into the parent immediately (default); followUp = queue until the parent finishes; auto = immediate when idle, follow-up when busy." })),
 });
 
 const DelegateSendParams = Type.Object({
   targetSessionId: Type.String({ description: "Session ID to send the message to" }),
   message: Type.String({ description: "Message content to send" }),
+  mode: Type.Optional(Type.Union([
+    Type.Literal("steer"),
+    Type.Literal("followUp"),
+  ], { description: "Override delivery for this message. Omit to use the replyMode chosen when the delegate was created." })),
 });
 
 const DelegateStatusParams = Type.Object({
@@ -64,17 +73,6 @@ const DelegateForkParams = Type.Object({
   task: Type.String({ description: "Task description for the forked session" }),
   title: Type.Optional(Type.String({ description: "Short title for the forked task" })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the forked session in. Defaults to the current working directory." })),
-});
-
-const DelegateSyncParams = Type.Object({
-  task: Type.String({ description: "Task description to delegate synchronously" }),
-  title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
-  agent: Type.Optional(Type.String({ description: "Agent name to activate in the delegated session" })),
-  model: Type.Optional(Type.String({ description: "Model override for the delegated session. Takes precedence over the agent definition's model." })),
-  timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds. Default: 180000." })),
-  projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
-  depth: Type.Optional(Type.Number({ description: "Current subagent recursion depth" })),
-  variables: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Variables to pass to the delegated session, accessible via $variable in task templates" })),
 });
 
 export { createServerProxy } from "./server-proxy.ts";
@@ -117,10 +115,12 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     name: "session_delegate",
     label: "Session Delegate",
     description: [
-      "Delegate a task to a background pi session.",
+      "Delegate a task to a background pi session asynchronously.",
       "Optionally specify a projectPath to run the session in a specific project directory.",
-      "Returns a sessionId for communication via session_delegate_send.",
-      "The delegated session can message back using its own coordinator channel.",
+      "Choose replyMode at creation time: interrupt (default, delegate replies are inserted into this parent immediately), followUp (queue replies until this parent finishes), or auto (idle sends immediately, busy queues).",
+      "Returns immediately with a sessionId; do not poll session_delegate_status just to wait for completion.",
+      "After delegating, stop and wait for the delegated session to report back by calling session_delegate_send to this parent session.",
+      "Use session_delegate_status only for explicit user-requested diagnostics, recovery, or troubleshooting.",
       "The delegate session is automatically restarted if inactive when receiving messages.",
     ].join(" "),
     parameters: DelegateParams,
@@ -128,7 +128,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       try {
         const sid = currentSessionId || ctx.sessionManager.getSessionId();
         const projectPath = params.projectPath || ctx.cwd;
-        const result = await serverProxy.delegate(params.task, projectPath);
+        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode);
 
         if (!result.sessionId) {
           console.debug("[coordinator] delegate failed: no sessionId returned");
@@ -145,11 +145,12 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
           task: params.task,
           title: params.title,
           projectPath,
+          replyMode: params.replyMode ?? "interrupt",
           dispatchedBy: sid,
         });
         return {
-          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Use session_delegate_send to communicate.` }],
-          details: { ...result, dispatchedBy: sid, projectPath },
+          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, replyMode: ${params.replyMode ?? "interrupt"}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
+          details: { ...result, dispatchedBy: sid, projectPath, replyMode: params.replyMode ?? "interrupt" },
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -165,14 +166,14 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       "Send a message to a delegated session by sessionId.",
       "If the target session is not active, the server will automatically restart it",
       "(same as clicking on the session in the UI) and deliver the message.",
-      "The message is injected as a followUp into the target session.",
+      "Omit mode to use the replyMode chosen when the delegate was created; pass mode=steer to interrupt/insert immediately, or mode=followUp to queue.",
       "This tool only fails if the session file has been physically deleted from disk.",
     ].join(" "),
     parameters: DelegateSendParams,
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const sid = currentSessionId || ctx.sessionManager.getSessionId();
-        const result = await serverProxy.delegate_send(sid, params.targetSessionId, params.message);
+        const result = await serverProxy.delegate_send(sid, params.targetSessionId, params.message, params.mode);
 
         if (!result.delivered) {
           pi.appendEntry("coordinator_send_failed", { fromSessionId: sid, toSessionId: params.targetSessionId });
@@ -197,7 +198,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "session_delegate_status",
     label: "Session Delegate Status",
-    description: "Check the status of a delegated task session.",
+    description: "Diagnostic-only status check for a delegated task session. Do not use this in a polling loop after session_delegate; asynchronous delegates are expected to call session_delegate_send back when they have progress or final results.",
     parameters: DelegateStatusParams,
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
       const task = store?.get(params.sessionId);
@@ -300,53 +301,6 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
         content: [{ type: "text" as const, text: `Cleared ${removed} stopped/completed task(s).` }],
         details: { removed },
       };
-    },
-  });
-
-  pi.registerTool({
-    name: "session_delegate_sync",
-    label: "Session Delegate Sync",
-    description: [
-      "Synchronously delegate a task to a subagent session and wait for the result.",
-      "Optionally specify an agent name to activate in the delegated session.",
-      "The agent parameter is passed through to the child session so hooks and permissions are applied.",
-    ].join(" "),
-    parameters: DelegateSyncParams,
-    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-      const sid = currentSessionId || ctx.sessionManager.getSessionId();
-      const projectPath = params.projectPath || ctx.cwd;
-      const timeoutMs = params.timeoutMs ?? 180_000;
-
-      try {
-        const result = await serverProxy.delegate_sync(params.task, params.agent, timeoutMs, projectPath, params.model, params.depth, params.variables);
-
-        pi.appendEntry("coordinator_delegate_sync", {
-          sessionId: result.sessionId,
-          status: result.status,
-          exitCode: result.exitCode,
-          agent: params.agent,
-          task: params.task,
-          title: params.title,
-          projectPath,
-          dispatchedBy: sid,
-        });
-
-        if (result.exitCode !== 0) {
-          return {
-            content: [{ type: "text" as const, text: `Sync delegate ${result.status}: ${result.error || result.finalText}` }],
-            details: { ...result, dispatchedBy: sid, projectPath },
-            isError: true,
-          };
-        }
-
-        return {
-          content: [{ type: "text" as const, text: result.finalText }],
-          details: { ...result, dispatchedBy: sid, projectPath },
-        };
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `Error: ${errorMsg}` }], details: { error: errorMsg }, isError: true };
-      }
     },
   });
 

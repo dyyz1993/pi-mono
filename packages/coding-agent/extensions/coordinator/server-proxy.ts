@@ -1,17 +1,18 @@
-import type { SessionStatus } from "./types.ts";
+import type { DelegateReplyMode, SessionStatus } from "./types.ts";
 import type { ProcessManagerApi } from "./handler.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createServerProxy(client: { call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => Promise<any> }): ProcessManagerApi {
   return {
-    async delegate(task, projectPath) {
-      return client.call("session_delegate", { task, projectPath });
+    async delegate(task, projectPath, replyMode?: DelegateReplyMode) {
+      return client.call("session_delegate", { task, projectPath, replyMode });
     },
 
-    async delegate_send(fromSessionId, toSessionId, message) {
+    async delegate_send(fromSessionId, toSessionId, message, mode?: "followUp" | "steer") {
       return client.call("session_delegate_send", {
         targetSessionId: toSessionId,
         message,
+        mode,
       });
     },
 

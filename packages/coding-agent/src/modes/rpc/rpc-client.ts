@@ -127,6 +127,7 @@ export class RpcClient {
 	private readyReject: ((error: Error) => void) | null = null;
 	private requestId = 0;
 	private stderr = "";
+	private stdout = "";
 	private exitError: Error | null = null;
 	private options: RpcClientOptions;
 
@@ -257,6 +258,24 @@ export class RpcClient {
 	 */
 	getStderr(): string {
 		return this.stderr;
+	}
+
+	/**
+	 * Get collected stdout tail (useful for debugging startup/ready issues).
+	 */
+	getStdout(): string {
+		return this.stdout;
+	}
+
+	/**
+	 * Get current child process state for startup diagnostics.
+	 */
+	getProcessSnapshot(): { pid?: number; exitCode: number | null; signalCode: NodeJS.Signals | null } {
+		return {
+			pid: this.process?.pid,
+			exitCode: this.process?.exitCode ?? null,
+			signalCode: this.process?.signalCode ?? null,
+		};
 	}
 
 	// =========================================================================
@@ -898,6 +917,12 @@ export class RpcClient {
 	// =========================================================================
 
 	private handleLine(line: string): void {
+		if (this.stdout.length < 20000) {
+			this.stdout += `${line}\n`;
+		} else {
+			this.stdout = `${this.stdout.slice(-15000)}${line}\n`;
+		}
+
 		try {
 			const data = JSON.parse(line);
 

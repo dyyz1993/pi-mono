@@ -146,6 +146,7 @@ class MemoryPrefetch {
 	private result: string | null = null;
 	private lastSelected: string[] = [];
 	private resultEntryWritten = false;
+	private _operationId: string | null = null;
 	private store: SkipWordStore | null = null;
 	private _debugInfo: PrefetchDebugInfo | null = null;
 	private lastPrefetchTime = 0;
@@ -159,6 +160,10 @@ class MemoryPrefetch {
 
 	get selectedFiles(): string[] {
 		return this.lastSelected;
+	}
+
+	get operationId(): string | null {
+		return this._operationId;
 	}
 
 	markResultEntryWritten(): boolean {
@@ -175,7 +180,8 @@ class MemoryPrefetch {
 		return this.ensureStore();
 	}
 
-	start(query: string, memoryDir: string, callLLM: CallLLMFn): void {
+	start(query: string, memoryDir: string, callLLM: CallLLMFn, operationId: string): void {
+		this._operationId = operationId;
 		const now = Date.now();
 		const elapsed = now - this.lastPrefetchTime;
 
@@ -1013,12 +1019,14 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		const lastUserText = event.prompt ?? "";
 		if (lastUserText) {
 			status("selecting memories...");
+			const operationId = `memory-prefetch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			pi.appendEntry("memory_prefetch", {
+				operationId,
 				query: lastUserText.slice(0, 200),
 				memoryDir,
 				availableFiles: (await scanMemoryFiles(memoryDir)).length,
 			});
-			prefetch.start(lastUserText, memoryDir, callLLMWithRetry);
+			prefetch.start(lastUserText, memoryDir, callLLMWithRetry, operationId);
 		}
 
 		return { systemPrompt: `${event.systemPrompt}\n\n${memoryPrompt}` };
@@ -1031,6 +1039,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		if (!prefetch.markResultEntryWritten() && prefetch.started) {
 			status(memoryText ? "memories injected" : "no memories found");
 			pi.appendEntry("memory_prefetch_result", {
+				operationId: prefetch.operationId,
 				summary: memoryText ? "Injected relevant memories" : "No relevant memories",
 				snippet: memoryText ? memoryText.slice(0, 500) : "",
 				injectedBytes: memoryText ? memoryText.length : 0,

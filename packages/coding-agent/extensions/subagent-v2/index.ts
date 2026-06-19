@@ -192,65 +192,80 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			try {
-				const title = params.description ?? `${params.agent}: ${params.task.slice(0, 40)}`;
-				const result = await coordinatorClient.call(
-					"session_delegate_sync",
-					{
-						task: resolvedTask,
-						title,
-						agent: params.agent,
-						model: params.model,
-						timeoutMs,
-						projectPath: params.cwd ?? ctx.cwd,
-						depth: currentDepth + 1,
-						variables: params.variables,
-					},
-					timeoutMs + 30_000,
-				);
+			const title = params.description ?? `${params.agent}: ${params.task.slice(0, 40)}`;
 
-				pi.appendEntry("subagent", {
+			// Subscribe to delegate_progress events during the sync call
+			const unsubProgress = coordinatorClient.on("delegate_progress", (progressData) => {
+				if (progressData.toolCallId !== toolCallId) return;
+				pi.appendEntry("subagent_progress", {
 					toolCallId,
-					sessionId: result.sessionId,
-					sessionPath: "",
-					description: params.description ?? params.agent,
-					instruction: params.task,
-					startedAt,
-					completedAt: Date.now(),
-					exitCode: result.exitCode,
-					finalText: result.finalText,
+					sessionId: progressData.sessionId,
+					eventType: progressData.eventType,
+					data: progressData.data,
 				});
+	});
 
-				if (result.exitCode !== 0) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Agent ${result.status}: ${result.error || result.finalText}`,
-							},
-						],
-						details: { ...details, result },
-						isError: true,
-					};
-				}
+		try {
+			const result = await coordinatorClient.call(
+				"session_delegate_sync",
+				{
+					task: resolvedTask,
+					title,
+					agent: params.agent,
+					model: params.model,
+					timeoutMs,
+					projectPath: params.cwd ?? ctx.cwd,
+					depth: currentDepth + 1,
+					variables: params.variables,
+					toolCallId,
+				},
+				timeoutMs + 30_000,
+			);
 
-				return {
-					content: [{ type: "text", text: result.finalText }],
-					details: { ...details, result },
-				};
-			} catch (err) {
+			pi.appendEntry("subagent", {
+				toolCallId,
+				sessionId: result.sessionId,
+				sessionPath: "",
+				description: params.description ?? params.agent,
+				instruction: params.task,
+				startedAt,
+				completedAt: Date.now(),
+				exitCode: result.exitCode,
+				finalText: result.finalText,
+			});
+
+			if (result.exitCode !== 0) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Agent failed: ${err instanceof Error ? err.message : String(err)}`,
+							text: `Agent ${result.status}: ${result.error || result.finalText}`,
 						},
 					],
-					details,
+					details: { ...details, result },
 					isError: true,
 				};
 			}
-		},
+
+			return {
+				content: [{ type: "text", text: result.finalText }],
+				details: { ...details, result },
+			};
+		} catch (err) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Agent failed: ${err instanceof Error ? err.message : String(err)}`,
+					},
+				],
+				details,
+				isError: true,
+			};
+		} finally {
+			unsubProgress();
+		}
+	},
 
 		renderCall(args, theme, _context) {
 			const scope: AgentScope = args.agentScope ?? "user";
@@ -327,6 +342,17 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			// Subscribe to delegate_progress events during the sync call
+			const unsubProgress = coordinatorClient.on("delegate_progress", (progressData) => {
+				if (progressData.toolCallId !== toolCallId) return;
+				pi.appendEntry("subagent_progress", {
+					toolCallId,
+					sessionId: progressData.sessionId,
+					eventType: progressData.eventType,
+					data: progressData.data,
+				});
+			});
+
 			try {
 				const result = await coordinatorClient.call(
 					"session_delegate_sync",
@@ -336,6 +362,7 @@ export default function (pi: ExtensionAPI) {
 						timeoutMs,
 						projectPath: ctx.cwd,
 						depth: currentDepth,
+						toolCallId,
 					},
 					timeoutMs + 30_000,
 				);
@@ -380,8 +407,10 @@ export default function (pi: ExtensionAPI) {
 					details,
 					isError: true,
 				};
+			} finally {
+				unsubProgress();
 			}
-		},
+	},
 
 		renderCall(args, theme, _context) {
 			const sPath = args.sessionPath ?? args.sessionId ?? "...";

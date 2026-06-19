@@ -180,6 +180,8 @@ export interface SupervisorChannelContract extends ChannelContract {
 // ── Trigger Record ──
 
 export interface TriggerRecord {
+    /** Goal id that this trigger evaluated, if a goal was active */
+    goalId?: string;
     /** Sequential trigger number (1-based) */
     seq: number;
     /** Timestamp when this check started */
@@ -208,6 +210,7 @@ export interface TriggerRecord {
         confidence: number;
         response?: string;
         durationMs: number;
+        model?: string;
     };
     /** Action taken after this trigger */
     action: "continue" | "complete" | "paused" | "error" | "idle";
@@ -224,11 +227,21 @@ export interface GoalState {
     startedAt: number;
     updatedAt: number;
     currentMilestone?: string;
+    checklist?: GoalChecklistItem[];
     continuationCount: number;
     blockers: Array<{
         kind: "permission" | "choice" | "runtime" | "unsafe" | "unknown";
         summary: string;
     }>;
+}
+
+export interface GoalChecklistItem {
+    id: string;
+    text: string;
+    status: "pending" | "in_progress" | "done" | "blocked";
+    kind: "scope" | "implementation" | "verification" | "report";
+    evidence?: string;
+    updatedAt?: number;
 }
 
 export interface GoldResult {

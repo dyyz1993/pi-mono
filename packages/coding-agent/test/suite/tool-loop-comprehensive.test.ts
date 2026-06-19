@@ -274,7 +274,10 @@ describe("D3: compaction + continued conversation", () => {
 	});
 
 	it("loop detection works after manual compaction", async () => {
-		const harness = await createHarness({ tools: [makeSuccessEdit()] });
+		const harness = await createHarness({
+			tools: [makeSuccessEdit()],
+			settings: { compaction: { enabled: true, keepRecentTokens: 0 } },
+		});
 		harnesses.push(harness);
 
 		// Build conversation

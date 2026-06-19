@@ -3,6 +3,7 @@ import type { ChannelContract } from "@dyyz1993/pi-coding-agent";
 export const COORDINATOR_CHANNEL_NAME = "coordinator";
 
 export type SessionStatus = "idle" | "streaming" | "stopped" | "completed";
+export type DelegateReplyMode = "auto" | "interrupt" | "followUp";
 
 export interface DelegatedTask {
   sessionId: string;
@@ -11,6 +12,7 @@ export interface DelegatedTask {
   projectPath: string;
   dispatchedAt: number;
   status: SessionStatus;
+  replyMode?: DelegateReplyMode;
   completedAt?: number;
   result?: string;
   isCompacting?: boolean;
@@ -41,7 +43,7 @@ export interface DelegateStatusExt {
 export interface CoordinatorChannelContract extends ChannelContract {
   methods: {
     session_delegate: {
-      params: { task: string; title?: string; projectPath?: string };
+      params: { task: string; title?: string; projectPath?: string; replyMode?: DelegateReplyMode };
       return: DelegateCreateResult;
     };
     session_delegate_send: {
@@ -84,6 +86,8 @@ export interface CoordinatorChannelContract extends ChannelContract {
         depth?: number;
         /** Variables passed down to the subagent, accessible via $variable in task templates. */
         variables?: Record<string, string>;
+        /** Tool call ID from the parent session, used to route progress events back. */
+        toolCallId?: string;
       };
       return: {
         sessionId: string;
@@ -100,5 +104,11 @@ export interface CoordinatorChannelContract extends ChannelContract {
     task_stopped: { sessionId: string };
     task_completed: { sessionId: string; result?: string };
     task_error: { sessionId: string; error: string };
+    delegate_progress: {
+      sessionId: string;
+      toolCallId: string;
+      eventType: string;
+      data?: unknown;
+    };
   };
 }

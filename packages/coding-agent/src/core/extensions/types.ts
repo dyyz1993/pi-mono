@@ -711,6 +711,8 @@ export interface SessionTreeEvent {
 	oldLeafId: string | null;
 	summaryEntry?: BranchSummaryEntry;
 	fromExtension?: boolean;
+	skipFiles?: boolean;
+	preview?: boolean;
 }
 
 /** Fired when entries are removed from or replaced in LLM context. */
@@ -1362,7 +1364,7 @@ export interface ExtensionAPI {
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	appendEntry<T = unknown>(customType: string, data?: T, options?: { display?: boolean }): void;
 
 	/** Hide existing entries from LLM context by appending a deletion marker. */
 	deleteEntries(targetIds: string[]): void;
@@ -1629,7 +1631,7 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp" },
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: { display?: boolean }) => void;
 
 export type DeleteEntriesHandler = (targetIds: string[]) => void;
 

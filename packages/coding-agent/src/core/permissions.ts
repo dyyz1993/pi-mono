@@ -25,7 +25,7 @@ const SKIP_PATH_TOOLS = new Set(["grep", "glob", "find", "ls"]);
 
 /** Bash command patterns that are blocked in `normal` mode. */
 const DANGEROUS_BASH_PATTERNS: readonly RegExp[] = [
-	/\brm\s+-rf\b/,
+	/\brm\b(?=[^;&|]*\s(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive)\b)/,
 	/\bgit\s+push\s+.*--force\b/,
 	/--no-verify/,
 	/\bsudo\b/,

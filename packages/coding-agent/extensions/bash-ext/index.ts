@@ -23,7 +23,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@dyyz1993/pi-agent-core";
@@ -71,6 +71,55 @@ type BashToolDetails = _BashToolDetails & {
   terminated?: TerminatedDetails;
   background?: BackgroundDetails;
 };
+
+type BackgroundProcessReason =
+  | "exit_zero"
+  | "exit_nonzero"
+  | "user_cancel"
+  | "system_cancel"
+  | "timeout"
+  | "crash";
+
+interface BackgroundProcessEventData {
+  bashId: string;
+  toolCallId: string;
+  command: string;
+  cwd: string;
+  pid?: number;
+  status: "done" | "error" | "terminated";
+  reason: BackgroundProcessReason;
+  backgroundTrigger: "auto" | "manual";
+  exitCode: number | null;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  duration: string;
+  logPath?: string;
+  logPreview?: BackgroundLogPreview;
+  error?: string;
+}
+
+interface BackgroundLogPreviewLine {
+  kind: "line";
+  text: string;
+  repeatCount?: number;
+}
+
+interface BackgroundLogPreviewOmitted {
+  kind: "omitted";
+  lineCount: number;
+}
+
+type BackgroundLogPreviewSegment = BackgroundLogPreviewLine | BackgroundLogPreviewOmitted;
+
+interface BackgroundLogPreview {
+  totalLines: number;
+  totalBytes: number;
+  truncated: boolean;
+  headLineCount: number;
+  tailLineCount: number;
+  segments: BackgroundLogPreviewSegment[];
+}
 
 const DEFAULT_TIMEOUT_SECONDS = 300;
 const MAX_TIMEOUT_SECONDS = 14400; // 4 hours — foreground commands shouldn't run longer
@@ -128,11 +177,126 @@ function getLogPath(bashId: string): string {
 }
 
 const BG_PREVIEW_LINES = 20;
+const BG_LOG_PREVIEW_HEAD_LINES = 24;
+const BG_LOG_PREVIEW_TAIL_LINES = 24;
 
 function takeLastLines(text: string, n: number): string {
   const lines = text.split("\n");
   if (lines.length <= n) return text;
   return `... (${lines.length - n} earlier lines)\n${lines.slice(-n).join("\n")}`;
+}
+
+function splitLogLines(text: string): string[] {
+  const normalized = stripAnsi(text).replace(/\r/g, "");
+  const lines = normalized.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+function buildLineRuns(lines: string[]): Array<{ text: string; count: number; start: number; end: number }> {
+  const runs: Array<{ text: string; count: number; start: number; end: number }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    const last = runs[runs.length - 1];
+    if (last && last.text === text) {
+      last.count++;
+      last.end = i;
+    } else {
+      runs.push({ text, count: 1, start: i, end: i });
+    }
+  }
+  return runs;
+}
+
+function sliceRuns(
+  runs: Array<{ text: string; count: number; start: number; end: number }>,
+  start: number,
+  end: number,
+): BackgroundLogPreviewLine[] {
+  const result: BackgroundLogPreviewLine[] = [];
+  for (const run of runs) {
+    if (run.end < start || run.start >= end) continue;
+    const overlapStart = Math.max(run.start, start);
+    const overlapEnd = Math.min(run.end + 1, end);
+    const repeatCount = overlapEnd - overlapStart;
+    result.push({
+      kind: "line",
+      text: run.text,
+      ...(repeatCount > 1 ? { repeatCount } : {}),
+    });
+  }
+  return result;
+}
+
+function summarizeLogText(text: string): BackgroundLogPreview | undefined {
+  if (!text.trim()) return undefined;
+
+  const lines = splitLogLines(text);
+  if (lines.length === 0) return undefined;
+
+  const totalLines = lines.length;
+  const totalBytes = Buffer.byteLength(text, "utf-8");
+  const runs = buildLineRuns(lines);
+  const previewWindow = BG_LOG_PREVIEW_HEAD_LINES + BG_LOG_PREVIEW_TAIL_LINES;
+  const truncated = totalLines > previewWindow;
+
+  if (!truncated) {
+    return {
+      totalLines,
+      totalBytes,
+      truncated: false,
+      headLineCount: totalLines,
+      tailLineCount: 0,
+      segments: sliceRuns(runs, 0, totalLines),
+    };
+  }
+
+  return {
+    totalLines,
+    totalBytes,
+    truncated: true,
+    headLineCount: BG_LOG_PREVIEW_HEAD_LINES,
+    tailLineCount: BG_LOG_PREVIEW_TAIL_LINES,
+    segments: [
+      ...sliceRuns(runs, 0, BG_LOG_PREVIEW_HEAD_LINES),
+      {
+        kind: "omitted",
+        lineCount: totalLines - previewWindow,
+      },
+      ...sliceRuns(runs, totalLines - BG_LOG_PREVIEW_TAIL_LINES, totalLines),
+    ],
+  };
+}
+
+function readLogPreview(proc: BashProcess): BackgroundLogPreview | undefined {
+  if (proc.logPath) {
+    try {
+      const content = readFileSync(proc.logPath, "utf-8");
+      const preview = summarizeLogText(content);
+      if (preview) return preview;
+    } catch {
+      // Fall through to proc.output. The log path may have been removed or not flushed.
+    }
+  }
+  return summarizeLogText(proc.output);
+}
+
+function formatLogPreviewForBody(preview: BackgroundLogPreview | undefined): string | null {
+  if (!preview) return null;
+  const lines = preview.segments.flatMap((segment) => {
+    if (segment.kind === "omitted") {
+      return [`... omitted ${segment.lineCount} middle lines ...`];
+    }
+    const result = [segment.text];
+    if (segment.repeatCount && segment.repeatCount > 1) {
+      result.push(`... repeated ${segment.repeatCount - 1} more lines ...`);
+    }
+    return result;
+  });
+  return [
+    `Log preview (${preview.totalLines} lines, ${preview.totalBytes} bytes${preview.truncated ? ", head+tail" : ""}):`,
+    ...lines,
+  ].join("\n");
 }
 
 function grepLines(text: string, pattern: string): string {
@@ -147,6 +311,115 @@ function formatDuration(ms: number): string {
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   return `${m}m${s % 60}s`;
+}
+
+function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function buildBackgroundProcessEvent(
+  proc: BashProcess,
+  reason: BackgroundProcessReason,
+  backgroundTrigger: "auto" | "manual" | undefined,
+  error?: string,
+): { data: BackgroundProcessEventData; content: string } {
+  const endedAt = proc.endedAt ?? Date.now();
+  const durationMs = endedAt - proc.startedAt;
+  const status: BackgroundProcessEventData["status"] =
+    reason === "exit_zero"
+      ? "done"
+      : reason === "user_cancel" || reason === "system_cancel"
+        ? "terminated"
+        : "error";
+  const data: BackgroundProcessEventData = {
+    bashId: proc.bashId,
+    toolCallId: proc.toolCallId,
+    command: proc.command,
+    cwd: proc.cwd,
+    pid: proc.pid,
+    status,
+    reason,
+    backgroundTrigger: backgroundTrigger ?? "auto",
+    exitCode: proc.exitCode ?? null,
+    startedAt: proc.startedAt,
+    endedAt,
+    durationMs,
+    duration: formatDuration(durationMs),
+    logPath: proc.logPath,
+    logPreview: readLogPreview(proc),
+    error,
+  };
+
+  const attrs: Record<string, string> = {
+    bash_id: data.bashId,
+    tool_call_id: data.toolCallId,
+    status: data.status,
+    reason: data.reason,
+    trigger: data.backgroundTrigger,
+    pid: data.pid != null ? String(data.pid) : "unknown",
+    exit_code: data.exitCode != null ? String(data.exitCode) : "unknown",
+    duration_ms: String(data.durationMs),
+  };
+  if (data.logPath) attrs.log_path = data.logPath;
+
+  const attrText = Object.entries(attrs)
+    .map(([key, value]) => `${key}="${escapeXmlAttr(value)}"`)
+    .join(" ");
+  const errorLine = error ? `\nError: ${error}` : "";
+  const logPreviewText = formatLogPreviewForBody(data.logPreview);
+  const body = [
+    `Command: ${data.command}`,
+    `CWD: ${data.cwd}`,
+    `Duration: ${data.duration}`,
+    logPreviewText,
+    `Use get_background_process with <bashId>${data.bashId}</bashId> to retrieve the output and continue your task.${errorLine}`,
+  ].filter(Boolean).join("\n");
+
+  return {
+    data,
+    content: `<background_process ${attrText}>${escapeXmlText(body)}</background_process>`,
+  };
+}
+
+function notifyBackgroundProcess(
+  pi: ExtensionAPI,
+  proc: BashProcess,
+  reason: BackgroundProcessReason,
+  backgroundTrigger: "auto" | "manual" | undefined,
+  error?: string,
+): void {
+  const event = buildBackgroundProcessEvent(proc, reason, backgroundTrigger, error);
+  pi.appendEntry("bash_background_process", event.data);
+  pi.sendMessage(
+    {
+      customType: "bash_background_process",
+      content: event.content,
+      display: false,
+      details: event.data,
+    },
+    { triggerTurn: true, deliverAs: "steer" },
+  );
+}
+
+function closeLogStream(m: ManagedBash, after: () => void): void {
+  const stream = m.logStream;
+  if (!stream) {
+    after();
+    return;
+  }
+  m.logStream = undefined;
+  stream.end(after);
 }
 
 export default function(pi: ExtensionAPI) {
@@ -220,7 +493,6 @@ export default function(pi: ExtensionAPI) {
       m.resolved = true;
       m.killedByUser = true;
       const durationMs = m.proc.endedAt - m.proc.startedAt;
-      if (m.logStream) m.logStream.end();
       channel?.emit("terminated", {
         type: "terminated",
         toolCallId,
@@ -523,10 +795,9 @@ export default function(pi: ExtensionAPI) {
 
             const m = managed.get(toolCallId);
             if (m?.resolved) {
-              if (m.logStream) m.logStream.end();
               proc.exitCode = code;
               proc.endedAt = Date.now();
-              proc.status = code === 0 ? "done" : "error";
+              proc.status = m.killedByUser ? "terminated" : code === 0 ? "done" : "error";
               channel?.emit(proc.status === "done" ? "end" : "error", {
                 type: proc.status === "done" ? "end" : "error",
                 toolCallId,
@@ -536,21 +807,28 @@ export default function(pi: ExtensionAPI) {
               });
               if (!deletedIds.has(toolCallId)) history.push({ ...proc });
               managed.delete(toolCallId);
-              try {
-                const deliverAs = m.killedByUser ? undefined : "steer";
-                const suffix = m.killedByUser
-                  ? "was killed by user"
-                  : `exited with code ${code ?? "unknown"}`;
-                const origin = m.backgroundTrigger === "manual" ? " (user-initiated background)" : " (auto background)";
-                pi.sendUserMessage(
-                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"})${origin} ${suffix} after ${formatDuration((proc.endedAt ?? Date.now()) - proc.startedAt)}.${proc.logPath ? ` Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
-                  deliverAs ? { deliverAs } : undefined,
-                );
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                if (msg.includes("stale")) return;
-                console.debug("[bash-ext] background exit notification failed:", msg);
-              }
+              closeLogStream(m, () => {
+                try {
+                  const reason: BackgroundProcessReason = m.killedByUser
+                    ? "user_cancel"
+                    : isTimedOut()
+                      ? "timeout"
+                      : code === 0
+                        ? "exit_zero"
+                        : "exit_nonzero";
+                  notifyBackgroundProcess(
+                    pi,
+                    proc,
+                    reason,
+                    m.backgroundTrigger,
+                    reason === "timeout" ? `Timed out after ${effectiveTimeout}s` : undefined,
+                  );
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  if (msg.includes("stale")) return;
+                  console.debug("[bash-ext] background exit notification failed:", msg);
+                }
+              });
               return;
             }
 
@@ -687,7 +965,6 @@ export default function(pi: ExtensionAPI) {
 
             const m = managed.get(toolCallId);
             if (m?.resolved) {
-              if (m.logStream) m.logStream.end();
               proc.status = "error";
               proc.endedAt = Date.now();
               proc.exitCode = null;
@@ -701,21 +978,20 @@ export default function(pi: ExtensionAPI) {
               });
               if (!deletedIds.has(toolCallId)) history.push({ ...proc });
               managed.delete(toolCallId);
-              try {
-                const deliverAs = m.killedByUser ? undefined : "steer";
-                const suffix = m.killedByUser
-                  ? "was killed by user"
-                  : `crashed: ${err.message}`;
-                const origin = m.backgroundTrigger === "manual" ? " (user-initiated background)" : " (auto background)";
-                pi.sendUserMessage(
-                  `[system] Background process "${proc.command}" (PID: ${proc.pid ?? "unknown"})${origin} ${suffix}${proc.logPath ? `. Log: ${proc.logPath}` : ""}. Use get_background_process with <bashId>${proc.bashId}</bashId> to retrieve the output and continue your task.`,
-                  deliverAs ? { deliverAs } : undefined,
-                );
-              } catch (innerErr) {
-                const msg = innerErr instanceof Error ? innerErr.message : String(innerErr);
-                if (msg.includes("stale")) return;
-                console.debug("[bash-ext] background crash notification failed:", msg);
-              }
+              closeLogStream(m, () => {
+                try {
+                  const reason: BackgroundProcessReason = m.killedByUser
+                    ? "user_cancel"
+                    : err.message === "aborted"
+                      ? "system_cancel"
+                      : "crash";
+                  notifyBackgroundProcess(pi, proc, reason, m.backgroundTrigger, err.message);
+                } catch (innerErr) {
+                  const msg = innerErr instanceof Error ? innerErr.message : String(innerErr);
+                  if (msg.includes("stale")) return;
+                  console.debug("[bash-ext] background crash notification failed:", msg);
+                }
+              });
               return;
             }
 

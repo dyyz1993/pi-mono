@@ -93,6 +93,28 @@ describe("AgentSession model and extension characterization", () => {
 		);
 	});
 
+	it("reload refreshes auth storage and model registry before model switching", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			withConfiguredAuth: false,
+		});
+		harnesses.push(harness);
+		const nextModel = harness.getModel("faux-2")!;
+
+		await expect(harness.session.setModel(nextModel)).rejects.toThrow(
+			`No API key for ${nextModel.provider}/${nextModel.id}`,
+		);
+
+		harness.authStorage.set(nextModel.provider, { type: "api_key", key: "saved-faux-key" });
+		await harness.session.reload();
+
+		await expect(harness.session.setModel(nextModel)).resolves.toBeUndefined();
+		expect(harness.session.model?.id).toBe("faux-2");
+	});
+
 	it("allows extension tool_call handlers to block tool execution", async () => {
 		const echoTool: AgentTool = {
 			name: "echo",

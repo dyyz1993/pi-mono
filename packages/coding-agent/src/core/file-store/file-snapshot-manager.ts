@@ -276,6 +276,10 @@ export class FileSnapshotManager {
 		};
 	}
 
+	getLatestSnapshotEntryId(): string | null {
+		return [...this.snapshotIndex.keys()].at(-1) ?? null;
+	}
+
 	resolveSnapshotEntryIdForTarget(targetEntryId: string, entries: SessionEntry[]): string | null {
 		if (this.snapshotIndex.has(targetEntryId)) return targetEntryId;
 		const pathSnap = this.getLatestSnapshotOnPath(entries, targetEntryId);
@@ -412,6 +416,11 @@ export class FileSnapshotManager {
 		return [...fileMap.values()].sort((a, b) => a.path.localeCompare(b.path));
 	}
 
+	readTreeFileContent(treeHash: string | null | undefined, filePath: string): string | null {
+		if (!treeHash) return null;
+		return this.git.readTreeFiles(treeHash, new Set([filePath]))?.get(filePath) ?? null;
+	}
+
 	/**
 	 * Batch-optimized: get old/new content for multiple files in a single pass.
 	 *
@@ -453,9 +462,8 @@ export class FileSnapshotManager {
 
 		// oldContent from snapshot baseline; newContent from disk
 		for (const [fromHashKey, paths] of fromHashGroups) {
-			const pathsSet = new Set(paths);
 			const fromTree = fromHashKey
-				? (this.git.readTreeFiles(fromHashKey, pathsSet) ?? new Map<string, string>())
+				? (this.git.readTreeFiles(fromHashKey, new Set(paths)) ?? new Map<string, string>())
 				: new Map<string, string>();
 			for (const filePath of paths) {
 				result.set(filePath, {

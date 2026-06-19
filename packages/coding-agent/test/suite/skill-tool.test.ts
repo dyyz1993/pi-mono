@@ -222,6 +222,133 @@ describe("skill tool integration via harness", () => {
 		expect(resultText).not.toContain('<skill name="deep-research"');
 	});
 
+	it("emits subtask progress to parent session when fork skill runs", async () => {
+		const tempDir = join(tmpdir(), `pi-skill-harness-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		tempDirs.push(tempDir);
+
+		const forkSkill = createSkillFile(
+			tempDir,
+			"event-research",
+			"Research with events",
+			"You are a research specialist.",
+			{ context: "fork" },
+		);
+
+		const harness = await createHarnessWithSkills([forkSkill]);
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("skill", { name: "event-research" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Subtask done"),
+			fauxAssistantMessage("Parent follow-up"),
+		]);
+
+		await harness.session.prompt("research something");
+
+		// The parent session should have received custom_entry events for subtask_progress
+		const customEntries = harness.eventsOfType("custom_entry");
+		const progressEntries = customEntries.filter((e) => e.customType === "subtask_progress");
+		expect(progressEntries.length).toBeGreaterThan(0);
+
+		// Each progress entry should have subtaskId, label, and eventType
+		const first = progressEntries[0]!;
+		const firstData = first.data as { subtaskId: string; label: string; eventType: string };
+		expect(firstData.subtaskId).toBeDefined();
+		expect(firstData.label).toBe("event-research");
+
+		// Should contain key lifecycle events from the child session
+		const eventTypes = progressEntries.map((e) => (e.data as { eventType: string }).eventType);
+		expect(eventTypes).toContain("agent_start");
+		expect(eventTypes).toContain("message_end");
+		expect(eventTypes).toContain("agent_end");
+
+		// High-frequency update events should be filtered out
+		expect(eventTypes).not.toContain("message_update");
+		expect(eventTypes).not.toContain("tool_execution_update");
+	});
+
+	it("subtask progress includes tool execution from multi-turn fork skill", async () => {
+		const tempDir = join(tmpdir(), `pi-skill-harness-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		tempDirs.push(tempDir);
+
+		const forkSkill = createSkillFile(
+			tempDir,
+			"multi-tool-skill",
+			"Uses multiple tools",
+			"You use tools to complete tasks.",
+			{ context: "fork" },
+		);
+
+		const harness = await createHarnessWithSkills([forkSkill]);
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("skill", { name: "multi-tool-skill" }), { stopReason: "toolUse" }),
+			// Subtask runs with 2 tool turns then finishes
+			fauxAssistantMessage(fauxToolCall("read", { file_path: "/a" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("read", { file_path: "/b" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Multi-turn done"),
+			fauxAssistantMessage("Parent summary"),
+		]);
+
+		await harness.session.prompt("run the multi-tool skill");
+
+		const customEntries = harness.eventsOfType("custom_entry");
+		const progressEntries = customEntries.filter((e) => e.customType === "subtask_progress");
+		expect(progressEntries.length).toBeGreaterThan(0);
+
+		const eventTypes = progressEntries.map((e) => (e.data as { eventType: string }).eventType);
+		// Tool execution should be visible in the parent's event stream
+		expect(eventTypes).toContain("tool_execution_start");
+		expect(eventTypes).toContain("tool_execution_end");
+		// Multiple turns should produce multiple turn_end events
+		const turnEnds = eventTypes.filter((t) => t === "turn_end");
+		expect(turnEnds.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("subtask progress contains correct label matching skill name and persists with timing", async () => {
+		const tempDir = join(tmpdir(), `pi-skill-harness-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		tempDirs.push(tempDir);
+
+		const forkSkill = createSkillFile(tempDir, "labeled-skill", "A labeled skill", "You do things.", {
+			context: "fork",
+		});
+
+		const harness = await createHarnessWithSkills([forkSkill]);
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("skill", { name: "labeled-skill" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+			fauxAssistantMessage("parent done"),
+		]);
+
+		await harness.session.prompt("use labeled skill");
+
+		const customEntries = harness.eventsOfType("custom_entry");
+		const progressEntries = customEntries.filter((e) => e.customType === "subtask_progress");
+		expect(progressEntries.length).toBeGreaterThan(0);
+
+		// Every progress event should have the skill name as label
+		for (const ev of progressEntries) {
+			expect((ev.data as { label: string }).label).toBe("labeled-skill");
+		}
+		// All events should share the same subtaskId (one fork skill call = one subtaskId)
+		const ids = new Set(progressEntries.map((e) => (e.data as { subtaskId: string }).subtaskId));
+		expect(ids.size).toBe(1);
+
+		// Should also have a final "subtask" custom_entry with timing
+		const subtaskEntries = customEntries.filter((e) => e.customType === "subtask");
+		expect(subtaskEntries.length).toBe(1);
+		const finalData = subtaskEntries[0]!.data as { startedAt: number; completedAt: number; success: boolean };
+		expect(finalData.startedAt).toBeGreaterThan(0);
+		expect(finalData.completedAt).toBeGreaterThanOrEqual(finalData.startedAt);
+		expect(finalData.success).toBe(true);
+	});
+
 	it("falls back to inline when context:fork is set but no subtaskContext", async () => {
 		const tempDir = join(tmpdir(), `pi-skill-harness-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });

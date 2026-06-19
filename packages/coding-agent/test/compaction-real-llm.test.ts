@@ -21,11 +21,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createCodingTools } from "../src/index.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
-const API_KEY =
-	process.env.ZHIPUAI_API_KEY ||
-	process.env.ANTHROPIC_OAUTH_TOKEN ||
-	process.env.ANTHROPIC_API_KEY ||
-	"f8c9e2d0beb044eb9e64ec2e5214c0bf.UnqBJ6a2ryaH1wjR";
+const API_KEY = process.env.ZHIPUAI_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
 
 const zhipuaiModel = {
 	id: "glm-4.7",

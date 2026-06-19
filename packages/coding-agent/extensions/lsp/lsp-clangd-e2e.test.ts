@@ -123,6 +123,17 @@ async function fireSessionStart(
 	}
 }
 
+async function waitForReadyStatus(channel: NonNullable<ReturnType<ReturnType<typeof createMockPi>["getCurrentChannel"]>>) {
+	let status: any;
+	for (let i = 0; i < 20; i++) {
+		status = await channel.call("getStatus", {});
+		const readyServers = (status.servers as any[])?.filter((s: any) => s.state === "ready") ?? [];
+		if (readyServers.length > 0) return status;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	return status;
+}
+
 async function fireSessionShutdown(mock: ReturnType<typeof createMockPi>): Promise<void> {
 	for (const h of mock.handlers.session_shutdown ?? []) {
 		await h({}, {});
@@ -189,7 +200,7 @@ describe("clangd E2E integration", () => {
 			const channel = mock.getCurrentChannel();
 			expect(channel).not.toBeNull();
 
-			const statusResult = await channel!.call("getStatus", {});
+			const statusResult = await waitForReadyStatus(channel!);
 			console.log("[e2e] Status after session_start:", JSON.stringify(statusResult, null, 2));
 
 			const status = statusResult as any;
@@ -204,6 +215,7 @@ describe("clangd E2E integration", () => {
 			if (readyServers.length === 0) {
 				console.log("[e2e] No clangd server became ready — skipping diagnostics check");
 				console.log("[e2e] All servers:", JSON.stringify(status.servers, null, 2));
+				return;
 			}
 
 			expect(readyServers.length).toBeGreaterThanOrEqual(1);

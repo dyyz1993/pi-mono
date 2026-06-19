@@ -139,7 +139,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	// Pending extension UI requests waiting for response
 	const pendingExtensionRequests = new Map<
 		string,
-		{ resolve: (value: any) => void; reject: (error: Error) => void }
+		{ request: RpcExtensionUIRequest; resolve: (value: any) => void; reject: (error: Error) => void }
 	>();
 
 	// Pending remote tool results waiting for response
@@ -186,14 +186,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}, opts.timeout);
 			}
 
+			const uiRequest = { type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest;
 			pendingExtensionRequests.set(id, {
+				request: uiRequest,
 				resolve: (response: RpcExtensionUIResponse) => {
 					cleanup("responded");
 					resolve(parseResponse(response));
 				},
 				reject,
 			});
-			output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
+			output(uiRequest);
 		});
 	}
 
@@ -342,8 +344,21 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		async editor(title: string, prefill?: string): Promise<string | undefined> {
 			const id = crypto.randomUUID();
 			return new Promise((resolve, reject) => {
+				const cleanup = (reason: "responded" | "timeout" | "aborted" = "responded") => {
+					pendingExtensionRequests.delete(id);
+					output({ type: "extension_ui_resolved", id, reason });
+				};
+				const uiRequest = {
+					type: "extension_ui_request",
+					id,
+					method: "editor",
+					title,
+					prefill,
+				} as RpcExtensionUIRequest;
 				pendingExtensionRequests.set(id, {
+					request: uiRequest,
 					resolve: (response: RpcExtensionUIResponse) => {
+						cleanup("responded");
 						if ("cancelled" in response && response.cancelled) {
 							resolve(undefined);
 						} else if ("value" in response) {
@@ -354,7 +369,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					},
 					reject,
 				});
-				output({ type: "extension_ui_request", id, method: "editor", title, prefill } as RpcExtensionUIRequest);
+				output(uiRequest);
 			});
 		},
 
@@ -551,6 +566,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					streamingMessage: session.state.streamingMessage,
+					pendingUIRequests: Array.from(pendingExtensionRequests.values()).map((pending) => pending.request),
 				};
 				return success(id, "get_state", state);
 			}
@@ -1247,6 +1263,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					permissionMode: agent.permissionMode,
 					source: agent.source,
 					filePath: agent.filePath,
+					color: agent.color,
+					avatar: agent.avatar,
 				}));
 				return success(id, "get_agents", { agents });
 			}

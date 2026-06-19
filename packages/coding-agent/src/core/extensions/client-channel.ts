@@ -36,7 +36,12 @@ export class ClientChannel<T extends ChannelContract = ChannelContract> {
 	}
 
 	on<K extends EventKeys<T>>(_event: K, handler: (data: EventData<T, K>) => void): () => void {
-		return this.raw.onReceive(handler as (data: unknown) => void);
+		return this.raw.onReceive((data: unknown) => {
+			const msg = asRecord(data);
+			// RPC requests have __call, RPC responses have invokeId — skip both
+			if (msg && ("__call" in msg || "invokeId" in msg)) return;
+			handler(data as EventData<T, K>);
+		});
 	}
 
 	get raw_(): Channel {

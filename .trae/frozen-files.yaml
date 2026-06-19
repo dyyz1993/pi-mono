@@ -1,0 +1,26 @@
+# 冻结文件保护清单 (Frozen Files Guard)
+#
+# 加入此清单的文件/目录，AI 的 Write/Edit/Bash(sed -i) 操作将被 hook 拦截拒绝。
+# 要解除保护，手动编辑此文件移除对应条目。
+# path 和 testPath 支持 glob 通配符: ** (多层目录), * (单层)
+#
+# 每条冻结规则格式:
+#   - path:       源码文件/目录的 glob 模式（必填）
+#     testPath:   对应测试文件的 glob 模式（可选）
+#     reason:     冻结原因（必填）
+#     frozenAt:   冻结日期 YYYY-MM-DD
+#     commit:     冻结时对应的 commit hash（可选，用于追溯）
+#     changelog:  修复记录（可选，记录这个模块解决了什么问题）
+#       - fix: "修复描述"
+#         date: "2026-06-16"
+#         commit: "abc1234"
+
+frozen:
+  - path: "packages/coding-agent/extensions/file-time-guard/**"
+    testPath: "packages/coding-agent/extensions/file-time-guard/**/*.test.ts"
+    reason: "file-time-guard 扩展已完成并测试通过"
+    frozenAt: "2026-06-16"
+    commit: ""
+    changelog:
+      - fix: "实现文件时间戳检查，防止 AI 覆盖外部修改"
+        date: "2026-06-16"

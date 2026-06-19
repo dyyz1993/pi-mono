@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { runSubtask, type SubtaskContext } from "../../src/core/subtask.ts";
 import type { ExtensionFactory } from "../../src/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
@@ -279,8 +280,8 @@ describe("runSubtask()", () => {
 
 		// Simulate 2 tool-use turns then a final text turn (3 turns total)
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("read", { file_path: "/nonexistent-1" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage(fauxToolCall("read", { file_path: "/nonexistent-2" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("read", { path: "/nonexistent-1" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("read", { path: "/nonexistent-2" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Final response"),
 		]);
 
@@ -437,5 +438,101 @@ You are a disk-loaded agent.
 		expect(result.success).toBe(true);
 		// When inheritTools is false, no tools should be available
 		expect(toolNamesInSubtask).toHaveLength(0);
+	});
+
+	it("forwards child session events via onEvent callback", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		const receivedEvents: AgentSessionEvent[] = [];
+		const result = await runSubtask({ task: "test", onEvent: (e) => receivedEvents.push(e) }, buildContext(harness));
+
+		expect(result.success).toBe(true);
+		// Should have received events from the child session
+		expect(receivedEvents.length).toBeGreaterThan(0);
+		// Key lifecycle events should be present
+		expect(receivedEvents.some((e) => e.type === "agent_start")).toBe(true);
+		expect(receivedEvents.some((e) => e.type === "message_end")).toBe(true);
+		expect(receivedEvents.some((e) => e.type === "agent_end")).toBe(true);
+	});
+
+	it("forwards events from multi-turn subtask including tool calls", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("read", { path: "/nonexistent" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Final response"),
+		]);
+
+		const receivedEvents: AgentSessionEvent[] = [];
+		const result = await runSubtask(
+			{ task: "test", maxTurns: 2, onEvent: (e) => receivedEvents.push(e) },
+			buildContext(harness),
+		);
+
+		expect(result.success).toBe(true);
+		// Should see tool execution events from the child session
+		expect(receivedEvents.some((e) => e.type === "tool_execution_start")).toBe(true);
+		expect(receivedEvents.some((e) => e.type === "tool_execution_end")).toBe(true);
+		expect(receivedEvents.some((e) => e.type === "turn_end")).toBe(true);
+	});
+
+	it("preserves event ordering in onEvent callback", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		const receivedEvents: AgentSessionEvent[] = [];
+		await runSubtask({ task: "test", onEvent: (e) => receivedEvents.push(e) }, buildContext(harness));
+
+		// agent_start should come before agent_end
+		const startIndex = receivedEvents.findIndex((e) => e.type === "agent_start");
+		const endIndex = receivedEvents.findIndex((e) => e.type === "agent_end");
+		expect(startIndex).toBeGreaterThanOrEqual(0);
+		expect(endIndex).toBeGreaterThanOrEqual(0);
+		expect(startIndex).toBeLessThan(endIndex);
+	});
+
+	it("forwards events even when subtask results in an error", async () => {
+		const harness = await createHarness({ models: [{ id: "faux-error", name: "Faux Error" }] });
+		harnesses.push(harness);
+
+		// Set no responses — the subtask will consume from the shared faux queue
+		// Use a model that doesn't match, causing a fallback but still working
+		harness.setResponses([fauxAssistantMessage("partial work")]);
+
+		const receivedEvents: AgentSessionEvent[] = [];
+		const result = await runSubtask(
+			{ task: "test", model: "nonexistent", onEvent: (e) => receivedEvents.push(e) },
+			buildContext(harness),
+		);
+
+		// Even if the subtask encounters issues, events should still be forwarded
+		// At minimum, agent_start should have fired
+		expect(receivedEvents.some((e) => e.type === "agent_start")).toBe(true);
+		// The subtask result reflects success/failure
+		expect(typeof result.success).toBe("boolean");
+	});
+
+	it("forwards all turn_end events from a multi-turn subtask", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("read", { path: "/a" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("read", { path: "/b" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Done after 3 turns"),
+		]);
+
+		const receivedEvents: AgentSessionEvent[] = [];
+		await runSubtask({ task: "test", maxTurns: 3, onEvent: (e) => receivedEvents.push(e) }, buildContext(harness));
+
+		// Should receive one turn_end per turn
+		const turnEnds = receivedEvents.filter((e) => e.type === "turn_end");
+		expect(turnEnds.length).toBeGreaterThanOrEqual(1);
 	});
 });

@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ServerChannel } from "@dyyz1993/pi-coding-agent";
-import type { CoordinatorChannelContract, DelegatedTask, DelegateCreateResult, SessionStatus } from "./types.ts";
+import type { CoordinatorChannelContract, DelegatedTask, DelegateCreateResult, DelegateReplyMode, SessionStatus } from "./types.ts";
 
 export interface ProcessManagerApi {
-  delegate(task: string, projectPath: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
-  delegate_send(fromSessionId: string, toSessionId: string, message: string): Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }>;
+  delegate(task: string, projectPath: string, replyMode?: DelegateReplyMode): Promise<{ sessionId: string; status: "started" | "already_running" }>;
+  delegate_send(fromSessionId: string, toSessionId: string, message: string, mode?: "followUp" | "steer"): Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }>;
   delegate_status(sessionId: string): Promise<{ status: SessionStatus }>;
   delegate_list(): Promise<Array<{ sessionId: string; status: SessionStatus; projectPath: string }>>;
   delegate_stop(sessionId: string): Promise<boolean>;
@@ -40,7 +40,7 @@ export class TaskStore {
     }
   }
 
-  private static readonly EVICT_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes (stopped/completed)
+  private static readonly EVICT_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes (stopped/completed)
   private static readonly IDLE_EVICT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours (idle zombies)
 
   /** Returns true if the task has expired and should be evicted/hidden. */
@@ -112,21 +112,36 @@ export class TaskStore {
     return removed;
   }
 
+  markStopped(sessionId: string, now: number = Date.now()): void {
+    const existing = this.tasks.get(sessionId);
+    if (!existing) return;
+    this.update(sessionId, {
+      status: "stopped",
+      completedAt: existing.completedAt ?? now,
+    });
+  }
+
   buildPrompt(): string {
     const now = Date.now();
     const tasks = this.list().filter((t) => !TaskStore.isExpired(t, now));
     if (tasks.length === 0) return "";
 
-    const lines = ["## Delegated Tasks", ""];
+    const lines = [
+      "## Delegated Tasks",
+      "",
+      "Async delegate contract: after starting a delegated task, do not poll `session_delegate_status` just to wait for completion. The child session must call `session_delegate_send` back to this parent when it has progress or a final result. You can start other work while waiting; delegate replies will be delivered according to the task replyMode. Use status checks only for explicit diagnostics, recovery, or user-requested troubleshooting.",
+      "",
+    ];
     for (const t of tasks) {
       const status = t.status === "completed" ? "DONE" : t.status === "stopped" ? "STOPPED" : t.status.toUpperCase();
       const compactTag = t.isCompacting ? " COMPACTING" : "";
       const ctxUsage = t.contextUsage;
       const ctxTag = ctxUsage?.percent != null ? ` ctx:${Math.round(ctxUsage.percent)}%` : "";
+      const replyMode = t.replyMode ?? "interrupt";
       const elapsed = t.completedAt
         ? `${((t.completedAt - t.dispatchedAt) / 1000).toFixed(1)}s`
         : `${((Date.now() - t.dispatchedAt) / 1000).toFixed(0)}s elapsed`;
-      lines.push(`- **${t.title}** (id: \`${t.sessionId}\`) — ${status}${compactTag}${ctxTag} — ${elapsed}`);
+      lines.push(`- **${t.title}** (id: \`${t.sessionId}\`) — ${status}${compactTag}${ctxTag} — replyMode:${replyMode} — ${elapsed}`);
       if (t.result) {
         const preview = t.result.length > 200 ? `${t.result.slice(0, 200)}...` : t.result;
         lines.push(`  > ${preview}`);
@@ -136,6 +151,38 @@ export class TaskStore {
   }
 }
 
+function resolveTaskStatus(
+  current: DelegatedTask,
+  remoteStatus: SessionStatus,
+): Pick<DelegatedTask, "status" | "completedAt"> {
+  if (remoteStatus === "stopped" || remoteStatus === "completed") {
+    return {
+      status: remoteStatus,
+      completedAt: current.completedAt ?? Date.now(),
+    };
+  }
+
+  if (remoteStatus === "streaming") {
+    return { status: "streaming", completedAt: undefined };
+  }
+
+  if (current.status === "streaming") {
+    return {
+      status: "completed",
+      completedAt: current.completedAt ?? Date.now(),
+    };
+  }
+
+  if (current.status === "completed" || current.status === "stopped") {
+    return {
+      status: current.status,
+      completedAt: current.completedAt,
+    };
+  }
+
+  return { status: "idle", completedAt: undefined };
+}
+
 export function createCoordinatorHandler(
   channel: ServerChannel<CoordinatorChannelContract>,
   pm: ProcessManagerApi,
@@ -143,12 +190,12 @@ export function createCoordinatorHandler(
   getStore: () => TaskStore,
 ): void {
   channel.handle("session_delegate", async (params) => {
-    const { task, title, projectPath: rawProjectPath } = params;
-    const projectPath = rawProjectPath || process.cwd();
+      const { task, title, projectPath: rawProjectPath, replyMode } = params;
+      const projectPath = rawProjectPath || process.cwd();
 
     let result: DelegateCreateResult;
     try {
-      result = await pm.delegate(task, projectPath);
+      result = await pm.delegate(task, projectPath, replyMode);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: msg };
@@ -165,6 +212,7 @@ export function createCoordinatorHandler(
       projectPath,
       dispatchedAt: Date.now(),
       status: "idle",
+      replyMode: replyMode ?? "interrupt",
     });
 
     channel.emit("task_started", {
@@ -177,8 +225,8 @@ export function createCoordinatorHandler(
   });
 
   channel.handle("session_delegate_send", async (params) => {
-    const { targetSessionId, message } = params;
-    const result = await pm.delegate_send(getSessionId(), targetSessionId, message);
+    const { targetSessionId, message, mode } = params;
+    const result = await pm.delegate_send(getSessionId(), targetSessionId, message, mode);
 
     if (result.targetStatus === "not_found") {
       // Ghost session — remove from store
@@ -208,13 +256,14 @@ export function createCoordinatorHandler(
     }
     try {
       const remote = await pm.delegate_status(sessionId);
-      store.update(sessionId, { status: remote.status });
+      store.update(sessionId, resolveTaskStatus(task, remote.status));
       const compactInfo = await pm.delegate_compact_status(sessionId);
       return { task: store.get(sessionId) ?? null, isCompacting: compactInfo.isCompacting, contextUsage: compactInfo.contextUsage };
     } catch {
-      // Ghost session — process manager can't find it, remove from store
-      store.remove(sessionId);
-      return { task: null };
+      // Ghost session — keep a short-lived stopped record so the parent can still
+      // see that the delegated task disappeared and remove it manually if needed.
+      store.markStopped(sessionId);
+      return { task: store.get(sessionId) ?? null };
     }
   });
 
@@ -224,14 +273,11 @@ export function createCoordinatorHandler(
     for (const t of tasks) {
       try {
         const remote = await pm.delegate_status(t.sessionId);
-        if (remote.status === "stopped") {
-          store.remove(t.sessionId);
-        } else {
-          store.update(t.sessionId, { status: remote.status });
-        }
+        store.update(t.sessionId, resolveTaskStatus(t, remote.status));
       } catch {
-        // Ghost session — process manager can't find it, remove from store
-        store.remove(t.sessionId);
+        // Ghost session — do not erase the task during list refresh. Mark it as
+        // stopped and let retention or explicit remove/clear handle cleanup.
+        store.markStopped(t.sessionId);
       }
     }
     return { tasks: store.list() };

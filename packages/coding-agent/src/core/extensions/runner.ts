@@ -692,6 +692,7 @@ export class ExtensionRunner {
 	}
 
 	private wrapUIForInterception(uiContext: ExtensionUIContext): ExtensionUIContext {
+		const effectiveUIContext: ExtensionUIContext = { ...noOpUIContext, ...uiContext };
 		const wrapAsyncMethod = <TArgs extends unknown[], TResult>(
 			_methodName: "confirm" | "select" | "input" | "editor",
 			original: (...args: TArgs) => Promise<TResult>,
@@ -725,7 +726,7 @@ export class ExtensionRunner {
 
 		const wrappedConfirm = wrapAsyncMethod(
 			"confirm",
-			uiContext.confirm.bind(uiContext) as (
+			effectiveUIContext.confirm.bind(effectiveUIContext) as (
 				title: string,
 				message: string,
 				opts?: ExtensionUIDialogOptions,
@@ -746,7 +747,7 @@ export class ExtensionRunner {
 
 		const wrappedSelect = wrapAsyncMethod(
 			"select",
-			uiContext.select.bind(uiContext) as (
+			effectiveUIContext.select.bind(effectiveUIContext) as (
 				title: string,
 				options: string[],
 				opts?: ExtensionUIDialogOptions,
@@ -767,7 +768,7 @@ export class ExtensionRunner {
 
 		const wrappedInput = wrapAsyncMethod(
 			"input",
-			uiContext.input.bind(uiContext) as (
+			effectiveUIContext.input.bind(effectiveUIContext) as (
 				title: string,
 				placeholder?: string,
 				opts?: ExtensionUIDialogOptions,
@@ -786,7 +787,10 @@ export class ExtensionRunner {
 
 		const wrappedEditor = wrapAsyncMethod(
 			"editor",
-			uiContext.editor.bind(uiContext) as (title: string, prefill?: string) => Promise<string | undefined>,
+			effectiveUIContext.editor.bind(effectiveUIContext) as (
+				title: string,
+				prefill?: string,
+			) => Promise<string | undefined>,
 			(id, [title, prefill]) => ({
 				type: "ui" as const,
 				id,
@@ -797,7 +801,7 @@ export class ExtensionRunner {
 			(result) => result.value,
 		);
 
-		const originalNotify = uiContext.notify.bind(uiContext);
+		const originalNotify = effectiveUIContext.notify.bind(effectiveUIContext);
 		const wrappedNotify = (message: string, type?: "info" | "warning" | "error"): void => {
 			const id = randomUUID();
 			const event: UIEvent = {
@@ -812,7 +816,7 @@ export class ExtensionRunner {
 		};
 
 		return {
-			...uiContext,
+			...effectiveUIContext,
 			confirm: wrappedConfirm,
 			select: wrappedSelect,
 			input: wrappedInput,

@@ -70,16 +70,28 @@ function seedCompactableSession(harness: Harness): void {
 	const now = Date.now();
 	harness.sessionManager.appendMessage({
 		role: "user",
-		content: [{ type: "text", text: "message to compact" }],
-		timestamp: now - 1000,
+		content: [{ type: "text", text: "older message to compact" }],
+		timestamp: now - 3000,
 	});
 	harness.sessionManager.appendMessage(
 		createAssistant(harness, {
 			stopReason: "stop",
 			totalTokens: 100,
-			timestamp: now - 500,
+			timestamp: now - 2000,
 		}),
 	);
+	harness.sessionManager.appendMessage({
+		role: "user",
+		content: [{ type: "text", text: "recent message to keep" }],
+		timestamp: now - 1000,
+	});
+	const recentAssistant = createAssistant(harness, {
+		stopReason: "stop",
+		totalTokens: 50_000,
+		timestamp: now - 500,
+	});
+	recentAssistant.content = [{ type: "text", text: `recent response ${"x".repeat(100_000)}` }];
+	harness.sessionManager.appendMessage(recentAssistant);
 	harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 }
 
@@ -111,8 +123,7 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 
-		await harness.session.prompt("one");
-		await harness.session.prompt("two");
+		seedCompactableSession(harness);
 
 		const result = await harness.session.compact();
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
@@ -145,8 +156,8 @@ describe("AgentSession compaction characterization", () => {
 
 		const result = await harness.session.compact();
 
-		expect(result.summary).toBe("summary from custom stream");
-		expect(getStreamCallCount()).toBe(1);
+		expect(result.summary).toContain("summary from custom stream");
+		expect(getStreamCallCount()).toBe(2);
 	});
 
 	it("auto-compacts with a custom streamFn when registry auth is absent", async () => {
@@ -160,7 +171,7 @@ describe("AgentSession compaction characterization", () => {
 
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
 		expect(compactionEntries).toHaveLength(1);
-		expect(getStreamCallCount()).toBe(1);
+		expect(getStreamCallCount()).toBe(2);
 	});
 
 	it("cancels in-progress manual compaction when abortCompaction is called", async () => {
@@ -177,8 +188,7 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 
-		await harness.session.prompt("one");
-		await harness.session.prompt("two");
+		seedCompactableSession(harness);
 
 		const compactPromise = harness.session.compact();
 		await new Promise((resolve) => setTimeout(resolve, 0));

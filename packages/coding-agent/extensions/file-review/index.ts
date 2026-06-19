@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent, CustomEntry } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 import * as Diff from "diff";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
@@ -78,6 +78,43 @@ export default function fileReview(pi: ExtensionAPI) {
 	/** Maps path → entryId of the snapshot when the file was last approved */
 	const approvedSnapshotEntry = new Map<string, string>();
 
+	function getLatestStepSnapshotEntryId(): string | undefined {
+		const mgr = ctx?.fileSnapshotManager;
+		if (mgr) {
+			const latest = mgr.getLatestSnapshotEntryId();
+			if (latest) return latest;
+		}
+		const entries = ctx?.sessionManager.getEntries();
+		if (!entries) return undefined;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i]!;
+			if (entry.type === "custom" && entry.customType === "step-snapshot") return entry.id;
+		}
+		return undefined;
+	}
+
+	function ensureCurrentSnapshotEntryId(): string | undefined {
+		const mgr = ctx?.fileSnapshotManager;
+		if (mgr && ctx && mgr.getLiveChanges(ctx.cwd).length > 0) {
+			mgr.onTurnEnd(ctx.cwd, currentTurnIndex, (type, data) => pi.appendEntry(type, data) ?? "");
+		}
+		return getLatestStepSnapshotEntryId();
+	}
+
+	function getSnapshotTreeHash(snapshotEntryId: string | undefined): string | undefined {
+		if (!snapshotEntryId) return undefined;
+		const indexed = ctx?.fileSnapshotManager?.getSnapshotAtEntry(snapshotEntryId)?.snapshotTreeHash;
+		if (indexed) return indexed;
+		const entries = ctx?.sessionManager.getEntries();
+		if (!entries) return undefined;
+		for (const entry of entries) {
+			if (entry.type !== "custom" || entry.customType !== "step-snapshot" || entry.id !== snapshotEntryId) continue;
+			const data = entry.data as { snapshotTreeHash?: string } | undefined;
+			if (data?.snapshotTreeHash) return data.snapshotTreeHash;
+		}
+		return undefined;
+	}
+
 	function getApproval(path: string): FileApproval {
 		const key = approvalKey(path);
 		const existing = approvals.get(key);
@@ -87,26 +124,32 @@ export default function fileReview(pi: ExtensionAPI) {
 		return pending;
 	}
 
-	function setApproval(path: string, status: "approved" | "rejected"): boolean {
+	function setApproval(
+		path: string,
+		status: "approved" | "rejected",
+		snapshotEntryId?: string,
+		snapshotTreeHash?: string,
+	): boolean {
 		const key = approvalKey(path);
 		const existing = approvals.get(key);
-		if (existing && existing.status === status) return true;
-		const entry: FileApproval = { turnIndex: -1, path, status, timestamp: Date.now() };
+		if (existing && existing.status === status && existing.snapshotEntryId === snapshotEntryId) return true;
+		const entry: FileApproval = { turnIndex: -1, path, status, timestamp: Date.now(), snapshotEntryId, snapshotTreeHash };
 		approvals.set(key, entry);
 		if (status === "approved") {
 			everApproved.add(path);
-			const mgr = ctx?.fileSnapshotManager;
-			if (mgr && ctx) {
-				const entries = ctx.sessionManager.getEntries();
-				for (let i = entries.length - 1; i >= 0; i--) {
-    			if (entries[i].type === "custom" && (entries[i] as CustomEntry).customType === "step-snapshot") {
-						approvedSnapshotEntry.set(path, entries[i].id);
-						break;
-					}
-				}
+			if (snapshotEntryId) {
+				approvedSnapshotEntry.set(path, snapshotEntryId);
 			}
+		} else {
+			approvedSnapshotEntry.delete(path);
 		}
-		pi.appendEntry("file-approval", { path, status, timestamp: entry.timestamp });
+		pi.appendEntry("file-approval", {
+			path,
+			status,
+			timestamp: entry.timestamp,
+			snapshotEntryId,
+			snapshotTreeHash,
+		});
 		return true;
 	}
 
@@ -211,16 +254,21 @@ export default function fileReview(pi: ExtensionAPI) {
 			}
 		}
 
-		// Build a map of turnIndex → snapshot tree hash from session entries.
+		// Build maps from session entries so review.pending can recover baselines
+		// even when the in-memory snapshot index was rebuilt or is stale.
 		// Use FIRST occurrence per turnIndex (rollback creates duplicate turn indices;
 		// the first one is the correct baseline before modification).
 		const turnToTreeHash = new Map<number, string>();
+		const snapshotEntryToTreeHash = new Map<string, string>();
 		const allEntries = ctx?.sessionManager.getEntries();
 		if (allEntries) {
 			for (const entry of allEntries) {
 				if (entry.type === "custom" && entry.customType === "step-snapshot") {
 					const data = entry.data as { turnIndex: number; snapshotTreeHash: string };
 					if (data && typeof data.turnIndex === "number" && data.snapshotTreeHash) {
+						if (entry.id) {
+							snapshotEntryToTreeHash.set(entry.id, data.snapshotTreeHash);
+						}
 						// Only set if not already present (first occurrence wins)
 						if (!turnToTreeHash.has(data.turnIndex)) {
 							turnToTreeHash.set(data.turnIndex, data.snapshotTreeHash);
@@ -250,16 +298,26 @@ export default function fileReview(pi: ExtensionAPI) {
 			try {
 				const fileRequests = [...pathMeta.entries()].map(([path, meta]) => {
 					const approvedEntry = approvedSnapshotEntry.get(path);
-					// For "added" files (firstStatus=added), baseline should be sessionStart
-					// (file didn't exist), NOT turnToTreeHash (which already has the file).
-					// For "modified"/"deleted" files, use turnToTreeHash at firstTurnIndex.
-					if (meta.firstStatus === "added" && !approvedEntry) {
+					if (approvedEntry) {
+						const approved = approvals.get(approvalKey(path));
+						const approvedHash = approved?.snapshotTreeHash ?? snapshotEntryToTreeHash.get(approvedEntry);
+						return { filePath: path, fromEntryId: approvedEntry, fromHash: approvedHash };
+					}
+					// If the file was added in this session (never existed before), oldContent is null.
+					// If the file was modified, we need the baseline from BEFORE the latest modification.
+					// Use the snapshot from the turn BEFORE latestTurnIndex to get pre-modification content.
+					if (meta.firstStatus === "added" && meta.latestFileStatus === "added") {
 						return { filePath: path, fromEntryId: undefined as string | undefined, fromHash: undefined as string | undefined };
 					}
+					// For modified files: use previous turn's snapshot as baseline.
+					// turnToTreeHash[N] = snapshot taken AFTER turn N (includes turn N's changes).
+					// To get content BEFORE turn latestTurnIndex's modification, use turn (latestTurnIndex - 1).
+					const baselineTurn = meta.latestTurnIndex > 0 ? meta.latestTurnIndex - 1 : -1;
+					const baselineHash = baselineTurn >= 0 ? turnToTreeHash.get(baselineTurn) : undefined;
 					return {
 						filePath: path,
-						fromEntryId: approvedEntry,
-						fromHash: approvedEntry ? undefined : turnToTreeHash.get(meta.firstTurnIndex),
+						fromEntryId: undefined as string | undefined,
+						fromHash: baselineHash as string | undefined,
 					};
 				});
 				const batchResult = mgr.getBatchFileContents(fileRequests, ctx.cwd);
@@ -277,17 +335,33 @@ export default function fileReview(pi: ExtensionAPI) {
 				const batchDiff = diffMap.get(path);
 				const liveDiff = liveMap.get(path);
 
-				if (liveDiff) {
+				if (approvedSnapshotEntry.has(path) && batchDiff) {
+					// For previously approved files, the review baseline is the approved snapshot,
+					// not the last committed tree. This keeps review.pending aligned with the
+					// approval workflow even after external rollbacks like `git checkout`.
+					diffMap.set(path, batchDiff);
+				} else if (liveDiff) {
 					// File has live (uncommitted) changes on disk.
-					// Use liveDiff.oldContent as baseline — it's the most accurate
-					// (compares against lastCommittedTreeHash).
-					// For genuinely new files (oldContent=null in liveDiff), keep null.
+					// If liveDiff.oldContent is null but file is 'modified', fall back to snapshots.
+					let oldContent = liveDiff.oldContent;
+					if (oldContent === null && meta.latestFileStatus === 'modified') {
+						for (let t = meta.latestTurnIndex - 1; t >= 0; t--) {
+							const hash = turnToTreeHash.get(t);
+							if (!hash) continue;
+							try {
+								const prevContent = mgr.readTreeFileContent(hash, path);
+								if (prevContent !== undefined && prevContent !== null) {
+									oldContent = prevContent;
+									break;
+								}
+							} catch {}
+						}
+					}
 					diffMap.set(path, {
-						oldContent: liveDiff.oldContent,
+						oldContent,
 						newContent: liveDiff.newContent,
 					});
 				} else if (meta.latestFileStatus === "deleted") {
-					// File was deleted and the deletion was committed (no live change).
 					let oldContent = batchDiff?.oldContent ?? null;
 					if (oldContent === null) {
 						try {
@@ -297,12 +371,49 @@ export default function fileReview(pi: ExtensionAPI) {
 					}
 					diffMap.set(path, { oldContent, newContent: null });
 				} else if (batchDiff) {
-					// No live change — file is committed. Use batchDiff as-is.
-					// For unapproved "added" files, oldContent should be null (file didn't exist before).
-					// For approved files, use batchDiff.oldContent (from approved snapshot).
-					const isApproved = !!approvedSnapshotEntry.get(path);
-					const oldContent = (meta.firstStatus === "added" && !isApproved) ? null : batchDiff.oldContent;
+					// No live change — file is committed.
+					// If oldContent is null but fileStatus is "modified", the file existed before
+					// but sessionStartTreeHash doesn't have it (session started from empty dir).
+					// Fall back to searching the previous turn's snapshot for the pre-modification content.
+					let oldContent = batchDiff.oldContent;
+					if (oldContent === null && meta.latestFileStatus === "modified") {
+						// Try each previous turn's snapshot to find where the file existed
+						for (let t = meta.latestTurnIndex - 1; t >= 0; t--) {
+							const hash = turnToTreeHash.get(t);
+							if (!hash) continue;
+							try {
+								const prevContent = mgr.readTreeFileContent(hash, path);
+								if (prevContent !== undefined && prevContent !== null) {
+									oldContent = prevContent;
+									break;
+								}
+							} catch {}
+						}
+					}
 					diffMap.set(path, { oldContent, newContent: batchDiff.newContent });
+				} else {
+					// Neither liveDiff nor batchDiff — file is committed but no baseline data.
+					// Build diff from previous turn snapshot + current disk content.
+					let oldContent = null;
+					if (meta.latestFileStatus === "modified") {
+						for (let t = meta.latestTurnIndex - 1; t >= 0; t--) {
+							const hash = turnToTreeHash.get(t);
+							if (!hash) continue;
+							try {
+								const prevContent = mgr.readTreeFileContent(hash, path);
+								if (prevContent !== undefined && prevContent !== null) {
+									oldContent = prevContent;
+									break;
+								}
+							} catch {}
+						}
+					}
+					let newContent = null;
+					try {
+						const diff = mgr.getFileDiff({ filePath: path });
+						if (diff) newContent = diff.newContent;
+					} catch {}
+					diffMap.set(path, { oldContent, newContent });
 				}
 			}
 		}
@@ -327,6 +438,12 @@ export default function fileReview(pi: ExtensionAPI) {
 				continue;
 			}
 
+			// Skip effective no-ops. This happens when a file changed after approval and was
+			// then restored back to the approved snapshot out-of-band (for example via git checkout).
+			if (oldContent === newContent) {
+				continue;
+			}
+
 			const { unifiedDiff, addedLines, deletedLines } = computeDiffInfo(oldContent, newContent);
 			result.push({
 				turnIndex: meta.latestTurnIndex,
@@ -345,28 +462,13 @@ export default function fileReview(pi: ExtensionAPI) {
 	});
 
 	channel?.handle("review.approve", (params) => {
-		// Record the approved snapshot entry for correct rollback baseline.
-		// Use the latest snapshot entry ID from fileSnapshotManager.
-		if (ctx?.fileSnapshotManager) {
-			const modifiedFiles = ctx.fileSnapshotManager.getModifiedFiles();
-			if (modifiedFiles.length > 0) {
-				const lastEntryId = modifiedFiles[modifiedFiles.length - 1]!.entryId;
-				if (lastEntryId) {
-					approvedSnapshotEntry.set(params.path, lastEntryId);
-				}
-			}
-		}
-		setApproval(params.path, "approved");
-		// Persist approval so it survives session reload
-		pi.appendEntry("file-approval", {
-			path: params.path,
-			status: "approved",
-			timestamp: Date.now(),
-		});
-		return { ok: true };
+		const snapshotEntryId = ensureCurrentSnapshotEntryId();
+		if (!snapshotEntryId) return { ok: false, error: "No snapshot available for approval" };
+		setApproval(params.path, "approved", snapshotEntryId, getSnapshotTreeHash(snapshotEntryId));
+		return { ok: true, snapshotEntryId };
 	});
 
-		channel?.handle("review.reject", (params) => {
+	channel?.handle("review.reject", (params) => {
 		// Roll back the file to its pre-modification state
 		if (!ctx) return { ok: false, error: "No session context" };
 		const mgr = ctx.fileSnapshotManager;
@@ -375,47 +477,21 @@ export default function fileReview(pi: ExtensionAPI) {
 		// Get the diff data for this file
 		let diffInfo: { oldContent: string | null; newContent: string | null } | null = null;
 		try {
-			let fromEntryId = approvedSnapshotEntry.get(params.path);
+			// For approved files, use the approved snapshot as baseline.
+			// For unapproved files, use sessionStartTreeHash (getFileDiff default).
+			const fromEntryId = approvedSnapshotEntry.get(params.path);
 
-			// For unapproved files or live sessions (approvedSnapshotEntry not populated),
-			// find the first snapshot where the file appeared from the turnLog
-			if (!fromEntryId) {
-				// Use FIRST occurrence per turnIndex (rollback creates duplicates)
-				const turnToEntryId = new Map<number, string>();
-				const entries = ctx?.sessionManager.getEntries();
-				if (entries) {
-					for (const entry of entries) {
-						if (entry.type === "custom" && entry.customType === "step-snapshot") {
-							const data = entry.data as { turnIndex: number };
-							if (data && typeof data.turnIndex === "number") {
-								if (!turnToEntryId.has(data.turnIndex)) {
-									turnToEntryId.set(data.turnIndex, entry.id);
-								}
-							}
-						}
-					}
-				}
-				for (const record of turnLog) {
-					if (record.changes.some((c) => c.path === params.path)) {
-						fromEntryId = turnToEntryId.get(record.turnIndex) ?? fromEntryId;
-						break;
-					}
-				}
-			}
-
-			const diff = mgr.getFileDiff({
-				filePath: params.path,
-				fromEntryId,
-			});
-			if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
-		} catch {}
-		if (!diffInfo) {
-			// Fallback: try getFileDiff without fromEntryId (uses sessionStartTreeHash)
-			try {
+			if (fromEntryId) {
+				const content = mgr.getBatchFileContents(
+					[{ filePath: params.path, fromEntryId, fromHash: getSnapshotTreeHash(fromEntryId) }],
+					ctx.cwd,
+				).get(params.path);
+				if (content) diffInfo = content;
+			} else {
 				const diff = mgr.getFileDiff({ filePath: params.path });
 				if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
-			} catch {}
-		}
+			}
+		} catch {}
 		if (!diffInfo) return { ok: false, error: "No diff data for file" };
 
 		// Perform rollback based on file status
@@ -457,30 +533,33 @@ export default function fileReview(pi: ExtensionAPI) {
 		}
 
 		setApproval(params.path, "rejected");
-		// Persist rejection so it survives session reload
-		pi.appendEntry("file-approval", {
-			path: params.path,
-			status: "rejected",
-			timestamp: Date.now(),
-		});
 		return { ok: true, rolledBack };
 	});
 
 	channel?.handle("review.approveAll", () => {
 		let count = 0;
-		// Get aggregated paths from turnLog (latest by path)
+		const snapshotEntryId = ensureCurrentSnapshotEntryId();
+		if (!snapshotEntryId) return { count };
+		const snapshotTreeHash = getSnapshotTreeHash(snapshotEntryId);
+		// Approve ALL files that are currently pending, not just those in turnLog.
+		// This matches what review.pending returns.
+		for (const [, approval] of approvals) {
+			if (approval.status === "pending") {
+				setApproval(approval.path, "approved", snapshotEntryId, snapshotTreeHash);
+				count++;
+			}
+		}
+		// Also check turnLog for files not yet in approvals map
 		const latestByPath = new Map<string, { turnIndex: number; timestamp: number }>();
 		for (const record of turnLog) {
 			for (const change of record.changes) {
 				latestByPath.set(change.path, { turnIndex: record.turnIndex, timestamp: record.timestamp });
 			}
 		}
-		const now = Date.now();
 		for (const [path] of latestByPath) {
 			const approval = getApproval(path);
 			if (approval.status === "pending") {
-				setApproval(path, "approved");
-				pi.appendEntry("file-approval", { path, status: "approved", timestamp: now });
+				setApproval(path, "approved", snapshotEntryId, snapshotTreeHash);
 				count++;
 			}
 		}
@@ -509,10 +588,16 @@ export default function fileReview(pi: ExtensionAPI) {
 					let diffInfo: { oldContent: string | null; newContent: string | null } | null = null;
 					try {
 						const approvedEntryId = approvedSnapshotEntry.get(path);
-						const diff = approvedEntryId
-							? mgr.getFileDiff({ filePath: path, fromEntryId: approvedEntryId })
-							: mgr.getFileDiff({ filePath: path });
-						if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+						if (approvedEntryId) {
+							const content = mgr.getBatchFileContents(
+								[{ filePath: path, fromEntryId: approvedEntryId, fromHash: getSnapshotTreeHash(approvedEntryId) }],
+								ctx.cwd,
+							).get(path);
+							if (content) diffInfo = content;
+						} else {
+							const diff = mgr.getFileDiff({ filePath: path });
+							if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+						}
 					} catch {}
 
 					if (diffInfo) {
@@ -534,7 +619,6 @@ export default function fileReview(pi: ExtensionAPI) {
 					}
 				}
 				setApproval(path, "rejected");
-				pi.appendEntry("file-approval", { path, status: "rejected", timestamp: Date.now() });
 				count++;
 			}
 		}
@@ -561,14 +645,19 @@ export default function fileReview(pi: ExtensionAPI) {
 		approvedSnapshotEntry.clear();
 
 		const entries = _ctx.sessionManager.getEntries();
-		let lastStepSnapshotId: string | undefined;
 		for (const entry of entries) {
 			if (entry.type !== "custom") continue;
 
-			if (entry.customType === "step-snapshot") {
-				lastStepSnapshotId = entry.id;
-			} else if (entry.customType === "file-approval") {
-				const data = entry.data as { path: string; status: "approved" | "rejected"; timestamp: number } | undefined;
+			if (entry.customType === "file-approval") {
+				const data = entry.data as
+					| {
+							path: string;
+							status: "approved" | "rejected";
+							timestamp: number;
+							snapshotEntryId?: string;
+							snapshotTreeHash?: string;
+					  }
+					| undefined;
 				if (!data) continue;
 				const key = approvalKey(data.path);
 				approvals.set(key, {
@@ -576,26 +665,41 @@ export default function fileReview(pi: ExtensionAPI) {
 					path: data.path,
 					status: data.status,
 					timestamp: data.timestamp,
+					snapshotEntryId: data.snapshotEntryId,
+					snapshotTreeHash: data.snapshotTreeHash,
 				});
 				if (data.status === "approved") {
 					everApproved.add(data.path);
-					if (lastStepSnapshotId) {
-						approvedSnapshotEntry.set(data.path, lastStepSnapshotId);
+					if (data.snapshotEntryId) {
+						approvedSnapshotEntry.set(data.path, data.snapshotEntryId);
 					}
 				}
 			} else if (entry.customType === "file-review-turn") {
 				const data = entry.data as { turnIndex: number; timestamp: number; changes: Array<{ path: string; status: string }> } | undefined;
 				if (!data) continue;
 				if (turnLog.length >= MAX_TURNS_RETAINED) turnLog.shift();
+				const changes = data.changes.map((c) => ({
+					path: c.path,
+					status: c.status as LiveChange["status"],
+					diff: null,
+				}));
 				turnLog.push({
 					turnIndex: data.turnIndex,
 					timestamp: data.timestamp,
-					changes: data.changes.map((c) => ({
-						path: c.path,
-						status: c.status as LiveChange["status"],
-						diff: null,
-					})),
+					changes,
 				});
+				for (const change of changes) {
+					const existing = approvals.get(approvalKey(change.path));
+					if (
+						existing &&
+						(existing.status === "approved" || existing.status === "rejected") &&
+						!!existing.snapshotEntryId &&
+						data.timestamp >= existing.timestamp
+					) {
+						existing.status = "pending";
+						existing.timestamp = data.timestamp;
+					}
+				}
 			}
 		}
 	});

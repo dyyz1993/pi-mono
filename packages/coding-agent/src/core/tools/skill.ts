@@ -4,6 +4,7 @@ import { readFileSync } from "fs";
 import { type Static, Type } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../../utils/frontmatter.ts";
+import type { AgentSessionEvent } from "../agent-session.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import type { Skill } from "../skills.ts";
 import { runSubtask, type SubtaskContext } from "../subtask.ts";
@@ -28,6 +29,14 @@ export interface SkillToolOptions {
 	getSkills: () => Skill[];
 	/** Context for running forked subtasks. Required for context:fork skills. */
 	subtaskContext?: SubtaskContext;
+	/** Optional callback to forward child session events to the parent session (for transparency). */
+	onSubtaskEvent?: (subtaskId: string, label: string | undefined, inner: AgentSessionEvent) => void;
+	/** Optional callback when a fork subtask completes, for persistence with timing. */
+	onSubtaskComplete?: (
+		subtaskId: string,
+		label: string,
+		result: { success: boolean; text: string; error?: string; startedAt: number; completedAt: number },
+	) => void;
 }
 
 function formatSkillCall(args: { name?: string; args?: string } | undefined, theme: any): string {
@@ -57,7 +66,7 @@ function formatSkillResult(
 }
 
 export function createSkillToolDefinition(options: SkillToolOptions): ToolDefinition<typeof skillSchema, undefined> {
-	const { getSkills, subtaskContext } = options;
+	const { getSkills, subtaskContext, onSubtaskEvent, onSubtaskComplete } = options;
 
 	return {
 		name: "skill",
@@ -69,7 +78,7 @@ export function createSkillToolDefinition(options: SkillToolOptions): ToolDefini
 			"Only invoke a skill that appears in the available_skills list.",
 		],
 		parameters: skillSchema,
-		async execute(_toolCallId, { name, args }, _signal?, _onUpdate?, _ctx?) {
+		async execute(toolCallId, { name, args }, _signal?, _onUpdate?, _ctx?) {
 			const skills = getSkills();
 			const skill = skills.find((s) => s.name.toLowerCase() === name.toLowerCase());
 
@@ -93,7 +102,26 @@ export function createSkillToolDefinition(options: SkillToolOptions): ToolDefini
 					const body = stripFrontmatter(rawContent).trim();
 					const task = args ? `${body}\n\nAdditional context: ${args}` : body;
 
-					const result = await runSubtask({ task, inheritHistory: false }, subtaskContext);
+					const result = await runSubtask(
+						{
+							task,
+							inheritHistory: false,
+							onEvent: (event) => {
+								if (!onSubtaskEvent) return;
+								if (event.type === "message_update" || event.type === "tool_execution_update") return;
+								onSubtaskEvent(toolCallId, name, event);
+							},
+						},
+						subtaskContext,
+					);
+
+					onSubtaskComplete?.(toolCallId, name, {
+						success: result.success,
+						text: result.text,
+						error: result.error,
+						startedAt: result.startedAt,
+						completedAt: result.completedAt,
+					});
 
 					if (result.success) {
 						return {

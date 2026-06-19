@@ -113,13 +113,26 @@ describe("session_delegate handler", () => {
 
 		expect(result.sessionId).toBe("sess-1");
 		expect(result.status).toBe("started");
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj");
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined);
 
 		const stored = ctx.store.get("sess-1");
 		expect(stored).toBeDefined();
 		expect(stored!.task).toBe("Do something");
 		expect(stored!.projectPath).toBe("/tmp/proj");
 		expect(stored!.status).toBe("idle");
+		expect(stored!.replyMode).toBe("interrupt");
+	});
+
+	it("passes replyMode from params to pm.delegate and store", async () => {
+		const ctx = useCtx();
+		await ctx.client.call("session_delegate", {
+			task: "Do something",
+			projectPath: "/tmp/proj",
+			replyMode: "followUp",
+		});
+
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", "followUp");
+		expect(ctx.store.get("sess-1")!.replyMode).toBe("followUp");
 	});
 
 	it("returns error result when pm.delegate throws", async () => {
@@ -209,7 +222,7 @@ describe("session_delegate_send handler", () => {
 		});
 
 		expect(result.delivered).toBe(true);
-		expect(ctx.pm.delegate_send).toHaveBeenCalledWith("parent-sess", "target-1", "hello");
+		expect(ctx.pm.delegate_send).toHaveBeenCalledWith("parent-sess", "target-1", "hello", undefined);
 	});
 
 	it("removes task from store when targetStatus is not_found", async () => {
@@ -338,7 +351,7 @@ describe("session_delegate_status handler", () => {
 		expect(result.contextUsage).toEqual({ tokens: 50000, contextWindow: 128000, percent: 39 });
 	});
 
-	it("removes task from store when pm.delegate_status throws (ghost session)", async () => {
+	it("marks task as stopped when pm.delegate_status throws so parent can observe it", async () => {
 		const ctx = useCtx({
 			delegate_status: vi.fn().mockRejectedValue(new Error("gone")),
 		});
@@ -355,15 +368,17 @@ describe("session_delegate_status handler", () => {
 			sessionId: "ghost-sess",
 		});
 
-		expect(result.task).toBeNull();
-		expect(ctx.store.get("ghost-sess")).toBeUndefined();
+		expect(result.task).not.toBeNull();
+		expect(result.task!.status).toBe("stopped");
+		expect(result.task!.completedAt).toBeDefined();
+		expect(ctx.store.get("ghost-sess")!.status).toBe("stopped");
 	});
 });
 
 // ── session_delegate_list ──
 
 describe("session_delegate_list handler", () => {
-	it("removes stopped tasks via pm status check", async () => {
+	it("marks stopped tasks via pm status check without removing them", async () => {
 		const ctx = useCtx({
 			delegate_status: vi.fn().mockResolvedValue({ status: "stopped" as const }),
 		});
@@ -378,8 +393,10 @@ describe("session_delegate_list handler", () => {
 
 		const result = await ctx.client.call("session_delegate_list", {});
 
-		expect(result.tasks).toHaveLength(0);
-		expect(ctx.store.get("sess-stopped-1")).toBeUndefined();
+		expect(result.tasks).toHaveLength(1);
+		expect(result.tasks[0].status).toBe("stopped");
+		expect(result.tasks[0].completedAt).toBeDefined();
+		expect(ctx.store.get("sess-stopped-1")).toBeDefined();
 	});
 
 	it("updates live tasks via pm status check", async () => {
@@ -401,7 +418,7 @@ describe("session_delegate_list handler", () => {
 		expect(result.tasks[0].status).toBe("streaming");
 	});
 
-	it("removes ghost tasks when pm throws", async () => {
+	it("marks ghost tasks as stopped when pm throws", async () => {
 		const ctx = useCtx({
 			delegate_status: vi.fn().mockRejectedValue(new Error("not found")),
 		});
@@ -416,7 +433,9 @@ describe("session_delegate_list handler", () => {
 
 		const result = await ctx.client.call("session_delegate_list", {});
 
-		expect(result.tasks).toHaveLength(0);
+		expect(result.tasks).toHaveLength(1);
+		expect(result.tasks[0].status).toBe("stopped");
+		expect(result.tasks[0].completedAt).toBeDefined();
 	});
 });
 
@@ -563,6 +582,50 @@ describe("session_delegate_clear_stopped handler", () => {
 		expect(result.removed).toBe(1);
 		expect(ctx.store.list()).toHaveLength(1);
 		expect(ctx.store.list()[0].sessionId).toBe("sess-cs-2");
+	});
+});
+
+describe("session_delegate_status lifecycle semantics", () => {
+	it("keeps a never-started idle task as idle", async () => {
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "idle" }),
+		});
+		ctx.store.add({
+			sessionId: "sess-idle-new",
+			title: "New",
+			task: "task",
+			projectPath: "/tmp",
+			dispatchedAt: Date.now(),
+			status: "idle",
+		});
+
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-idle-new",
+		});
+
+		expect(result.task?.status).toBe("idle");
+		expect(result.task?.completedAt).toBeUndefined();
+	});
+
+	it("converts a previously streaming idle task to completed", async () => {
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "idle" }),
+		});
+		ctx.store.add({
+			sessionId: "sess-completed",
+			title: "Completed",
+			task: "task",
+			projectPath: "/tmp",
+			dispatchedAt: Date.now(),
+			status: "streaming",
+		});
+
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-completed",
+		});
+
+		expect(result.task?.status).toBe("completed");
+		expect(result.task?.completedAt).toBeDefined();
 	});
 });
 

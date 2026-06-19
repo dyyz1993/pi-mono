@@ -177,7 +177,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		lazyActivator.buildIndex(config.servers);
 
 		// Scan project for file counts to determine primary languages
-		const cwd = process.cwd();
+		const cwd = typeof ctx.cwd === "string" ? ctx.cwd : process.cwd();
 		const scanResult = await scanProjectFileTypes(cwd);
 		lazyActivator.markPrimary(scanResult.extensionCounts);
 

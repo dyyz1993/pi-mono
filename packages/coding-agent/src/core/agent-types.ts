@@ -363,6 +363,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			mode: coerceField("mode", frontmatter.mode) as AgentMode | undefined,
 			hidden: coerceField("hidden", frontmatter.hidden) as boolean | undefined,
 			paths: parsePathConfig(frontmatter.paths),
+			avatar: parseAvatar(frontmatter.avatar),
 		});
 	}
 
@@ -399,6 +400,18 @@ export function mergeAgentsByPriority(...groups: AgentConfig[][]): AgentConfig[]
 	return Array.from(agentMap.values());
 }
 
+function builtinAgentAvatar(accent: string, glyph: string): AgentAvatar {
+	const svg =
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+		`<defs><linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">` +
+		`<stop stop-color="${accent}"/><stop offset="1" stop-color="#111827"/></linearGradient></defs>` +
+		`<rect width="64" height="64" rx="18" fill="url(#g)"/>` +
+		`<circle cx="48" cy="16" r="8" fill="rgba(255,255,255,0.18)"/>` +
+		`<text x="32" y="40" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="26" font-weight="700" fill="white">${glyph}</text>` +
+		`</svg>`;
+	return { type: "image", src: `data:image/svg+xml,${encodeURIComponent(svg)}` };
+}
+
 export function getBuiltinAgents(): AgentConfig[] {
 	return [
 		{
@@ -409,6 +422,9 @@ export function getBuiltinAgents(): AgentConfig[] {
 			source: "builtin",
 			filePath: "",
 			mode: "primary",
+			tier: "pro",
+			color: "orange",
+			avatar: builtinAgentAvatar("#F97316", "B"),
 		},
 		{
 			name: "explore",
@@ -422,6 +438,7 @@ export function getBuiltinAgents(): AgentConfig[] {
 			mode: "primary",
 			tier: "fast",
 			color: "blue",
+			avatar: builtinAgentAvatar("#3B82F6", "E"),
 		},
 		{
 			name: "plan",
@@ -436,6 +453,7 @@ export function getBuiltinAgents(): AgentConfig[] {
 			tier: "max",
 			thinkingLevel: "high",
 			color: "purple",
+			avatar: builtinAgentAvatar("#7C3AED", "P"),
 		},
 	];
 }

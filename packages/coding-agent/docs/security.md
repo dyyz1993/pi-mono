@@ -36,7 +36,7 @@ Project trust is only an input-loading guard. It prevents a repository from sile
 
 The core agent session enforces tool permissions for sub-agents declared in agent markdown files. These checks run in `beforeToolCall` and apply regardless of which extensions are loaded:
 
-- `permissionMode: "normal"` (default) blocks dangerous bash patterns: `rm -rf`, `sudo`, `git push --force`, `chmod 777`, `.env`, `credentials`, `--no-verify`.
+- `permissionMode: "normal"` (default) blocks dangerous bash patterns: recursive `rm` flags (`-r`, `-R`, `-rf`, `--recursive`), `sudo`, `git push --force`, `chmod 777`, `.env`, `credentials`, `--no-verify`.
 - `permissionMode: "yolo"` skips dangerous-bash blocking but still respects allowlist and blocklist.
 - `tools: [...]` is an allowlist. Tools not listed are blocked even if registered.
 - `disallowedTools: [...]` is a blocklist. Supports `tool` and `tool(glob)` patterns matched against the tool's input fields (e.g. `bash(rm*)` blocks any `bash` call whose command starts with `rm`).
