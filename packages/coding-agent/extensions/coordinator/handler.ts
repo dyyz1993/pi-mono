@@ -40,34 +40,7 @@ export class TaskStore {
     }
   }
 
-  private static readonly EVICT_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes (stopped/completed)
-  private static readonly IDLE_EVICT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours (idle zombies)
-
-  /** Returns true if the task has expired and should be evicted/hidden. */
-  static isExpired(task: DelegatedTask, now: number = Date.now()): boolean {
-    if (
-      (task.status === "stopped" || task.status === "completed") &&
-      task.completedAt &&
-      now - task.completedAt > TaskStore.EVICT_MAX_AGE_MS
-    ) {
-      return true;
-    }
-    if (
-      task.status === "idle" &&
-      now - task.dispatchedAt > TaskStore.IDLE_EVICT_MAX_AGE_MS
-    ) {
-      return true;
-    }
-    return false;
-  }
-
   private save(): void {
-    const now = Date.now();
-    for (const [id, task] of this.tasks) {
-      if (TaskStore.isExpired(task, now)) {
-        this.tasks.delete(id);
-      }
-    }
     const arr = Array.from(this.tasks.values());
     fs.writeFileSync(this.filePath, JSON.stringify(arr, null, 2), "utf-8");
   }
@@ -122,8 +95,7 @@ export class TaskStore {
   }
 
   buildPrompt(): string {
-    const now = Date.now();
-    const tasks = this.list().filter((t) => !TaskStore.isExpired(t, now));
+    const tasks = this.list();
     if (tasks.length === 0) return "";
 
     const lines = [
@@ -260,8 +232,8 @@ export function createCoordinatorHandler(
       const compactInfo = await pm.delegate_compact_status(sessionId);
       return { task: store.get(sessionId) ?? null, isCompacting: compactInfo.isCompacting, contextUsage: compactInfo.contextUsage };
     } catch {
-      // Ghost session — keep a short-lived stopped record so the parent can still
-      // see that the delegated task disappeared and remove it manually if needed.
+      // Ghost session — keep a stopped record so the parent can still see that
+      // the delegated task disappeared and remove it manually if needed.
       store.markStopped(sessionId);
       return { task: store.get(sessionId) ?? null };
     }
@@ -276,7 +248,7 @@ export function createCoordinatorHandler(
         store.update(t.sessionId, resolveTaskStatus(t, remote.status));
       } catch {
         // Ghost session — do not erase the task during list refresh. Mark it as
-        // stopped and let retention or explicit remove/clear handle cleanup.
+        // stopped and let explicit remove/clear handle cleanup.
         store.markStopped(t.sessionId);
       }
     }

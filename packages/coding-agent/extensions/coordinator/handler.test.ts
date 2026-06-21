@@ -218,7 +218,7 @@ describe("TaskStore.add() sessionId guard", () => {
   });
 });
 
-describe("TaskStore.buildPrompt() stale task filtering", () => {
+describe("TaskStore.buildPrompt() persisted task visibility", () => {
   let tempDir: string;
 
   afterEach(() => {
@@ -227,7 +227,7 @@ describe("TaskStore.buildPrompt() stale task filtering", () => {
     }
   });
 
-  it("hides stopped tasks older than 30 minutes", () => {
+  it("keeps stopped tasks older than 30 minutes visible until explicit cleanup", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -242,7 +242,8 @@ describe("TaskStore.buildPrompt() stale task filtering", () => {
     }));
 
     const prompt = store.buildPrompt();
-    expect(prompt).toBe("");
+    expect(prompt).toContain("Old stopped task");
+    expect(prompt).toContain("STOPPED");
   });
 
   it("keeps recently stopped tasks", () => {
@@ -331,9 +332,9 @@ describe("session_delegate_remove and session_delegate_clear_stopped handlers ex
   });
 });
 
-// ── TDD tests for zombie task bugs ──
+// ── Regression tests for coordinator task retention ──
 
-describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () => {
+describe("TaskStore does not silently evict delegated task indexes", () => {
   let tempDir: string;
 
   afterEach(() => {
@@ -342,7 +343,7 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
     }
   });
 
-  it("auto-evicts stopped tasks older than 30 minutes from the store on save()", () => {
+  it("keeps stopped tasks older than 30 minutes in the store on save()", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -354,12 +355,11 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
       completedAt: Date.now() - 31 * 60 * 1000, // 31 minutes ago
     }));
 
-    // After eviction, the task should be gone from the store entirely
-    expect(store.get("sess-zombie-stop")).toBeUndefined();
-    expect(store.list()).toHaveLength(0);
+    expect(store.get("sess-zombie-stop")).toBeDefined();
+    expect(store.list()).toHaveLength(1);
   });
 
-  it("auto-evicts completed tasks older than 30 minutes from the store on save()", () => {
+  it("keeps completed tasks older than 30 minutes in the store on save()", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -371,11 +371,11 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
       completedAt: Date.now() - 31 * 60 * 1000,
     }));
 
-    expect(store.get("sess-zombie-done")).toBeUndefined();
-    expect(store.list()).toHaveLength(0);
+    expect(store.get("sess-zombie-done")).toBeDefined();
+    expect(store.list()).toHaveLength(1);
   });
 
-  it("keeps recently stopped tasks (within 30 minutes)", () => {
+  it("keeps recently stopped tasks", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -391,7 +391,7 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
     expect(store.list()).toHaveLength(1);
   });
 
-  it("evicts stale tasks and keeps fresh ones in the same batch", () => {
+  it("keeps stale and fresh tasks in the same batch", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -411,15 +411,15 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
       status: "idle",
     }));
 
-    expect(store.list()).toHaveLength(2);
+    expect(store.list()).toHaveLength(3);
     expect(store.list().map((t) => t.sessionId)).toEqual(
-      expect.arrayContaining(["sess-recent-stopped", "sess-active-idle"]),
+      expect.arrayContaining(["sess-old-stopped", "sess-recent-stopped", "sess-active-idle"]),
     );
   });
 });
 
 describe("Bug: delegate_list should not eagerly erase stopped or ghost tasks", () => {
-  it("handler session_delegate_list keeps stopped/ghost tasks so parents can observe them before retention cleanup", async () => {
+  it("handler session_delegate_list keeps stopped/ghost tasks so parents can observe them until explicit cleanup", async () => {
     const handlerSource = fs.readFileSync(path.join(__dirname, "handler.ts"), "utf-8");
     const listHandlerStart = handlerSource.indexOf('channel.handle("session_delegate_list"');
     expect(listHandlerStart).toBeGreaterThan(-1);
@@ -447,7 +447,7 @@ describe("Bug: session_delegate_stop registered twice in index.ts", () => {
 
 // ── Regression tests for bugs found during audit ──
 
-describe("buildPrompt() filters completed tasks older than 30 minutes (Bug 2 fix)", () => {
+describe("buildPrompt() keeps completed task history until explicit cleanup", () => {
   let tempDir: string;
 
   afterEach(() => {
@@ -456,7 +456,7 @@ describe("buildPrompt() filters completed tasks older than 30 minutes (Bug 2 fix
     }
   });
 
-  it("hides completed tasks older than 30 minutes", () => {
+  it("shows completed tasks older than 30 minutes", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -468,10 +468,12 @@ describe("buildPrompt() filters completed tasks older than 30 minutes (Bug 2 fix
       completedAt: Date.now() - 31 * 60 * 1000, // 31 minutes ago
     }));
 
-    expect(store.buildPrompt()).toBe("");
+    const prompt = store.buildPrompt();
+    expect(prompt).toContain("Old completed task");
+    expect(prompt).toContain("DONE");
   });
 
-  it("keeps recently completed tasks (within 30 minutes)", () => {
+  it("keeps recently completed tasks", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -488,7 +490,7 @@ describe("buildPrompt() filters completed tasks older than 30 minutes (Bug 2 fix
     expect(prompt).toContain("DONE");
   });
 
-  it("mixed: old completed hidden, recent completed visible, idle always visible", () => {
+  it("mixed: old completed, recent completed, and idle tasks are all visible", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -512,7 +514,7 @@ describe("buildPrompt() filters completed tasks older than 30 minutes (Bug 2 fix
     }));
 
     const prompt = store.buildPrompt();
-    expect(prompt).not.toContain("Old Completed");
+    expect(prompt).toContain("Old Completed");
     expect(prompt).toContain("Recent Completed");
     expect(prompt).toContain("Active Task");
   });

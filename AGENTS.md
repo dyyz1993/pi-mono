@@ -86,6 +86,7 @@ For more detail, see `docs/file-store-performance.md`.
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
 - Never run `npm run build` or `npm test` unless requested by the user.
 - **yalc push 必须先 build**：推送包到消费项目前，必须先在对应 package 目录运行 `npm run build`（或从根目录 `npm run build`），确保 `dist/` 是最新的。yalc push 推的是磁盘上的文件，不包含 TypeScript 源码编译产物。流程：`npm run build && yalc push`。
+- `yalc push` 到 `pi-agent-chat` 后，新创建的 Agent 进程会读取更新后的 `packages/coding-agent/dist/`；已经运行中的 Agent/CLI 进程需要 reload、停止后重启 session，或重启消费项目 dev server 才会加载新的 extension 代码。
 - **Test commands:**
   - Full non-e2e suite: `./test.sh` from repo root (strips API keys to avoid e2e activation).
   - Single test file: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts` from the package root.
@@ -161,22 +162,26 @@ it("enforces agent permission mode", async () => {
 });
 ```
 
-**Testing interactive UI tools (ask-confirm, ask-select, etc.):**
+**Testing interactive UI tools (`ask-user-question`, `ask-notify`):**
 
-Extensions like `ask-tools` use `ctx.ui.confirm/select/input/editor` which block until the user responds. In harness mode, the default `noOpUIContext` returns `false`/`undefined` for all calls. To simulate specific user responses, inject a mock UI context via `extensionRunner.setUIContext()`:
+The `ask-tools` extension now exposes Ask v2 tools. Use `ask-user-question` for structured questions and `ask-notify` for fire-and-forget notifications. Do not add new code that calls the old `ask-confirm`, `ask-select`, `ask-input`, or `ask-editor` tool names. In harness mode, the default `noOpUIContext` returns no response for user questions. To simulate specific user responses, inject a mock UI context via `extensionRunner.setUIContext()`:
 
 ```typescript
 harness.session.extensionRunner.setUIContext({
-  confirm: async () => true,           // user clicks "yes"
-  select: async () => "option B",      // user selects "option B"
-  input: async () => "typed text",     // user types text
-  editor: async () => "edited content", // user edits in editor
+  askUserQuestion: async () => ({
+    action: "responded",
+    answers: {
+      scope: { selected: ["Local"], text: "ship local first" },
+    },
+  }),
   notify: () => {},                    // non-blocking, fire-and-forget
   // Required no-op stubs for remaining ExtensionUIContext methods:
   onTerminalInput: () => () => {},
   setStatus: () => {}, setWorkingMessage: () => {}, setWorkingVisible: () => {},
   setWorkingIndicator: () => {}, setHiddenThinkingLabel: () => {},
   setWidget: () => {}, setFooter: () => {}, setHeader: () => {}, setTitle: () => {},
+  confirm: async () => false, select: async () => undefined,
+  input: async () => undefined, editor: async () => undefined,
   custom: async () => undefined as never,
 }, "interactive");
 ```
@@ -219,6 +224,13 @@ await runner.emit({ type: "session_compact", summary: "...", messages: [...] });
 4. **Regression tests**: issue-specific fixes. Put under `test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
 
 **Extension development reference:** See `docs/extensions.md` for the full extension API and `examples/extensions/` for working examples.
+
+### Coordinator Delegation Persistence
+
+- `packages/coding-agent/extensions/coordinator/handler.ts` owns the parent-session delegate index in `coordinator-tasks.json`.
+- Delegate records are user-visible runtime state. Do not silently evict them by age from `save()`, `list()`, or `buildPrompt()`.
+- Stopped/completed delegate records remain visible until explicit cleanup via `session_delegate_remove` or `session_delegate_clear_stopped`.
+- If a future cleanup policy is required, it must be explicit, configurable, logged/emitted as an event, and covered by regression tests. Silent retention cleanup breaks parent Agent awareness and web reconnect/recovery behavior.
 
 ### Directory System and Storage Paths
 
