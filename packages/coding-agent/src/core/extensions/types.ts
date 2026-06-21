@@ -98,15 +98,22 @@ export interface ExtensionUIDialogOptions {
 	multiple?: boolean;
 	/** Tool call associated with the dialog, if any. */
 	toolCallId?: string;
+	/** Confirm button label override for confirmation dialogs. */
+	confirmText?: string;
+	/** Cancel button label override for confirmation dialogs. */
+	cancelText?: string;
 	/** Hook-specific metadata used by RPC clients to render permission prompts. */
 	hookMeta?: {
 		toolName?: string;
 		matcher?: string;
+		description?: string;
 		command?: string;
 		hookCommand?: string;
 		eventName?: string;
 		source?: string;
 		reason?: string;
+		confirmText?: string;
+		cancelText?: string;
 	};
 	/** Path permission metadata for rendering approval cards in RPC clients. */
 	permissionMeta?: {
@@ -118,6 +125,36 @@ export interface ExtensionUIDialogOptions {
 		relativeTo: string;
 	};
 }
+
+export interface AskUserQuestionOption {
+	label: string;
+	description?: string;
+	preview?: string;
+}
+
+export interface AskUserQuestion {
+	id: string;
+	header: string;
+	question: string;
+	options: AskUserQuestionOption[];
+	multiSelect?: boolean;
+}
+
+export interface AskUserQuestionAnswer {
+	selected: string[];
+	text?: string;
+}
+
+export interface AskUserQuestionResponse {
+	action: "responded";
+	answers: Record<string, AskUserQuestionAnswer>;
+	annotations?: Record<string, unknown>;
+}
+
+export type AskUserQuestionOptions = ExtensionUIDialogOptions & {
+	title?: string;
+	message?: string;
+};
 
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
@@ -156,6 +193,12 @@ export interface ExtensionUIContext {
 
 	/** Show a text input dialog. */
 	input(title: string, placeholder?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+
+	/** Ask one or more structured questions and return the collected answers. */
+	askUserQuestion(
+		questions: AskUserQuestion[],
+		opts?: AskUserQuestionOptions,
+	): Promise<AskUserQuestionResponse | undefined>;
 
 	/** Show a notification to the user. */
 	notify(message: string, type?: "info" | "warning" | "error"): void;
@@ -310,6 +353,87 @@ export interface ContextUsage {
 	contextWindow: number;
 	/** Context usage as percentage of context window, or null if tokens is unknown. */
 	percent: number | null;
+	/** Estimated token breakdown by prompt/message source. */
+	breakdown?: ContextUsageBreakdownItem[];
+	/** Lightweight summary of the latest provider payload, without raw prompt content. */
+	providerRequest?: ProviderRequestContextUsage;
+}
+
+export type ContextUsageBreakdownId =
+	| "system_base"
+	| "tools"
+	| "mcp_tools"
+	| "context_files"
+	| "skills"
+	| "agents"
+	| "tool_inputs"
+	| "tool_outputs"
+	| "conversation"
+	| "thinking"
+	| "memory"
+	| "rules"
+	| "lsp"
+	| "provider_system"
+	| "provider_messages"
+	| "provider_tools"
+	| "provider_options"
+	| "unclassified";
+
+export interface ContextUsageCompactionInfo {
+	count: number;
+	tokensBefore: number;
+	summaryTokens: number;
+	estimatedSavedTokens: number;
+}
+
+export interface ContextUsageBreakdownItem {
+	id: ContextUsageBreakdownId;
+	label: string;
+	tokens: number;
+	source: "core" | "extension";
+	estimated: boolean;
+	details?: Array<{ label: string; tokens: number }>;
+	compaction?: ContextUsageCompactionInfo;
+}
+
+export interface ProviderRequestContextUsageSection {
+	id: "system" | "messages" | "tools" | "options";
+	label: string;
+	chars: number;
+	tokens: number;
+	count?: number;
+}
+
+export interface ProviderRequestToolDefinitionUsage {
+	name: string;
+	chars: number;
+	tokens: number;
+}
+
+export interface ProviderRequestToolInteractionUsage {
+	name: string;
+	inputCount: number;
+	inputChars: number;
+	inputTokens: number;
+	avgInputTokens: number;
+	outputCount: number;
+	outputChars: number;
+	outputTokens: number;
+	avgOutputTokens: number;
+}
+
+export interface ProviderRequestContextUsage {
+	version: 1;
+	provider: string;
+	modelId: string;
+	api?: string;
+	timestamp: string;
+	payloadChars: number;
+	payloadTokens: number;
+	topLevelKeys: string[];
+	sections: ProviderRequestContextUsageSection[];
+	toolDefinitions?: ProviderRequestToolDefinitionUsage[];
+	toolInteractions?: ProviderRequestToolInteractionUsage[];
 }
 
 export interface CompactOptions {
@@ -386,10 +510,11 @@ export interface ExtensionContext {
 export interface UIEvent {
 	type: "ui";
 	id: string;
-	method: "confirm" | "select" | "input" | "notify" | "editor";
+	method: "askUserQuestion" | "confirm" | "select" | "input" | "notify" | "editor";
 	title: string;
 	message?: string;
 	options?: string[];
+	questions?: AskUserQuestion[];
 	placeholder?: string;
 	prefill?: string;
 	notifyType?: "info" | "warning" | "error";
@@ -398,6 +523,7 @@ export interface UIEvent {
 	hookMeta?: {
 		toolName?: string;
 		matcher?: string;
+		description?: string;
 		command?: string;
 		hookCommand?: string;
 		eventName?: string;
@@ -417,7 +543,11 @@ export interface UIEvent {
 }
 
 /** Result of a UI event response. */
-export type UIEventResult = { action: "responded"; confirmed?: boolean; value?: string } | undefined;
+export type UIEventResult =
+	| { action: "responded"; confirmed: boolean }
+	| { action: "responded"; value: string }
+	| AskUserQuestionResponse
+	| undefined;
 
 /**
  * Extended context for command handlers.

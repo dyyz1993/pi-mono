@@ -358,6 +358,7 @@ export function interpretHookOutput(output: HookOutput): {
 		const parsedMessage = parsed
 			? firstString(
 					parsed.hookSpecificOutput?.permissionDecisionReason,
+					parsed.message,
 					parsed.reason,
 					parsed.question,
 					parsed.stopReason,
@@ -411,6 +412,7 @@ function extractHookMessage(output: HookOutput, fallback: string): string {
 	const parsedMessage = parsed
 		? firstString(
 				parsed.hookSpecificOutput?.permissionDecisionReason,
+				parsed.message,
 				parsed.reason,
 				parsed.question,
 				parsed.stopReason,

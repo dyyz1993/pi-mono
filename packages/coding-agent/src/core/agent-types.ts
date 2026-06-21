@@ -480,3 +480,48 @@ export function formatAgentList(agents: AgentConfig[], maxItems: number): { text
 		remaining: agents.length - listed.length,
 	};
 }
+
+/**
+ * Format visible agents for inclusion in a system prompt.
+ * Mirrors formatSkillsForPrompt() so models can choose delegation targets.
+ */
+export function formatAgentsForPrompt(agents: AgentConfig[]): string {
+	const visibleAgents = agents.filter((agent) => !agent.hidden);
+
+	if (visibleAgents.length === 0) {
+		return "";
+	}
+
+	const lines = [
+		"\n\n<available_agents>",
+		"The following agents are available for delegation via subagent or session_delegate tools.",
+		"Choose the agent that best matches the task nature:",
+		"",
+	];
+
+	for (const agent of visibleAgents) {
+		lines.push("  <agent>");
+		lines.push(`    <name>${escapeXml(agent.name)}</name>`);
+		lines.push(`    <description>${escapeXml(agent.description)}</description>`);
+		lines.push(`    <source>${escapeXml(agent.source)}</source>`);
+		lines.push(`    <filePath>${escapeXml(agent.filePath || "(builtin)")}</filePath>`);
+		lines.push("  </agent>");
+	}
+
+	lines.push("</available_agents>");
+	lines.push("");
+	lines.push(
+		'Default agent is "build" when not specified. Use the agent name in the `agent` parameter of subagent/session_delegate tools.',
+	);
+
+	return lines.join("\n");
+}
+
+function escapeXml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;");
+}

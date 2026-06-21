@@ -21,6 +21,7 @@ import { generateSegmentSummary } from "../../core/compaction/branch-summarizati
 import { ChannelManager } from "../../core/extensions/channel-manager.ts";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.ts";
 import type {
+	AskUserQuestionResponse,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -203,6 +204,26 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	 * Create an extension UI context that uses the RPC protocol.
 	 */
 	const createExtensionUIContext = (): ExtensionUIContext => ({
+		askUserQuestion: (questions, opts) =>
+			createDialogPromise<AskUserQuestionResponse | undefined>(
+				opts,
+				undefined,
+				{
+					method: "askUserQuestion",
+					title: opts?.title ?? "Question",
+					questions,
+					timeout: opts?.timeout,
+					toolCallId: opts?.toolCallId,
+				},
+				(response) =>
+					"action" in response && response.action === "responded" && "answers" in response
+						? {
+								action: "responded",
+								answers: response.answers,
+								annotations: response.annotations,
+							}
+						: undefined,
+			),
 		select: (title, options, opts) =>
 			createDialogPromise(
 				opts,
@@ -229,6 +250,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					message,
 					timeout: opts?.timeout,
 					toolCallId: opts?.toolCallId,
+					confirmText: opts?.confirmText,
+					cancelText: opts?.cancelText,
 					hookMeta: opts?.hookMeta,
 				},
 				(r) => ("cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),

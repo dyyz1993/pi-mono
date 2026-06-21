@@ -1,210 +1,191 @@
-# Message Bridge UI 拦截插件
+# Message Bridge Ask v2 插件
 
 ## 背景
 
-pi-coding-agent 的扩展系统支持 `ui` 事件拦截机制。扩展可以通过 `pi.on("ui", handler)` 拦截 `ctx.ui.confirm()`、`ctx.ui.select()`、`ctx.ui.input()`、`ctx.ui.notify()` 调用，将 UI 交互转发到外部系统（如移动端、Web 控制台），实现远程裁决。
+pi-coding-agent 的扩展系统支持 `ui` 事件拦截机制。Message Bridge 插件只接管新的 `ctx.ui.askUserQuestion()` 协议，并把结构化问题转发到外部系统（移动端、Web 控制台或其他远程响应器）。
 
-本插件将 pi 的 UI 交互桥接到 Message Bridge 服务，使 Agent 在执行过程中可以：
-1. 将 confirm/select/input/notify 推送到移动端或 Web 控制台
-2. 等待用户远程回复后注入结果
-3. Agent 完成后将最终输出推送，用户可回复触发新任务
+旧的 `confirm` / `select` / `input` / `editor` 不在 bridge 层做兼容转换。需要远程裁决的问题应在上游统一构造成 `askUserQuestion`。
 
-## Message Bridge 服务文档
+本插件提供两类能力：
 
-> 详见：[Message Bridge README](../../extensions/message-bridge/README.md)
->
-> 服务地址：`https://message-bridge.docker.19930810.xyz:8443`
->
-> API 端点：
-> - `POST /push` — 推送问题，返回消息 ID
-> - `GET /pull/{msg_id}` — 长轮询拉取回复（阻塞直到用户回复）
-> - `POST /answer/{msg_id}` — 提交回复
-> - `GET /messages` — 获取消息历史
+1. `askUserQuestion`：推送结构化问题，等待远程结构化回复，并通过 `ctx.respondUI()` 注入结果。
+2. `notify` / `agent_end`：推送纯文本通知；`agent_end` 可接收用户回复并通过 `pi.sendUserMessage()` 触发新一轮。
 
-## 类型映射
+## Message Bridge 服务
 
-| pi `ctx.ui` 方法 | Message Bridge 推送格式 | 回复解析 |
-|---|---|---|
-| `confirm(title, message)` | `{type: "confirm", question: "..."}` | `"【确认】: 确定"` → `confirmed: true`<br>`"【确认】: 取消"` → `confirmed: false` |
-| `select(title, options)` | `{type: "radio", question: "...", options: [{label, description}]}` | `"【问题】: 选项A"` → `value: "选项A"` |
-| `input(title, placeholder)` | 纯文本 `"{title}\n\nPlaceholder: {placeholder}"` | 直接返回 answer |
-| `notify(message)` | 纯文本 | fire-and-forget，不等待回复 |
+服务地址默认：
+
+```txt
+https://message-bridge.docker.19930810.xyz:8443
+```
+
+API 端点：
+
+| Endpoint | 用途 |
+| --- | --- |
+| `POST /push` | 推送问题或通知，返回消息 ID |
+| `GET /pull/{msg_id}` | 长轮询拉取回复 |
+| `POST /answer/{msg_id}` | 提交回复 |
+| `GET /messages` | 获取消息历史 |
+
+## Ask v2 推送格式
+
+插件向 `/push` 发送：
+
+```json
+{
+  "request_id": "ui-request-id",
+  "session_id": "optional-session-id",
+  "question": {
+    "type": "extension_ui_request",
+    "id": "ui-request-id",
+    "method": "askUserQuestion",
+    "title": "Review deployment plan",
+    "timeout": 60000,
+    "toolCallId": "tool-call-id",
+    "questions": [
+      {
+        "id": "scope",
+        "header": "Scope",
+        "question": "先处理哪边？",
+        "options": [
+          { "label": "Local", "description": "先做好本地" },
+          { "label": "Remote", "description": "先对接远程" }
+        ]
+      },
+      {
+        "id": "checks",
+        "header": "Checks",
+        "question": "需要哪些验证？",
+        "multiSelect": true,
+        "options": [
+          { "label": "Refresh", "description": "刷新恢复" },
+          { "label": "Bridge", "description": "message bridge" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## Ask v2 回复格式
+
+`GET /pull/{msg_id}` 必须返回结构化 `answer`：
+
+```json
+{
+  "id": "msg-id",
+  "answer": {
+    "action": "responded",
+    "answers": {
+      "scope": {
+        "selected": ["Local"],
+        "text": "ship local first"
+      },
+      "checks": {
+        "selected": ["Refresh", "Bridge"]
+      }
+    },
+    "annotations": {
+      "checks": {
+        "notes": "smoke note"
+      }
+    }
+  }
+}
+```
+
+如果 `answer` 不是对象，或缺少 `action: "responded"` / `answers`，插件会拒绝注入，避免把旧文本回复误当成 Ask v2。
 
 ## 事件处理流程
 
-### 1. UI 拦截（confirm/select/input）
-
-```
-Agent 调用 ctx.ui.confirm("Permission", "Deploy?")
-  → pi 触发 ui 事件，调用 handler
-  → handler 返回 {action: "responded", confirmed: true}
-     （short-circuit：原始 UI 不会被调用）
-  → 工具拿到 confirmed=true，继续执行
-```
-
-推荐写法（直接 await，不触发 race）：
-
-```typescript
-pi.on("ui", async (event, ctx) => {
-    if (event.method === "confirm") {
-        const question = { type: "confirm", question: `${event.title} - ${event.message}` };
-        const id = await pushQuestion(question, sessionId);
-        const answer = await pullAnswer(id);
-        return { action: "responded", confirmed: parseConfirmAnswer(answer) };
-    }
-    // select, input 同理...
-    return undefined;
-});
-```
-
-### 2. Agent 结束推送
-
-```
-Agent 完成所有任务 → 触发 agent_end 事件
-  → 插件将 assistant 回复拼接为纯文本
-  → push 到 Message Bridge
-  → pullAnswer 阻塞等待用户指令
-  → 用户回复 "继续做XXX" → pi.sendUserMessage("继续做XXX")
-  → Agent 开始新一轮处理
-```
-
-```typescript
-pi.on("agent_end", async (event) => {
-    const texts = event.messages
-        .filter(m => m.role === "assistant")
-        .map(m => extractText(m))
-        .filter(t => t.trim());
-    if (texts.length === 0) return;
-
-    const id = await pushQuestion(texts.join("\n\n---\n\n"), sessionId);
-    const answer = await pullAnswer(id);
-    if (answer?.trim()) {
-        pi.sendUserMessage(answer.trim());
-    }
-});
-```
-
-### 3. 时序图
+### 1. Ask v2 远程裁决
 
 ```mermaid
 sequenceDiagram
-    participant Agent as pi Agent
-    participant Tool as ask-confirm Tool
+    participant Tool as Extension Tool
     participant Runner as ExtensionRunner
-    participant Plugin as message-bridge Plugin
-    participant Bridge as Message Bridge
-    participant User as User (Mobile/Web)
+    participant Plugin as Message Bridge
+    participant Bridge as Bridge Server
+    participant User as Remote User
 
-    Agent->>Tool: LLM 调用 ask-confirm
-    Tool->>Runner: ctx.ui.confirm("Permission", "Deploy?")
-    Runner->>Plugin: emitUIEvent({method:"confirm", ...})
-    Plugin->>Bridge: POST /push {type:"confirm", question:"..."}
-    Bridge-->>User: 推送通知
-    User->>Bridge: POST /answer "【确认】: 确定"
+    Tool->>Runner: ctx.ui.askUserQuestion(questions)
+    Runner->>Plugin: ui event {method:"askUserQuestion"}
+    Plugin->>Bridge: POST /push {request_id, question}
+    Bridge-->>User: 展示结构化问题
+    User->>Bridge: POST /answer {action:"responded", answers}
     Bridge-->>Plugin: GET /pull 返回 answer
-    Plugin->>Runner: return {action:"responded", confirmed:true}
-    Runner->>Tool: return true (short-circuit)
-    Tool->>Agent: tool result
-
-    Note over Agent: Agent 完成...
-
-    Agent->>Plugin: agent_end event
-    Plugin->>Bridge: POST /push (最终文本)
-    Bridge-->>User: 推送通知
-    User->>Bridge: POST /answer "继续做XXX"
-    Bridge-->>Plugin: GET /pull 返回 answer
-    Plugin->>Agent: pi.sendUserMessage("继续做XXX")
-    Note over Agent: 开始新一轮处理
+    Plugin->>Runner: ctx.respondUI(event.id, answer)
+    Runner->>Tool: 返回结构化 answers
 ```
 
-## pi 扩展 API 参考
+### 2. 通知与 Agent 结束推送
 
-### 注册事件
+```mermaid
+sequenceDiagram
+    participant Agent as Agent
+    participant Plugin as Message Bridge
+    participant Bridge as Bridge Server
+    participant User as Remote User
+
+    Agent->>Plugin: notify 或 agent_end
+    Plugin->>Bridge: POST /push 纯文本
+    Bridge-->>User: 展示通知
+    User->>Bridge: POST /answer "继续做下一步"
+    Bridge-->>Plugin: GET /pull 返回文本
+    Plugin->>Agent: pi.sendUserMessage("继续做下一步")
+```
+
+## 扩展 API 参考
 
 ```typescript
 export default function myExtension(pi) {
-    // 拦截 UI 事件
-    pi.on("ui", async (event, ctx) => {
-        // event.type: "ui"
-        // event.id: string (唯一标识)
-        // event.method: "confirm" | "select" | "input" | "notify"
-        // event.title: string
-        // event.message?: string
-        // event.options?: string[]  (select 方法)
-        // event.placeholder?: string (input 方法)
+  pi.on("ui", async (event, ctx) => {
+    if (event.method !== "askUserQuestion") return undefined;
 
-        // 返回 {action:"responded", ...} → short-circuit，原始 UI 不调用
-        // 返回 undefined → 放行到原始 UI
-        return { action: "responded", confirmed: true };
+    // 推送 event.questions 到远程系统，等远程返回 Ask v2 answer。
+    ctx.respondUI(event.id, {
+      action: "responded",
+      answers: {
+        scope: { selected: ["Local"] },
+      },
     });
 
-    // 监听 Agent 结束
-    pi.on("agent_end", async (event) => {
-        // event.messages: AgentMessage[]
-        // 可以提取 assistant 文本推送
-    });
+    return undefined;
+  });
+
+  pi.on("agent_end", async (event) => {
+    // 提取 assistant 文本并推送；用户远程回复后可 pi.sendUserMessage(...)
+  });
 }
-```
-
-### 注册工具
-
-```typescript
-pi.registerTool({
-    name: "ask-confirm",
-    label: "Ask Confirm",
-    description: "Asks a yes/no question",
-    parameters: Type.Object({ question: Type.String() }),
-    execute: async (id, params, signal, onUpdate, ctx) => {
-        // ctx.ui.confirm() → 被 ui 事件拦截
-        const confirmed = await ctx.ui.confirm("Title", params.question);
-        return { content: [{ type: "text", text: confirmed ? "yes" : "no" }] };
-    },
-});
-```
-
-### UIEvent 类型
-
-```typescript
-interface UIEvent {
-    type: "ui";
-    id: string;
-    method: "confirm" | "select" | "input" | "notify";
-    title: string;
-    message?: string;
-    options?: string[];       // select
-    placeholder?: string;     // input
-    notifyType?: "info" | "warning" | "error";
-}
-
-type UIEventResult = { action: "responded"; confirmed?: boolean; value?: string } | undefined;
 ```
 
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | `MESSAGE_BRIDGE_URL` | `https://message-bridge.docker.19930810.xyz:8443` | Bridge 服务地址 |
-| `MESSAGE_BRIDGE_SESSION_ID` | (空) | 可选 session 过滤 |
+| `MESSAGE_BRIDGE_SESSION_ID` | 空 | 可选 session 过滤 |
 
 ## 启用方式
 
 ```bash
-# CLI
 pi --extension ./extensions/message-bridge/index.ts
+```
 
-# settings.json
-{ "extensions": ["./extensions/message-bridge/index.ts"] }
+```json
+{
+  "extensions": ["./extensions/message-bridge/index.ts"]
+}
 ```
 
 ## 已验证场景
 
 | # | 场景 | 方式 |
-|---|---|---|
-| 1 | confirm → confirmed=true | 单元测试 + E2E + 真实 pi |
-| 2 | confirm → confirmed=false (取消) | 单元测试 + E2E |
-| 3 | select → radio 单选 | 单元测试 + E2E + 真实 pi |
-| 4 | select → 多选 JSON 解析 | 单元测试 |
-| 5 | input → 纯文本回复 | 单元测试 + E2E |
-| 6 | notify → fire-and-forget | 单元测试 + E2E |
-| 7 | agent_end → 推送最终文本 | 真实 pi |
-| 8 | agent_end → 回复触发 sendUserMessage 新任务 | 真实 pi |
+| --- | --- | --- |
+| 1 | `askUserQuestion` 原样推送 Ask v2 payload | 单元测试 |
+| 2 | Ask v2 结构化回复注入 `ctx.respondUI` | 单元测试 |
+| 3 | 非结构化旧文本回复被拒绝注入 | 单元测试 |
+| 4 | 旧 `confirm/select/input/editor` 不再被 bridge 翻译 | 单元测试 |
+| 5 | `notify` 纯文本 fire-and-forget | 单元测试 |
+| 6 | `agent_end` 推送最终文本并接收回复 | 单元测试 |

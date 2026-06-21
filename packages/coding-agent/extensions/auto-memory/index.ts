@@ -166,7 +166,8 @@ class MemoryPrefetch {
 		return this._operationId;
 	}
 
-	markResultEntryWritten(): boolean {
+	markResultEntryWritten(operationId?: string): boolean {
+		if (operationId && this._operationId !== operationId) return true;
 		if (this.resultEntryWritten) return true;
 		this.resultEntryWritten = true;
 		return false;
@@ -301,6 +302,17 @@ class MemoryPrefetch {
 			]);
 		}
 		return this.collect();
+	}
+
+	async waitForOperation(operationId: string): Promise<string | null> {
+		const promise = this.promise;
+		if (!promise || this._operationId !== operationId) return null;
+		try {
+			const result = await promise;
+			return this._operationId === operationId ? result : null;
+		} catch {
+			return this._operationId === operationId ? "" : null;
+		}
 	}
 
 	private ensureStore(): SkipWordStore {
@@ -1000,6 +1012,37 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		ctx?.ui.notify(message, type);
 	}
 
+	function appendPrefetchResult(memoryText: string | null): void {
+		const debug = prefetch.debugInfo;
+		const selectedFiles = debug?.selectedFiles ?? [];
+		if (prefetch.markResultEntryWritten(prefetch.operationId ?? undefined)) return;
+		status(memoryText ? "memories selected" : "no memories found");
+		pi.appendEntry("memory_prefetch_result", {
+			operationId: prefetch.operationId,
+			summary: memoryText ? "Selected relevant memories" : "No relevant memories",
+			snippet: memoryText ? memoryText.slice(0, 500) : "",
+			injectedBytes: memoryText ? memoryText.length : 0,
+			selectedFiles,
+			durationMs: debug?.durationMs ?? 0,
+			layer: debug?.layer ?? "unknown",
+			skipHits: debug?.skipHits ?? [],
+			guardHits: debug?.guardHits ?? [],
+			availableFiles: debug?.availableFiles ?? 0,
+		});
+	}
+
+	function appendMemoryInject(memoryText: string, selectedFiles: string[], fingerprint: string): void {
+		status("memories injected");
+		pi.appendEntry("memory_inject", {
+			operationId: prefetch.operationId,
+			summary: "Injected memory context",
+			snippet: memoryText.slice(0, 500),
+			injectedBytes: memoryText.length,
+			selectedFiles,
+			fingerprint,
+		});
+	}
+
 	pi.on("session_start", async (_event, context) => {
 		ctx = context as ExtensionContext;
 		await mkdir(memoryDir, { recursive: true });
@@ -1027,30 +1070,17 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 				availableFiles: (await scanMemoryFiles(memoryDir)).length,
 			});
 			prefetch.start(lastUserText, memoryDir, callLLMWithRetry, operationId);
+			void prefetch.waitForOperation(operationId).then((memoryText) => {
+				if (prefetch.operationId !== operationId) return;
+				appendPrefetchResult(memoryText);
+			});
 		}
 
 		return { systemPrompt: `${event.systemPrompt}\n\n${memoryPrompt}` };
 	});
 
 	pi.on("context", async (event) => {
-		const memoryText = await prefetch.awaitResult();
-		const debug = prefetch.debugInfo;
-
-		if (!prefetch.markResultEntryWritten() && prefetch.started) {
-			status(memoryText ? "memories injected" : "no memories found");
-			pi.appendEntry("memory_prefetch_result", {
-				operationId: prefetch.operationId,
-				summary: memoryText ? "Injected relevant memories" : "No relevant memories",
-				snippet: memoryText ? memoryText.slice(0, 500) : "",
-				injectedBytes: memoryText ? memoryText.length : 0,
-				selectedFiles: debug?.selectedFiles ?? [],
-				durationMs: debug?.durationMs ?? 0,
-				layer: debug?.layer ?? "unknown",
-				skipHits: debug?.skipHits ?? [],
-				guardHits: debug?.guardHits ?? [],
-				availableFiles: debug?.availableFiles ?? 0,
-			});
-		}
+		const memoryText = prefetch.collect();
 
 		if (!memoryText) return;
 
@@ -1068,15 +1098,7 @@ ${memoryText}
 </files>
 </memory_context>`;
 
-		pi.sendMessage(
-			{
-				customType: "memory_relevant",
-				content: xmlContent,
-				display: false,
-				details: { fingerprint, filenames: selectedFiles, source: "auto-memory" },
-			},
-			{ deliverAs: "nextTurn" },
-		);
+		appendMemoryInject(memoryText, selectedFiles, fingerprint);
 
 		const memoryMessage = {
 			role: "user" as const,

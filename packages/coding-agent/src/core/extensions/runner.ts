@@ -236,6 +236,7 @@ export async function emitProjectTrustEvent(
 }
 
 const noOpUIContext: ExtensionUIContext = {
+	askUserQuestion: async () => undefined,
 	select: async () => undefined,
 	confirm: async () => false,
 	input: async () => undefined,
@@ -439,6 +440,9 @@ export class ExtensionRunner {
 	}
 
 	flushPendingChannels(registerChannel: (name: string) => Channel): void {
+		console.error(
+			`[DIAG:flushPendingChannels] pending=${this.runtime.pendingChannelRegistrations.length} names=[${this.runtime.pendingChannelRegistrations.map((p) => p.name).join(",")}] resolved=[${[...this.runtime.resolvedChannels.keys()].join(",")}]`,
+		);
 		if (this.runtime.pendingChannelRegistrations.length === 0) return;
 
 		for (const pending of this.runtime.pendingChannelRegistrations) {
@@ -446,7 +450,11 @@ export class ExtensionRunner {
 				const channel = registerChannel(pending.name);
 				this.runtime.resolvedChannels.set(pending.name, channel);
 				pending.resolve(channel);
+				console.error(`[DIAG:flushPendingChannels] resolved "${pending.name}" OK`);
 			} catch (err) {
+				console.error(
+					`[DIAG:flushPendingChannels] FAILED to resolve "${pending.name}": ${err instanceof Error ? err.message : String(err)}`,
+				);
 				pending.reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		}
@@ -742,7 +750,7 @@ export class ExtensionRunner {
 				signal: opts?.signal,
 				timeout: opts?.timeout,
 			}),
-			(result) => result.confirmed,
+			(result) => ("confirmed" in result ? result.confirmed : false),
 		);
 
 		const wrappedSelect = wrapAsyncMethod(
@@ -763,7 +771,7 @@ export class ExtensionRunner {
 				timeout: opts?.timeout,
 				permissionMeta: opts?.permissionMeta,
 			}),
-			(result) => result.value,
+			(result) => ("value" in result ? result.value : undefined),
 		);
 
 		const wrappedInput = wrapAsyncMethod(
@@ -782,7 +790,7 @@ export class ExtensionRunner {
 				signal: opts?.signal,
 				timeout: opts?.timeout,
 			}),
-			(result) => result.value,
+			(result) => ("value" in result ? result.value : undefined),
 		);
 
 		const wrappedEditor = wrapAsyncMethod(
@@ -798,8 +806,44 @@ export class ExtensionRunner {
 				title,
 				prefill,
 			}),
-			(result) => result.value,
+			(result) => ("value" in result ? result.value : undefined),
 		);
+
+		const wrappedAskUserQuestion = async (
+			questions: Parameters<ExtensionUIContext["askUserQuestion"]>[0],
+			opts?: Parameters<ExtensionUIContext["askUserQuestion"]>[1],
+		): Promise<Awaited<ReturnType<ExtensionUIContext["askUserQuestion"]>>> => {
+			const id = randomUUID();
+			const event: UIEvent = {
+				type: "ui",
+				id,
+				method: "askUserQuestion",
+				title: opts?.title ?? "Question",
+				questions,
+				toolCallId: opts?.toolCallId,
+				signal: opts?.signal,
+				timeout: opts?.timeout,
+			};
+
+			const handlerResult = await this.emitUIEventAsync(event);
+			if (handlerResult?.action === "responded" && "answers" in handlerResult) {
+				return handlerResult;
+			}
+
+			const originalPromise = effectiveUIContext.askUserQuestion(questions, opts);
+			const asyncPromise = this.createAsyncUIPromise(id).then((asyncResult) => {
+				if (asyncResult?.action === "responded" && "answers" in asyncResult) {
+					return asyncResult;
+				}
+				return effectiveUIContext.askUserQuestion(questions, opts);
+			});
+
+			try {
+				return await Promise.race([originalPromise, asyncPromise]);
+			} finally {
+				this.pendingUIResponses.delete(id);
+			}
+		};
 
 		const originalNotify = effectiveUIContext.notify.bind(effectiveUIContext);
 		const wrappedNotify = (message: string, type?: "info" | "warning" | "error"): void => {
@@ -817,6 +861,7 @@ export class ExtensionRunner {
 
 		return {
 			...effectiveUIContext,
+			askUserQuestion: wrappedAskUserQuestion,
 			confirm: wrappedConfirm,
 			select: wrappedSelect,
 			input: wrappedInput,

@@ -195,34 +195,71 @@ describe("Built-in Extensions", () => {
 	// ─── 1. ask-tools ───────────────────────────────────────────────────
 
 	describe("ask-tools", () => {
-		it("registers all 5 ask tools", async () => {
+		it("registers the structured ask tool and notify tool", async () => {
 			const { runner } = await loadExtension("ask-tools");
 			const names = getToolNames(runner);
-			expect(names).toContain("ask-confirm");
-			expect(names).toContain("ask-select");
-			expect(names).toContain("ask-input");
-			expect(names).toContain("ask-editor");
+			expect(names).toContain("ask-user-question");
 			expect(names).toContain("ask-notify");
+			expect(names).not.toContain("ask-confirm");
+			expect(names).not.toContain("ask-select");
+			expect(names).not.toContain("ask-input");
+			expect(names).not.toContain("ask-editor");
 		});
 
-		it("ask-confirm returns confirmed yes when UI returns true", async () => {
+		it("ask-user-question returns structured answers", async () => {
 			const { runner } = await loadExtension("ask-tools");
-			const tool = runner.getAllRegisteredTools().find((t) => t.definition.name === "ask-confirm");
+			const tool = runner.getAllRegisteredTools().find((t) => t.definition.name === "ask-user-question");
 			expect(tool).toBeDefined();
 
 			const execute = tool!.definition.execute as unknown as (
 				id: string,
-				params: { title: string; question: string },
+				params: {
+					title: string;
+					questions: Array<{
+						id: string;
+						header: string;
+						question: string;
+						options: Array<{ label: string; description: string }>;
+					}>;
+				},
 				signal: undefined,
 				onUpdate: undefined,
-				ctx: { ui: { confirm: (title: string, question: string) => Promise<boolean> } },
-			) => Promise<{ content: Array<{ type: string; text: string }> }>;
+				ctx: {
+					ui: {
+						askUserQuestion: (
+							questions: unknown,
+							options: unknown,
+						) => Promise<{ action: "responded"; answers: Record<string, unknown> }>;
+					};
+				},
+			) => Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
 
-			const result = await execute("test-id", { title: "Test", question: "Proceed?" }, undefined, undefined, {
-				ui: { confirm: async () => true },
-			});
+			const result = await execute(
+				"test-id",
+				{
+					title: "Test",
+					questions: [
+						{
+							id: "scope",
+							header: "Scope",
+							question: "Proceed?",
+							options: [
+								{ label: "Yes", description: "Continue now" },
+								{ label: "No", description: "Stop here" },
+							],
+						},
+					],
+				},
+				undefined,
+				undefined,
+				{
+					ui: {
+						askUserQuestion: async () => ({ action: "responded", answers: { scope: { selected: ["Yes"] } } }),
+					},
+				},
+			);
 
-			expect(result.content[0]?.text).toContain("yes");
+			expect(result.content[0]?.text).toContain("Yes");
 		});
 	});
 

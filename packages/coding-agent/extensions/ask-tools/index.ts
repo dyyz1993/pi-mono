@@ -1,34 +1,40 @@
 /**
  * Ask Tools Extension
  *
- * 注册 ask-confirm / ask-select / ask-input / ask-editor / ask-notify 工具，
- * 内部调用 ctx.ui.confirm / select / input / editor / notify 触发 UI 交互。
- * ask-select 支持 multiple 参数切换单选/多选模式。
- * 配合 message-bridge 扩展使用时，confirm/select/input/editor 调用会被推送到 Bridge。
+ * Registers a single structured ask tool for user questions.
+ * Use ask-user-question for single-question, multi-question, single-select,
+ * multi-select, and free-text supplement flows.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 import { type Static, Type } from "typebox";
 
-const ConfirmParams = Type.Object({
-	title: Type.String({ description: "Short title for the confirmation" }),
-	question: Type.String({ description: "The question to ask" }),
+const AskOptionParams = Type.Object({
+	label: Type.String({ description: "Short option label shown to the user" }),
+	description: Type.String({ description: "One sentence explaining the tradeoff or impact" }),
+	preview: Type.Optional(Type.String({ description: "Optional preview text shown with this option" })),
 });
 
-const SelectParams = Type.Object({
-	title: Type.String({ description: "Short title for the selection" }),
-	options: Type.Array(Type.String(), { description: "List of options to choose from" }),
-	multiple: Type.Optional(Type.Boolean({ description: "Allow multi-select (checkbox mode). Default: false (single select)." })),
+const AskQuestionParams = Type.Object({
+	id: Type.String({ description: "Stable answer key, e.g. scope, strategy, files" }),
+	header: Type.String({ description: "Short section label for this question" }),
+	question: Type.String({ description: "The question shown to the user" }),
+	options: Type.Array(AskOptionParams, {
+		minItems: 2,
+		maxItems: 4,
+		description: "Two to four explicit choices. Put the recommended option first when applicable.",
+	}),
+	multiSelect: Type.Optional(Type.Boolean({ description: "Allow selecting multiple options for this question" })),
 });
 
-const InputParams = Type.Object({
-	title: Type.String({ description: "Short title for the input" }),
-	placeholder: Type.Optional(Type.String({ description: "Placeholder text" })),
-});
-
-const EditorParams = Type.Object({
-	title: Type.String({ description: "Short title for the editor" }),
-	prefill: Type.Optional(Type.String({ description: "Pre-filled content in the editor" })),
+const AskUserQuestionParams = Type.Object({
+	title: Type.Optional(Type.String({ description: "Optional title for the whole ask request" })),
+	questions: Type.Array(AskQuestionParams, {
+		minItems: 1,
+		maxItems: 4,
+		description: "One to four questions submitted as a single ask request.",
+	}),
+	timeout: Type.Optional(Type.Number({ description: "Optional timeout in milliseconds" })),
 });
 
 const NotifyParams = Type.Object({
@@ -38,63 +44,26 @@ const NotifyParams = Type.Object({
 
 export default function askToolsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "ask-confirm",
-		label: "Ask Confirm",
-		description: "Asks the user a yes/no confirmation question. Use when you need user approval before proceeding.",
-		parameters: ConfirmParams,
-		execute: async (_id: string, params: Static<typeof ConfirmParams>, _signal, _onUpdate, ctx: ExtensionContext) => {
-			const confirmed = await ctx.ui.confirm(params.title, params.question);
-			return {
-				content: [{ type: "text" as const, text: confirmed ? "User confirmed: yes" : "User confirmed: no" }],
-				details: undefined,
-			};
-		},
-	});
-
-	pi.registerTool({
-		name: "ask-select",
-		label: "Ask Select",
+		name: "ask-user-question",
+		label: "Ask User Question",
 		description:
-			"Asks the user to select option(s) from a list. By default single-select (returns one choice). Set multiple=true to allow selecting multiple options (checkbox style).",
-		parameters: SelectParams,
-		execute: async (_id: string, params: Static<typeof SelectParams>, _signal, _onUpdate, ctx: ExtensionContext) => {
-			const isMultiple = params.multiple === true;
-			const result = await ctx.ui.select(params.title, params.options, { multiple: isMultiple });
-			if (isMultiple) {
-				if (!result || !Array.isArray(result) || result.length === 0) {
-					return { content: [{ type: "text" as const, text: "User selected: (none)" }], details: undefined };
-				}
-				return { content: [{ type: "text" as const, text: `User selected: ${(result as string[]).join(", ")}` }], details: undefined };
-			}
-			const choice = result as string | undefined;
-			return { content: [{ type: "text" as const, text: `User selected: ${choice ?? "(cancelled)"}` }], details: undefined };
-		},
-	});
+			"Ask the user one or more structured questions in a single request. Supports single-select, multi-select, and optional free-text supplements. Use this instead of separate confirm/select/input/editor flows.",
+		parameters: AskUserQuestionParams,
+		execute: async (id: string, params: Static<typeof AskUserQuestionParams>, _signal, _onUpdate, ctx: ExtensionContext) => {
+			const result = await ctx.ui.askUserQuestion(params.questions, {
+				title: params.title,
+				timeout: params.timeout,
+				toolCallId: id,
+			});
 
-	pi.registerTool({
-		name: "ask-input",
-		label: "Ask Input",
-		description: "Asks user for free-form text input. Use when you need user to provide text.",
-		parameters: InputParams,
-		execute: async (_id: string, params: Static<typeof InputParams>, _signal, _onUpdate, ctx: ExtensionContext) => {
-			const text = await ctx.ui.input(params.title, params.placeholder);
 			return {
-				content: [{ type: "text" as const, text: `User input: ${text ?? "(empty)"}` }],
-				details: undefined,
-			};
-		},
-	});
-
-	pi.registerTool({
-		name: "ask-editor",
-		label: "Ask Editor",
-		description: "Opens a multi-line editor for user to edit text. Use when you need user to edit longer text (code, JSON, configs, commit messages).",
-		parameters: EditorParams,
-		execute: async (_id: string, params: Static<typeof EditorParams>, _signal, _onUpdate, ctx: ExtensionContext) => {
-			const text = await ctx.ui.editor(params.title, params.prefill);
-			return {
-				content: [{ type: "text" as const, text: text ?? "(cancelled)" }],
-				details: undefined,
+				content: [
+					{
+						type: "text" as const,
+						text: result ? `User answered: ${JSON.stringify(result.answers)}` : "User did not answer.",
+					},
+				],
+				details: result,
 			};
 		},
 	});

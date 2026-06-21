@@ -11,6 +11,7 @@ import type { PermissionMode, SessionStats } from "../../core/agent-session.ts";
 import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { AskUserQuestion, AskUserQuestionResponse } from "../../core/extensions/types.ts";
 import type { BatchDiffResult, FileDiffInfo, FileHistoryEntry, ModifiedFileInfo } from "../../core/file-store/index.ts";
 import type { AgentChangeEntry } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
@@ -227,6 +228,71 @@ export interface RpcContextUsage {
 	tokens: number | null;
 	contextWindow: number;
 	percent: number | null;
+	breakdown?: Array<{
+		id:
+			| "system_base"
+			| "tools"
+			| "mcp_tools"
+			| "context_files"
+			| "skills"
+			| "agents"
+			| "tool_inputs"
+			| "tool_outputs"
+			| "conversation"
+			| "thinking"
+			| "memory"
+			| "rules"
+			| "lsp"
+			| "provider_system"
+			| "provider_messages"
+			| "provider_tools"
+			| "provider_options"
+			| "unclassified";
+		label: string;
+		tokens: number;
+		source: "core" | "extension";
+		estimated: boolean;
+		details?: Array<{ label: string; tokens: number }>;
+		compaction?: {
+			count: number;
+			tokensBefore: number;
+			summaryTokens: number;
+			estimatedSavedTokens: number;
+		};
+	}>;
+	providerRequest?: {
+		version: 1;
+		provider: string;
+		modelId: string;
+		api?: string;
+		timestamp: string;
+		payloadChars: number;
+		payloadTokens: number;
+		topLevelKeys: string[];
+		sections: Array<{
+			id: "system" | "messages" | "tools" | "options";
+			label: string;
+			chars: number;
+			tokens: number;
+			count?: number;
+		}>;
+		toolDefinitions?: Array<{
+			name: string;
+			chars: number;
+			tokens: number;
+		}>;
+		toolInteractions?: Array<{
+			name: string;
+			inputCount: number;
+			inputChars: number;
+			inputTokens: number;
+			avgInputTokens: number;
+			outputCount: number;
+			outputChars: number;
+			outputTokens: number;
+			avgOutputTokens: number;
+		}>;
+	};
 }
 
 export interface RpcExtensionFlag {
@@ -603,6 +669,16 @@ export type RpcExtensionUIRequest =
 	| {
 			type: "extension_ui_request";
 			id: string;
+			method: "askUserQuestion";
+			title: string;
+			message?: string;
+			questions: AskUserQuestion[];
+			timeout?: number;
+			toolCallId?: string;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
 			method: "select";
 			title: string;
 			options: string[];
@@ -626,14 +702,19 @@ export type RpcExtensionUIRequest =
 			message: string;
 			timeout?: number;
 			toolCallId?: string;
+			confirmText?: string;
+			cancelText?: string;
 			hookMeta?: {
 				toolName?: string;
 				matcher?: string;
+				description?: string;
 				command?: string;
 				hookCommand?: string;
 				eventName?: string;
 				source?: string;
 				reason?: string;
+				confirmText?: string;
+				cancelText?: string;
 			};
 	  }
 	| {
@@ -685,6 +766,7 @@ export type RpcExtensionUIResolved = {
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| ({ type: "extension_ui_response"; id: string } & AskUserQuestionResponse)
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 // ============================================================================

@@ -3,6 +3,7 @@ import {
 	type BranchSummaryEntry,
 	buildSessionContext,
 	type CompactionEntry,
+	type CustomMessageEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -60,6 +61,18 @@ function modelChange(id: string, parentId: string | null, provider: string, mode
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
 }
 
+function memoryContext(id: string, parentId: string | null, fingerprint: string, text: string): CustomMessageEntry {
+	return {
+		type: "custom_message",
+		id,
+		parentId,
+		timestamp: "2025-01-01T00:00:00Z",
+		customType: "memory_relevant",
+		content: `<memory_context fingerprint="${fingerprint}"><files>${text}</files></memory_context>`,
+		display: false,
+	};
+}
+
 describe("buildSessionContext", () => {
 	describe("trivial cases", () => {
 		it("empty entries returns empty context", () => {
@@ -86,6 +99,24 @@ describe("buildSessionContext", () => {
 			const ctx = buildSessionContext(entries);
 			expect(ctx.messages).toHaveLength(4);
 			expect(ctx.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+		});
+
+		it("preserves repeated auto-memory custom messages by fingerprint", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "hello"),
+				memoryContext("2", "1", "same", "first"),
+				memoryContext("3", "2", "same", "duplicate"),
+				memoryContext("4", "3", "other", "other"),
+			];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.messages).toHaveLength(4);
+			expect(ctx.messages.map((m) => m.role)).toEqual(["user", "custom", "custom", "custom"]);
+			expect(ctx.messages.map((m) => (m.role === "custom" ? m.content : ""))).toEqual([
+				"",
+				'<memory_context fingerprint="same"><files>first</files></memory_context>',
+				'<memory_context fingerprint="same"><files>duplicate</files></memory_context>',
+				'<memory_context fingerprint="other"><files>other</files></memory_context>',
+			]);
 		});
 
 		it("tracks thinking level changes", () => {

@@ -47,4 +47,15 @@ describe("pi-hooks hook output interpretation", () => {
 		expect(result.shouldBlock).toBe(true);
 		expect(result.reason).toBe("是否允许执行 npm run build？");
 	});
+
+	it("uses parsed JSON message for exit code 3 approvals", () => {
+		const result = interpretHookOutput({
+			exitCode: 3,
+			stdout: '{"message":"配置热更新第二次验证","allowText":"允许一次","denyText":"取消"}',
+			stderr: "",
+		});
+
+		expect(result.shouldBlock).toBe(true);
+		expect(result.reason).toBe("配置热更新第二次验证");
+	});
 });

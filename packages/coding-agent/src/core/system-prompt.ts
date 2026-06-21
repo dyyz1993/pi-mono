@@ -3,6 +3,7 @@
  */
 
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
+import { type AgentConfig, formatAgentsForPrompt } from "./agent-types.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
@@ -22,10 +23,40 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** Pre-loaded agents. */
+	agents?: AgentConfig[];
+}
+
+export interface SystemPromptBreakdown {
+	systemBaseChars: number;
+	toolsChars: number;
+	contextFilesChars: number;
+	skillsChars: number;
+	agentsChars: number;
+}
+
+export interface BuildSystemPromptResult {
+	prompt: string;
+	breakdown: SystemPromptBreakdown;
+}
+
+function emptyBreakdown(): SystemPromptBreakdown {
+	return {
+		systemBaseChars: 0,
+		toolsChars: 0,
+		contextFilesChars: 0,
+		skillsChars: 0,
+		agentsChars: 0,
+	};
 }
 
 /** Build the system prompt with tools, guidelines, and context */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
+	return buildSystemPromptWithBreakdown(options).prompt;
+}
+
+/** Build the system prompt and return stable character counts for major prompt segments. */
+export function buildSystemPromptWithBreakdown(options: BuildSystemPromptOptions): BuildSystemPromptResult {
 	const {
 		customPrompt,
 		selectedTools,
@@ -35,6 +66,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		agents: providedAgents,
 	} = options;
 	const resolvedCwd = cwd;
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -49,9 +81,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+	const agents = providedAgents ?? [];
 
 	if (customPrompt) {
 		let prompt = customPrompt;
+		const breakdown = emptyBreakdown();
 
 		if (appendSection) {
 			prompt += appendSection;
@@ -59,25 +93,37 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 		// Append project context files
 		if (contextFiles.length > 0) {
-			prompt += "\n\n<project_context>\n\n";
-			prompt += "Project-specific instructions and guidelines:\n\n";
+			let contextSection = "\n\n<project_context>\n\n";
+			contextSection += "Project-specific instructions and guidelines:\n\n";
 			for (const { path: filePath, content } of contextFiles) {
-				prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
+				contextSection += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
 			}
-			prompt += "</project_context>\n";
+			contextSection += "</project_context>\n";
+			breakdown.contextFilesChars = contextSection.length;
+			prompt += contextSection;
 		}
 
 		// Append skills section (only if skill or read tool is available)
 		const customPromptHasSkill = !selectedTools || selectedTools.includes("skill") || selectedTools.includes("read");
 		if (customPromptHasSkill && skills.length > 0) {
-			prompt += formatSkillsForPrompt(skills);
+			const skillsSection = formatSkillsForPrompt(skills);
+			breakdown.skillsChars = skillsSection.length;
+			prompt += skillsSection;
+		}
+
+		if (agents.length > 0) {
+			const agentsSection = formatAgentsForPrompt(agents);
+			breakdown.agentsChars = agentsSection.length;
+			prompt += agentsSection;
 		}
 
 		// Add date and working directory last
 		prompt += `\nCurrent date: ${date}`;
 		prompt += `\nCurrent working directory: ${promptCwd}`;
 
-		return prompt;
+		breakdown.systemBaseChars =
+			prompt.length - breakdown.contextFilesChars - breakdown.skillsChars - breakdown.agentsChars;
+		return { prompt, breakdown };
 	}
 
 	// Get absolute paths to documentation and examples
@@ -127,10 +173,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	const promptBeforeTools = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
-${toolsList}
+`;
+	const promptAfterTools = `
 
 In addition to the tools above, you may have access to other custom tools depending on the project.
 
@@ -146,29 +193,49 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
 - Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
 
+	let prompt = promptBeforeTools + toolsList + promptAfterTools;
+	const breakdown = emptyBreakdown();
+	breakdown.toolsChars = toolsList.length;
+
 	if (appendSection) {
 		prompt += appendSection;
 	}
 
 	// Append project context files
 	if (contextFiles.length > 0) {
-		prompt += "\n\n<project_context>\n\n";
-		prompt += "Project-specific instructions and guidelines:\n\n";
+		let contextSection = "\n\n<project_context>\n\n";
+		contextSection += "Project-specific instructions and guidelines:\n\n";
 		for (const { path: filePath, content } of contextFiles) {
-			prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
+			contextSection += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
 		}
-		prompt += "</project_context>\n";
+		contextSection += "</project_context>\n";
+		breakdown.contextFilesChars = contextSection.length;
+		prompt += contextSection;
 	}
 
 	// Append skills section (only if skill or read tool is available)
 	const hasSkill = tools.includes("skill");
 	if ((hasRead || hasSkill) && skills.length > 0) {
-		prompt += formatSkillsForPrompt(skills);
+		const skillsSection = formatSkillsForPrompt(skills);
+		breakdown.skillsChars = skillsSection.length;
+		prompt += skillsSection;
+	}
+
+	if (agents.length > 0) {
+		const agentsSection = formatAgentsForPrompt(agents);
+		breakdown.agentsChars = agentsSection.length;
+		prompt += agentsSection;
 	}
 
 	// Add date and working directory last
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 
-	return prompt;
+	breakdown.systemBaseChars =
+		prompt.length -
+		breakdown.toolsChars -
+		breakdown.contextFilesChars -
+		breakdown.skillsChars -
+		breakdown.agentsChars;
+	return { prompt, breakdown };
 }

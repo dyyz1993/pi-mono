@@ -62,6 +62,7 @@ import {
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type {
+	AskUserQuestionResponse,
 	AutocompleteProviderFactory,
 	EditorFactory,
 	ExtensionCommandContext,
@@ -2029,6 +2030,7 @@ export class InteractiveMode {
 
 	private createExtensionUIContext(): ExtensionUIContext {
 		return {
+			askUserQuestion: (questions, opts) => this.showExtensionAskUserQuestion(questions, opts),
 			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
 			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
 			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
@@ -2082,6 +2084,36 @@ export class InteractiveMode {
 			getToolsExpanded: () => this.toolOutputExpanded,
 			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
 		};
+	}
+
+	private async showExtensionAskUserQuestion(
+		questions: Parameters<ExtensionUIContext["askUserQuestion"]>[0],
+		opts?: Parameters<ExtensionUIContext["askUserQuestion"]>[1],
+	): Promise<Awaited<ReturnType<ExtensionUIContext["askUserQuestion"]>>> {
+		const answers: AskUserQuestionResponse["answers"] = {};
+		const customLabel = "Custom answer...";
+		const skipLabel = "Skip";
+
+		for (const question of questions) {
+			const title = `${opts?.title ?? "Question"}\n${question.header}\n${question.question}`;
+			const labels = question.options.map((option) => option.label);
+			const choice = await this.showExtensionSelector(title, [...labels, customLabel, skipLabel], opts);
+			if (choice === undefined) return undefined;
+			if (choice === skipLabel) {
+				answers[question.id] = { selected: [] };
+				continue;
+			}
+			if (choice === customLabel) {
+				const text = await this.showExtensionInput(question.header, question.question, opts);
+				if (text === undefined) return undefined;
+				answers[question.id] = { selected: [], text };
+				continue;
+			}
+
+			answers[question.id] = { selected: [choice] };
+		}
+
+		return { action: "responded", answers };
 	}
 
 	/**

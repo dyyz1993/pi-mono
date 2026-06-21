@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@dyyz1993/pi-agent-core";
 import { Agent as CoreAgent } from "@dyyz1993/pi-agent-core";
-import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
+import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent, Usage } from "@dyyz1993/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -34,7 +34,7 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { asRecord, getPathArg, type UnknownRecord } from "../utils/type-helpers.ts";
-import type { AgentConfig, PathConfig } from "./agent-types.ts";
+import { type AgentConfig, discoverAgents, type PathConfig } from "./agent-types.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -57,6 +57,7 @@ import type { Channel } from "./extensions/channel-types.ts";
 import {
 	type CallLLMOptions,
 	type ContextUsage,
+	type ContextUsageBreakdownItem,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	type ExtensionMode,
@@ -66,6 +67,7 @@ import {
 	type MessageEndEvent,
 	type MessageStartEvent,
 	type MessageUpdateEvent,
+	type ProviderRequestContextUsage,
 	type ReplacedSessionContext,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
@@ -94,7 +96,7 @@ import { matchPathGlob, PathPermissionStore } from "./path-permission-store.ts";
 import { checkToolPermission } from "./permissions.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, CompactionEntry, CustomEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -107,7 +109,11 @@ import {
 	resolveProjectIdentity,
 } from "./storage.ts";
 import type { SubtaskContext } from "./subtask.ts";
-import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import {
+	type BuildSystemPromptOptions,
+	buildSystemPromptWithBreakdown,
+	type SystemPromptBreakdown,
+} from "./system-prompt.ts";
 import {
 	checkToolEnd,
 	createLoopDetectionState,
@@ -429,6 +435,113 @@ function matchesAnyAgentPath(filePath: string, patterns: string[] | undefined): 
 	return patterns?.some((pattern) => matchesAgentPath(filePath, pattern)) ?? false;
 }
 
+function estimateCharsAsTokens(chars: number): number {
+	return Math.ceil(Math.max(chars, 0) / 4);
+}
+
+function textAndImageContentToText(content: string | Array<{ type: string; text?: string }>): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	return content
+		.filter(
+			(block): block is { type: string; text: string } => block.type === "text" && typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
+}
+
+function getMessageText(message: AgentMessage): string {
+	switch (message.role) {
+		case "user":
+		case "custom":
+		case "toolResult":
+			return textAndImageContentToText(message.content);
+		case "assistant":
+			return message.content
+				.map((block) => {
+					if (block.type === "text") return block.text;
+					if (block.type === "thinking") return block.thinking;
+					if (block.type === "toolCall") return `${block.name} ${JSON.stringify(block.arguments)}`;
+					return "";
+				})
+				.filter((text) => text.length > 0)
+				.join("\n");
+		case "bashExecution":
+			return `${message.command}\n${message.output}`;
+		case "branchSummary":
+		case "compactionSummary":
+			return message.summary;
+	}
+}
+
+function classifyContextMessage(message: AgentMessage): "conversation" | "memory" | "rules" | "lsp" {
+	const text = getMessageText(message);
+	if (message.role === "custom") {
+		if (message.customType === "lsp_diagnostics") return "lsp";
+		if (message.customType === "memory_relevant") return "memory";
+		if (message.customType === "rules-engine") return "rules";
+	}
+	if ((message.role === "user" || message.role === "custom") && text.includes("<memory_context")) return "memory";
+	if ((message.role === "user" || message.role === "custom") && text.includes("<system-reminder")) return "rules";
+	return "conversation";
+}
+
+function estimateAssistantMessageParts(message: AssistantMessage): {
+	conversation: number;
+	thinking: number;
+	toolInputs: number;
+} {
+	let conversationChars = 0;
+	let thinkingChars = 0;
+	let toolInputChars = 0;
+
+	for (const block of message.content) {
+		if (block.type === "thinking") {
+			thinkingChars += block.thinking.length;
+		} else if (block.type === "text") {
+			conversationChars += block.text.length;
+		} else if (block.type === "toolCall") {
+			toolInputChars += block.name.length + JSON.stringify(block.arguments).length;
+		}
+	}
+
+	return {
+		conversation: estimateCharsAsTokens(conversationChars),
+		thinking: estimateCharsAsTokens(thinkingChars),
+		toolInputs: estimateCharsAsTokens(toolInputChars),
+	};
+}
+
+function providerSectionTokens(
+	providerRequest: ProviderRequestContextUsage | undefined,
+	id: "system" | "messages" | "tools" | "options",
+): number {
+	return providerRequest?.sections.find((section) => section.id === id)?.tokens ?? 0;
+}
+
+function positiveDeltaTokens(actual: number, accounted: number): number {
+	return Math.max(0, Math.round(actual) - Math.round(accounted));
+}
+
+function providerToolInteractionTokens(
+	providerRequest: ProviderRequestContextUsage | undefined,
+	kind: "input" | "output",
+): number {
+	return (providerRequest?.toolInteractions ?? []).reduce(
+		(sum, tool) => sum + (kind === "input" ? tool.inputTokens : tool.outputTokens),
+		0,
+	);
+}
+
+function getLastAssistantUsage(messages: AgentMessage[]): Usage | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role === "assistant") return message.usage;
+	}
+	return undefined;
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -522,6 +635,7 @@ export class AgentSession {
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 	private _permissionMode: PermissionMode = "normal";
 	private _mcpManager: McpManager | undefined;
+	private _mcpToolNames: Set<string> = new Set();
 	private _currentAgentName = "build";
 	private _agentSystemPromptOverride: string | undefined;
 	private _currentAgentPaths: PathConfig | undefined;
@@ -532,6 +646,13 @@ export class AgentSession {
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	private _baseSystemPromptBreakdown: SystemPromptBreakdown = {
+		systemBaseChars: 0,
+		toolsChars: 0,
+		contextFilesChars: 0,
+		skillsChars: 0,
+		agentsChars: 0,
+	};
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -1467,10 +1588,12 @@ export class AgentSession {
 			? loadedSkills.filter((skill) => this._activeSkillNames?.has(skill.name))
 			: loadedSkills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		const availableAgents = discoverAgents(this._cwd, "both").agents;
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: activeSkills,
+			agents: availableAgents,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
@@ -1478,7 +1601,9 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 		};
-		return buildSystemPrompt(this._baseSystemPromptOptions);
+		const result = buildSystemPromptWithBreakdown(this._baseSystemPromptOptions);
+		this._baseSystemPromptBreakdown = result.breakdown;
+		return result.prompt;
 	}
 
 	// =========================================================================
@@ -2896,6 +3021,7 @@ export class AgentSession {
 			await this._mcpManager.dispose();
 			this._mcpManager = undefined;
 		}
+		this._mcpToolNames = new Set();
 
 		const mcpSettings = this.settingsManager.getMcpSettings();
 		const servers = mcpSettings.servers;
@@ -2917,6 +3043,7 @@ export class AgentSession {
 	private _registerMcpTools(): void {
 		if (!this._mcpManager) return;
 		const tools = this._mcpManager.getAllTools();
+		this._mcpToolNames = new Set(tools.map((tool) => tool.fullName));
 		for (const tool of tools) {
 			const definition = createMcpToolDefinition(tool, this._mcpManager);
 			this._customTools = [...(this._customTools ?? []), definition];
@@ -4041,8 +4168,11 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
+		const breakdown = this._buildContextUsageBreakdown();
+		const breakdownTokens = this._sumContextUsageBreakdownTokens(breakdown);
 		const branchEntries = this.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
+		const providerRequest = this._getLatestProviderRequestContextUsage();
 
 		if (latestCompaction) {
 			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
@@ -4053,10 +4183,16 @@ export class AgentSession {
 					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
 						const contextTokens = calculateContextTokens(assistant.usage);
 						if (contextTokens > 0) {
+							const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, contextTokens, {
+								usage: assistant.usage,
+								trailingTokens: 0,
+							});
 							return {
 								tokens: contextTokens,
 								contextWindow,
 								percent: (contextTokens / contextWindow) * 100,
+								breakdown: reconciledBreakdown,
+								...(providerRequest ? { providerRequest } : {}),
 							};
 						}
 					}
@@ -4066,12 +4202,319 @@ export class AgentSession {
 		}
 
 		const estimate = estimateContextTokens(this.messages);
-		const percent = (estimate.tokens / contextWindow) * 100;
+		const tokens = estimate.usageTokens > 0 ? estimate.tokens : breakdownTokens;
+		const percent = (tokens / contextWindow) * 100;
+		const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, {
+			usage: getLastAssistantUsage(this.messages),
+			trailingTokens: estimate.trailingTokens,
+		});
 
 		return {
-			tokens: estimate.tokens,
+			tokens,
 			contextWindow,
 			percent,
+			breakdown: reconciledBreakdown,
+			...(providerRequest ? { providerRequest } : {}),
+		};
+	}
+
+	private _getLatestProviderRequestContextUsage(): ProviderRequestContextUsage | undefined {
+		const branchEntries = this.sessionManager.getBranch();
+		for (let i = branchEntries.length - 1; i >= 0; i--) {
+			const entry = branchEntries[i];
+			if (entry.type !== "custom" || entry.customType !== "provider_request_context_usage") continue;
+			const data = (entry as CustomEntry).data as ProviderRequestContextUsage | undefined;
+			if (data?.version === 1 && typeof data.payloadChars === "number") {
+				return data;
+			}
+		}
+		return undefined;
+	}
+
+	private _sumContextUsageBreakdownTokens(breakdown: ContextUsageBreakdownItem[]): number {
+		return breakdown.reduce((sum, item) => sum + item.tokens, 0);
+	}
+
+	private _reconcileContextUsageBreakdown(
+		breakdown: ContextUsageBreakdownItem[],
+		totalTokens: number | null | undefined,
+		evidence?: { usage?: Usage; trailingTokens?: number },
+	): ContextUsageBreakdownItem[] {
+		if (!totalTokens || totalTokens <= 0) return breakdown;
+		const knownTokens = this._sumContextUsageBreakdownTokens(breakdown);
+		if (knownTokens > totalTokens) {
+			const capped = breakdown.map((item) => ({ ...item }));
+			let excess = knownTokens - totalTokens;
+			for (let i = capped.length - 1; i >= 0 && excess > 0; i--) {
+				const item = capped[i];
+				if (!item.id.startsWith("provider_") || item.tokens <= 0) continue;
+				const reduction = Math.min(item.tokens, excess);
+				item.tokens -= reduction;
+				excess -= reduction;
+			}
+			return capped;
+		}
+		const unclassifiedTokens = Math.max(0, totalTokens - knownTokens);
+		if (unclassifiedTokens <= 0) return breakdown;
+		return [
+			...breakdown,
+			{
+				id: "unclassified",
+				label: "未归因差额",
+				tokens: unclassifiedTokens,
+				source: "core",
+				estimated: true,
+				details: [
+					...(evidence?.usage
+						? [
+								{ label: "Provider input", tokens: evidence.usage.input },
+								{ label: "Provider cacheRead", tokens: evidence.usage.cacheRead },
+								{ label: "Provider cacheWrite", tokens: evidence.usage.cacheWrite },
+							]
+						: []),
+					...(evidence?.trailingTokens ? [{ label: "本地尾部估算", tokens: evidence.trailingTokens }] : []),
+					{ label: "本地已归因合计", tokens: knownTokens },
+					{ label: "差额", tokens: unclassifiedTokens },
+				].filter((item) => item.tokens > 0),
+			},
+		];
+	}
+
+	private _buildContextUsageBreakdown(): ContextUsageBreakdownItem[] {
+		const systemBreakdown = { ...this._baseSystemPromptBreakdown };
+		const currentSystemPrompt = this.agent.state.systemPrompt || this._baseSystemPrompt;
+		const extraSystemChars = Math.max(0, currentSystemPrompt.length - this._baseSystemPrompt.length);
+		systemBreakdown.systemBaseChars += extraSystemChars;
+		const toolDefinitionChars = this._estimateActiveToolDefinitionChars();
+		const providerRequest = this._getLatestProviderRequestContextUsage();
+
+		const messageTokens = {
+			conversation: 0,
+			thinking: 0,
+			toolInputs: 0,
+			toolOutputs: 0,
+			memory: 0,
+			rules: 0,
+			lsp: 0,
+		};
+
+		for (const message of this.messages) {
+			if (message.role === "assistant") {
+				const assistantTokens = estimateAssistantMessageParts(message);
+				messageTokens.conversation += assistantTokens.conversation;
+				messageTokens.thinking += assistantTokens.thinking;
+				messageTokens.toolInputs += assistantTokens.toolInputs;
+				continue;
+			}
+			if (message.role === "toolResult") {
+				messageTokens.toolOutputs += estimateTokens(message);
+				continue;
+			}
+			const category = classifyContextMessage(message);
+			messageTokens[category] += estimateTokens(message);
+		}
+
+		const compaction = this._getContextUsageCompactionInfo();
+		const systemTokens = estimateCharsAsTokens(systemBreakdown.systemBaseChars);
+		const contextFileTokens = estimateCharsAsTokens(systemBreakdown.contextFilesChars);
+		const skillTokens = estimateCharsAsTokens(systemBreakdown.skillsChars);
+		const agentTokens = estimateCharsAsTokens(systemBreakdown.agentsChars);
+		const builtinAndExtensionToolTokens = estimateCharsAsTokens(toolDefinitionChars.builtinAndExtensionChars);
+		const mcpToolTokens = estimateCharsAsTokens(toolDefinitionChars.mcpChars);
+		const providerToolInputTokens = providerToolInteractionTokens(providerRequest, "input");
+		const providerToolOutputTokens = providerToolInteractionTokens(providerRequest, "output");
+		const toolInputTokens = providerToolInputTokens > 0 ? providerToolInputTokens : messageTokens.toolInputs;
+		const toolOutputTokens = providerToolOutputTokens > 0 ? providerToolOutputTokens : messageTokens.toolOutputs;
+		const localMessageTokens =
+			messageTokens.conversation +
+			messageTokens.thinking +
+			toolInputTokens +
+			toolOutputTokens +
+			messageTokens.memory +
+			messageTokens.rules +
+			messageTokens.lsp;
+		const localSystemTokens = systemTokens + contextFileTokens + skillTokens + agentTokens;
+		const localToolTokens = builtinAndExtensionToolTokens + mcpToolTokens;
+		const providerDeltas = {
+			system: positiveDeltaTokens(providerSectionTokens(providerRequest, "system"), localSystemTokens),
+			messages: positiveDeltaTokens(providerSectionTokens(providerRequest, "messages"), localMessageTokens),
+			tools: positiveDeltaTokens(providerSectionTokens(providerRequest, "tools"), localToolTokens),
+			options: providerSectionTokens(providerRequest, "options"),
+		};
+
+		return [
+			{
+				id: "system_base",
+				label: "系统提示词",
+				tokens: systemTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "tools",
+				label: "内置/扩展工具定义",
+				tokens: builtinAndExtensionToolTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "mcp_tools",
+				label: "MCP 工具定义",
+				tokens: mcpToolTokens,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "context_files",
+				label: "项目上下文文件",
+				tokens: contextFileTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "skills",
+				label: "Skills",
+				tokens: skillTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "agents",
+				label: "Agents",
+				tokens: agentTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "conversation",
+				label: "对话历史",
+				tokens: messageTokens.conversation,
+				source: "core",
+				estimated: true,
+				...(compaction ? { compaction } : {}),
+			},
+			{
+				id: "tool_inputs",
+				label: "工具输入/调用参数",
+				tokens: toolInputTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "tool_outputs",
+				label: "工具输出/结果",
+				tokens: toolOutputTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "thinking",
+				label: "思考",
+				tokens: messageTokens.thinking,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "memory",
+				label: "记忆",
+				tokens: messageTokens.memory,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "rules",
+				label: "规则",
+				tokens: messageTokens.rules,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "lsp",
+				label: "LSP 诊断",
+				tokens: messageTokens.lsp,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "provider_system",
+				label: "Provider 系统包装/转换差额",
+				tokens: providerDeltas.system,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "provider_messages",
+				label: "Provider 消息包装/转换差额",
+				tokens: providerDeltas.messages,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "provider_tools",
+				label: "Provider 工具 schema 差额",
+				tokens: providerDeltas.tools,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "provider_options",
+				label: "Provider 选项/元数据",
+				tokens: providerDeltas.options,
+				source: "core",
+				estimated: true,
+			},
+		];
+	}
+
+	private _estimateActiveToolDefinitionChars(): { builtinAndExtensionChars: number; mcpChars: number } {
+		let builtinAndExtensionChars = 0;
+		let mcpChars = 0;
+
+		for (const name of this.getActiveToolNames()) {
+			const definition = this._toolDefinitions.get(name)?.definition;
+			if (!definition) continue;
+			const text = [
+				definition.name,
+				definition.label,
+				definition.description,
+				definition.promptSnippet,
+				...(definition.promptGuidelines ?? []),
+				JSON.stringify(definition.parameters ?? {}),
+			]
+				.filter((part): part is string => typeof part === "string" && part.length > 0)
+				.join("\n");
+
+			if (this._mcpToolNames.has(name)) {
+				mcpChars += text.length;
+			} else {
+				builtinAndExtensionChars += text.length;
+			}
+		}
+
+		return { builtinAndExtensionChars, mcpChars };
+	}
+
+	private _getContextUsageCompactionInfo(): ContextUsageBreakdownItem["compaction"] | undefined {
+		let count = 0;
+		let tokensBefore = 0;
+		let summaryTokens = 0;
+
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "compaction") continue;
+			count++;
+			tokensBefore += entry.tokensBefore;
+			summaryTokens += estimateCharsAsTokens(entry.summary.length);
+		}
+
+		if (count === 0) {
+			return undefined;
+		}
+
+		return {
+			count,
+			tokensBefore,
+			summaryTokens,
+			estimatedSavedTokens: Math.max(0, tokensBefore - summaryTokens),
 		};
 	}
 

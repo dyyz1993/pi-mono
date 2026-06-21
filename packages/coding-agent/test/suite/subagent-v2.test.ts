@@ -20,7 +20,9 @@ import type { Theme } from "../../src/modes/interactive/theme/theme.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 // Load subagent-v2 extension factory
-const subagentV2Factory: ExtensionFactory = (await import("../../extensions/subagent-v2/index.ts")).default;
+const subagentV2Module = await import("../../extensions/subagent-v2/index.ts");
+const subagentV2Factory: ExtensionFactory = subagentV2Module.default;
+const { resolveSubagentAgentName } = subagentV2Module;
 
 // ── Helpers ──
 
@@ -105,12 +107,51 @@ describe("subagent-v2 tool registration", () => {
 		expect(schema.properties).toHaveProperty("model");
 	});
 
-	it("subagent tool has required fields: agent and task", async () => {
+	it("subagent tool only requires task and can resolve agent automatically", async () => {
 		const harness = await createSubagentHarness();
 		const tool = harness.session.getToolDefinition("subagent");
 		const schema = tool!.parameters as { required: string[] };
-		expect(schema.required).toContain("agent");
 		expect(schema.required).toContain("task");
+		expect(schema.required).not.toContain("agent");
+	});
+});
+
+describe("subagent agent resolution", () => {
+	it("resolves omitted, default, and auto to worker when available", () => {
+		const agents = [{ name: "build" }, { name: "worker" }, { name: "interactive-worker" }];
+		expect(resolveSubagentAgentName(undefined, agents)).toMatchObject({
+			resolvedAgentName: "worker",
+			usedDefaultAgent: true,
+		});
+		expect(resolveSubagentAgentName("default", agents)).toMatchObject({
+			requestedAgentName: "default",
+			resolvedAgentName: "worker",
+			usedDefaultAgent: true,
+		});
+		expect(resolveSubagentAgentName("auto", agents)).toMatchObject({
+			requestedAgentName: "auto",
+			resolvedAgentName: "worker",
+			usedDefaultAgent: true,
+		});
+	});
+
+	it("falls back to build and then first available agent", () => {
+		expect(resolveSubagentAgentName("default", [{ name: "build" }, { name: "plan" }])).toMatchObject({
+			resolvedAgentName: "build",
+			usedDefaultAgent: true,
+		});
+		expect(resolveSubagentAgentName("default", [{ name: "plan" }])).toMatchObject({
+			resolvedAgentName: "plan",
+			usedDefaultAgent: true,
+		});
+	});
+
+	it("keeps explicit non-default names for normal unknown-agent errors", () => {
+		expect(resolveSubagentAgentName("reviewer", [{ name: "worker" }])).toMatchObject({
+			requestedAgentName: "reviewer",
+			resolvedAgentName: "reviewer",
+			usedDefaultAgent: false,
+		});
 	});
 });
 
@@ -541,6 +582,39 @@ describe("subagent tool normal execution path", () => {
 
 		expect(capturedParams).toBeDefined();
 		expect(capturedParams!.agent).toBe("test-worker");
+	});
+
+	it("resolves default agent before calling coordinator", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-default-agent",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "ok",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "default",
+					task: "check default agent param",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a default subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.agent).toEqual(expect.any(String));
+		expect(capturedParams!.agent).not.toBe("default");
 	});
 
 	it("passes model override to coordinator", async () => {

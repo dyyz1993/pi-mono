@@ -1,12 +1,13 @@
 import { createTypedChannel, type ExtensionAPI, type ToolResultEvent, type BeforeAgentStartEvent } from "@dyyz1993/pi-coding-agent";
 import type { MatcherGroup, HookHandler } from "./types.ts";
-import { loadConfigs, loadConfigSources, type ConfigSource } from "./config-loader.ts";
+import { getConfigSignature, loadConfigs, loadConfigSources, type ConfigSource } from "./config-loader.ts";
 import { matchesMatcher } from "./matcher.ts";
 import { matchesIfClause } from "./if-parser.ts";
 import { buildStdinData } from "./stdin-builder.ts";
 import { runHandler, interpretHookOutput } from "./handler-runner.ts";
 import { RingBuffer, extractSnippet, computeRuleStats, type HookLogEntry, type HookLogResult, type HookConfigSnapshot, truncateMiddle } from "./hooks-log.ts";
 import { HOOKS_CHANNEL_NAME, type HooksChannelContract, type SkippedRuleKey } from "./channel-contract.ts";
+import type { HookOutput } from "./types.ts";
 
 function matchesPiVariables(
 	handler: HookHandler,
@@ -32,6 +33,7 @@ export default function (pi: ExtensionAPI) {
 	const logBuffer = new RingBuffer<HookLogEntry>(RING_BUFFER_CAPACITY);
 	let logIdCounter = 0;
 	let configSources: ConfigSource[] = [];
+	let configSignature = "";
 	let runtimeEnabled = true;
 	const skippedRules = new Map<string, SkippedRuleKey>();
 
@@ -82,9 +84,14 @@ export default function (pi: ExtensionAPI) {
 		return { skipped: Array.from(skippedRules.values()) };
 	});
 
+	function reloadHookConfigs(cwd: string): void {
+		configs = loadConfigs(cwd);
+		configSources = loadConfigSources(cwd);
+		configSignature = getConfigSignature(cwd);
+	}
+
 	pi.on("session_start", async (event, ctx) => {
-		configs = loadConfigs(ctx.cwd);
-		configSources = loadConfigSources(ctx.cwd);
+		reloadHookConfigs(ctx.cwd);
 		const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager;
 		currentSessionId = sm?.getSessionId?.()
 			?? (((ctx as unknown) as Record<string, unknown>).variables as Record<string, unknown> | undefined)?.session_id as string | undefined;
@@ -204,12 +211,10 @@ export default function (pi: ExtensionAPI) {
 	): Promise<{ block: boolean; reason: string } | undefined> {
 		if (!runtimeEnabled) return undefined;
 
-		// Reload configs lazily if not yet loaded (e.g. session_start didn't fire in tests)
-		if (configs.size === 0) {
-			configs = loadConfigs(ctx.cwd);
-			if (configSources.length === 0) {
-				configSources = loadConfigSources(ctx.cwd);
-			}
+		const nextConfigSignature = getConfigSignature(ctx.cwd);
+		// Reload configs lazily if not yet loaded, or when project/user hook settings changed.
+		if (configs.size === 0 || nextConfigSignature !== configSignature) {
+			reloadHookConfigs(ctx.cwd);
 		}
 
 		if (!currentSessionId) {
@@ -352,26 +357,33 @@ export default function (pi: ExtensionAPI) {
 						const uiCtx = ((ctx as Record<string, unknown>).ui) as {
 							confirm?: (title: string, message: string, opts?: Record<string, unknown>) => Promise<unknown>;
 						} | undefined;
-						if (uiCtx?.confirm) {
-							const toolLabel = formatToolLabel(event.toolName);
-							const command = extractCommand(event.input);
-							const hookCommand = truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200);
-							const confirmResult = await uiCtx.confirm(
-								`${toolLabel} 确认`,
-								question,
-								{
-									toolCallId: event.toolCallId,
-									hookMeta: {
-										toolName: event.toolName,
-										matcher: group.matcher ?? "*",
-										command,
-										hookCommand,
-										eventName: hookEventName,
-										source: group.__source__ ?? "unknown",
-										reason: question,
+							if (uiCtx?.confirm) {
+								const toolLabel = formatToolLabel(event.toolName);
+								const command = extractCommand(event.input);
+								const description = event.toolName === "bash" ? extractDescription(event.input) : undefined;
+								const hookCommand = truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200);
+								const labels = extractConfirmLabels(output);
+								const confirmResult = await uiCtx.confirm(
+									`${toolLabel} 确认`,
+									question,
+									{
+										toolCallId: event.toolCallId,
+										confirmText: labels.confirmText,
+										cancelText: labels.cancelText,
+										hookMeta: {
+											toolName: event.toolName,
+											matcher: group.matcher ?? "*",
+											description,
+											command,
+											hookCommand,
+											eventName: hookEventName,
+											source: group.__source__ ?? "unknown",
+											reason: question,
+											confirmText: labels.confirmText,
+											cancelText: labels.cancelText,
+										},
 									},
-								},
-							) as boolean | { confirmed: boolean };
+								) as boolean | { confirmed: boolean };
 							const confirmed = typeof confirmResult === "object" ? confirmResult.confirmed : !!confirmResult;
 							if (confirmed) {
 								entry.decision = "allow";
@@ -395,6 +407,32 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		return undefined;
+	}
+
+	function extractConfirmLabels(output: HookOutput): { confirmText?: string; cancelText?: string } {
+		const parsed = output.parsed ?? parseOutputJson(output.stdout);
+		return {
+			confirmText: firstString(parsed?.allowText, parsed?.confirmText),
+			cancelText: firstString(parsed?.denyText, parsed?.cancelText),
+		};
+	}
+
+	function parseOutputJson(stdout: string): HookOutput["parsed"] | undefined {
+		const trimmed = stdout.trim();
+		if (!trimmed.startsWith("{")) return undefined;
+		try {
+			return JSON.parse(trimmed) as HookOutput["parsed"];
+		} catch {
+			return undefined;
+		}
+	}
+
+	function firstString(...values: Array<string | undefined>): string | undefined {
+		for (const value of values) {
+			const trimmed = value?.trim();
+			if (trimmed) return trimmed;
+		}
 		return undefined;
 	}
 
@@ -473,6 +511,12 @@ function extractCommand(input: Record<string, unknown>): string | undefined {
 	if (typeof input.path === "string") return input.path;
 	if (typeof input.pattern === "string") return input.pattern;
 	return undefined;
+}
+
+function extractDescription(input: Record<string, unknown>): string | undefined {
+	if (typeof input.description !== "string") return undefined;
+	const description = input.description.trim();
+	return description.length > 0 ? description : undefined;
 }
 
 function formatToolLabel(toolName: string): string {

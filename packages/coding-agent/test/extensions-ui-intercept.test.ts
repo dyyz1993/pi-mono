@@ -11,6 +11,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 
 function createMockUI(overrides: Partial<ExtensionUIContext> = {}): ExtensionUIContext {
 	const base: ExtensionUIContext = {
+		askUserQuestion: async () => undefined,
 		confirm: async () => false,
 		select: async () => undefined,
 		input: async () => undefined,

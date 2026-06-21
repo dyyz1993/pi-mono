@@ -26,6 +26,7 @@ export type {
 export {
 	discoverAgents,
 	formatAgentList,
+	formatAgentsForPrompt,
 	getBuiltinAgents,
 	loadAgentsFromDir,
 } from "./core/agent-types.ts";

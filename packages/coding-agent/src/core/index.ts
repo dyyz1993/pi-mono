@@ -37,7 +37,13 @@ export type {
 	AgentTier,
 	PathConfig,
 } from "./agent-types.ts";
-export { discoverAgents, formatAgentList, getBuiltinAgents, loadAgentsFromDir } from "./agent-types.ts";
+export {
+	discoverAgents,
+	formatAgentList,
+	formatAgentsForPrompt,
+	getBuiltinAgents,
+	loadAgentsFromDir,
+} from "./agent-types.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";

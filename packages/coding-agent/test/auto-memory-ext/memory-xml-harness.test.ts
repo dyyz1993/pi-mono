@@ -23,6 +23,7 @@ afterEach(() => {
 function createMockPi() {
 	const handlers: Record<string, ((...args: any[]) => any)[]> = {};
 	const sentMessages: Array<{ customType: string; content: string; details?: unknown; display?: boolean }> = [];
+	const appendedEntries: Array<{ customType: string; data?: unknown }> = [];
 
 	const mockUI = {
 		setStatus: vi.fn(),
@@ -52,7 +53,9 @@ function createMockPi() {
 		events: { on: vi.fn(), off: vi.fn(), emit: vi.fn(), once: vi.fn() },
 		registerTool: vi.fn(),
 		registerChannel: vi.fn(() => mockChannel),
-		appendEntry: vi.fn(),
+		appendEntry: vi.fn((customType: string, data?: unknown) => {
+			appendedEntries.push({ customType, data });
+		}),
 		sendMessage: vi.fn((msg: any) => {
 			sentMessages.push(msg);
 		}),
@@ -68,7 +71,7 @@ function createMockPi() {
 		return result;
 	};
 
-	return { pi, emit, ctx: mockCtx, sentMessages };
+	return { pi, emit, ctx: mockCtx, sentMessages, appendedEntries };
 }
 
 describe("auto-memory XML injection harness", () => {
@@ -107,9 +110,44 @@ describe("auto-memory XML injection harness", () => {
 		expect(injectedText).toContain("Content.");
 		expect(injectedText).toContain("</memory_context>");
 
-		expect(sentMessages.length).toBe(1);
-		expect(sentMessages[0].customType).toBe("memory_relevant");
-		expect(sentMessages[0].display).toBe(false);
+		expect(sentMessages.length).toBe(0);
+
+		rmSync(memoryDir, { recursive: true, force: true });
+	});
+
+	it("does not persist memory messages when context is rebuilt repeatedly in one turn", async () => {
+		const { pi, emit, sentMessages, appendedEntries } = createMockPi();
+		autoMemoryExtensionDefault(pi);
+
+		await emit("session_start");
+
+		const memoryDir = getMemoryDir(process.cwd());
+		mkdirSync(memoryDir, { recursive: true });
+		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
+
+		(pi.callLLM as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify({ selected: ["test.md"] }));
+
+		await emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "test query",
+		});
+
+		await new Promise((r) => setTimeout(r, 100));
+
+		const originalMessages = [
+			{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() },
+		] as AgentMessage[];
+
+		const first = await emit("context", { type: "context", messages: originalMessages });
+		const second = await emit("context", { type: "context", messages: originalMessages });
+		const third = await emit("context", { type: "context", messages: originalMessages });
+
+		expect(first?.messages).toHaveLength(2);
+		expect(second?.messages).toHaveLength(2);
+		expect(third?.messages).toHaveLength(2);
+		expect(sentMessages.length).toBe(0);
+		expect(appendedEntries.some((entry) => entry.customType === "memory_relevant")).toBe(false);
 
 		rmSync(memoryDir, { recursive: true, force: true });
 	});
@@ -195,7 +233,7 @@ Content.
 			messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }] as AgentMessage[],
 		});
 
-		expect(sentMessages.length).toBe(1);
+		expect(sentMessages.length).toBe(0);
 
 		// Simulate compaction — session_compact event
 		await emit("session_compact", {
@@ -222,7 +260,7 @@ Content.
 		expect(result2).toBeDefined();
 		expect(result2.messages.length).toBe(2);
 		expect(result2.messages[1].content[0].text).toContain("<memory_context");
-		expect(sentMessages.length).toBe(2);
+		expect(sentMessages.length).toBe(0);
 
 		rmSync(memoryDir, { recursive: true, force: true });
 	});
@@ -293,8 +331,7 @@ ${aFileContent}
 
 		expect(result).toBeDefined();
 		expect(result.messages[result.messages.length - 1].content[0].text).toContain("B content.");
-		expect(sentMessages.length).toBe(1);
-		expect((sentMessages[0].details as { fingerprint: string }).fingerprint).not.toBe(oldFingerprint);
+		expect(sentMessages.length).toBe(0);
 
 		rmSync(memoryDir, { recursive: true, force: true });
 	});

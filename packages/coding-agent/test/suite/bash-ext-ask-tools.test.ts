@@ -14,12 +14,10 @@
  *  10. Non-existent bashId returns error message
  *
  * ask-tools tests:
- *  11. ask-confirm returns yes
- *  12. ask-confirm returns no
- *  13. ask-select single returns chosen option
- *  14. ask-select multiple returns multiple choices
- *  15. ask-input returns typed text
- *  16. ask-notify fires and returns immediately
+ *  11. ask-user-question returns structured single-select answers
+ *  12. ask-user-question returns structured multi-select answers
+ *  13. ask-user-question handles no answer
+ *  14. ask-notify fires and returns immediately
  */
 
 import { mkdirSync, rmSync } from "node:fs";
@@ -307,10 +305,10 @@ describe("ask-tools harness tests with mocked UI", () => {
 	});
 
 	async function createAskHarnessWithUI(uiOverrides: {
-		confirm?: (title: string, msg: string) => Promise<boolean>;
-		select?: (title: string, options: string[], opts?: Record<string, unknown>) => Promise<string | undefined>;
-		input?: (title: string, placeholder?: string) => Promise<string | undefined>;
-		editor?: (title: string, prefill?: string) => Promise<string | undefined>;
+		askUserQuestion?: (
+			questions: unknown,
+			options?: unknown,
+		) => Promise<{ action: "responded"; answers: Record<string, unknown> } | undefined>;
 		notify?: (msg: string, type?: string) => void;
 	}): Promise<Harness> {
 		const cwd = makeTempDir();
@@ -326,11 +324,12 @@ describe("ask-tools harness tests with mocked UI", () => {
 		const asyncNoop = async () => undefined as never;
 		harness.session.extensionRunner.setUIContext(
 			{
-				confirm: uiOverrides.confirm ?? (async () => false),
-				select: uiOverrides.select ?? (async () => undefined),
-				input: uiOverrides.input ?? (async () => undefined),
+				confirm: async () => false,
+				select: async () => undefined,
+				input: async () => undefined,
 				notify: uiOverrides.notify ?? noop,
-				editor: uiOverrides.editor ?? (async () => undefined),
+				editor: async () => undefined,
+				askUserQuestion: uiOverrides.askUserQuestion ?? (async () => undefined),
 				onTerminalInput: () => noop,
 				setStatus: noop,
 				setWorkingMessage: noop,
@@ -359,15 +358,31 @@ describe("ask-tools harness tests with mocked UI", () => {
 		return harness;
 	}
 
-	it("ask-confirm returns yes when UI confirms", async () => {
+	it("ask-user-question returns structured single-select answers", async () => {
 		const harness = await createAskHarnessWithUI({
-			confirm: async () => true,
+			askUserQuestion: async () => ({ action: "responded", answers: { scope: { selected: ["Proceed"] } } }),
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("ask-confirm", { title: "Proceed?", question: "Are you sure?" })], {
-				stopReason: "toolUse",
-			}),
+			fauxAssistantMessage(
+				[
+					fauxToolCall("ask-user-question", {
+						title: "Proceed?",
+						questions: [
+							{
+								id: "scope",
+								header: "Scope",
+								question: "Continue?",
+								options: [
+									{ label: "Proceed", description: "Continue now" },
+									{ label: "Stop", description: "Stop here" },
+								],
+							},
+						],
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
 			fauxAssistantMessage("done"),
 		]);
 
@@ -379,18 +394,39 @@ describe("ask-tools harness tests with mocked UI", () => {
 			.filter((e) => e.type === "message")
 			.map((e) => getMessageText(e.message))
 			.join(" ");
-		expect(allText).toContain("yes");
+		expect(allText).toContain("Proceed");
 	});
 
-	it("ask-confirm returns no when UI declines", async () => {
+	it("ask-user-question returns structured multi-select answers", async () => {
 		const harness = await createAskHarnessWithUI({
-			confirm: async () => false,
+			askUserQuestion: async () => ({
+				action: "responded",
+				answers: { checks: { selected: ["Bridge", "UI"], text: "also test mobile" } },
+			}),
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("ask-confirm", { title: "Proceed?", question: "Sure?" })], {
-				stopReason: "toolUse",
-			}),
+			fauxAssistantMessage(
+				[
+					fauxToolCall("ask-user-question", {
+						title: "Pick checks",
+						questions: [
+							{
+								id: "checks",
+								header: "Checks",
+								question: "What should be tested?",
+								multiSelect: true,
+								options: [
+									{ label: "Bridge", description: "Bridge protocol" },
+									{ label: "UI", description: "Local UI" },
+									{ label: "Docs", description: "Docs only" },
+								],
+							},
+						],
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
 			fauxAssistantMessage("done"),
 		]);
 
@@ -402,23 +438,37 @@ describe("ask-tools harness tests with mocked UI", () => {
 			.filter((e) => e.type === "message")
 			.map((e) => getMessageText(e.message))
 			.join(" ");
-		expect(allText).toContain("no");
+		expect(allText).toContain("Bridge");
+		expect(allText).toContain("UI");
+		expect(allText).toContain("also test mobile");
 	});
 
-	it("ask-select single returns chosen option", async () => {
-		const harness = await createAskHarnessWithUI({
-			select: async () => "option B",
-		});
+	it("ask-user-question handles no answer", async () => {
+		const harness = await createAskHarnessWithUI({});
 
 		harness.setResponses([
 			fauxAssistantMessage(
-				[fauxToolCall("ask-select", { title: "Pick one", options: ["option A", "option B", "option C"] })],
+				[
+					fauxToolCall("ask-user-question", {
+						questions: [
+							{
+								id: "scope",
+								header: "Scope",
+								question: "Continue?",
+								options: [
+									{ label: "Yes", description: "Continue now" },
+									{ label: "No", description: "Stop here" },
+								],
+							},
+						],
+					}),
+				],
 				{ stopReason: "toolUse" },
 			),
 			fauxAssistantMessage("done"),
 		]);
 
-		await harness.session.prompt("select");
+		await harness.session.prompt("ask");
 		await harness.session.agent.waitForIdle();
 
 		const entries = harness.sessionManager.getEntries();
@@ -426,101 +476,7 @@ describe("ask-tools harness tests with mocked UI", () => {
 			.filter((e) => e.type === "message")
 			.map((e) => getMessageText(e.message))
 			.join(" ");
-		expect(allText).toContain("option B");
-	});
-
-	it("ask-select multiple returns multiple choices", async () => {
-		const harness = await createAskHarnessWithUI({
-			select: async () => ["red", "blue"] as unknown as string,
-		});
-
-		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxToolCall("ask-select", { title: "Pick colors", options: ["red", "green", "blue"], multiple: true })],
-				{ stopReason: "toolUse" },
-			),
-			fauxAssistantMessage("done"),
-		]);
-
-		await harness.session.prompt("multi-select");
-		await harness.session.agent.waitForIdle();
-
-		const entries = harness.sessionManager.getEntries();
-		const allText = entries
-			.filter((e) => e.type === "message")
-			.map((e) => getMessageText(e.message))
-			.join(" ");
-		expect(allText).toContain("red");
-		expect(allText).toContain("blue");
-	});
-
-	it("ask-input returns typed text", async () => {
-		const harness = await createAskHarnessWithUI({
-			input: async () => "hello from user",
-		});
-
-		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("ask-input", { title: "Enter name", placeholder: "Name" })], {
-				stopReason: "toolUse",
-			}),
-			fauxAssistantMessage("done"),
-		]);
-
-		await harness.session.prompt("input");
-		await harness.session.agent.waitForIdle();
-
-		const entries = harness.sessionManager.getEntries();
-		const allText = entries
-			.filter((e) => e.type === "message")
-			.map((e) => getMessageText(e.message))
-			.join(" ");
-		expect(allText).toContain("hello from user");
-	});
-
-	it("ask-editor returns edited text", async () => {
-		const harness = await createAskHarnessWithUI({
-			editor: async () => "edited multi\nline content",
-		});
-
-		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("ask-editor", { title: "Edit JSON", prefill: "{}" })], {
-				stopReason: "toolUse",
-			}),
-			fauxAssistantMessage("done"),
-		]);
-
-		await harness.session.prompt("edit");
-		await harness.session.agent.waitForIdle();
-
-		const entries = harness.sessionManager.getEntries();
-		const allText = entries
-			.filter((e) => e.type === "message")
-			.map((e) => getMessageText(e.message))
-			.join(" ");
-		expect(allText).toContain("edited multi");
-	});
-
-	it("ask-select cancelled returns (cancelled)", async () => {
-		const harness = await createAskHarnessWithUI({
-			select: async () => undefined,
-		});
-
-		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("ask-select", { title: "Pick", options: ["A", "B"] })], {
-				stopReason: "toolUse",
-			}),
-			fauxAssistantMessage("done"),
-		]);
-
-		await harness.session.prompt("select");
-		await harness.session.agent.waitForIdle();
-
-		const entries = harness.sessionManager.getEntries();
-		const allText = entries
-			.filter((e) => e.type === "message")
-			.map((e) => getMessageText(e.message))
-			.join(" ");
-		expect(allText).toContain("cancelled");
+		expect(allText).toContain("User did not answer");
 	});
 
 	it("ask-notify fires and returns immediately", async () => {
@@ -544,7 +500,7 @@ describe("ask-tools harness tests with mocked UI", () => {
 		expect(allText).toContain("Notified user");
 	});
 
-	it("registers all 5 ask tools — verified via tool dispatch", async () => {
+	it("registers the notify tool — verified via tool dispatch", async () => {
 		const harness = await createAskHarnessWithUI({});
 
 		harness.setResponses([
