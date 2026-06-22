@@ -30,6 +30,11 @@ export {
 	getBuiltinAgents,
 	loadAgentsFromDir,
 } from "./core/agent-types.ts";
+export {
+	type AskPermissionOptions,
+	type AskPermissionStore,
+	askPermission,
+} from "./core/ask-permission.ts";
 // Auth and model registry
 export {
 	type ApiKeyCredential,
@@ -204,6 +209,48 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+export {
+	createDangerousCommandProvider,
+	createPathAccessProvider,
+	createPiHooksProvider,
+	createStoredDecisionProvider,
+	createToolGateProvider,
+	type DangerousCommandAction,
+	type DangerousCommandPattern,
+	type DangerousCommandProviderOptions,
+	DEFAULT_DANGEROUS_COMMAND_PATTERNS,
+	defaultStoredDecisionCandidates,
+	findDangerousCommandMatch,
+	inputToPermissionRecord,
+	matchesAnyPathPattern,
+	matchesToolPattern,
+	matchPathGlob,
+	normalizePermissionPath,
+	type PathAccessProviderOptions,
+	type PermissionAction,
+	type PermissionContext,
+	type PermissionDecision,
+	type PermissionProvider,
+	type PermissionProviderFailure,
+	type PermissionRememberOption,
+	type PermissionRequest,
+	type PermissionRule,
+	type PermissionRuleAction,
+	type PermissionRuleDecision,
+	type PermissionRuleInput,
+	type PermissionRuleMatchInput,
+	type PermissionRuleScope,
+	PermissionRuntime,
+	type PermissionRuntimeOptions,
+	type PermissionSettings,
+	PermissionStore,
+	type PermissionStoreSettingsHost,
+	type PiHooksProviderOptions,
+	readPermissionRules,
+	type StoredDecisionLookup,
+	type StoredDecisionProviderOptions,
+	type ToolGateProviderOptions,
+} from "./core/permissions/index.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage

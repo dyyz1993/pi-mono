@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { encodeProjectPath } from "./storage.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -27,6 +28,14 @@ type TrustFile = Record<string, boolean | null | undefined>;
 
 function normalizeCwd(cwd: string): string {
 	return canonicalizePath(resolvePath(cwd));
+}
+
+function getProjectStateDir(agentDir: string, projectPath: string): string {
+	return join(resolvePath(agentDir), "projects", encodeProjectPath(normalizeCwd(projectPath)));
+}
+
+export function getProjectTrustStorePath(agentDir: string, projectPath: string): string {
+	return join(getProjectStateDir(agentDir, projectPath), "trust.json");
 }
 
 function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
@@ -58,7 +67,12 @@ export function getProjectTrustParentPath(cwd: string): string | undefined {
 export function getProjectTrustOptions(cwd: string, options?: { includeSessionOnly?: boolean }): ProjectTrustOption[] {
 	const trustPath = getProjectTrustPath(cwd);
 	const trustOptions: ProjectTrustOption[] = [
-		{ label: "Trust", trusted: true, updates: [{ path: trustPath, decision: true }], savedPath: trustPath },
+		{
+			label: "Trust",
+			trusted: true,
+			updates: [{ path: trustPath, decision: true }],
+			savedPath: trustPath,
+		},
 	];
 	const parentPath = getProjectTrustParentPath(cwd);
 	if (parentPath !== undefined) {
@@ -73,7 +87,11 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 		});
 	}
 	if (options?.includeSessionOnly) {
-		trustOptions.push({ label: "Trust (this session only)", trusted: true, updates: [] });
+		trustOptions.push({
+			label: "Trust (this session only)",
+			trusted: true,
+			updates: [],
+		});
 	}
 	trustOptions.push({
 		label: "Do not trust",
@@ -82,7 +100,11 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 		savedPath: trustPath,
 	});
 	if (options?.includeSessionOnly) {
-		trustOptions.push({ label: "Do not trust (this session only)", trusted: false, updates: [] });
+		trustOptions.push({
+			label: "Do not trust (this session only)",
+			trusted: false,
+			updates: [],
+		});
 	}
 	return trustOptions;
 }
@@ -135,7 +157,10 @@ function acquireTrustLockSync(path: string): () => void {
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		try {
-			return lockfile.lockSync(trustDir, { realpath: false, lockfilePath: `${path}.lock` });
+			return lockfile.lockSync(trustDir, {
+				realpath: false,
+				lockfilePath: `${path}.lock`,
+			});
 		} catch (error) {
 			const code =
 				typeof error === "object" && error !== null && "code" in error
@@ -191,10 +216,12 @@ export function hasProjectTrustInputs(cwd: string): boolean {
 }
 
 export class ProjectTrustStore {
-	private trustPath: string;
+	private agentDir: string;
+	private legacyTrustPath: string;
 
 	constructor(agentDir: string) {
-		this.trustPath = join(resolvePath(agentDir), "trust.json");
+		this.agentDir = resolvePath(agentDir);
+		this.legacyTrustPath = join(this.agentDir, "trust.json");
 	}
 
 	get(cwd: string): ProjectTrustDecision {
@@ -202,8 +229,22 @@ export class ProjectTrustStore {
 	}
 
 	getEntry(cwd: string): ProjectTrustStoreEntry | null {
-		return withTrustFileLock(this.trustPath, () => {
-			const data = readTrustFile(this.trustPath);
+		let currentDir = normalizeCwd(cwd);
+		while (true) {
+			const trustPath = getProjectTrustStorePath(this.agentDir, currentDir);
+			const entry = withTrustFileLock(trustPath, () => {
+				const value = readTrustFile(trustPath).decision;
+				return value === true || value === false ? { path: currentDir, decision: value } : null;
+			});
+			if (entry) return entry;
+
+			const parentDir = dirname(currentDir);
+			if (parentDir === currentDir) break;
+			currentDir = parentDir;
+		}
+
+		return withTrustFileLock(this.legacyTrustPath, () => {
+			const data = readTrustFile(this.legacyTrustPath);
 			return findNearestTrustEntry(data, cwd);
 		});
 	}
@@ -213,17 +254,18 @@ export class ProjectTrustStore {
 	}
 
 	setMany(decisions: ProjectTrustUpdate[]): void {
-		withTrustFileLock(this.trustPath, () => {
-			const data = readTrustFile(this.trustPath);
-			for (const { path, decision } of decisions) {
-				const key = normalizeCwd(path);
+		for (const { path, decision } of decisions) {
+			const key = normalizeCwd(path);
+			const trustPath = getProjectTrustStorePath(this.agentDir, key);
+			withTrustFileLock(trustPath, () => {
+				const data = readTrustFile(trustPath);
 				if (decision === null) {
-					delete data[key];
+					delete data.decision;
 				} else {
-					data[key] = decision;
+					data.decision = decision;
 				}
-			}
-			writeTrustFile(this.trustPath, data);
-		});
+				writeTrustFile(trustPath, data);
+			});
+		}
 	}
 }

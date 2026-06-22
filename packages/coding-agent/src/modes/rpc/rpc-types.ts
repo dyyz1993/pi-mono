@@ -11,7 +11,11 @@ import type { PermissionMode, SessionStats } from "../../core/agent-session.ts";
 import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { AskUserQuestion, AskUserQuestionResponse } from "../../core/extensions/types.ts";
+import type {
+	AskUserQuestion,
+	AskUserQuestionResponse,
+	ExtensionUIPermissionMeta,
+} from "../../core/extensions/types.ts";
 import type { BatchDiffResult, FileDiffInfo, FileHistoryEntry, ModifiedFileInfo } from "../../core/file-store/index.ts";
 import type { AgentChangeEntry } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
@@ -685,14 +689,7 @@ export type RpcExtensionUIRequest =
 			multiple?: boolean;
 			timeout?: number;
 			toolCallId?: string;
-			permissionMeta?: {
-				type: "path_boundary";
-				path: string;
-				cwd: string;
-				toolName: string;
-				scope: "read" | "write";
-				relativeTo: string;
-			};
+			permissionMeta?: ExtensionUIPermissionMeta;
 	  }
 	| {
 			type: "extension_ui_request";

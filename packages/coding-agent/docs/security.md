@@ -42,7 +42,7 @@ The core agent session enforces tool permissions for sub-agents declared in agen
 - `disallowedTools: [...]` is a blocklist. Supports `tool` and `tool(glob)` patterns matched against the tool's input fields (e.g. `bash(rm*)` blocks any `bash` call whose command starts with `rm`).
 - `paths.write: [...]` and `paths.read: [...]` restrict write and read tools to matching glob patterns relative to the project root. `grep`, `glob`, `find`, and `ls` are not path-checked. `bash` is not path-checked.
 
-These checks are independent of the `agent-permissions` extension. Loading the extension adds a second layer (UI approval, `event.variables` injection) but is no longer required for the core safeguards to apply.
+These checks are enforced by the core permission runtime. Policy plugins can contribute permission providers and profiles, but the legacy `agent-permissions` extension is no longer the permission enforcement layer.
 
 ## Running Untrusted or Unmonitored Work
 

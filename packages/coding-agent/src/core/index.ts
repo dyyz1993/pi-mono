@@ -44,6 +44,11 @@ export {
 	getBuiltinAgents,
 	loadAgentsFromDir,
 } from "./agent-types.ts";
+export {
+	type AskPermissionOptions,
+	type AskPermissionStore,
+	askPermission,
+} from "./ask-permission.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
@@ -108,6 +113,48 @@ export type {
 } from "./mcp/index.ts";
 // MCP
 export { McpManager } from "./mcp/index.ts";
+export {
+	createDangerousCommandProvider,
+	createPathAccessProvider,
+	createPiHooksProvider,
+	createStoredDecisionProvider,
+	createToolGateProvider,
+	type DangerousCommandAction,
+	type DangerousCommandPattern,
+	type DangerousCommandProviderOptions,
+	DEFAULT_DANGEROUS_COMMAND_PATTERNS,
+	defaultStoredDecisionCandidates,
+	findDangerousCommandMatch,
+	inputToPermissionRecord,
+	matchesAnyPathPattern,
+	matchesToolPattern,
+	matchPathGlob,
+	normalizePermissionPath,
+	type PathAccessProviderOptions,
+	type PermissionAction,
+	type PermissionContext,
+	type PermissionDecision,
+	type PermissionProvider,
+	type PermissionProviderFailure,
+	type PermissionRememberOption,
+	type PermissionRequest,
+	type PermissionRule,
+	type PermissionRuleAction,
+	type PermissionRuleDecision,
+	type PermissionRuleInput,
+	type PermissionRuleMatchInput,
+	type PermissionRuleScope,
+	PermissionRuntime,
+	type PermissionRuntimeOptions,
+	type PermissionSettings,
+	PermissionStore,
+	type PermissionStoreSettingsHost,
+	type PiHooksProviderOptions,
+	readPermissionRules,
+	type StoredDecisionLookup,
+	type StoredDecisionProviderOptions,
+	type ToolGateProviderOptions,
+} from "./permissions/index.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
 	ExtensionStorage,

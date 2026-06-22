@@ -1679,6 +1679,14 @@ export class InteractiveMode {
 			model: this.session.model,
 			isIdle: () => !this.session.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
+			permissions: {
+				ask: async (request) => ({
+					type: "deny",
+					reason: `Permission request "${request.title}" cannot be handled from a shortcut context.`,
+				}),
+				registerProvider: () => {},
+				unregisterProvider: () => {},
+			},
 			signal: this.session.agent.signal,
 			sessionSignal: this.session.agent.signal,
 			abort: () => {

@@ -35,6 +35,7 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import { isPermissionProfileInput, listPermissionProfiles } from "../../core/permissions/index.ts";
 import type { CompactionEntry, CustomEntry, SessionEntry, SessionMessageEntry } from "../../core/session-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import type { UnknownRecord } from "../../utils/type-helpers.ts";
@@ -67,10 +68,14 @@ export type {
 	RpcSessionState,
 } from "./rpc-types.ts";
 
-const PERMISSION_MODES = ["normal", "yolo", "auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"] as const;
-
 function isPermissionMode(mode: string): mode is PermissionMode {
-	return (PERMISSION_MODES as readonly string[]).includes(mode);
+	return isPermissionProfileInput(mode);
+}
+
+function formatPermissionModes(): string {
+	const builtin = listPermissionProfiles().map((profile) => profile.name);
+	const legacy = ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"];
+	return [...builtin, ...legacy].join(", ");
 }
 
 function getTreeEntryLabel(entry: SessionEntry): string | undefined {
@@ -1349,7 +1354,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return error(
 						id,
 						"set_permission_mode",
-						`Invalid permission mode: "${command.mode}". Valid modes: ${PERMISSION_MODES.join(", ")}`,
+						`Invalid permission mode: "${command.mode}". Valid modes: ${formatPermissionModes()}`,
 					);
 				}
 				session.setPermissionMode(command.mode);

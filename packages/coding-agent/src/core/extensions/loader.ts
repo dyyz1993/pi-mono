@@ -157,6 +157,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
+		pendingPermissionProviderRegistrations: [],
 		pendingChannelRegistrations: [],
 		resolvedChannels: new Map(),
 		assertActive,
@@ -172,6 +173,14 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		},
 		unregisterProvider: (name) => {
 			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
+		},
+		registerPermissionProvider: (provider, extensionPath = "<unknown>") => {
+			runtime.pendingPermissionProviderRegistrations.push({ provider, extensionPath });
+		},
+		unregisterPermissionProvider: (name) => {
+			runtime.pendingPermissionProviderRegistrations = runtime.pendingPermissionProviderRegistrations.filter(
+				(r) => r.provider.name !== name,
+			);
 		},
 	};
 
@@ -409,6 +418,17 @@ function createExtensionAPI(
 		registerChannel(name: string) {
 			runtime.assertActive();
 			return runtime.registerChannel(name);
+		},
+
+		permissions: {
+			registerProvider(provider) {
+				runtime.assertActive();
+				runtime.registerPermissionProvider(provider, extension.path);
+			},
+			unregisterProvider(name: string) {
+				runtime.assertActive();
+				runtime.unregisterPermissionProvider(name, extension.path);
+			},
 		},
 
 		setModel(model) {

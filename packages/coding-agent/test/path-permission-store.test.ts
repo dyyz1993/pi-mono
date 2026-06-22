@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PathPermissionStore } from "../src/core/path-permission-store.ts";
+import { encodeProjectPath } from "../src/core/storage.ts";
 
 describe("PathPermissionStore", () => {
 	let storeDir: string;
@@ -24,6 +25,11 @@ describe("PathPermissionStore", () => {
 	it("stores and retrieves an allow decision", () => {
 		store.allow("/project", "/tmp/**", "read");
 		expect(store.check("/project", "/tmp/foo.txt", "read")).toBe("allow");
+		const scopedPath = join(storeDir, "projects", encodeProjectPath("/project"), "path-permissions.json");
+		expect(existsSync(scopedPath)).toBe(true);
+		expect(JSON.parse(readFileSync(scopedPath, "utf-8"))).toEqual([
+			{ pattern: "/tmp/**", scope: "read", decision: "allow" },
+		]);
 	});
 
 	it("stores and retrieves a deny decision", () => {
@@ -52,5 +58,18 @@ describe("PathPermissionStore", () => {
 		store.allow("/project", "/tmp/**", "read");
 		store.remove("/project", "/tmp/**", "read");
 		expect(store.check("/project", "/tmp/foo.txt", "read")).toBeUndefined();
+	});
+
+	it("reads legacy global decisions without writing new decisions there", () => {
+		const legacyPath = join(storeDir, "path-permissions.json");
+		const legacy = {
+			"/project": [{ pattern: "/legacy/**", scope: "write", decision: "allow" }],
+		};
+		writeFileSync(legacyPath, JSON.stringify(legacy, null, 2));
+		expect(store.check("/project", "/legacy/file.txt", "write")).toBe("allow");
+
+		store.deny("/project", "/new/**", "write");
+		expect(JSON.parse(readFileSync(legacyPath, "utf-8"))).toEqual(legacy);
+		expect(store.check("/project", "/new/file.txt", "write")).toBe("deny");
 	});
 });

@@ -1,9 +1,10 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	getProjectTrustPath,
+	getProjectTrustStorePath,
 	hasProjectConfigDir,
 	hasProjectTrustInputs,
 	ProjectTrustStore,
@@ -33,13 +34,22 @@ describe("ProjectTrustStore", () => {
 		expect(store.getEntry(cwd)).toBeNull();
 		store.set(cwd, true);
 		expect(store.get(cwd)).toBe(true);
-		expect(store.getEntry(cwd)).toEqual({ path: getProjectTrustPath(cwd), decision: true });
+		expect(store.getEntry(cwd)).toEqual({
+			path: getProjectTrustPath(cwd),
+			decision: true,
+		});
+		expect(JSON.parse(readFileSync(getProjectTrustStorePath(agentDir, cwd), "utf-8"))).toEqual({ decision: true });
 		store.set(cwd, false);
 		expect(store.get(cwd)).toBe(false);
-		expect(store.getEntry(cwd)).toEqual({ path: getProjectTrustPath(cwd), decision: false });
+		expect(store.getEntry(cwd)).toEqual({
+			path: getProjectTrustPath(cwd),
+			decision: false,
+		});
+		expect(JSON.parse(readFileSync(getProjectTrustStorePath(agentDir, cwd), "utf-8"))).toEqual({ decision: false });
 		store.set(cwd, null);
 		expect(store.get(cwd)).toBeNull();
 		expect(store.getEntry(cwd)).toBeNull();
+		expect(JSON.parse(readFileSync(getProjectTrustStorePath(agentDir, cwd), "utf-8"))).toEqual({});
 	});
 
 	it("inherits the closest saved decision from parent directories", () => {
@@ -51,13 +61,22 @@ describe("ProjectTrustStore", () => {
 
 		store.set(parentDir, true);
 		expect(store.get(childDir)).toBe(true);
-		expect(store.getEntry(childDir)).toEqual({ path: getProjectTrustPath(parentDir), decision: true });
+		expect(store.getEntry(childDir)).toEqual({
+			path: getProjectTrustPath(parentDir),
+			decision: true,
+		});
 		expect(store.get(grandchildDir)).toBe(true);
-		expect(store.getEntry(grandchildDir)).toEqual({ path: getProjectTrustPath(parentDir), decision: true });
+		expect(store.getEntry(grandchildDir)).toEqual({
+			path: getProjectTrustPath(parentDir),
+			decision: true,
+		});
 
 		store.set(childDir, false);
 		expect(store.get(grandchildDir)).toBe(false);
-		expect(store.getEntry(grandchildDir)).toEqual({ path: getProjectTrustPath(childDir), decision: false });
+		expect(store.getEntry(grandchildDir)).toEqual({
+			path: getProjectTrustPath(childDir),
+			decision: false,
+		});
 	});
 
 	it("can clear a child override to inherit parent trust", () => {
@@ -68,24 +87,54 @@ describe("ProjectTrustStore", () => {
 
 		store.set(parentDir, true);
 		store.set(childDir, false);
-		expect(store.getEntry(childDir)).toEqual({ path: getProjectTrustPath(childDir), decision: false });
+		expect(store.getEntry(childDir)).toEqual({
+			path: getProjectTrustPath(childDir),
+			decision: false,
+		});
 
 		store.setMany([
 			{ path: parentDir, decision: true },
 			{ path: childDir, decision: null },
 		]);
 		expect(store.get(childDir)).toBe(true);
-		expect(store.getEntry(childDir)).toEqual({ path: getProjectTrustPath(parentDir), decision: true });
+		expect(store.getEntry(childDir)).toEqual({
+			path: getProjectTrustPath(parentDir),
+			decision: true,
+		});
 	});
 
 	it("fails loudly without overwriting malformed trust stores", () => {
-		const trustPath = join(agentDir, "trust.json");
+		const trustPath = getProjectTrustStorePath(agentDir, cwd);
+		mkdirSync(dirname(trustPath), { recursive: true });
 		writeFileSync(trustPath, "{not json", "utf-8");
 		const store = new ProjectTrustStore(agentDir);
 
 		expect(() => store.get(cwd)).toThrow(/Failed to read trust store/);
 		expect(() => store.set(cwd, true)).toThrow(/Failed to read trust store/);
 		expect(readFileSync(trustPath, "utf-8")).toBe("{not json");
+	});
+
+	it("reads legacy global trust entries but writes new project-scoped entries", () => {
+		const legacyTrustPath = join(agentDir, "trust.json");
+		writeFileSync(legacyTrustPath, JSON.stringify({ [getProjectTrustPath(cwd)]: true }, null, 2), "utf-8");
+		const store = new ProjectTrustStore(agentDir);
+
+		expect(store.getEntry(cwd)).toEqual({
+			path: getProjectTrustPath(cwd),
+			decision: true,
+		});
+
+		store.set(cwd, false);
+		expect(store.getEntry(cwd)).toEqual({
+			path: getProjectTrustPath(cwd),
+			decision: false,
+		});
+		expect(JSON.parse(readFileSync(legacyTrustPath, "utf-8"))).toEqual({
+			[getProjectTrustPath(cwd)]: true,
+		});
+		expect(JSON.parse(readFileSync(getProjectTrustStorePath(agentDir, cwd), "utf-8"))).toEqual({
+			decision: false,
+		});
 	});
 
 	it("detects project trust inputs", () => {

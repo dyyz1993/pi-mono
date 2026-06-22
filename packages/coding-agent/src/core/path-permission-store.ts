@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { minimatch } from "minimatch";
+import { dirname, join } from "node:path";
+import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { matchPathGlob } from "./permissions/path-patterns.ts";
+import { encodeProjectPath } from "./storage.ts";
 
 export type PathPermissionDecision = "allow" | "deny";
 
@@ -12,85 +14,74 @@ export interface PathPermissionEntry {
 
 type StoreData = Record<string, PathPermissionEntry[]>;
 
-function normalizeFilePath(filePath: string): string {
-	let normalized = filePath;
-	if (normalized.startsWith("file://")) {
-		normalized = normalized.slice("file://".length);
-	}
-	const parts = normalized.split("/");
-	const resolved: string[] = [];
-	for (const part of parts) {
-		if (part === "..") {
-			if (resolved.length > 0 && resolved[resolved.length - 1] !== "") {
-				resolved.pop();
-			}
-		} else if (part !== "." && part !== "") {
-			resolved.push(part);
-		} else if (part === "" && resolved.length === 0) {
-			resolved.push("");
-		}
-	}
-	if (normalized.startsWith("/")) {
-		return `/${resolved.filter((p) => p !== "").join("/")}`;
-	}
-	return resolved.join("/") || ".";
-}
-
-export function matchPathGlob(filePath: string, pattern: string): boolean {
-	if (pattern === "**") return true;
-	const normalized = normalizeFilePath(filePath);
-	const parts = normalized.split("/");
-	for (let i = 0; i < parts.length; i++) {
-		const subpath = parts.slice(i).join("/");
-		try {
-			if (minimatch(subpath, pattern, { dot: true })) {
-				return true;
-			}
-		} catch {
-			// Invalid glob pattern — treat as no match
-		}
-	}
-	return false;
-}
+export { matchPathGlob };
 
 export class PathPermissionStore {
-	private filePath: string;
-	private cache: StoreData = {};
-	private loaded = false;
+	private agentDir: string;
+	private legacyFilePath: string;
+	private legacyCache: StoreData = {};
+	private legacyLoaded = false;
+	private projectCache = new Map<string, PathPermissionEntry[]>();
 
 	constructor(agentDir: string) {
-		const dir = agentDir;
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		this.filePath = join(dir, "path-permissions.json");
+		this.agentDir = agentDir;
+		if (!existsSync(agentDir)) mkdirSync(agentDir, { recursive: true });
+		this.legacyFilePath = join(agentDir, "path-permissions.json");
 	}
 
-	private load(): StoreData {
-		if (this.loaded) return this.cache;
-		this.loaded = true;
-		if (!existsSync(this.filePath)) {
-			this.cache = {};
-			return this.cache;
+	private normalizeCwd(cwd: string): string {
+		return canonicalizePath(resolvePath(cwd));
+	}
+
+	private projectFilePath(cwd: string): string {
+		return join(this.agentDir, "projects", encodeProjectPath(this.normalizeCwd(cwd)), "path-permissions.json");
+	}
+
+	private loadProject(cwd: string): PathPermissionEntry[] {
+		const key = this.normalizeCwd(cwd);
+		const cached = this.projectCache.get(key);
+		if (cached) return cached;
+		const filePath = this.projectFilePath(key);
+		if (!existsSync(filePath)) {
+			this.projectCache.set(key, []);
+			return [];
 		}
 		try {
-			this.cache = JSON.parse(readFileSync(this.filePath, "utf-8"));
+			const parsed = JSON.parse(readFileSync(filePath, "utf-8"));
+			const entries = Array.isArray(parsed) ? parsed : [];
+			this.projectCache.set(key, entries);
+			return entries;
 		} catch {
-			this.cache = {};
+			this.projectCache.set(key, []);
+			return [];
 		}
-		return this.cache;
 	}
 
-	private flush(): void {
-		writeFileSync(this.filePath, JSON.stringify(this.cache, null, 2));
+	private loadLegacy(): StoreData {
+		if (this.legacyLoaded) return this.legacyCache;
+		this.legacyLoaded = true;
+		if (!existsSync(this.legacyFilePath)) {
+			this.legacyCache = {};
+			return this.legacyCache;
+		}
+		try {
+			this.legacyCache = JSON.parse(readFileSync(this.legacyFilePath, "utf-8"));
+		} catch {
+			this.legacyCache = {};
+		}
+		return this.legacyCache;
 	}
 
-	private key(cwd: string): string {
-		return cwd;
+	private flushProject(cwd: string, entries: PathPermissionEntry[]): void {
+		const key = this.normalizeCwd(cwd);
+		const filePath = this.projectFilePath(key);
+		mkdirSync(dirname(filePath), { recursive: true });
+		this.projectCache.set(key, entries);
+		writeFileSync(filePath, JSON.stringify(entries, null, 2));
 	}
 
 	check(cwd: string, filePath: string, scope: "read" | "write"): PathPermissionDecision | undefined {
-		const entries = this.load()[this.key(cwd)];
-		if (!entries) return undefined;
-		for (const entry of entries) {
+		for (const entry of [...this.loadProject(cwd), ...(this.loadLegacy()[this.normalizeCwd(cwd)] ?? [])]) {
 			if (entry.scope !== scope) continue;
 			if (matchPathGlob(filePath, entry.pattern)) {
 				return entry.decision;
@@ -100,29 +91,19 @@ export class PathPermissionStore {
 	}
 
 	allow(cwd: string, pattern: string, scope: "read" | "write"): void {
-		const data = this.load();
-		const key = this.key(cwd);
-		if (!data[key]) data[key] = [];
-		data[key] = data[key].filter((e) => !(e.pattern === pattern && e.scope === scope));
-		data[key].push({ pattern, scope, decision: "allow" });
-		this.flush();
+		const entries = this.loadProject(cwd).filter((e) => !(e.pattern === pattern && e.scope === scope));
+		entries.push({ pattern, scope, decision: "allow" });
+		this.flushProject(cwd, entries);
 	}
 
 	deny(cwd: string, pattern: string, scope: "read" | "write"): void {
-		const data = this.load();
-		const key = this.key(cwd);
-		if (!data[key]) data[key] = [];
-		data[key] = data[key].filter((e) => !(e.pattern === pattern && e.scope === scope));
-		data[key].push({ pattern, scope, decision: "deny" });
-		this.flush();
+		const entries = this.loadProject(cwd).filter((e) => !(e.pattern === pattern && e.scope === scope));
+		entries.push({ pattern, scope, decision: "deny" });
+		this.flushProject(cwd, entries);
 	}
 
 	remove(cwd: string, pattern: string, scope: "read" | "write"): void {
-		const data = this.load();
-		const key = this.key(cwd);
-		if (!data[key]) return;
-		data[key] = data[key].filter((e) => !(e.pattern === pattern && e.scope === scope));
-		if (data[key].length === 0) delete data[key];
-		this.flush();
+		const entries = this.loadProject(cwd).filter((e) => !(e.pattern === pattern && e.scope === scope));
+		this.flushProject(cwd, entries);
 	}
 }

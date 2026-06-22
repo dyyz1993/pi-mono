@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@dyyz1993/pi-agent-core";
@@ -27,7 +28,6 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@dyyz1993/pi-ai";
-import { minimatch } from "minimatch";
 import { getAgentDir } from "../config.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
@@ -35,6 +35,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { asRecord, getPathArg, type UnknownRecord } from "../utils/type-helpers.ts";
 import { type AgentConfig, discoverAgents, type PathConfig } from "./agent-types.ts";
+import { askPermission } from "./ask-permission.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -92,8 +93,28 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.ts";
 import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
-import { matchPathGlob, PathPermissionStore } from "./path-permission-store.ts";
-import { checkToolPermission } from "./permissions.ts";
+import {
+	createDangerousCommandProvider,
+	createPathAccessProvider,
+	createPiHooksProvider,
+	createReadonlyProvider,
+	createStoredDecisionProvider,
+	createToolGateProvider,
+	getPermissionProfile,
+	isPermissionProfileInput,
+	type LegacyPermissionProfileName,
+	matchPathGlob,
+	normalizePermissionProfile,
+	type PermissionContext,
+	type PermissionDecision,
+	type PermissionProfile,
+	type PermissionProfileName,
+	type PermissionProvider,
+	type PermissionProviderId,
+	type PermissionRequest,
+	PermissionRuntime,
+	PermissionStore,
+} from "./permissions/index.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, CustomEntry, SessionManager } from "./session-manager.ts";
@@ -324,13 +345,12 @@ export interface SessionStats {
 	contextUsage?: ContextUsage;
 }
 
-export type PermissionMode = "normal" | "yolo";
+export type PermissionMode = PermissionProfileName;
 /** @deprecated Use "normal" or "yolo" */
-export type LegacyPermissionMode = "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+export type LegacyPermissionMode = LegacyPermissionProfileName;
 
 function normalizePermissionMode(mode: string): PermissionMode {
-	if (mode === "dontAsk" || mode === "always-allow") return "yolo";
-	return "normal";
+	return normalizePermissionProfile(mode);
 }
 
 interface ToolDefinitionEntry {
@@ -350,7 +370,7 @@ function isThinkingLevel(level: string): level is ThinkingLevel {
 }
 
 function isPermissionMode(mode: string): mode is PermissionMode | LegacyPermissionMode {
-	return ["normal", "yolo", "auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"].includes(mode);
+	return isPermissionProfileInput(mode);
 }
 
 function buildAgentSystemPrompt(agent: AgentConfig): string | undefined {
@@ -416,23 +436,6 @@ function resolvePathAgainstCwd(filePath: string, cwd: string): string {
 		}
 	}
 	return `/${resolved.join("/")}`;
-}
-
-function matchesAgentPath(filePath: string, pattern: string): boolean {
-	if (pattern === "**") return true;
-	const normalized = normalizeAgentPath(filePath);
-	const parts = normalized.split("/");
-	for (let i = 0; i < parts.length; i++) {
-		const subpath = parts.slice(i).join("/");
-		if (minimatch(subpath, pattern, { dot: true })) {
-			return true;
-		}
-	}
-	return false;
-}
-
-function matchesAnyAgentPath(filePath: string, patterns: string[] | undefined): boolean {
-	return patterns?.some((pattern) => matchesAgentPath(filePath, pattern)) ?? false;
 }
 
 function estimateCharsAsTokens(chars: number): number {
@@ -641,7 +644,6 @@ export class AgentSession {
 	private _currentAgentPaths: PathConfig | undefined;
 	private _currentAgentTools: string[] | undefined;
 	private _currentAgentDisallowedTools: string[] | undefined;
-	private _pathPermissionStore: PathPermissionStore;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -676,7 +678,6 @@ export class AgentSession {
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
-		this._pathPermissionStore = new PathPermissionStore(getAgentDir());
 		this._installAgentToolHooks();
 
 		this._buildRuntime({
@@ -752,49 +753,144 @@ export class AgentSession {
 	 * registered tool execution to the extension context. Tool call and tool result interception now
 	 * happens here instead of in wrappers.
 	 */
-	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args }) => {
-			// Core permission check: allowlist, blocklist, path constraints, dangerous bash.
-			// This runs in addition to (not instead of) extension tool_call handlers, so
-			// permissions are enforced even when no permission extension is loaded.
-			const permissionResult = checkToolPermission({
-				toolName: toolCall.name,
-				input: args,
-				permissionMode: this._permissionMode,
-				allowedTools: this._currentAgentTools,
+	private async _evaluateToolPermission(
+		toolName: string,
+		toolCallId: string | undefined,
+		args: unknown,
+	): Promise<{ block: true; reason: string } | undefined> {
+		const input = asRecord(args);
+		const context = this._createPermissionContext(toolName, toolCallId, input);
+		const profile = this._getPermissionProfile();
+
+		const preDecision = await new PermissionRuntime({
+			providers: this._createToolPermissionProviders(profile.preProviders),
+			defaultDecision: { type: "pass" },
+		}).evaluate(context);
+		const preResult = await this._applyPermissionDecision(preDecision, input);
+		if (preResult) return preResult;
+		if (preDecision.type === "allow") return undefined;
+
+		const postDecision = await new PermissionRuntime({
+			providers: this._createToolPermissionProviders(profile.postProviders),
+		}).evaluate({ ...context, input });
+		return this._applyPermissionDecision(postDecision, input);
+	}
+
+	private _createPermissionContext(
+		toolName: string,
+		toolCallId: string | undefined,
+		input: Record<string, unknown>,
+	): PermissionContext {
+		return {
+			sessionId: this.sessionManager.getSessionId(),
+			cwd: this._cwd,
+			permissionProfile: this._permissionMode,
+			toolName,
+			toolCallId,
+			input,
+			agent: {
+				name: this._currentAgentName,
+				tools: this._currentAgentTools,
 				disallowedTools: this._currentAgentDisallowedTools,
 				paths: this._currentAgentPaths,
-			});
-			if (permissionResult?.block) {
-				return { block: true, reason: permissionResult.reason };
+			},
+		};
+	}
+
+	private _getPermissionProfile(): PermissionProfile {
+		return getPermissionProfile(this._permissionMode);
+	}
+
+	private _createToolPermissionProviders(providerIds: PermissionProviderId[]): PermissionProvider[] {
+		const providers: PermissionProvider[] = [];
+		for (const [index, providerId] of providerIds.entries()) {
+			const provider = this._createToolPermissionProvider(providerId, (index + 1) * 10);
+			if (provider) providers.push(provider);
+		}
+		return providers;
+	}
+
+	private _createToolPermissionProvider(
+		providerId: PermissionProviderId,
+		priority: number,
+	): PermissionProvider | undefined {
+		switch (providerId) {
+			case "tool-gate":
+				return createToolGateProvider({ priority });
+			case "readonly":
+				return createReadonlyProvider({ priority });
+			case "stored-decision":
+				return createStoredDecisionProvider({
+					priority,
+					store: new PermissionStore(this.settingsManager),
+				});
+			case "pi-hooks": {
+				const runner = this._extensionRunner;
+				if (!runner.hasHandlers("tool_call")) return undefined;
+				return createPiHooksProvider({
+					priority,
+					emitToolCall: (event) => runner.emitToolCall(event),
+				});
 			}
+			case "path-access":
+				return createPathAccessProvider({ priority });
+			case "dangerous-command":
+				return createDangerousCommandProvider({ priority, action: "ask" });
+			case "file-time-guard":
+				return undefined;
+			default: {
+				const provider = this._extensionRunner.getPermissionProvider(providerId);
+				if (!provider) return undefined;
+				return { ...provider, priority };
+			}
+		}
+	}
 
-			this._assertAgentPathAllowed(toolCall.name, args);
+	private async _applyPermissionDecision(
+		decision: PermissionDecision,
+		input: Record<string, unknown>,
+	): Promise<{ block: true; reason: string } | undefined> {
+		switch (decision.type) {
+			case "deny":
+				return { block: true, reason: decision.reason };
+			case "ask":
+				return this._applyPermissionDecision(await this._askPermission(decision.request, input), input);
+			case "mutate":
+				for (const key of Object.keys(input)) {
+					delete input[key];
+				}
+				Object.assign(input, decision.input);
+				return undefined;
+			case "allow":
+			case "pass":
+				return undefined;
+		}
+	}
 
-			// Path boundary check with interactive approval
-			const uiCtx = this._extensionRunner.hasUI() ? this._extensionRunner.getUIContext() : null;
-			const boundaryResult = await this._checkPathBoundary(toolCall.name, args, uiCtx);
+	private async _askPermission(
+		request: PermissionRequest,
+		input: Record<string, unknown>,
+	): Promise<PermissionDecision> {
+		const runner = this._extensionRunner;
+		return askPermission({
+			request,
+			input,
+			uiContext: runner.hasUI() ? runner.getUIContext() : null,
+			emitPermissionRequest: runner.hasPermissionRequestHandlers()
+				? (event) => runner.emitPermissionRequest(event)
+				: undefined,
+			store: new PermissionStore(this.settingsManager),
+		});
+	}
+
+	private _installAgentToolHooks(): void {
+		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			const permissionResult = await this._evaluateToolPermission(toolCall.name, toolCall.id, args);
+			if (permissionResult) return permissionResult;
+
+			const boundaryResult = await this._checkPathBoundary(toolCall.name, toolCall.id, args);
 			if (boundaryResult?.block) {
 				return { block: true, reason: boundaryResult.reason };
-			}
-
-			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_call")) {
-				return undefined;
-			}
-
-			try {
-				return await runner.emitToolCall({
-					type: "tool_call",
-					toolName: toolCall.name,
-					toolCallId: toolCall.id,
-					input: asRecord(args),
-				});
-			} catch (err) {
-				if (err instanceof Error) {
-					throw err;
-				}
-				throw new Error(`Extension failed, blocking execution: ${String(err)}`);
 			}
 		};
 
@@ -1322,33 +1418,12 @@ export class AgentSession {
 		return this._currentAgentName;
 	}
 
-	private _assertAgentPathAllowed(toolName: string, args: unknown): void {
-		const paths = this._currentAgentPaths;
-		if (!paths) return;
-
-		const rawPath = getPathArg(args);
-		if (!rawPath) return;
-
-		const normalizedPath = normalizeAgentPath(rawPath);
-		if (
-			paths.write &&
-			["edit", "write", "multiedit", "patch"].includes(toolName) &&
-			!matchesAnyAgentPath(normalizedPath, paths.write)
-		) {
-			throw new Error(`Path ${normalizedPath} is not in the allowed write paths: ${paths.write.join(", ")}`);
-		}
-
-		if (paths.read && toolName === "read" && !matchesAnyAgentPath(normalizedPath, paths.read)) {
-			throw new Error(`Path ${normalizedPath} is not in the allowed read paths: ${paths.read.join(", ")}`);
-		}
-	}
-
 	private static readonly _SYSTEM_PATH_ALLOWLIST = ["/tmp/**", "/private/tmp/**", "/var/folders/**", "/dev/null"];
 
 	private async _checkPathBoundary(
 		toolName: string,
+		toolCallId: string | undefined,
 		args: unknown,
-		uiContext: ExtensionUIContext | null,
 	): Promise<{ block: true; reason: string } | undefined> {
 		const FILE_TOOLS = new Set(["read", "edit", "write", "multiedit", "patch"]);
 		if (!FILE_TOOLS.has(toolName)) return undefined;
@@ -1369,72 +1444,53 @@ export class AgentSession {
 			if (matchPathGlob(normalizedPath, pattern)) return undefined;
 		}
 
-		// YOLO mode: skip approval
-		if (this._permissionMode === "yolo") return undefined;
+		if (this._getPermissionProfile().skipPathBoundaryApproval) return undefined;
 
-		// Check store for prior decision
 		const scope = ["edit", "write", "multiedit", "patch"].includes(toolName) ? "write" : "read";
-		const decision = this._pathPermissionStore.check(this._cwd, normalizedPath, scope);
-		if (decision === "allow") return undefined;
-		if (decision === "deny") {
-			return { block: true, reason: `Access to ${normalizedPath} was previously denied.` };
-		}
-
-		// No prior decision — ask user via UI
-
-		// PermissionRequest hook: let extensions decide before showing dialog
-		const runner = this._extensionRunner;
-		if (runner.hasPermissionRequestHandlers()) {
-			const hookResult = await runner.emitPermissionRequest({
-				type: "permission_request",
-				toolName,
-				toolCallId: "",
-				input: args as Record<string, unknown>,
-				reason: "path_boundary",
-				path: normalizedPath,
-			});
-			if (hookResult) {
-				if (hookResult.decision === "allow") {
-					// Hook approved — persist like "Always allow" for this path
-					const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
-					this._pathPermissionStore.allow(this._cwd, parentDir, scope);
-					return undefined;
-				}
-				if (hookResult.decision === "deny") {
-					return { block: true, reason: hookResult.message ?? `Permission denied by hook: ${normalizedPath}` };
-				}
-			}
-		}
-
-		if (!uiContext) {
-			return { block: true, reason: `Path ${normalizedPath} is outside the project directory (${this._cwd}).` };
-		}
-
-		const choice = await uiContext.select(
-			`Path outside project\n\n${toolName} ${normalizedPath}\n(outside ${this._cwd})`,
-			["1. Allow once", "2. Always allow", "3. Deny"],
-			{
-				permissionMeta: {
-					type: "path_boundary",
-					path: normalizedPath,
-					cwd: this._cwd,
-					toolName,
-					scope,
-					relativeTo: "outside project directory",
+		const subject = scope === "write" ? "file.write" : "file.read";
+		const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
+		const input = asRecord(args);
+		const request: PermissionRequest = {
+			requestId: `perm_${randomUUID()}`,
+			sessionId: this.sessionManager.getSessionId(),
+			toolCallId,
+			provider: "path-access",
+			subject,
+			title: "Path outside project",
+			message: `Allow ${toolName} to ${scope} ${normalizedPath} outside ${this._cwd}?`,
+			actions: ["allow_once", "always_allow_project", "deny_once", "always_deny_project"],
+			rememberOptions: [
+				{
+					id: "path-allow-parent",
+					label: "This parent directory",
+					subject,
+					pattern: parentDir,
+					scope: "project",
+					action: "allow",
+					metadata: { provider: "path-access", type: "path_boundary" },
 				},
+				{
+					id: "path-deny-exact",
+					label: "This exact path",
+					subject,
+					pattern: normalizedPath,
+					scope: "project",
+					action: "deny",
+					metadata: { provider: "path-access", type: "path_boundary" },
+				},
+			],
+			metadata: {
+				type: "path_boundary",
+				path: normalizedPath,
+				cwd: this._cwd,
+				toolName,
+				scope,
+				relativeTo: "outside project directory",
 			},
-		);
+			createdAt: new Date().toISOString(),
+		};
 
-		if (!choice || choice.startsWith("3")) {
-			return { block: true, reason: `User denied access to ${normalizedPath}.` };
-		}
-
-		if (choice.startsWith("2")) {
-			const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
-			this._pathPermissionStore.allow(this._cwd, parentDir, scope);
-		}
-
-		return undefined;
+		return this._applyPermissionDecision(await this._askPermission(request, input), input);
 	}
 
 	applyAgentConfig(agent: AgentConfig): void {
@@ -1444,8 +1500,9 @@ export class AgentSession {
 		this._currentAgentDisallowedTools =
 			agent.disallowedTools && agent.disallowedTools.length > 0 ? agent.disallowedTools : undefined;
 
-		if (agent.permissionMode && isPermissionMode(agent.permissionMode)) {
-			this.setPermissionMode(agent.permissionMode);
+		const permissionProfile = agent.permissionProfile ?? agent.permissionMode;
+		if (permissionProfile && isPermissionMode(permissionProfile)) {
+			this.setPermissionMode(permissionProfile);
 		}
 
 		if (agent.thinkingLevel && isThinkingLevel(agent.thinkingLevel)) {
@@ -1474,7 +1531,7 @@ export class AgentSession {
 			description: agent.description,
 			tools: agent.tools,
 			disallowedTools: agent.disallowedTools,
-			permissionMode: agent.permissionMode,
+			permissionMode: permissionProfile,
 			tier: agent.tier,
 			thinkingLevel: agent.thinkingLevel,
 			model: agent.model,
@@ -3581,6 +3638,7 @@ export class AgentSession {
 		this._initFileSnapshotManager();
 		this._extensionRunner.setFileSnapshotManagerFn(() => this._fileSnapshotManager);
 		this._extensionRunner.setPermissionModeFn(() => this._permissionMode);
+		this._extensionRunner.setPermissionAskFn((request, input) => this._askPermission(request, input ?? {}));
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)

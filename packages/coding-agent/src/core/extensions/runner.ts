@@ -12,6 +12,8 @@ import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { FileSnapshotManager } from "../file-store/file-snapshot-manager.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { PermissionProvider } from "../permissions/provider.ts";
+import type { PermissionDecision, PermissionRequest } from "../permissions/types.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { Channel } from "./channel-types.ts";
@@ -299,6 +301,14 @@ export class ExtensionRunner {
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
 	private getPermissionModeFn: () => string = () => "normal";
+	private permissionAskFn: (
+		request: PermissionRequest,
+		input?: Record<string, unknown>,
+	) => Promise<PermissionDecision> = async (request) => ({
+		type: "deny",
+		reason: `Permission request "${request.title}" cannot be handled.`,
+	});
+	private permissionProviders = new Map<string, PermissionProvider>();
 	private _currentExtensionName = "";
 	private getProjectRootFn: () => string = () => this.cwd;
 	private getSessionDataDirFn: () => string = () => "";
@@ -357,6 +367,16 @@ export class ExtensionRunner {
 
 	setPermissionModeFn(fn: () => string): void {
 		this.getPermissionModeFn = fn;
+	}
+
+	setPermissionAskFn(
+		fn: (request: PermissionRequest, input?: Record<string, unknown>) => Promise<PermissionDecision>,
+	): void {
+		this.permissionAskFn = fn;
+	}
+
+	getPermissionProvider(name: string): PermissionProvider | undefined {
+		return this.permissionProviders.get(name);
 	}
 
 	bindCore(
@@ -436,6 +456,18 @@ export class ExtensionRunner {
 				return;
 			}
 			this.modelRegistry.unregisterProvider(name);
+		};
+
+		for (const { provider } of this.runtime.pendingPermissionProviderRegistrations) {
+			this.permissionProviders.set(provider.name, provider);
+		}
+		this.runtime.pendingPermissionProviderRegistrations = [];
+
+		this.runtime.registerPermissionProvider = (provider) => {
+			this.permissionProviders.set(provider.name, provider);
+		};
+		this.runtime.unregisterPermissionProvider = (name) => {
+			this.permissionProviders.delete(name);
 		};
 	}
 
@@ -958,6 +990,20 @@ export class ExtensionRunner {
 			get permissionMode() {
 				runner.assertActive();
 				return runner.getPermissionModeFn();
+			},
+			permissions: {
+				ask: (request, input) => {
+					runner.assertActive();
+					return runner.permissionAskFn(request, input);
+				},
+				registerProvider: (provider) => {
+					runner.assertActive();
+					runner.runtime.registerPermissionProvider(provider, runner._currentExtensionName);
+				},
+				unregisterProvider: (name) => {
+					runner.assertActive();
+					runner.runtime.unregisterPermissionProvider(name, runner._currentExtensionName);
+				},
 			},
 			isIdle: () => {
 				runner.assertActive();

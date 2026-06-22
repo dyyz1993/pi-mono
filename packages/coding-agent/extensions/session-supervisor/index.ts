@@ -52,6 +52,7 @@ const DEFAULT_GUARDS: GuardConfig[] = [
 const GOAL_RUNTIME_STATE_FILE = "supervisor-goal-runtime.json";
 const TRIGGER_LOG_DIR = "supervisor-logs";
 const TRIGGER_HISTORY_LIMIT = 200;
+const SUPERVISOR_COMPLETE_TOOL = "supervisor_complete";
 
 interface GoalRuntimeState {
     activeGoal?: GoalState;
@@ -165,6 +166,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         schedulerInstance?.cancelAll();
         pendingPause = undefined;
         currentState = "disabled";
+        syncSupervisorToolVisibility();
         emitStatusChanged();
         persistGoalRuntimeState();
         return { disabled: true };
@@ -173,6 +175,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     channel.handle("enable", async () => {
         enabled = true;
         currentState = "idle";
+        syncSupervisorToolVisibility();
         emitStatusChanged();
         persistGoalRuntimeState();
         return { enabled: true };
@@ -200,6 +203,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         lastGoldResult = undefined;
         stagnationCount = 0;
         lastIncompleteSignature = "";
+        syncSupervisorToolVisibility();
         persistGoalRuntimeState();
         emitStatusChanged();
         channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
@@ -219,6 +223,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         }
         activeGoal = undefined;
         lastGoldResult = undefined;
+        syncSupervisorToolVisibility();
         persistGoalRuntimeState();
         channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: undefined, reason: params.reason });
         emitStatusChanged();
@@ -292,7 +297,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     // LLM calls this to declare completion. Guards can reject it.
 
     pi.registerTool({
-        name: "supervisor_complete",
+        name: SUPERVISOR_COMPLETE_TOOL,
         label: "Supervisor Complete",
         description: "Declare that the current task is complete. The supervisor will verify with active guards before allowing the session to end.",
         parameters: {
@@ -310,9 +315,9 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
 
             if (!enabled) {
                 return {
-                    content: [{ type: "text" as const, text: "Supervisor complete: approved (supervisor disabled)" }],
-                    details: { approved: true, reason: "Supervisor is disabled" },
-                    terminate: true,
+                    content: [{ type: "text" as const, text: "Supervisor complete ignored: supervisor is disabled for this session." }],
+                    details: { approved: false, reason: "Supervisor is disabled" },
+                    terminate: false,
                 };
             }
 
@@ -425,6 +430,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         );
 
         currentState = enabled ? "idle" : "disabled";
+        syncSupervisorToolVisibility();
         emitStatusChanged();
 
         if (enabled && activeGoal && (activeGoal.status === "running" || activeGoal.status === "checking")) {
@@ -1437,6 +1443,21 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
         } catch (err) {
             log(`persistGoalRuntimeState failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
+    function syncSupervisorToolVisibility(): void {
+        try {
+            const activeTools = pi.getActiveTools();
+            const hasTool = activeTools.includes(SUPERVISOR_COMPLETE_TOOL);
+            const shouldExpose = enabled;
+            if (shouldExpose && !hasTool) {
+                pi.setActiveTools([...activeTools, SUPERVISOR_COMPLETE_TOOL]);
+            } else if (!shouldExpose && hasTool) {
+                pi.setActiveTools(activeTools.filter((name) => name !== SUPERVISOR_COMPLETE_TOOL));
+            }
+        } catch (err) {
+            log(`syncSupervisorToolVisibility failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 

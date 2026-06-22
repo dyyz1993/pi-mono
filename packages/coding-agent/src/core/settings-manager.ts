@@ -9,6 +9,7 @@ import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 import { DEFAULT_TIER_ALIASES } from "./defaults.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import type { McpSettings } from "./mcp/types.ts";
+import type { PermissionSettings } from "./permissions/store.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -124,6 +125,7 @@ export interface Settings {
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	tierModels?: Record<string, string>;
 	mcp?: McpSettings;
+	permissions?: PermissionSettings;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */

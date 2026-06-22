@@ -50,6 +50,8 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { PermissionProvider } from "../permissions/provider.ts";
+import type { PermissionAction, PermissionDecision, PermissionRequest } from "../permissions/types.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -116,14 +118,7 @@ export interface ExtensionUIDialogOptions {
 		cancelText?: string;
 	};
 	/** Path permission metadata for rendering approval cards in RPC clients. */
-	permissionMeta?: {
-		type: "path_boundary";
-		path: string;
-		cwd: string;
-		toolName: string;
-		scope: "read" | "write";
-		relativeTo: string;
-	};
+	permissionMeta?: ExtensionUIPermissionMeta;
 }
 
 export interface AskUserQuestionOption {
@@ -155,6 +150,26 @@ export type AskUserQuestionOptions = ExtensionUIDialogOptions & {
 	title?: string;
 	message?: string;
 };
+
+export type ExtensionUIPermissionMeta =
+	| {
+			type: "path_boundary";
+			path: string;
+			cwd: string;
+			toolName: string;
+			scope: "read" | "write";
+			relativeTo: string;
+	  }
+	| {
+			type: "permission_runtime";
+			requestId: string;
+			provider: string;
+			subject: string;
+			actions: PermissionAction[];
+			rememberOptions?: PermissionRequest["rememberOptions"];
+			toolCallId?: string;
+			metadata?: Record<string, unknown>;
+	  };
 
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
@@ -464,6 +479,8 @@ export interface ExtensionContext {
 	model: Model<any> | undefined;
 	/** Current permission mode used by the active agent session. */
 	permissionMode?: string;
+	/** Unified permission request service for extensions that implement policy gates. */
+	permissions: ExtensionPermissionService;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
 	/** Whether project-local trust is active for this context. */
@@ -506,6 +523,17 @@ export interface ExtensionContext {
 	respondUI(id: string, result: UIEventResult): () => void;
 }
 
+export interface ExtensionPermissionRegistrationService {
+	/** Register or override a permission provider by its provider.name. */
+	registerProvider(provider: PermissionProvider): void;
+	/** Remove a permission provider previously registered by this extension runtime. */
+	unregisterProvider(name: string): void;
+}
+
+export interface ExtensionPermissionService extends ExtensionPermissionRegistrationService {
+	ask(request: PermissionRequest, input?: Record<string, unknown>): Promise<PermissionDecision>;
+}
+
 /** UI event emitted to extensions for remote response. */
 export interface UIEvent {
 	type: "ui";
@@ -530,14 +558,7 @@ export interface UIEvent {
 		source?: string;
 		reason?: string;
 	};
-	permissionMeta?: {
-		type: "path_boundary";
-		path: string;
-		cwd: string;
-		toolName: string;
-		scope: "read" | "write";
-		relativeTo: string;
-	};
+	permissionMeta?: ExtensionUIPermissionMeta;
 	signal?: AbortSignal;
 	timeout?: number;
 }
@@ -1276,6 +1297,12 @@ export interface PermissionRequestEvent {
 	reason: string;
 	/** The path or resource that needs approval (if applicable). */
 	path?: string;
+	/** New PermissionRuntime request shape, when the request originated from a provider. */
+	request?: PermissionRequest;
+	subject?: string;
+	title?: string;
+	message?: string;
+	actions?: PermissionAction[];
 }
 
 export interface PermissionRequestResult {
@@ -1544,6 +1571,9 @@ export interface ExtensionAPI {
 
 	/** Register a bidirectional RPC channel for extension/client communication. */
 	registerChannel(name: string): Channel;
+
+	/** Permission provider registration API for policy extensions. */
+	permissions: ExtensionPermissionRegistrationService;
 
 	// =========================================================================
 	// Model and Thinking Level
@@ -1823,6 +1853,8 @@ export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+	/** Permission provider registrations queued during extension loading. */
+	pendingPermissionProviderRegistrations: Array<{ provider: PermissionProvider; extensionPath: string }>;
 	pendingChannelRegistrations: Array<{
 		name: string;
 		resolve: (channel: Channel) => void;
@@ -1841,6 +1873,8 @@ export interface ExtensionRuntimeState {
 	 */
 	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
 	unregisterProvider: (name: string, extensionPath?: string) => void;
+	registerPermissionProvider: (provider: PermissionProvider, extensionPath?: string) => void;
+	unregisterPermissionProvider: (name: string, extensionPath?: string) => void;
 }
 
 /**

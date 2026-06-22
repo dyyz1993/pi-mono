@@ -91,6 +91,7 @@ let sentMessages: Array<{
 	message: Parameters<ExtensionActions["sendMessage"]>[0];
 	options: Parameters<ExtensionActions["sendMessage"]>[1];
 }> = [];
+let activeTools: string[] = [];
 
 const extensionActions: ExtensionActions = {
 	sendMessage: (message, options) => {
@@ -103,9 +104,11 @@ const extensionActions: ExtensionActions = {
 	setSessionName: () => {},
 	getSessionName: () => undefined,
 	setLabel: () => {},
-	getActiveTools: () => [],
+	getActiveTools: () => activeTools,
 	getAllTools: () => [],
-	setActiveTools: () => {},
+	setActiveTools: (toolNames) => {
+		activeTools = toolNames;
+	},
 	refreshTools: () => {},
 	setToolOperationsProvider: () => {},
 	getToolOperationsProvider: () => undefined,
@@ -145,6 +148,7 @@ describe("Built-in Extensions", () => {
 
 	beforeEach(() => {
 		sentMessages = [];
+		activeTools = [];
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-builtin-ext-test-"));
 		sessionManager = SessionManager.inMemory();
 		const authStorage = AuthStorage.create(path.join(tempDir, "auth.json"));
@@ -426,8 +430,37 @@ describe("Built-in Extensions", () => {
 			expect(names).toContain("supervisor_complete");
 		});
 
-		it("marks approved supervisor_complete results as terminal", async () => {
+		it("does not approve or terminate supervisor_complete while disabled", async () => {
 			const { runner } = await loadExtension("session-supervisor");
+			const tool = runner.getAllRegisteredTools().find((t) => t.definition.name === "supervisor_complete");
+			expect(tool).toBeDefined();
+
+			const result = await tool!.definition.execute(
+				"test-supervisor-complete",
+				{ summary: "done" },
+				undefined,
+				undefined,
+				runner.createContext(),
+			);
+
+			expect(result.details).toMatchObject({ approved: false, reason: "Supervisor is disabled" });
+			expect(result.terminate).toBe(false);
+		});
+
+		it("exposes supervisor_complete only while supervisor is enabled", async () => {
+			const { manager, outputs } = await loadExtension("session-supervisor");
+			expect(activeTools).not.toContain("supervisor_complete");
+
+			await invokeChannelMethod(manager, outputs, "supervisor", "enable");
+			expect(activeTools).toContain("supervisor_complete");
+
+			await invokeChannelMethod(manager, outputs, "supervisor", "disable");
+			expect(activeTools).not.toContain("supervisor_complete");
+		});
+
+		it("marks enabled supervisor_complete approvals as terminal", async () => {
+			const { runner, manager, outputs } = await loadExtension("session-supervisor");
+			await invokeChannelMethod(manager, outputs, "supervisor", "enable");
 			const tool = runner.getAllRegisteredTools().find((t) => t.definition.name === "supervisor_complete");
 			expect(tool).toBeDefined();
 
@@ -759,15 +792,6 @@ describe("Built-in Extensions", () => {
 		it("registers memory channel", async () => {
 			const { manager } = await loadExtension("auto-memory");
 			expect(manager.has("memory")).toBe(true);
-		});
-	});
-
-	// ─── 13. agent-permissions ──────────────────────────────────────────
-
-	describe("agent-permissions", () => {
-		it("loads without errors and survives session_start", async () => {
-			const { runner } = await loadExtension("agent-permissions");
-			expect(runner.hasHandlers("tool_call")).toBe(true);
 		});
 	});
 });

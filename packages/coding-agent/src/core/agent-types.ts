@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
+import type { PermissionProfileInput } from "./permissions/index.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -77,7 +78,8 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: AgentSource;
 	filePath: string;
-	permissionMode?: "normal" | "yolo" | "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+	permissionMode?: PermissionProfileInput;
+	permissionProfile?: PermissionProfileInput;
 	maxTurns?: number;
 	effort?: string;
 	color?: AgentColor;
@@ -111,6 +113,7 @@ const STRING_FIELDS: ReadonlySet<string> = new Set([
 	"description",
 	"model",
 	"permissionMode",
+	"permissionProfile",
 	"effort",
 	"color",
 	"memory",
@@ -289,6 +292,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			"disallowedTools",
 			"model",
 			"permissionMode",
+			"permissionProfile",
 			"maxTurns",
 			"effort",
 			"color",
@@ -326,6 +330,12 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 					`Use "permissionMode" with a single value like "always-allow" instead.`,
 			);
 		}
+		if (frontmatter.permissionMode && frontmatter.permissionProfile) {
+			console.warn(
+				`[agent] "${entry.name}" defines both "permissionMode" and "permissionProfile". ` +
+					`Using "permissionProfile".`,
+			);
+		}
 		if (suggestedHints.length > 0) {
 			console.warn(
 				`[agent] "${entry.name}" is missing recommended field(s): ${suggestedHints.join(", ")}. ` +
@@ -337,6 +347,11 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 		const disallowedTools = coerceField("disallowedTools", frontmatter.disallowedTools) as string[] | undefined;
 		const skills = coerceField("skills", frontmatter.skills) as string[] | undefined;
 		const variables = isStringRecord(frontmatter.variables) ? frontmatter.variables : undefined;
+		const permissionProfile = coerceField(
+			"permissionProfile",
+			frontmatter.permissionProfile,
+		) as AgentConfig["permissionProfile"];
+		const permissionMode = coerceField("permissionMode", frontmatter.permissionMode) as AgentConfig["permissionMode"];
 
 		agents.push({
 			name: coerceField("name", frontmatter.name) as string,
@@ -347,7 +362,8 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			systemPrompt: body,
 			source,
 			filePath,
-			permissionMode: coerceField("permissionMode", frontmatter.permissionMode) as AgentConfig["permissionMode"],
+			permissionMode: permissionProfile ?? permissionMode,
+			permissionProfile,
 			maxTurns: coerceField("maxTurns", frontmatter.maxTurns) as number | undefined,
 			effort: coerceField("effort", frontmatter.effort) as string | undefined,
 			color: coerceField("color", frontmatter.color) as AgentColor | undefined,
