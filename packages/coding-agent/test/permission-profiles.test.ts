@@ -73,7 +73,7 @@ describe("permission profiles", () => {
 	it("defines autopilot as a core profile with auto approval before risky post checks", () => {
 		expect(getPermissionProfile("autopilot")).toMatchObject({
 			name: "autopilot",
-			preProviders: ["tool-gate", "stored-decision", "pi-hooks", "auto-approver"],
+			preProviders: ["tool-gate", "stored-decision", "auto-approver", "pi-hooks"],
 			postProviders: ["path-access", "dangerous-command"],
 			skipPathBoundaryApproval: false,
 		});

@@ -79,7 +79,7 @@ export function createDangerousCommandProvider(options: DangerousCommandProvider
 			const matched = findDangerousCommandMatch(command, patterns);
 			if (!matched) return { type: "pass" };
 
-			const reason = `Blocked dangerous bash command: ${command}`;
+			const reason = `Blocked dangerous bash command: ${formatDangerousCommandReason(matched.description)}.`;
 			if (action === "deny") {
 				return { type: "deny", reason };
 			}
@@ -98,6 +98,16 @@ export function createDangerousCommandProvider(options: DangerousCommandProvider
 			};
 		},
 	};
+}
+
+function formatDangerousCommandReason(description: string): string {
+	if (description === "sudo") return "sudo requires administrator privileges";
+	if (description === "chmod 777") return "chmod 777 grants broad write or execute access";
+	if (description === "force push") return "force push can overwrite remote history";
+	if (description === "recursive rm") return "recursive removal can delete many files";
+	if (description === "environment file access") return "environment files may contain secrets";
+	if (description === "credentials access") return "credential files may contain secrets";
+	return description;
 }
 
 export function findDangerousCommandMatch(

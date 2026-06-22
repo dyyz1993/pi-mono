@@ -54,7 +54,7 @@ describe("dangerous-command provider", () => {
 
 		expect(await provider.check(makeContext({ input: { command: "rm -rf /tmp/data" } }))).toEqual({
 			type: "deny",
-			reason: "Blocked dangerous bash command: rm -rf /tmp/data",
+			reason: "Blocked dangerous bash command: recursive removal can delete many files.",
 		});
 	});
 

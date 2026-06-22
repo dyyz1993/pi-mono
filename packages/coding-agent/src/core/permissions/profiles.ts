@@ -53,7 +53,7 @@ const BUILTIN_PROFILES: Record<BuiltinPermissionProfileName, PermissionProfile> 
 		label: "Autopilot",
 		description: "Auto-approve low-risk operations and ask for risky operations.",
 		source: "core",
-		preProviders: ["tool-gate", "stored-decision", "pi-hooks", "auto-approver"],
+		preProviders: ["tool-gate", "stored-decision", "auto-approver", "pi-hooks"],
 		postProviders: ["path-access", "dangerous-command"],
 		skipPathBoundaryApproval: false,
 	},

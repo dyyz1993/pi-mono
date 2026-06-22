@@ -563,6 +563,26 @@ describe("core permission enforcement in beforeToolCall", () => {
 		expect(records[0]?.input).toEqual({ file_path: join(harness.tempDir, "safe.txt") });
 	});
 
+	it("allows default temporary paths without prompting in normal profile", async () => {
+		const writeTool = makeRecorderTool("write", records, Type.Object({ file_path: Type.String() }));
+
+		const harness = await createHarness({ tools: [writeTool] });
+		harnesses.push(harness);
+
+		harness.session.applyAgentConfig(testConfig({ permissionMode: "normal" }));
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("write", { file_path: "/tmp/pi-agent-system-allowlist.txt" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("write temp file");
+
+		expect(records).toHaveLength(1);
+		expect(records[0]?.input).toEqual({ file_path: "/tmp/pi-agent-system-allowlist.txt" });
+	});
+
 	it("keeps outside-project writes gated under autopilot profile", async () => {
 		const writeTool = makeRecorderTool("write", records, Type.Object({ file_path: Type.String() }));
 

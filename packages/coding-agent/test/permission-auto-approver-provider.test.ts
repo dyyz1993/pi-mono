@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 import autoApproverExtension from "../extensions/auto-approver/index.ts";
 import type { PermissionContext } from "../src/core/permissions/types.ts";
@@ -57,10 +58,29 @@ describe("auto-approver permission extension", () => {
 		});
 	});
 
-	it("does not auto-approve writes outside the workspace", () => {
+	it("auto-decides user-writable writes outside the workspace", () => {
 		const provider = loadProvider();
-		expect(provider.check(makeContext({ toolName: "write", input: { file_path: "/tmp/app.ts" } }))).toEqual({
-			type: "pass",
+		const filePath = `${homedir()}/Desktop/autopilot.txt`;
+		expect(provider.check(makeContext({ toolName: "write", input: { file_path: filePath } }))).toEqual({
+			type: "allow",
+			reason: `Auto-approved user-writable path "${filePath}".`,
+		});
+	});
+
+	it("blocks protected writes outside the workspace", () => {
+		const provider = loadProvider();
+		expect(provider.check(makeContext({ toolName: "write", input: { file_path: "/var/autopilot.txt" } }))).toEqual({
+			type: "deny",
+			reason: "Autopilot blocked protected or sensitive path.",
+		});
+	});
+
+	it("blocks sensitive user path writes outside the workspace", () => {
+		const provider = loadProvider();
+		const filePath = `${homedir()}/.ssh/config`;
+		expect(provider.check(makeContext({ toolName: "write", input: { file_path: filePath } }))).toEqual({
+			type: "deny",
+			reason: "Autopilot blocked protected or sensitive path.",
 		});
 	});
 
@@ -72,10 +92,35 @@ describe("auto-approver permission extension", () => {
 		});
 	});
 
-	it("does not auto-approve dangerous bash commands", () => {
+	it("auto-approves bounded dangerous bash commands", () => {
 		const provider = loadProvider();
 		expect(provider.check(makeContext({ toolName: "bash", input: { command: "rm -rf /tmp/data" } }))).toEqual({
-			type: "pass",
+			type: "allow",
+			reason: "Auto-approved bounded dangerous command.",
+		});
+	});
+
+	it("blocks dangerous bash commands that are not bounded", () => {
+		const provider = loadProvider();
+		expect(provider.check(makeContext({ toolName: "bash", input: { command: "sudo rm -rf /tmp/data" } }))).toEqual({
+			type: "deny",
+			reason: "Autopilot blocked dangerous bash command: recursive removal can delete many files.",
+		});
+		expect(provider.check(makeContext({ toolName: "bash", input: { command: "rm -rf /Users/me/project" } }))).toEqual(
+			{
+				type: "deny",
+				reason: "Autopilot blocked dangerous bash command: recursive removal can delete many files.",
+			},
+		);
+	});
+
+	it("keeps autopilot denied bash reasons concise", () => {
+		const provider = loadProvider();
+		expect(
+			provider.check(makeContext({ toolName: "bash", input: { command: "echo hello | sudo tee /tmp/file.txt" } })),
+		).toEqual({
+			type: "deny",
+			reason: "Autopilot blocked dangerous bash command: sudo requires administrator privileges.",
 		});
 	});
 });
