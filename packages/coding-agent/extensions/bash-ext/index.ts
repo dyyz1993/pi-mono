@@ -43,6 +43,7 @@ import {
   waitForChildProcess,
 } from "@dyyz1993/pi-coding-agent";
 import { BASH_CHANNEL_NAME, type BashChannelContract, type BashProcess } from "./contract.ts";
+import { wrapCommandWithSandboxRuntime } from "./sandbox-runtime.ts";
 export type { BashProcess, BashChannelEvent } from "./contract.ts";
 
 interface TerminatedDetails {
@@ -630,15 +631,17 @@ export default function(pi: ExtensionAPI) {
       onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
       _ctx?: ExtensionContext,
     ): Promise<AgentToolResult<BashToolDetails>> {
-      return new Promise((resolve, reject) => {
-        const effectiveTimeout = Math.min(timeout ?? DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
-        const rawBackgroundAfter = backgroundAfter ?? DEFAULT_BACKGROUND_AFTER_SECONDS;
-        const effectiveBackgroundAfter = rawBackgroundAfter < effectiveTimeout ? rawBackgroundAfter : undefined;
-        const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
-        const bashId = generateBashId();
+      const effectiveTimeout = Math.min(timeout ?? DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
+      const rawBackgroundAfter = backgroundAfter ?? DEFAULT_BACKGROUND_AFTER_SECONDS;
+      const effectiveBackgroundAfter = rawBackgroundAfter < effectiveTimeout ? rawBackgroundAfter : undefined;
+      const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
+      const bashId = generateBashId();
+      const sandboxRuntime = await wrapCommandWithSandboxRuntime(command, cwd, signal);
+      const commandToExecute = sandboxRuntime.command;
 
+      return new Promise((resolve, reject) => {
         const spawnResult = spawnManagedProcess({
-          command,
+          command: commandToExecute,
           cwd,
           timeout: effectiveTimeout,
           signal,
