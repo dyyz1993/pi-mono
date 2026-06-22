@@ -807,7 +807,8 @@
 			},
 			"engines": {
 				"node": ">=18"
-			}
+			},
+			"peer": true
 		},
 		"node_modules/@nodable/entities": {
 			"version": "2.1.0",
@@ -1500,7 +1501,8 @@
 			"funding": {
 				"type": "opencollective",
 				"url": "https://opencollective.com/express"
-			}
+			},
+			"peer": true
 		},
 		"node_modules/express-rate-limit": {
 			"version": "8.5.2",
@@ -1846,7 +1848,8 @@
 			"license": "MIT",
 			"engines": {
 				"node": ">=16.9.0"
-			}
+			},
+			"peer": true
 		},
 		"node_modules/hosted-git-info": {
 			"version": "9.0.3",
@@ -1974,7 +1977,8 @@
 			"license": "MIT",
 			"bin": {
 				"jiti": "lib/jiti-cli.mjs"
-			}
+			},
+			"peer": true
 		},
 		"node_modules/jose": {
 			"version": "6.2.3",
@@ -2879,7 +2883,8 @@
 			"license": "MIT",
 			"funding": {
 				"url": "https://github.com/sponsors/colinhacks"
-			}
+			},
+			"peer": true
 		},
 		"node_modules/zod-to-json-schema": {
 			"version": "3.25.2",
