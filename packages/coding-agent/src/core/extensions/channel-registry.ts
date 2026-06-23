@@ -13,6 +13,7 @@ import type { MemoryChannelContract } from "../../../extensions/auto-memory/cont
 import type { BashChannelContract } from "../../../extensions/bash-ext/contract.ts";
 import type { CoordinatorChannelContract } from "../../../extensions/coordinator/types.ts";
 import type { LspChannelContract } from "../../../extensions/lsp/contract.ts";
+import type { RemoteSshChannelContract } from "../../../extensions/remote-ssh/contract.ts";
 import type { RulesChannelContract } from "../../../extensions/rules-engine/types.ts";
 import type { SupervisorChannelContract } from "../../../extensions/session-supervisor/types.ts";
 import type { SubagentV2ChannelContract } from "../../../extensions/subagent-v2/contract.ts";
@@ -27,4 +28,5 @@ export interface ChannelTypeRegistry {
 	coordinator: CoordinatorChannelContract;
 	"rules-engine": RulesChannelContract;
 	supervisor: SupervisorChannelContract;
+	"remote-ssh": RemoteSshChannelContract;
 }

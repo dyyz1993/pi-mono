@@ -379,6 +379,7 @@ export {
 	type SpawnedProcess,
 	type SpawnOptions,
 	spawnManagedProcess,
+	type ToolOperationsProvider,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,

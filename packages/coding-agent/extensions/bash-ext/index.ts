@@ -635,6 +635,174 @@ export default function(pi: ExtensionAPI) {
       const rawBackgroundAfter = backgroundAfter ?? DEFAULT_BACKGROUND_AFTER_SECONDS;
       const effectiveBackgroundAfter = rawBackgroundAfter < effectiveTimeout ? rawBackgroundAfter : undefined;
       const cwd = cwdParam ?? _ctx?.cwd ?? process.cwd();
+      const providerBash = pi.getToolOperationsProvider()?.bash;
+      if (providerBash) {
+        const bashId = generateBashId();
+        const proc: BashProcess = {
+          bashId,
+          toolCallId,
+          command,
+          cwd,
+          startedAt: Date.now(),
+          output: "",
+          status: "running",
+        };
+        channel?.emit("start", {
+          type: "start",
+          toolCallId,
+          data: command,
+          processes: Array.from(managed.values()).map((m) => m.proc),
+          timestamp: proc.startedAt,
+        });
+
+        const collector = new OutputCollector();
+        const controller = new AbortController();
+        const timeoutHandle = setTimeout(() => controller.abort(), effectiveTimeout * 1000);
+        const onAbort = () => controller.abort();
+        if (signal) {
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }
+
+        try {
+          const result = await providerBash.exec(command, cwd, {
+            signal: controller.signal,
+            timeout: effectiveTimeout,
+            onData: (data: Buffer) => {
+              collector.push(data);
+              const rawText = data.toString("utf-8");
+              const text = sanitizeBinaryOutput(stripAnsi(rawText)).replace(/\r/g, "");
+              proc.output += text;
+              channel?.emit("output", {
+                type: "output",
+                toolCallId,
+                data: text,
+                processes: Array.from(managed.values()).map((m) => m.proc),
+                timestamp: Date.now(),
+              });
+              if (onUpdate) {
+                const truncation = collector.getTruncation();
+                onUpdate({
+                  content: [{ type: "text", text: truncation.content || "" }],
+                  details: {
+                    truncation: truncation.truncated ? truncation : undefined,
+                    fullOutputPath: collector.fullOutputPath,
+                  },
+                });
+              }
+            },
+          });
+
+          proc.exitCode = result.exitCode;
+          proc.endedAt = Date.now();
+          const truncation = collector.finalize();
+          let outputText = truncation.content || "(no output)";
+          let details: BashToolDetails | undefined;
+          if (truncation.truncated) {
+            details = { truncation, fullOutputPath: collector.fullOutputPath };
+            const startLine = truncation.totalLines - truncation.outputLines + 1;
+            const endLine = truncation.totalLines;
+            outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${collector.fullOutputPath}]`;
+          }
+
+          if (controller.signal.aborted || signal?.aborted) {
+            proc.status = "terminated";
+            const durationMs = proc.endedAt - proc.startedAt;
+            const reason = signal?.aborted ? "Aborted" : `Timed out after ${effectiveTimeout}s`;
+            outputText += `\n\n[${reason} after ${formatDuration(durationMs)}]`;
+            channel?.emit("terminated", {
+              type: "terminated",
+              toolCallId,
+              data: outputText,
+              processes: Array.from(managed.values()).map((m) => m.proc),
+              timestamp: Date.now(),
+            });
+            return {
+              content: [{ type: "text", text: outputText }],
+              details: {
+                terminated: {
+                  reason: signal?.aborted ? "signal" : "timeout",
+                  command,
+                  startedAt: proc.startedAt,
+                  endedAt: proc.endedAt,
+                  durationMs,
+                  timeoutSecs: signal?.aborted ? undefined : effectiveTimeout,
+                  logPath: collector.fullOutputPath,
+                },
+              },
+            };
+          }
+
+          if (result.exitCode !== 0 && result.exitCode !== null) {
+            proc.status = "error";
+            const durationMs = proc.endedAt - proc.startedAt;
+            outputText += `\n\n[Command failed with exit code ${result.exitCode} after ${formatDuration(durationMs)}]`;
+            channel?.emit("error", {
+              type: "error",
+              toolCallId,
+              data: outputText,
+              processes: Array.from(managed.values()).map((m) => m.proc),
+              timestamp: Date.now(),
+            });
+            return {
+              content: [{ type: "text", text: outputText }],
+              details: {
+                terminated: {
+                  reason: "error",
+                  command,
+                  startedAt: proc.startedAt,
+                  endedAt: proc.endedAt,
+                  durationMs,
+                  exitCode: result.exitCode,
+                  logPath: collector.fullOutputPath,
+                },
+              },
+            };
+          }
+
+          proc.status = "done";
+          channel?.emit("end", {
+            type: "end",
+            toolCallId,
+            data: outputText,
+            processes: Array.from(managed.values()).map((m) => m.proc),
+            timestamp: Date.now(),
+          });
+          return { content: [{ type: "text", text: outputText }], details } as AgentToolResult<BashToolDetails>;
+        } catch (err) {
+          proc.status = "error";
+          proc.endedAt = Date.now();
+          const truncation = collector.finalize();
+          const outputText = truncation.content || proc.output || "(no output)";
+          const message = err instanceof Error ? err.message : String(err);
+          channel?.emit("error", {
+            type: "error",
+            toolCallId,
+            data: outputText,
+            processes: Array.from(managed.values()).map((m) => m.proc),
+            timestamp: Date.now(),
+          });
+          return {
+            content: [{ type: "text", text: `${outputText}\n\n[Remote bash failed: ${message}]` }],
+            details: {
+              terminated: {
+                reason: controller.signal.aborted ? "timeout" : "crash",
+                command,
+                startedAt: proc.startedAt,
+                endedAt: proc.endedAt,
+                durationMs: proc.endedAt - proc.startedAt,
+                timeoutSecs: controller.signal.aborted ? effectiveTimeout : undefined,
+                error: message,
+                logPath: collector.fullOutputPath,
+              },
+            },
+          };
+        } finally {
+          clearTimeout(timeoutHandle);
+          signal?.removeEventListener("abort", onAbort);
+          collector.close();
+        }
+      }
       const bashId = generateBashId();
       const sandboxRuntime = await wrapCommandWithSandboxRuntime(command, cwd, signal);
       const commandToExecute = sandboxRuntime.command;

@@ -50,6 +50,21 @@ export interface RpcClientOptions {
 	cwd?: string;
 	/** Environment variables */
 	env?: Record<string, string>;
+	/** Run the RPC child on a remote host via SSH instead of spawning local node. */
+	remoteSsh?: {
+		/** SSH target, e.g. a ~/.ssh/config host or user@host. */
+		target: string;
+		/** Remote working directory for the agent process. */
+		cwd: string;
+		/** Extra ssh arguments, such as -p or identity options. */
+		sshArgs?: string[];
+		/** Remote node executable. Defaults to node. Set to "" when cliPath is directly executable. */
+		nodePath?: string;
+		/** Environment variables to set for the remote agent command. */
+		env?: Record<string, string>;
+		/** Remote shell command used to run the agent command. Defaults to /bin/bash -lc. */
+		shell?: string;
+	};
 	/** Provider to use */
 	provider?: string;
 	/** Model ID to use */
@@ -66,6 +81,44 @@ export interface ModelInfo {
 }
 
 export type RpcEventListener = (event: AgentEvent) => void;
+
+export function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function shellDoubleQuoteBody(value: string): string {
+	return value.replace(/["\\`$]/g, (char) => `\\${char}`);
+}
+
+export function remoteShellQuote(value: string): string {
+	if (value.startsWith("~/")) {
+		return `"${"${HOME}"}/${shellDoubleQuoteBody(value.slice(2))}"`;
+	}
+	return shellQuote(value);
+}
+
+export function buildRemoteShellCommand(options: {
+	remoteCwd: string;
+	nodePath: string;
+	cliPath: string;
+	args: string[];
+	env?: Record<string, string>;
+	shell: string;
+}): string {
+	const envPrefix = Object.entries(options.env ?? {})
+		.filter(([, value]) => value !== undefined)
+		.map(([key, value]) => `${key}=${remoteShellQuote(value)}`);
+	const agentCommand = [
+		"cd --",
+		remoteShellQuote(options.remoteCwd),
+		"&&",
+		...(envPrefix.length > 0 ? ["env", ...envPrefix] : []),
+		...(options.nodePath ? [remoteShellQuote(options.nodePath)] : []),
+		remoteShellQuote(options.cliPath),
+		...options.args.map(remoteShellQuote),
+	].join(" ");
+	return `${options.shell} ${shellQuote(agentCommand)}`;
+}
 
 export interface TreeWithLeaf {
 	entries: TreeEntry[];
@@ -158,11 +211,33 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		const childProcess = spawn("node", [cliPath, ...args], {
-			cwd: this.options.cwd,
-			env: { ...process.env, ...this.options.env },
-			stdio: ["pipe", "pipe", "pipe"],
-		});
+		const remoteSsh = this.options.remoteSsh;
+		const childProcess = remoteSsh
+			? spawn(
+					"ssh",
+					[
+						...(remoteSsh.sshArgs ?? []),
+						remoteSsh.target,
+						buildRemoteShellCommand({
+							remoteCwd: remoteSsh.cwd,
+							nodePath: remoteSsh.nodePath ?? "node",
+							cliPath,
+							args,
+							env: remoteSsh.env,
+							shell: remoteSsh.shell ?? "/bin/bash -lc",
+						}),
+					],
+					{
+						cwd: this.options.cwd,
+						env: { ...process.env, ...this.options.env },
+						stdio: ["pipe", "pipe", "pipe"],
+					},
+				)
+			: spawn("node", [cliPath, ...args], {
+					cwd: this.options.cwd,
+					env: { ...process.env, ...this.options.env },
+					stdio: ["pipe", "pipe", "pipe"],
+				});
 		this.process = childProcess;
 
 		// Collect stderr for debugging (limit accumulation to prevent backpressure)
