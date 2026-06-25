@@ -4,12 +4,19 @@ import { join } from "node:path";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import autoMemoryExtensionDefault, { type CallLLMFn, MemoryPrefetch } from "../../extensions/auto-memory/index.ts";
+import { MEMORY_SYSTEM_PROMPT } from "../../extensions/auto-memory/prompts.ts";
 import { getEntrypointPath, getMemoryDir } from "../../extensions/auto-memory/utils.ts";
 import type { ExtensionAPI } from "../../src/core/extensions/index.ts";
 
 let tempDir: string;
+let previousRemoteToolProxyEnv: string | undefined;
+let previousAgentDirEnv: string | undefined;
 
 beforeEach(() => {
+	previousRemoteToolProxyEnv = process.env.PI_REMOTE_SSH_TOOL_PROXY;
+	previousAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+	delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
+	delete process.env.PI_CODING_AGENT_DIR;
 	tempDir = join(tmpdir(), `am-xml-harness-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 });
@@ -17,19 +24,30 @@ beforeEach(() => {
 afterEach(() => {
 	const memoryDir = getMemoryDir(tempDir);
 	if (existsSync(memoryDir)) rmSync(memoryDir, { recursive: true, force: true });
+	if (previousRemoteToolProxyEnv === undefined) {
+		delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
+	} else {
+		process.env.PI_REMOTE_SSH_TOOL_PROXY = previousRemoteToolProxyEnv;
+	}
+	if (previousAgentDirEnv === undefined) {
+		delete process.env.PI_CODING_AGENT_DIR;
+	} else {
+		process.env.PI_CODING_AGENT_DIR = previousAgentDirEnv;
+	}
 	if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 });
 
-function createMockPi() {
+function createMockPi(options: { sessionDataDir?: string } = {}) {
 	const handlers: Record<string, ((...args: any[]) => any)[]> = {};
 	const sentMessages: Array<{ customType: string; content: string; details?: unknown; display?: boolean }> = [];
 	const appendedEntries: Array<{ customType: string; data?: unknown }> = [];
+	const registeredTools: any[] = [];
 
 	const mockUI = {
 		setStatus: vi.fn(),
 		notify: vi.fn(),
 	};
-	const mockCtx = { ui: mockUI } as any;
+	const mockCtx = { ui: mockUI, sessionDataDir: options.sessionDataDir ?? join(tempDir, "session-data") } as any;
 
 	const mockChannel = {
 		name: "memory",
@@ -51,7 +69,9 @@ function createMockPi() {
 		registerProvider: vi.fn(),
 		unregisterProvider: vi.fn(),
 		events: { on: vi.fn(), off: vi.fn(), emit: vi.fn(), once: vi.fn() },
-		registerTool: vi.fn(),
+		registerTool: vi.fn((tool: any) => {
+			registeredTools.push(tool);
+		}),
 		registerChannel: vi.fn(() => mockChannel),
 		appendEntry: vi.fn((customType: string, data?: unknown) => {
 			appendedEntries.push({ customType, data });
@@ -71,10 +91,98 @@ function createMockPi() {
 		return result;
 	};
 
-	return { pi, emit, ctx: mockCtx, sentMessages, appendedEntries };
+	return { pi, emit, ctx: mockCtx, sentMessages, appendedEntries, registeredTools };
 }
 
+describe("auto-memory storage paths", () => {
+	it("uses PI_CODING_AGENT_DIR as the memory owner root", () => {
+		const agentDir = join(tempDir, "remote-agent-dir");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+
+		const memoryDir = getMemoryDir(tempDir);
+
+		expect(memoryDir.startsWith(join(agentDir, "memory"))).toBe(true);
+	});
+});
+
 describe("auto-memory XML injection harness", () => {
+	it("disables model-visible memory tools and injection in SSH tool-proxy mode", async () => {
+		process.env.PI_REMOTE_SSH_TOOL_PROXY = "1";
+		const { pi, emit, registeredTools, appendedEntries } = createMockPi();
+		autoMemoryExtensionDefault(pi);
+
+		expect(registeredTools.map((tool) => tool.name)).not.toContain("save_memory");
+		expect(registeredTools.map((tool) => tool.name)).not.toContain("create_bookmark");
+
+		await emit("session_start");
+		const beforeResult = await emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "please remember this",
+		});
+		const contextResult = await emit("context", {
+			type: "context",
+			messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }] as AgentMessage[],
+		});
+
+		expect(beforeResult).toBeUndefined();
+		expect(contextResult).toBeUndefined();
+		expect(appendedEntries).toEqual([]);
+		expect(pi.registerChannel).toHaveBeenCalledWith("memory");
+	});
+
+	it("directs explicit memory saves through save_memory instead of filesystem tools", () => {
+		const prompt = MEMORY_SYSTEM_PROMPT("/runtime-owned/memory", "");
+
+		expect(prompt).toContain("Use the save_memory tool");
+		expect(prompt).toContain("Do not use write, edit, bash");
+		expect(prompt).toContain("physical storage path is runtime-owned");
+		expect(prompt).not.toContain("/runtime-owned/memory");
+		expect(prompt).not.toContain("Step 1 — Write memory file");
+	});
+
+	it("does not expose physical memory paths in model-visible save events", async () => {
+		const { pi, registeredTools, appendedEntries } = createMockPi();
+		autoMemoryExtensionDefault(pi);
+
+		const saveMemory = registeredTools.find((tool) => tool.name === "save_memory");
+		expect(saveMemory).toBeDefined();
+
+		const result = await saveMemory.execute("tool-call", {
+			name: "ssh-remote-verification-flow",
+			description: "SSH remote project testing preference",
+			type: "feedback",
+			content: "Confirm hostname, then pwd before remote operations.",
+		});
+
+		expect(result.content[0].text).toContain("Memory saved:");
+		expect(result.details).toEqual({ filename: expect.stringMatching(/ssh-remote-verification-flow.*\.md/) });
+		expect(JSON.stringify(result)).not.toContain("filePath");
+		expect(JSON.stringify(appendedEntries.filter((entry) => entry.customType === "memory_created"))).not.toContain(
+			"filePath",
+		);
+
+		const memoryDir = getMemoryDir(process.cwd());
+		rmSync(memoryDir, { recursive: true, force: true });
+	});
+
+	it("does not log the physical memory directory in prefetch custom entries", async () => {
+		const { pi, emit, appendedEntries } = createMockPi();
+		autoMemoryExtensionDefault(pi);
+
+		await emit("session_start");
+		await emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "where is the memory path?",
+		});
+
+		const prefetchEntry = appendedEntries.find((entry) => entry.customType === "memory_prefetch");
+		expect(prefetchEntry).toBeDefined();
+		expect(JSON.stringify(prefetchEntry)).not.toContain("memoryDir");
+		expect(JSON.stringify(prefetchEntry)).not.toContain(getMemoryDir(process.cwd()));
+	});
+
 	it("injects memory with XML wrapping on first context call", async () => {
 		const { pi, emit, sentMessages } = createMockPi();
 		autoMemoryExtensionDefault(pi);
@@ -115,6 +223,57 @@ describe("auto-memory XML injection harness", () => {
 		rmSync(memoryDir, { recursive: true, force: true });
 	});
 
+	it("orders prefetch result before memory injection when context races prefetch completion", async () => {
+		const { pi, emit, appendedEntries } = createMockPi();
+		autoMemoryExtensionDefault(pi);
+
+		await emit("session_start");
+
+		const memoryDir = getMemoryDir(process.cwd());
+		mkdirSync(memoryDir, { recursive: true });
+		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
+
+		(pi.callLLM as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify({ selected: ["test.md"] }));
+
+		await emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "test query",
+		});
+
+		const result = await emit("context", {
+			type: "context",
+			messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }] as AgentMessage[],
+		});
+
+		expect(result?.messages).toHaveLength(2);
+		expect(appendedEntries.map((entry) => entry.customType)).toEqual([
+			"memory_prefetch",
+			"memory_prefetch_result",
+			"memory_inject",
+		]);
+
+		const [prefetchEntry, resultEntry, injectEntry] = appendedEntries;
+		const prefetchData = prefetchEntry.data as Record<string, unknown>;
+		const resultData = resultEntry.data as Record<string, unknown>;
+		const injectData = injectEntry.data as Record<string, unknown>;
+		expect(prefetchData.operationId).toBe(resultData.operationId);
+		expect(resultData.operationId).toBe(injectData.operationId);
+		expect(prefetchData.phase).toBe("prefetch_started");
+		expect(resultData.phase).toBe("prefetch_result");
+		expect(injectData.phase).toBe("inject");
+		expect(prefetchData.phaseOrder).toBe(1);
+		expect(resultData.phaseOrder).toBe(2);
+		expect(injectData.phaseOrder).toBe(3);
+		expect(typeof prefetchData.occurredAt).toBe("number");
+		expect(typeof resultData.occurredAt).toBe("number");
+		expect(typeof injectData.occurredAt).toBe("number");
+		expect(resultData.occurredAt as number).toBeGreaterThanOrEqual(prefetchData.occurredAt as number);
+		expect(injectData.occurredAt as number).toBeGreaterThanOrEqual(resultData.occurredAt as number);
+
+		rmSync(memoryDir, { recursive: true, force: true });
+	});
+
 	it("does not persist memory messages when context is rebuilt repeatedly in one turn", async () => {
 		const { pi, emit, sentMessages, appendedEntries } = createMockPi();
 		autoMemoryExtensionDefault(pi);
@@ -144,10 +303,134 @@ describe("auto-memory XML injection harness", () => {
 		const third = await emit("context", { type: "context", messages: originalMessages });
 
 		expect(first?.messages).toHaveLength(2);
-		expect(second?.messages).toHaveLength(2);
-		expect(third?.messages).toHaveLength(2);
+		expect(second).toBeUndefined();
+		expect(third).toBeUndefined();
 		expect(sentMessages.length).toBe(0);
 		expect(appendedEntries.some((entry) => entry.customType === "memory_relevant")).toBe(false);
+		expect(appendedEntries.filter((entry) => entry.customType === "memory_inject")).toHaveLength(1);
+
+		rmSync(memoryDir, { recursive: true, force: true });
+	});
+
+	it("remembers injected memory fingerprints across session restart", async () => {
+		const sessionDataDir = join(tempDir, "persisted-session-data");
+		const firstRuntime = createMockPi({ sessionDataDir });
+		autoMemoryExtensionDefault(firstRuntime.pi);
+
+		await firstRuntime.emit("session_start");
+
+		const memoryDir = getMemoryDir(process.cwd());
+		mkdirSync(memoryDir, { recursive: true });
+		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
+
+		(firstRuntime.pi.callLLM as ReturnType<typeof vi.fn>).mockResolvedValue(
+			JSON.stringify({ selected: ["test.md"] }),
+		);
+
+		await firstRuntime.emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "first query",
+		});
+		const first = await firstRuntime.emit("context", {
+			type: "context",
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "first" }], timestamp: Date.now() },
+			] as AgentMessage[],
+		});
+
+		expect(first?.messages).toHaveLength(2);
+		expect(firstRuntime.appendedEntries.filter((entry) => entry.customType === "memory_inject")).toHaveLength(1);
+
+		await new Promise((r) => setTimeout(r, 50));
+
+		const secondRuntime = createMockPi({ sessionDataDir });
+		autoMemoryExtensionDefault(secondRuntime.pi);
+		(secondRuntime.pi.callLLM as ReturnType<typeof vi.fn>).mockResolvedValue(
+			JSON.stringify({ selected: ["test.md"] }),
+		);
+
+		await secondRuntime.emit("session_start");
+		await secondRuntime.emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "second query after restart",
+		});
+		const second = await secondRuntime.emit("context", {
+			type: "context",
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "first" }], timestamp: Date.now() },
+				{ role: "assistant", content: [{ type: "text", text: "first response" }], timestamp: Date.now() },
+				{ role: "user", content: [{ type: "text", text: "second" }], timestamp: Date.now() },
+			] as AgentMessage[],
+		});
+
+		expect(second).toBeUndefined();
+		const restartInjectEntries = secondRuntime.appendedEntries.filter(
+			(entry) => entry.customType === "memory_inject",
+		);
+		expect(restartInjectEntries).toHaveLength(1);
+		expect(restartInjectEntries[0].data).toMatchObject({
+			skipped: true,
+			alreadyInjected: true,
+			skipReason: "already_in_session",
+			injectedBytes: 0,
+		});
+
+		rmSync(memoryDir, { recursive: true, force: true });
+	});
+
+	it("does not re-inject the same memory fingerprint on later turns when the prior injection was transient", async () => {
+		const { pi, emit, appendedEntries } = createMockPi();
+		autoMemoryExtensionDefault(pi);
+
+		await emit("session_start");
+
+		const memoryDir = getMemoryDir(process.cwd());
+		mkdirSync(memoryDir, { recursive: true });
+		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
+
+		(pi.callLLM as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify({ selected: ["test.md"] }));
+
+		await emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "first query",
+		});
+		const first = await emit("context", {
+			type: "context",
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "first" }], timestamp: Date.now() },
+			] as AgentMessage[],
+		});
+		expect(first?.messages).toHaveLength(2);
+		expect(first.messages[1].content[0].text).toContain("<memory_context");
+
+		await emit("before_agent_start", {
+			type: "before_agent_start",
+			systemPrompt: "base",
+			prompt: "second query",
+		});
+		const second = await emit("context", {
+			type: "context",
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "first" }], timestamp: Date.now() },
+				{ role: "assistant", content: [{ type: "text", text: "first response" }], timestamp: Date.now() },
+				{ role: "user", content: [{ type: "text", text: "second" }], timestamp: Date.now() },
+			] as AgentMessage[],
+		});
+
+		expect(second).toBeUndefined();
+		const injectEntries = appendedEntries.filter((entry) => entry.customType === "memory_inject");
+		expect(injectEntries).toHaveLength(2);
+		expect((injectEntries[0].data as Record<string, unknown>).skipped).not.toBe(true);
+		expect((injectEntries[0].data as Record<string, unknown>).alreadyInjected).not.toBe(true);
+		expect(injectEntries[1].data).toMatchObject({
+			skipped: true,
+			alreadyInjected: true,
+			skipReason: "already_in_session",
+			injectedBytes: 0,
+		});
 
 		rmSync(memoryDir, { recursive: true, force: true });
 	});

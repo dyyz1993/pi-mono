@@ -1,11 +1,16 @@
-import { existsSync, type Stats } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, type Stats, writeFileSync } from "node:fs";
 import { mkdir, readFile, stat, unlink, utimes, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AgentMessage, AgentToolResult } from "@dyyz1993/pi-agent-core";
 import { Type } from "typebox";
-import type { CallLLMOptions, ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
-import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
+import {
+	createTypedChannel,
+	type CallLLMOptions,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@dyyz1993/pi-coding-agent";
 import type { MemoryChannelContract } from "./contract.ts";
+import { getExtensionRuntimeResourcePolicy } from "../runtime-policy.ts";
 
 function stripMarkdownCodeBlock(text: string): string {
 	let cleaned = text.trim();
@@ -17,6 +22,31 @@ function stripMarkdownCodeBlock(text: string): string {
 		cleaned = cleaned.trim();
 	}
 	return cleaned;
+}
+
+function slugifyMemoryFilename(input: string, fallback = "memory"): string {
+	const base = input
+		.trim()
+		.toLowerCase()
+		.replace(/\.md$/i, "")
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.replace(/--+/g, "-")
+		.slice(0, 64);
+	return `${base || fallback}.md`;
+}
+
+async function uniqueMemoryFilePath(memoryDir: string, filename: string): Promise<{ filename: string; filePath: string }> {
+	const stem = filename.replace(/\.md$/i, "") || "memory";
+	let candidate = `${stem}.md`;
+	let filePath = join(memoryDir, candidate);
+	let suffix = 2;
+	while (existsSync(filePath)) {
+		candidate = `${stem}-${suffix}.md`;
+		filePath = join(memoryDir, candidate);
+		suffix += 1;
+	}
+	return { filename: candidate, filePath };
 }
 
 import {
@@ -954,6 +984,41 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	const runtimePolicy = getExtensionRuntimeResourcePolicy();
+	if (!runtimePolicy.canLoadUserMemory && !runtimePolicy.canLoadProjectMemory) {
+		try {
+			const raw = pi.registerChannel("memory");
+			const disabledChannel = createTypedChannel<MemoryChannelContract>(raw).server;
+			const emptyStatus = () => ({
+				skipRules: { builtin: [], custom: [] },
+				guardRules: { builtin: [], custom: [] },
+				excludeKeywords: [],
+				recentQueries: [],
+				dream: { lastRunAt: null },
+			});
+			disabledChannel.handle("memory.list", async () => ({
+				type: "list_result" as const,
+				files: [],
+				entrypointContent: null,
+				memoryDir: "",
+			}));
+			disabledChannel.handle("memory.userRemember", async () => ({ ok: false }));
+			disabledChannel.handle("memory.markIrrelevant", async () => ({ ok: false }));
+			disabledChannel.handle("memory.getStatus", async () => emptyStatus());
+			disabledChannel.handle("memory.removeRule", async () => ({ ok: false }));
+			disabledChannel.handle("memory.addRule", async () => ({ ok: false }));
+		} catch {
+			// registerChannel is unavailable outside RPC mode.
+		}
+		pi.on("session_start", (_event, context) => {
+			(context as ExtensionContext).ui.setStatus("auto-memory", "memory disabled for SSH tool proxy");
+		});
+		pi.on("session_shutdown", (_event, context) => {
+			(context as ExtensionContext | undefined)?.ui.setStatus("auto-memory", undefined);
+		});
+		return;
+	}
+
 	pi.registerTool({
 		name: "create_bookmark",
 		label: "create_bookmark",
@@ -971,7 +1036,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 			_signal?: AbortSignal,
 			_onUpdate?: unknown,
 			_ctx?: ExtensionContext,
-		): Promise<AgentToolResult<{ filename: string; filePath: string } | null>> => {
+		): Promise<AgentToolResult<{ filename: string } | null>> => {
 			const content = `## ${params.title}\n\n${params.summary}`;
 			const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
 			const result = await bookmarkCreator.create(
@@ -982,8 +1047,8 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 				callLLMWithRetry,
 			);
 			if (result) {
-				prefetch.markDirty();
-				pi.appendEntry("memory_created", result);
+				markMemorySelectionDirty();
+				pi.appendEntry("memory_created", { filename: result.filename });
 				const updatedMemories = await scanMemoryFiles(memoryDir);
 				memoryChannel?.emit("memory_updated", {
 					type: "memory_updated",
@@ -995,9 +1060,78 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 						mtimeMs: m.mtimeMs,
 					})),
 				});
-				return { content: [{ type: "text", text: `Bookmark created: ${result.filename}` }], details: result };
+				return {
+					content: [{ type: "text", text: `Bookmark created: ${result.filename}` }],
+					details: { filename: result.filename },
+				};
 			}
 			return { content: [{ type: "text", text: "Failed to create bookmark" }], details: null };
+		},
+	});
+
+	pi.registerTool({
+		name: "save_memory",
+		label: "save_memory",
+		description:
+			"Persist a durable memory entry through the memory system. Use this instead of write/edit/bash for memory files, especially in SSH or remote runtime sessions.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Short stable memory name" }),
+			description: Type.String({ description: "One-line description used in the memory index" }),
+			type: Type.Union(
+				[
+					Type.Literal("user"),
+					Type.Literal("feedback"),
+					Type.Literal("project"),
+					Type.Literal("reference"),
+				],
+				{ description: "Memory category. Do not use bookmark here." },
+			),
+			content: Type.String({
+				description: "Memory body. Include Why and How to apply for feedback/project entries.",
+			}),
+			filename: Type.Optional(Type.String({ description: "Optional markdown filename. The system will sanitize it." })),
+		}),
+		execute: async (
+			_toolCallId: string,
+			params: {
+				name: string;
+				description: string;
+				type: "user" | "feedback" | "project" | "reference";
+				content: string;
+				filename?: string;
+			},
+			_signal?: AbortSignal,
+			_onUpdate?: unknown,
+			_ctx?: ExtensionContext,
+		): Promise<AgentToolResult<{ filename: string }>> => {
+			await mkdir(memoryDir, { recursive: true });
+			const requestedFilename = slugifyMemoryFilename(params.filename ?? params.name, "memory");
+			const { filename, filePath } = await uniqueMemoryFilePath(memoryDir, requestedFilename);
+			const fm = buildFrontmatter({
+				name: params.name,
+				description: params.description,
+				type: params.type,
+			});
+			const body = params.content.trim().slice(0, MAX_MEMORY_BYTES_PER_FILE);
+			await writeFile(filePath, `${fm}\n\n${body}\n`, "utf-8");
+			await updateMemoryIndex(memoryDir);
+			markMemorySelectionDirty();
+			pi.appendEntry("memory_created", { filename });
+			const updatedMemories = await scanMemoryFiles(memoryDir);
+			memoryChannel?.emit("memory_updated", {
+				type: "memory_updated",
+				files: updatedMemories.map((m) => ({
+					filename: m.filename,
+					filePath: m.filePath,
+					description: m.description ?? null,
+					type: m.type ?? null,
+					mtimeMs: m.mtimeMs,
+				})),
+			});
+			return {
+				content: [{ type: "text", text: `Memory saved: ${filename}` }],
+				details: { filename },
+			};
 		},
 	});
 
@@ -1012,6 +1146,12 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		ctx?.ui.notify(message, type);
 	}
 
+	const MEMORY_PREFETCH_PHASE = {
+		start: { phase: "prefetch_started", phaseOrder: 1 },
+		result: { phase: "prefetch_result", phaseOrder: 2 },
+		inject: { phase: "inject", phaseOrder: 3 },
+	} as const;
+
 	function appendPrefetchResult(memoryText: string | null): void {
 		const debug = prefetch.debugInfo;
 		const selectedFiles = debug?.selectedFiles ?? [];
@@ -1019,6 +1159,8 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		status(memoryText ? "memories selected" : "no memories found");
 		pi.appendEntry("memory_prefetch_result", {
 			operationId: prefetch.operationId,
+			...MEMORY_PREFETCH_PHASE.result,
+			occurredAt: Date.now(),
 			summary: memoryText ? "Selected relevant memories" : "No relevant memories",
 			snippet: memoryText ? memoryText.slice(0, 500) : "",
 			injectedBytes: memoryText ? memoryText.length : 0,
@@ -1031,10 +1173,115 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		});
 	}
 
+	const writtenMemoryInjectEntries = new Set<string>();
+	const writtenMemoryInjectEntryOrder: string[] = [];
+	const maxWrittenMemoryInjectEntries = 200;
+	const activeInjectedMemoryFingerprints = new Set<string>();
+	const activeInjectedMemoryFingerprintOrder: string[] = [];
+	const maxActiveInjectedMemoryFingerprints = 200;
+	const injectedFingerprintStateFileName = "auto-memory-injected-fingerprints.json";
+
+	function getInjectedFingerprintStateFile(): string | null {
+		const sessionDataDir = (ctx as (ExtensionContext & { sessionDataDir?: string }) | null)?.sessionDataDir;
+		return sessionDataDir ? join(sessionDataDir, injectedFingerprintStateFileName) : null;
+	}
+
+	function persistActiveInjectedMemoryFingerprints(): void {
+		const filePath = getInjectedFingerprintStateFile();
+		if (!filePath) return;
+		try {
+			mkdirSync(dirname(filePath), { recursive: true });
+			writeFileSync(
+				filePath,
+				JSON.stringify(
+					{
+						version: 1,
+						fingerprints: activeInjectedMemoryFingerprintOrder.filter((fingerprint) =>
+							activeInjectedMemoryFingerprints.has(fingerprint),
+						),
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+		} catch (err) {
+			console.debug(
+				"[auto-memory] persist injected memory fingerprints failed:",
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
+	function restoreActiveInjectedMemoryFingerprints(): void {
+		const filePath = getInjectedFingerprintStateFile();
+		if (!filePath || !existsSync(filePath)) return;
+		try {
+			const raw = readFileSync(filePath, "utf-8");
+			const parsed = JSON.parse(raw) as { fingerprints?: unknown };
+			const fingerprints = Array.isArray(parsed.fingerprints)
+				? parsed.fingerprints.filter((value): value is string => typeof value === "string" && value.length > 0)
+				: [];
+			for (const fingerprint of fingerprints.slice(-maxActiveInjectedMemoryFingerprints)) {
+				markActiveInjectedMemoryFingerprint(fingerprint, { persist: false });
+			}
+		} catch (err) {
+			console.debug(
+				"[auto-memory] restore injected memory fingerprints failed:",
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
+	function clearActiveInjectedMemoryFingerprints(options: { persist?: boolean } = {}): void {
+		activeInjectedMemoryFingerprints.clear();
+		activeInjectedMemoryFingerprintOrder.length = 0;
+		writtenMemoryInjectEntries.clear();
+		writtenMemoryInjectEntryOrder.length = 0;
+		if (options.persist !== false) persistActiveInjectedMemoryFingerprints();
+	}
+
+	function markMemorySelectionDirty(): void {
+		prefetch.markDirty();
+		clearActiveInjectedMemoryFingerprints();
+	}
+
+	function hasActiveInjectedMemoryFingerprint(fingerprint: string): boolean {
+		return activeInjectedMemoryFingerprints.has(fingerprint);
+	}
+
+	function markActiveInjectedMemoryFingerprint(fingerprint: string, options: { persist?: boolean } = {}): void {
+		if (activeInjectedMemoryFingerprints.has(fingerprint)) return;
+		activeInjectedMemoryFingerprints.add(fingerprint);
+		activeInjectedMemoryFingerprintOrder.push(fingerprint);
+		while (activeInjectedMemoryFingerprintOrder.length > maxActiveInjectedMemoryFingerprints) {
+			const oldest = activeInjectedMemoryFingerprintOrder.shift();
+			if (oldest) activeInjectedMemoryFingerprints.delete(oldest);
+		}
+		if (options.persist !== false) persistActiveInjectedMemoryFingerprints();
+	}
+
+	function markMemoryInjectEntryWritten(entryKey: string): boolean {
+		if (writtenMemoryInjectEntries.has(entryKey)) return true;
+		writtenMemoryInjectEntries.add(entryKey);
+		writtenMemoryInjectEntryOrder.push(entryKey);
+		while (writtenMemoryInjectEntryOrder.length > maxWrittenMemoryInjectEntries) {
+			const oldest = writtenMemoryInjectEntryOrder.shift();
+			if (oldest) writtenMemoryInjectEntries.delete(oldest);
+		}
+		return false;
+	}
+
 	function appendMemoryInject(memoryText: string, selectedFiles: string[], fingerprint: string): void {
 		status("memories injected");
+		const operationId = prefetch.operationId ?? "unknown";
+		const entryKey = `${operationId}:${fingerprint}`;
+		if (markMemoryInjectEntryWritten(entryKey)) return;
+		markActiveInjectedMemoryFingerprint(fingerprint);
 		pi.appendEntry("memory_inject", {
-			operationId: prefetch.operationId,
+			operationId,
+			...MEMORY_PREFETCH_PHASE.inject,
+			occurredAt: Date.now(),
 			summary: "Injected memory context",
 			snippet: memoryText.slice(0, 500),
 			injectedBytes: memoryText.length,
@@ -1043,8 +1290,37 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		});
 	}
 
+	function appendMemoryInjectSkipped(
+		memoryText: string,
+		selectedFiles: string[],
+		fingerprint: string,
+		reason: "already_in_context" | "already_in_session",
+	): void {
+		status("memory already injected");
+		const operationId = prefetch.operationId ?? "unknown";
+		if (writtenMemoryInjectEntries.has(`${operationId}:${fingerprint}`)) return;
+		const entryKey = `${operationId}:${fingerprint}:skipped:${reason}`;
+		if (markMemoryInjectEntryWritten(entryKey)) return;
+		pi.appendEntry("memory_inject", {
+			operationId,
+			...MEMORY_PREFETCH_PHASE.inject,
+			occurredAt: Date.now(),
+			summary: "Memory context already injected",
+			snippet: memoryText.slice(0, 500),
+			injectedBytes: 0,
+			originalBytes: memoryText.length,
+			selectedFiles,
+			fingerprint,
+			skipped: true,
+			alreadyInjected: true,
+			skipReason: reason,
+		});
+	}
+
 	pi.on("session_start", async (_event, context) => {
 		ctx = context as ExtensionContext;
+		clearActiveInjectedMemoryFingerprints({ persist: false });
+		restoreActiveInjectedMemoryFingerprints();
 		await mkdir(memoryDir, { recursive: true });
 		status("memory ready");
 	});
@@ -1060,15 +1336,16 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 		const memoryPrompt = MEMORY_SYSTEM_PROMPT(memoryDir, truncated.content);
 
 		const lastUserText = event.prompt ?? "";
-		if (lastUserText) {
-			status("selecting memories...");
-			const operationId = `memory-prefetch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-			pi.appendEntry("memory_prefetch", {
-				operationId,
-				query: lastUserText.slice(0, 200),
-				memoryDir,
-				availableFiles: (await scanMemoryFiles(memoryDir)).length,
-			});
+			if (lastUserText) {
+				status("selecting memories...");
+				const operationId = `memory-prefetch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+				pi.appendEntry("memory_prefetch", {
+					operationId,
+					...MEMORY_PREFETCH_PHASE.start,
+					occurredAt: Date.now(),
+					query: lastUserText.slice(0, 200),
+					availableFiles: (await scanMemoryFiles(memoryDir)).length,
+				});
 			prefetch.start(lastUserText, memoryDir, callLLMWithRetry, operationId);
 			void prefetch.waitForOperation(operationId).then((memoryText) => {
 				if (prefetch.operationId !== operationId) return;
@@ -1080,7 +1357,10 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("context", async (event) => {
-		const memoryText = prefetch.collect();
+		const operationId = prefetch.operationId;
+		const memoryText = operationId
+			? await prefetch.waitForOperation(operationId)
+			: prefetch.collect();
 
 		if (!memoryText) return;
 
@@ -1089,6 +1369,14 @@ export default function autoMemoryExtension(pi: ExtensionAPI): void {
 
 		const existingMemory = findExistingMemoryContext(event.messages);
 		if (existingMemory && existingMemory === fingerprint) {
+			markActiveInjectedMemoryFingerprint(fingerprint);
+			appendPrefetchResult(memoryText);
+			appendMemoryInjectSkipped(memoryText, selectedFiles, fingerprint, "already_in_context");
+			return;
+		}
+		if (hasActiveInjectedMemoryFingerprint(fingerprint)) {
+			appendPrefetchResult(memoryText);
+			appendMemoryInjectSkipped(memoryText, selectedFiles, fingerprint, "already_in_session");
 			return;
 		}
 
@@ -1098,6 +1386,7 @@ ${memoryText}
 </files>
 </memory_context>`;
 
+		appendPrefetchResult(memoryText);
 		appendMemoryInject(memoryText, selectedFiles, fingerprint);
 
 		const memoryMessage = {
@@ -1109,7 +1398,7 @@ ${memoryText}
 	});
 
 	pi.on("session_compact", () => {
-		prefetch.markDirty();
+		markMemorySelectionDirty();
 	});
 
 	pi.on("tool_call", (event) => {
@@ -1124,7 +1413,7 @@ ${memoryText}
 				status("extracting memories...");
 				const extractResult = await extractor.maybeExtract(event.messages, memoryDir, callLLMWithRetry);
 				if (extractResult) {
-					prefetch.markDirty();
+					markMemorySelectionDirty();
 					pi.appendEntry("memory_extract", {
 						status: "completed",
 						created: extractResult.created,
@@ -1135,7 +1424,7 @@ ${memoryText}
 				status("consolidating memories...");
 				const dreamResult = await dream.maybeRun(memoryDir, callLLMWithRetry);
 				if (dreamResult) {
-					prefetch.markDirty();
+					markMemorySelectionDirty();
 					pi.appendEntry("memory_dream", {
 						status: "completed",
 						merges: dreamResult.merges,
@@ -1147,7 +1436,7 @@ ${memoryText}
 				status("purifying exclusions...");
 				const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
 				if (purifyResult) {
-					prefetch.markDirty();
+					markMemorySelectionDirty();
 				}
 
 				status("memory idle");
@@ -1207,8 +1496,8 @@ ${memoryText}
 				callLLMWithRetry,
 			);
 			if (result) {
-				prefetch.markDirty();
-				pi.appendEntry("memory_created", result);
+				markMemorySelectionDirty();
+				pi.appendEntry("memory_created", { filename: result.filename });
 				const updatedMemories = await scanMemoryFiles(memoryDir);
 				memoryChannel.emit("memory_updated", {
 					type: "memory_updated",
@@ -1330,7 +1619,7 @@ ${memoryText}
 
 		if (modified) {
 			await saveSkipWordStore(getGlobalMemoryDir(), store);
-			prefetch.markDirty();
+			markMemorySelectionDirty();
 		}
 
 		return { ok: modified };
@@ -1344,6 +1633,7 @@ ${memoryText}
 		if (!exists) {
 			store.rules.push({ pattern: data.pattern, mode: data.mode, action: data.action, builtin: false });
 			await saveSkipWordStore(getGlobalMemoryDir(), store);
+			markMemorySelectionDirty();
 		}
 		return { ok: true };
 	});
