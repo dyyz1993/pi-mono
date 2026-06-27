@@ -334,6 +334,13 @@ If rebase conflicts occur:
 
 See `CONTRIBUTING.md` for the contributor gate (auto-close workflows, `lgtm`/`lgtmi`, quality bar).
 
+This checkout uses `origin` as the working fork (`dyyz1993/pi-mono`) and `upstream`
+as the source repository (`earendil-works/pi`). When pushing branches or creating
+PRs from this local fork, default to `origin` and create PRs inside the fork
+repository (for example `--repo dyyz1993/pi-mono --base main --head <branch>`).
+Do not push to `upstream` or open upstream-targeted PRs unless the user explicitly
+asks for that.
+
 When reviewing PRs:
 
 - Do not run `gh pr checkout`, `git switch`, or otherwise move the worktree to the PR branch unless the user explicitly asks.
