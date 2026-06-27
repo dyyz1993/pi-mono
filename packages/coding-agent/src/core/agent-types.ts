@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getRuntimeResourcePolicy } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 import type { PermissionProfileInput } from "./permissions/index.ts";
@@ -475,11 +475,22 @@ export function getBuiltinAgents(): AgentConfig[] {
 }
 
 export function discoverAgents(cwd: string, scope: AgentScope, overrideAgents?: AgentConfig[]): AgentDiscoveryResult {
+	const runtimePolicy = getRuntimeResourcePolicy();
+	if (!runtimePolicy.canLoadUserAgents && !runtimePolicy.canLoadProjectAgents) {
+		return {
+			agents: getBuiltinAgents(),
+			projectAgentsDir: null,
+		};
+	}
+
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+	const userAgents = scope === "project" || !runtimePolicy.canLoadUserAgents ? [] : loadAgentsFromDir(userDir, "user");
+	const projectAgents =
+		scope === "user" || !projectAgentsDir || !runtimePolicy.canLoadProjectAgents
+			? []
+			: loadAgentsFromDir(projectAgentsDir, "project");
 	const flagAgents = overrideAgents ?? [];
 
 	return {

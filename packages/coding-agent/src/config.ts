@@ -22,6 +22,112 @@ export const isBunBinary =
 /** Detect if Bun is the runtime (compiled binary or bun run) */
 export const isBunRuntime = !!process.versions.bun;
 
+function isTruthyEnv(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+export type RuntimeKind = "local" | "ssh-command" | "remote-agent-child" | "remote-server";
+
+export interface RuntimeContext {
+	kind: RuntimeKind;
+	projectRoot: string;
+	displayProjectRoot: string;
+	remote?: {
+		host?: string;
+		cwd?: string;
+		runtimeDir?: string;
+		agentDir?: string;
+	};
+}
+
+export interface RuntimeResourcePolicy {
+	canLoadUserSkills: boolean;
+	canLoadProjectSkills: boolean;
+	canLoadUserAgents: boolean;
+	canLoadProjectAgents: boolean;
+	canLoadUserMemory: boolean;
+	canLoadProjectMemory: boolean;
+	canLoadPlugins: boolean;
+	canLoadHooks: boolean;
+	promptMayMentionLocalPaths: boolean;
+}
+
+const RUNTIME_KINDS = new Set<RuntimeKind>(["local", "ssh-command", "remote-agent-child", "remote-server"]);
+
+function parseRuntimeKind(value: string | undefined): RuntimeKind | undefined {
+	const normalized = value?.trim();
+	return normalized && RUNTIME_KINDS.has(normalized as RuntimeKind) ? (normalized as RuntimeKind) : undefined;
+}
+
+export function getRuntimeKind(env: NodeJS.ProcessEnv = process.env): RuntimeKind {
+	return (
+		parseRuntimeKind(env.PI_RUNTIME_KIND) ?? (isTruthyEnv(env.PI_REMOTE_SSH_TOOL_PROXY) ? "ssh-command" : "local")
+	);
+}
+
+/**
+ * SSH tool-proxy mode runs the pi runtime locally while file/bash tools are
+ * forwarded to a remote host. Local user resources must not be exposed as if
+ * they were readable from the remote filesystem.
+ */
+export function isRemoteSshToolProxyMode(): boolean {
+	return getRuntimeKind() === "ssh-command";
+}
+
+export function getRemoteSshToolProxyCwd(): string | undefined {
+	if (getRuntimeKind() !== "ssh-command") return undefined;
+	const cwd = process.env.PI_REMOTE_SSH_CWD?.trim();
+	return cwd && cwd.length > 0 ? cwd : undefined;
+}
+
+export function getRuntimeContext(options?: { cwd?: string; env?: NodeJS.ProcessEnv }): RuntimeContext {
+	const env = options?.env ?? process.env;
+	const kind = getRuntimeKind(env);
+	const projectRoot = options?.cwd ?? process.cwd();
+	const remoteCwd = kind === "ssh-command" ? env.PI_REMOTE_SSH_CWD?.trim() : undefined;
+	const displayProjectRoot = remoteCwd && remoteCwd.length > 0 ? remoteCwd : projectRoot;
+	const remote =
+		kind === "local"
+			? undefined
+			: {
+					host: env.PI_REMOTE_SSH_HOST,
+					cwd: remoteCwd,
+					runtimeDir: env.PI_REMOTE_RUNTIME_DIR,
+					agentDir: env.PI_CODING_AGENT_DIR,
+				};
+	return { kind, projectRoot, displayProjectRoot, remote };
+}
+
+export function getRuntimeResourcePolicy(kind: RuntimeKind = getRuntimeKind()): RuntimeResourcePolicy {
+	if (kind === "ssh-command") {
+		return {
+			canLoadUserSkills: false,
+			canLoadProjectSkills: false,
+			canLoadUserAgents: false,
+			canLoadProjectAgents: false,
+			canLoadUserMemory: false,
+			canLoadProjectMemory: false,
+			canLoadPlugins: false,
+			canLoadHooks: false,
+			promptMayMentionLocalPaths: false,
+		};
+	}
+
+	const promptMayMentionLocalPaths = kind === "local";
+	return {
+		canLoadUserSkills: true,
+		canLoadProjectSkills: true,
+		canLoadUserAgents: true,
+		canLoadProjectAgents: true,
+		canLoadUserMemory: true,
+		canLoadProjectMemory: true,
+		canLoadPlugins: true,
+		canLoadHooks: true,
+		promptMayMentionLocalPaths,
+	};
+}
+
 // =============================================================================
 // Install Method Detection
 // =============================================================================

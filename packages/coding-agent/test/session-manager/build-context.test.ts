@@ -101,7 +101,7 @@ describe("buildSessionContext", () => {
 			expect(ctx.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
 		});
 
-		it("preserves repeated auto-memory custom messages by fingerprint", () => {
+		it("preserves repeated memory custom messages by fingerprint", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "hello"),
 				memoryContext("2", "1", "same", "first"),

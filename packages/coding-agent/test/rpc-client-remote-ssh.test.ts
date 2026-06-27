@@ -32,12 +32,12 @@ describe("RpcClient remote SSH command", () => {
 			remoteCwd: "~/project",
 			nodePath: "",
 			cliPath: "~/.pi/agent/runtime/pi",
-			args: ["--mode", "rpc", "--extension", "~/.pi/agent/runtime/extensions/auto-memory/index.ts"],
+			args: ["--mode", "rpc", "--extension", "~/.pi/agent/runtime/extensions/learning/index.ts"],
 			shell: "/bin/bash -lc",
 		});
 
 		expect(command).toBe(
-			"/bin/bash -lc 'cd -- \"${HOME}/project\" && \"${HOME}/.pi/agent/runtime/pi\" '\\''--mode'\\'' '\\''rpc'\\'' '\\''--extension'\\'' \"${HOME}/.pi/agent/runtime/extensions/auto-memory/index.ts\"'",
+			"/bin/bash -lc 'cd -- \"${HOME}/project\" && \"${HOME}/.pi/agent/runtime/pi\" '\\''--mode'\\'' '\\''rpc'\\'' '\\''--extension'\\'' \"${HOME}/.pi/agent/runtime/extensions/learning/index.ts\"'",
 		);
 	});
 });

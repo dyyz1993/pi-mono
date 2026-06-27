@@ -7,18 +7,24 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as _bundledAnthropicSandboxRuntime from "@anthropic-ai/sandbox-runtime";
 import * as _bundledPiAgentCore from "@dyyz1993/pi-agent-core";
 import * as _bundledPiAi from "@dyyz1993/pi-ai";
 import * as _bundledPiAiOauth from "@dyyz1993/pi-ai/oauth";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import * as _bundledPiTui from "@dyyz1993/pi-tui";
+import * as _bundledDiff from "diff";
+import _bundledIgnore from "ignore";
 import { createJiti } from "jiti/static";
+import * as _bundledMinimatch from "minimatch";
+import _bundledStripAnsi from "strip-ansi";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
 import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
+import * as _bundledYaml from "yaml";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @dyyz1993/pi-coding-agent.
@@ -54,6 +60,12 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@dyyz1993/pi-ai": _bundledPiAi,
 	"@dyyz1993/pi-ai/oauth": _bundledPiAiOauth,
 	"@dyyz1993/pi-coding-agent": _bundledPiCodingAgent,
+	"@anthropic-ai/sandbox-runtime": _bundledAnthropicSandboxRuntime,
+	diff: _bundledDiff,
+	ignore: { default: _bundledIgnore },
+	minimatch: _bundledMinimatch,
+	"strip-ansi": { default: _bundledStripAnsi },
+	yaml: _bundledYaml,
 	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
 	"@mariozechner/pi-tui": _bundledPiTui,
 	"@mariozechner/pi-ai": _bundledPiAi,

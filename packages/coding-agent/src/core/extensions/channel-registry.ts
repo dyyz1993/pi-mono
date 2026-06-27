@@ -9,9 +9,9 @@
  *   type BashEvents = ChannelTypeRegistry["bash"]["events"];
  */
 
-import type { MemoryChannelContract } from "../../../extensions/auto-memory/contract.ts";
 import type { BashChannelContract } from "../../../extensions/bash-ext/contract.ts";
 import type { CoordinatorChannelContract } from "../../../extensions/coordinator/types.ts";
+import type { LearningChannelContract } from "../../../extensions/learning/contract.ts";
 import type { LspChannelContract } from "../../../extensions/lsp/contract.ts";
 import type { RemoteSshChannelContract } from "../../../extensions/remote-ssh/contract.ts";
 import type { RulesChannelContract } from "../../../extensions/rules-engine/types.ts";
@@ -23,7 +23,7 @@ export interface ChannelTypeRegistry {
 	bash: BashChannelContract;
 	todo: TodoChannelContract;
 	lsp: LspChannelContract;
-	memory: MemoryChannelContract;
+	learning: LearningChannelContract;
 	subagent: SubagentV2ChannelContract;
 	coordinator: CoordinatorChannelContract;
 	"rules-engine": RulesChannelContract;

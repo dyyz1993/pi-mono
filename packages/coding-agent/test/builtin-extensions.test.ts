@@ -780,18 +780,20 @@ describe("Built-in Extensions", () => {
 		});
 	});
 
-	// ─── 12. auto-memory ────────────────────────────────────────────────
+	// ─── 12. learning ───────────────────────────────────────────────────
 
-	describe("auto-memory", () => {
-		it("registers create_bookmark tool", async () => {
-			const { runner } = await loadExtension("auto-memory");
+	describe("learning", () => {
+		it("registers memory tools", async () => {
+			const { runner } = await loadExtension("learning");
 			const names = getToolNames(runner);
 			expect(names).toContain("create_bookmark");
+			expect(names).toContain("save_memory");
 		});
 
-		it("registers memory channel", async () => {
-			const { manager } = await loadExtension("auto-memory");
-			expect(manager.has("memory")).toBe(true);
+		it("registers the learning channel", async () => {
+			const { manager } = await loadExtension("learning");
+			expect(manager.has("learning")).toBe(true);
+			expect(manager.has("memory")).toBe(false);
 		});
 	});
 });

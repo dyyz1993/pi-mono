@@ -3,7 +3,22 @@
 export { type Args, parseArgs } from "./cli/args.ts";
 
 // Config paths
-export { getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION } from "./config.ts";
+export {
+	getAgentDir,
+	getDocsPath,
+	getExamplesPath,
+	getPackageDir,
+	getReadmePath,
+	getRemoteSshToolProxyCwd,
+	getRuntimeContext,
+	getRuntimeKind,
+	getRuntimeResourcePolicy,
+	isRemoteSshToolProxyMode,
+	type RuntimeContext,
+	type RuntimeKind,
+	type RuntimeResourcePolicy,
+	VERSION,
+} from "./config.ts";
 export {
 	AgentSession,
 	type AgentSessionConfig,
@@ -35,6 +50,14 @@ export {
 	type AskPermissionStore,
 	askPermission,
 } from "./core/ask-permission.ts";
+export {
+	createLocalImageAssetStore,
+	type ImageAssetRef,
+	type ImageAssetStore,
+	LocalImageAssetStore,
+	type LocalImageAssetStoreOptions,
+	type PutImageAssetInput,
+} from "./core/assets.ts";
 // Auth and model registry
 export {
 	type ApiKeyCredential,
@@ -194,6 +217,16 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export {
+	createDefaultFileResolvers,
+	createImageFileResolver,
+	createTextFileResolver,
+	type FileResolver,
+	type FileResolverContext,
+	type FileResolverDetails,
+	type FileResolverResult,
+	resolveFileWithResolvers,
+} from "./core/file-resolvers.ts";
 // File store
 export type { GCResult } from "./core/file-store/index.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)

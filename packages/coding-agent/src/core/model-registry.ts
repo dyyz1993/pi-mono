@@ -30,6 +30,15 @@ import { stripJsonComments } from "../utils/json.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
+import {
+	isModelProxyEnabled,
+	loadModelProxyModels,
+	MODEL_PROXY_HEADER_API,
+	MODEL_PROXY_HEADER_MODEL,
+	MODEL_PROXY_HEADER_PROVIDER,
+	MODEL_PROXY_HEADER_TOKEN,
+	MODEL_PROXY_PLACEHOLDER_API_KEY,
+} from "./model-proxy.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
 	clearConfigValueCache,
@@ -412,6 +421,7 @@ export class ModelRegistry {
 	private loadError: string | undefined = undefined;
 	readonly authStorage: AuthStorage;
 	private modelsJsonPath: string | undefined;
+	private modelProxyEnabled = false;
 
 	private constructor(authStorage: AuthStorage, modelsJsonPath: string | undefined) {
 		this.authStorage = authStorage;
@@ -454,6 +464,14 @@ export class ModelRegistry {
 	}
 
 	private loadModels(): void {
+		const proxyModels = loadModelProxyModels();
+		if (proxyModels) {
+			this.modelProxyEnabled = true;
+			this.models = proxyModels;
+			return;
+		}
+		this.modelProxyEnabled = false;
+
 		// Load custom models and overrides from models.json
 		const {
 			models: customModels,
@@ -713,6 +731,7 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
+		if (this.modelProxyEnabled) return true;
 		const providerApiKey = this.providerRequestConfigs.get(model.provider)?.apiKey;
 		return (
 			this.authStorage.hasAuth(model.provider) ||
@@ -757,6 +776,20 @@ export class ModelRegistry {
 	 */
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
 		try {
+			if (this.modelProxyEnabled && isModelProxyEnabled()) {
+				return {
+					ok: true,
+					apiKey: MODEL_PROXY_PLACEHOLDER_API_KEY,
+					headers: {
+						...(model.headers ?? {}),
+						[MODEL_PROXY_HEADER_TOKEN]: process.env.PI_MODEL_PROXY_TOKEN ?? "",
+						[MODEL_PROXY_HEADER_PROVIDER]: model.provider,
+						[MODEL_PROXY_HEADER_MODEL]: model.id,
+						[MODEL_PROXY_HEADER_API]: model.api,
+					},
+				};
+			}
+
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
 			const apiKeyFromAuthStorage = await this.authStorage.getApiKey(model.provider, { includeFallback: false });
 			const apiKey =
@@ -801,6 +834,10 @@ export class ModelRegistry {
 	 * This intentionally does not execute command-backed config values.
 	 */
 	getProviderAuthStatus(provider: string): AuthStatus {
+		if (this.modelProxyEnabled) {
+			return { configured: true, source: "runtime", label: "model proxy" };
+		}
+
 		const authStatus = this.authStorage.getAuthStatus(provider);
 		if (authStatus.source) {
 			return authStatus;

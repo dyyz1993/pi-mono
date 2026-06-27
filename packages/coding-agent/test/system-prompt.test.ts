@@ -1,6 +1,28 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import type { AgentConfig } from "../src/core/agent-types.ts";
 import { buildSystemPrompt, buildSystemPromptWithBreakdown } from "../src/core/system-prompt.ts";
+
+const originalRemoteSshToolProxy = process.env.PI_REMOTE_SSH_TOOL_PROXY;
+const originalRemoteSshCwd = process.env.PI_REMOTE_SSH_CWD;
+const originalRuntimeKind = process.env.PI_RUNTIME_KIND;
+
+afterEach(() => {
+	if (originalRuntimeKind === undefined) {
+		delete process.env.PI_RUNTIME_KIND;
+	} else {
+		process.env.PI_RUNTIME_KIND = originalRuntimeKind;
+	}
+	if (originalRemoteSshToolProxy === undefined) {
+		delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
+	} else {
+		process.env.PI_REMOTE_SSH_TOOL_PROXY = originalRemoteSshToolProxy;
+	}
+	if (originalRemoteSshCwd === undefined) {
+		delete process.env.PI_REMOTE_SSH_CWD;
+	} else {
+		process.env.PI_REMOTE_SSH_CWD = originalRemoteSshCwd;
+	}
+});
 
 describe("buildSystemPrompt", () => {
 	describe("empty tools", () => {
@@ -57,6 +79,35 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain(
 				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
 			);
+		});
+
+		test("omits local pi docs and shows remote cwd in SSH tool-proxy mode", () => {
+			process.env.PI_REMOTE_SSH_TOOL_PROXY = "1";
+			process.env.PI_REMOTE_SSH_CWD = "/srv/app";
+
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: "/Users/example/.pi-agent-chat/remote-projects/ssh-shadow",
+			});
+
+			expect(prompt).not.toContain("Pi documentation");
+			expect(prompt).not.toContain("/Users/example/.pi-agent-chat/remote-projects/ssh-shadow");
+			expect(prompt).toContain("Current working directory: /srv/app");
+		});
+
+		test("omits local pi docs in remote-agent-child mode", () => {
+			process.env.PI_RUNTIME_KIND = "remote-agent-child";
+			delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
+
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: "/srv/app",
+			});
+
+			expect(prompt).not.toContain("Pi documentation");
+			expect(prompt).toContain("Current working directory: /srv/app");
 		});
 	});
 

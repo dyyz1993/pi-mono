@@ -2,7 +2,7 @@
  * System prompt construction and project context loading
  */
 
-import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
+import { getDocsPath, getExamplesPath, getReadmePath, getRuntimeContext, getRuntimeResourcePolicy } from "../config.ts";
 import { type AgentConfig, formatAgentsForPrompt } from "./agent-types.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
@@ -68,8 +68,9 @@ export function buildSystemPromptWithBreakdown(options: BuildSystemPromptOptions
 		skills: providedSkills,
 		agents: providedAgents,
 	} = options;
-	const resolvedCwd = cwd;
-	const promptCwd = resolvedCwd.replace(/\\/g, "/");
+	const runtimeContext = getRuntimeContext({ cwd });
+	const runtimePolicy = getRuntimeResourcePolicy(runtimeContext.kind);
+	const promptCwd = runtimeContext.displayProjectRoot.replace(/\\/g, "/");
 
 	const now = new Date();
 	const year = now.getFullYear();
@@ -177,12 +178,8 @@ export function buildSystemPromptWithBreakdown(options: BuildSystemPromptOptions
 
 Available tools:
 `;
-	const promptAfterTools = `
-
-In addition to the tools above, you may have access to other custom tools depending on the project.
-
-Guidelines:
-${guidelines}
+	const docsSection = runtimePolicy.promptMayMentionLocalPaths
+		? `
 
 Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}
@@ -191,7 +188,14 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 - When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
 - When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
 - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`
+		: "";
+	const promptAfterTools = `
+
+In addition to the tools above, you may have access to other custom tools depending on the project.
+
+Guidelines:
+${guidelines}${docsSection}`;
 
 	let prompt = promptBeforeTools + toolsList + promptAfterTools;
 	const breakdown = emptyBreakdown();

@@ -10,6 +10,7 @@ import {
 } from "@dyyz1993/pi-coding-agent";
 import { Text } from "@dyyz1993/pi-tui";
 import { Type } from "typebox";
+import { getExtensionRuntimeResourcePolicy } from "../runtime-policy.ts";
 
 import { type SubagentChannelContract } from "./subagent-shared/index.ts";
 import type { CoordinatorChannelContract } from "../coordinator/types.ts";
@@ -118,6 +119,8 @@ export function resolveSessionPath(sessionId: string, sessionsBase?: string): st
 }
 
 export default function(pi: ExtensionAPI) {
+  const runtimePolicy = getExtensionRuntimeResourcePolicy();
+  const canLoadConfiguredAgents = runtimePolicy.canLoadUserAgents || runtimePolicy.canLoadProjectAgents;
   const rawChannel = pi.registerChannel("subagent");
   const channel = createTypedChannel<SubagentChannelContract>(rawChannel).server;
 
@@ -144,12 +147,18 @@ export default function(pi: ExtensionAPI) {
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
-    description: [
-      "Delegate a task to a specialized subagent with isolated context.",
-      "Agents are discovered from ~/.pi/agent/agents/ (user) and .pi/agents/ (project).",
-      'Use agentScope to control discovery: "user" (default), "project", or "both".',
-      "The task is dispatched through the coordinator channel to Process Manager.",
-    ].join(" "),
+    description: !canLoadConfiguredAgents
+      ? [
+        "Delegate a task to a builtin subagent with isolated context.",
+        "SSH tool-proxy mode (quick SSH sandbox) does not expose local user or project agent files.",
+        "The task is dispatched through the coordinator channel to Process Manager.",
+      ].join(" ")
+      : [
+        "Delegate a task to a specialized subagent with isolated context.",
+        "Agents are discovered from ~/.pi/agent/agents/ (user) and .pi/agents/ (project).",
+        'Use agentScope to control discovery: "user" (default), "project", or "both".',
+        "The task is dispatched through the coordinator channel to Process Manager.",
+      ].join(" "),
     parameters: SubagentParams,
 
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {

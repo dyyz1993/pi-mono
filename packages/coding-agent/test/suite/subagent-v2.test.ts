@@ -31,8 +31,14 @@ const mockContext = {} as ToolRenderContext;
 
 const harnesses: Harness[] = [];
 const tempDirs: string[] = [];
+const originalRemoteSshToolProxy = process.env.PI_REMOTE_SSH_TOOL_PROXY;
 
 afterEach(() => {
+	if (originalRemoteSshToolProxy === undefined) {
+		delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
+	} else {
+		process.env.PI_REMOTE_SSH_TOOL_PROXY = originalRemoteSshToolProxy;
+	}
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
 	}
@@ -113,6 +119,16 @@ describe("subagent-v2 tool registration", () => {
 		const schema = tool!.parameters as { required: string[] };
 		expect(schema.required).toContain("task");
 		expect(schema.required).not.toContain("agent");
+	});
+
+	it("does not mention local agent directories in SSH tool-proxy mode", async () => {
+		process.env.PI_REMOTE_SSH_TOOL_PROXY = "1";
+		const harness = await createSubagentHarness();
+		const tool = harness.session.getToolDefinition("subagent") as { description?: string } | undefined;
+
+		expect(tool?.description).toContain("SSH tool-proxy mode");
+		expect(tool?.description).not.toContain("~/.pi/agent/agents");
+		expect(tool?.description).not.toContain(".pi/agents");
 	});
 });
 

@@ -205,7 +205,7 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
-	it("counts repeated auto-memory contexts in context usage", () => {
+	it("counts repeated memory contexts in context usage", () => {
 		const { session, sessionManager } = createSession();
 		const repeatedMemory = `<memory_context fingerprint="same-memory"><files>${"x".repeat(4000)}</files></memory_context>`;
 
@@ -223,6 +223,30 @@ describe("AgentSession.getSessionStats", () => {
 
 			expect(memory?.tokens).toBeGreaterThan(0);
 			expect(memory?.tokens).toBeGreaterThanOrEqual(Math.ceil((repeatedMemory.length * 2) / 4));
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("attributes Learning injected array user context as memory", () => {
+		const { session, sessionManager } = createSession();
+		const injectedMemory = `<memory_context fingerprint="learning-memory"><files>${"learned preference ".repeat(80)}</files></memory_context>`;
+
+		try {
+			sessionManager.appendMessage(createUserMessage("real user request", 1));
+			sessionManager.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: injectedMemory }],
+				timestamp: 2,
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const usage = session.getContextUsage();
+			const byId = new Map(usage?.breakdown?.map((item) => [item.id, item]));
+
+			expect(byId.get("memory")?.tokens).toBeGreaterThanOrEqual(Math.ceil(injectedMemory.length / 4));
+			expect(byId.get("conversation")?.tokens).toBeGreaterThan(0);
+			expect(usage?.tokens).toBe(usage?.breakdown?.reduce((sum, item) => sum + item.tokens, 0));
 		} finally {
 			session.dispose();
 		}

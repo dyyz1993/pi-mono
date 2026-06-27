@@ -135,6 +135,7 @@ import {
 	buildSystemPromptWithBreakdown,
 	type SystemPromptBreakdown,
 } from "./system-prompt.ts";
+import { normalizeTierModelsForAvailableModels } from "./tier-models.ts";
 import {
 	checkToolEnd,
 	createLoopDetectionState,
@@ -1329,7 +1330,7 @@ export class AgentSession {
 	}
 
 	getTierModels(): Record<string, string> {
-		return { ...this._tierModels };
+		return normalizeTierModelsForAvailableModels(this._tierModels, this.modelRegistry.getAvailable(), this.model);
 	}
 
 	setTierModels(mapping: Record<string, string>): void {

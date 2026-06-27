@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import autoMemoryExtensionDefault, { type CallLLMFn, MemoryPrefetch } from "../../extensions/auto-memory/index.ts";
-import { MEMORY_SYSTEM_PROMPT } from "../../extensions/auto-memory/prompts.ts";
-import { getEntrypointPath, getMemoryDir } from "../../extensions/auto-memory/utils.ts";
+import { type CallLLMFn, MemoryPrefetch } from "../../extensions/learning/context-provider.ts";
+import learningExtension from "../../extensions/learning/index.ts";
+import { MEMORY_SYSTEM_PROMPT } from "../../extensions/learning/prompts.ts";
+import { LearningStore } from "../../extensions/learning/store.ts";
 import type { ExtensionAPI } from "../../src/core/extensions/index.ts";
 
 let tempDir: string;
@@ -16,13 +17,13 @@ beforeEach(() => {
 	previousRemoteToolProxyEnv = process.env.PI_REMOTE_SSH_TOOL_PROXY;
 	previousAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
 	delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
-	delete process.env.PI_CODING_AGENT_DIR;
-	tempDir = join(tmpdir(), `am-xml-harness-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	tempDir = join(tmpdir(), `learning-memory-harness-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
+	process.env.PI_CODING_AGENT_DIR = join(tempDir, "agent");
 });
 
 afterEach(() => {
-	const memoryDir = getMemoryDir(tempDir);
+	const memoryDir = getMemoryDir();
 	if (existsSync(memoryDir)) rmSync(memoryDir, { recursive: true, force: true });
 	if (previousRemoteToolProxyEnv === undefined) {
 		delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
@@ -37,6 +38,14 @@ afterEach(() => {
 	if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 });
 
+function getMemoryDir(): string {
+	return new LearningStore(tempDir).paths.memoryDir;
+}
+
+function getEntrypointPath(): string {
+	return join(getMemoryDir(), "MEMORY.md");
+}
+
 function createMockPi(options: { sessionDataDir?: string } = {}) {
 	const handlers: Record<string, ((...args: any[]) => any)[]> = {};
 	const sentMessages: Array<{ customType: string; content: string; details?: unknown; display?: boolean }> = [];
@@ -47,14 +56,22 @@ function createMockPi(options: { sessionDataDir?: string } = {}) {
 		setStatus: vi.fn(),
 		notify: vi.fn(),
 	};
-	const mockCtx = { ui: mockUI, sessionDataDir: options.sessionDataDir ?? join(tempDir, "session-data") } as any;
+	const mockCtx = {
+		ui: mockUI,
+		cwd: tempDir,
+		projectRoot: tempDir,
+		sessionDataDir: options.sessionDataDir ?? join(tempDir, "session-data"),
+		sessionManager: {
+			getSessionId: () => "session-1",
+		},
+	} as any;
 
-	const mockChannel = {
-		name: "memory",
+	const mockChannel = (name: string) => ({
+		name,
 		send: vi.fn(),
 		onReceive: vi.fn(),
 		invoke: vi.fn(),
-	};
+	});
 
 	const pi = {
 		on: vi.fn((event: string, handler: (...args: any[]) => any) => {
@@ -72,7 +89,7 @@ function createMockPi(options: { sessionDataDir?: string } = {}) {
 		registerTool: vi.fn((tool: any) => {
 			registeredTools.push(tool);
 		}),
-		registerChannel: vi.fn(() => mockChannel),
+		registerChannel: vi.fn((name: string) => mockChannel(name)),
 		appendEntry: vi.fn((customType: string, data?: unknown) => {
 			appendedEntries.push({ customType, data });
 		}),
@@ -94,22 +111,22 @@ function createMockPi(options: { sessionDataDir?: string } = {}) {
 	return { pi, emit, ctx: mockCtx, sentMessages, appendedEntries, registeredTools };
 }
 
-describe("auto-memory storage paths", () => {
+describe("learning memory storage paths", () => {
 	it("uses PI_CODING_AGENT_DIR as the memory owner root", () => {
 		const agentDir = join(tempDir, "remote-agent-dir");
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 
-		const memoryDir = getMemoryDir(tempDir);
+		const memoryDir = getMemoryDir();
 
-		expect(memoryDir.startsWith(join(agentDir, "memory"))).toBe(true);
+		expect(memoryDir.startsWith(join(agentDir, "projects"))).toBe(true);
 	});
 });
 
-describe("auto-memory XML injection harness", () => {
+describe("learning memory XML injection harness", () => {
 	it("disables model-visible memory tools and injection in SSH tool-proxy mode", async () => {
 		process.env.PI_REMOTE_SSH_TOOL_PROXY = "1";
 		const { pi, emit, registeredTools, appendedEntries } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		expect(registeredTools.map((tool) => tool.name)).not.toContain("save_memory");
 		expect(registeredTools.map((tool) => tool.name)).not.toContain("create_bookmark");
@@ -128,7 +145,8 @@ describe("auto-memory XML injection harness", () => {
 		expect(beforeResult).toBeUndefined();
 		expect(contextResult).toBeUndefined();
 		expect(appendedEntries).toEqual([]);
-		expect(pi.registerChannel).toHaveBeenCalledWith("memory");
+		expect(pi.registerChannel).toHaveBeenCalledWith("learning");
+		expect(pi.registerChannel).not.toHaveBeenCalledWith("memory");
 	});
 
 	it("directs explicit memory saves through save_memory instead of filesystem tools", () => {
@@ -142,8 +160,9 @@ describe("auto-memory XML injection harness", () => {
 	});
 
 	it("does not expose physical memory paths in model-visible save events", async () => {
-		const { pi, registeredTools, appendedEntries } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		const { pi, emit, registeredTools, appendedEntries } = createMockPi();
+		learningExtension(pi);
+		await emit("session_start");
 
 		const saveMemory = registeredTools.find((tool) => tool.name === "save_memory");
 		expect(saveMemory).toBeDefined();
@@ -162,13 +181,13 @@ describe("auto-memory XML injection harness", () => {
 			"filePath",
 		);
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		rmSync(memoryDir, { recursive: true, force: true });
 	});
 
 	it("does not log the physical memory directory in prefetch custom entries", async () => {
 		const { pi, emit, appendedEntries } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 		await emit("before_agent_start", {
@@ -180,16 +199,16 @@ describe("auto-memory XML injection harness", () => {
 		const prefetchEntry = appendedEntries.find((entry) => entry.customType === "memory_prefetch");
 		expect(prefetchEntry).toBeDefined();
 		expect(JSON.stringify(prefetchEntry)).not.toContain("memoryDir");
-		expect(JSON.stringify(prefetchEntry)).not.toContain(getMemoryDir(process.cwd()));
+		expect(JSON.stringify(prefetchEntry)).not.toContain(getMemoryDir());
 	});
 
 	it("injects memory with XML wrapping on first context call", async () => {
 		const { pi, emit, sentMessages } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
@@ -225,11 +244,11 @@ describe("auto-memory XML injection harness", () => {
 
 	it("orders prefetch result before memory injection when context races prefetch completion", async () => {
 		const { pi, emit, appendedEntries } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
@@ -276,11 +295,11 @@ describe("auto-memory XML injection harness", () => {
 
 	it("does not persist memory messages when context is rebuilt repeatedly in one turn", async () => {
 		const { pi, emit, sentMessages, appendedEntries } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
@@ -315,11 +334,11 @@ describe("auto-memory XML injection harness", () => {
 	it("remembers injected memory fingerprints across session restart", async () => {
 		const sessionDataDir = join(tempDir, "persisted-session-data");
 		const firstRuntime = createMockPi({ sessionDataDir });
-		autoMemoryExtensionDefault(firstRuntime.pi);
+		learningExtension(firstRuntime.pi);
 
 		await firstRuntime.emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
@@ -345,7 +364,7 @@ describe("auto-memory XML injection harness", () => {
 		await new Promise((r) => setTimeout(r, 50));
 
 		const secondRuntime = createMockPi({ sessionDataDir });
-		autoMemoryExtensionDefault(secondRuntime.pi);
+		learningExtension(secondRuntime.pi);
 		(secondRuntime.pi.callLLM as ReturnType<typeof vi.fn>).mockResolvedValue(
 			JSON.stringify({ selected: ["test.md"] }),
 		);
@@ -382,11 +401,11 @@ describe("auto-memory XML injection harness", () => {
 
 	it("does not re-inject the same memory fingerprint on later turns when the prior injection was transient", async () => {
 		const { pi, emit, appendedEntries } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
@@ -437,11 +456,11 @@ describe("auto-memory XML injection harness", () => {
 
 	it("skips injection when fingerprint matches existing memory in context", async () => {
 		const { pi, emit, sentMessages } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
@@ -469,7 +488,7 @@ describe("auto-memory XML injection harness", () => {
 					{
 						type: "text",
 						text: `<memory_context fingerprint="${fingerprint}">
-<files count="1" source="auto-memory">
+<files count="1" source="learning">
 Content.
 </files>
 </memory_context>`,
@@ -492,11 +511,11 @@ Content.
 
 	it("re-injects after compaction removes existing memory", async () => {
 		const { pi, emit, sentMessages } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
@@ -550,11 +569,11 @@ Content.
 
 	it("re-injects when fingerprint changes (different query)", async () => {
 		const { pi, emit, sentMessages } = createMockPi();
-		autoMemoryExtensionDefault(pi);
+		learningExtension(pi);
 
 		await emit("session_start");
 
-		const memoryDir = getMemoryDir(process.cwd());
+		const memoryDir = getMemoryDir();
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "a.md"), "---\nname: A\ntype: project\n---\nA content.");
 		writeFileSync(join(memoryDir, "b.md"), "---\nname: B\ntype: project\n---\nB content.");
@@ -585,7 +604,7 @@ Content.
 					{
 						type: "text",
 						text: `<memory_context fingerprint="${oldFingerprint}">
-<files count="1" source="auto-memory">
+<files count="1" source="learning">
 ### a.md
 ${aFileContent}
 </files>

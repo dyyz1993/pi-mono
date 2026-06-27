@@ -1,3 +1,4 @@
+import type { ImageContent } from "@dyyz1993/pi-ai";
 import { applyPatch } from "diff";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -181,13 +182,46 @@ describe("Coding Agent Tools", () => {
 			expect(result.content[0]?.type).toBe("text");
 			expect(getTextOutput(result)).toContain("Read image file [image/png]");
 
-			const imageBlock = result.content.find(
-				(c): c is { type: "image"; mimeType: string; data: string } => c.type === "image",
-			);
+			const imageBlock = result.content.find((c): c is ImageContent => c.type === "image");
 			expect(imageBlock).toBeDefined();
 			expect(imageBlock?.mimeType).toBe("image/png");
 			expect(typeof imageBlock?.data).toBe("string");
 			expect((imageBlock?.data ?? "").length).toBeGreaterThan(0);
+			expect(imageBlock?.asset).toMatchObject({
+				type: "image",
+				mimeType: "image/png",
+				storage: "local",
+				visibility: "local",
+				sourcePath: testFile,
+			});
+			expect(getTextOutput(result)).toContain(`[Image asset: ${imageBlock?.asset?.id}]`);
+			expect(result.details?.asset?.id).toBe(imageBlock?.asset?.id);
+			expect(result.details?.resolver).toBe("image-file-resolver");
+			expect(imageBlock?.asset?.localPath && existsSync(imageBlock.asset.localPath)).toBe(true);
+		});
+
+		it("should allow file resolvers to handle read output", async () => {
+			const testFile = join(testDir, "custom.bin");
+			writeFileSync(testFile, Buffer.from([1, 2, 3]));
+			const tool = createReadTool(testDir, {
+				fileResolvers: [
+					{
+						name: "custom-test-resolver",
+						async resolve(ctx) {
+							if (!ctx.absolutePath.endsWith("custom.bin")) return undefined;
+							return {
+								content: [{ type: "text", text: "custom resolver output" }],
+								details: { custom: true },
+							};
+						},
+					},
+				],
+			});
+
+			const result = await tool.execute("test-call-resolver-1", { path: testFile });
+
+			expect(getTextOutput(result)).toBe("custom resolver output");
+			expect(result.details).toMatchObject({ custom: true, resolver: "custom-test-resolver" });
 		});
 
 		it("should treat files with image extension but non-image content as text", async () => {
