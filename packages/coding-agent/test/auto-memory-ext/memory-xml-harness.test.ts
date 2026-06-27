@@ -95,13 +95,14 @@ function createMockPi(options: { sessionDataDir?: string } = {}) {
 }
 
 describe("auto-memory storage paths", () => {
-	it("uses PI_CODING_AGENT_DIR as the memory owner root", () => {
+	it("stores memories under the legacy homedir-scoped agent root", () => {
 		const agentDir = join(tempDir, "remote-agent-dir");
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 
 		const memoryDir = getMemoryDir(tempDir);
 
-		expect(memoryDir.startsWith(join(agentDir, "memory"))).toBe(true);
+		expect(memoryDir.startsWith(join(agentDir, "memory"))).toBe(false);
+		expect(memoryDir).toContain(join(".pi", "agent", "memory"));
 	});
 });
 
@@ -131,14 +132,13 @@ describe("auto-memory XML injection harness", () => {
 		expect(pi.registerChannel).toHaveBeenCalledWith("memory");
 	});
 
-	it("directs explicit memory saves through save_memory instead of filesystem tools", () => {
+	it("documents the legacy filesystem-based save flow in the system prompt", () => {
 		const prompt = MEMORY_SYSTEM_PROMPT("/runtime-owned/memory", "");
 
-		expect(prompt).toContain("Use the save_memory tool");
-		expect(prompt).toContain("Do not use write, edit, bash");
-		expect(prompt).toContain("physical storage path is runtime-owned");
-		expect(prompt).not.toContain("/runtime-owned/memory");
-		expect(prompt).not.toContain("Step 1 — Write memory file");
+		expect(prompt).toContain("/runtime-owned/memory");
+		expect(prompt).toContain("Step 1 — Write memory file");
+		expect(prompt).toContain("Step 2 — Add pointer in MEMORY.md");
+		expect(prompt).not.toContain("Use the save_memory tool");
 	});
 
 	it("does not expose physical memory paths in model-visible save events", async () => {

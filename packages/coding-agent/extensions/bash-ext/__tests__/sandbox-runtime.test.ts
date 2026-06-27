@@ -39,8 +39,12 @@ describe("bash-ext sandbox runtime", () => {
       PI_SANDBOX_RUNTIME: "1",
     });
     expect(enabled.enabled).toBe(true);
-    expect(enabled.command).toContain("sandbox-exec");
     expect(enabled.command).toContain("echo hello");
+    if (process.platform === "darwin") {
+      expect(enabled.command).toContain("sandbox-exec");
+    } else {
+      expect(enabled.command).toContain("bwrap");
+    }
   });
 
   it("blocks writes outside the allowed roots on macOS", async () => {

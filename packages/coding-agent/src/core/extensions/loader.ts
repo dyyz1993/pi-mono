@@ -80,19 +80,28 @@ function getAliases(): Record<string, string> {
 	const typeboxValueEntry = require.resolve("typebox/value");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
-	const resolveWorkspaceOrImport = (workspaceRelativePath: string, specifier: string): string => {
-		const workspacePath = path.join(packagesRoot, workspaceRelativePath);
-		if (fs.existsSync(workspacePath)) {
-			return workspacePath;
+	const resolveWorkspaceOrImport = (workspaceRelativePaths: string[], specifier: string): string => {
+		for (const workspaceRelativePath of workspaceRelativePaths) {
+			const workspacePath = path.join(packagesRoot, workspaceRelativePath);
+			if (fs.existsSync(workspacePath)) {
+				return workspacePath;
+			}
 		}
-		return fileURLToPath(import.meta.resolve(specifier));
+		try {
+			return require.resolve(specifier);
+		} catch {
+			return fileURLToPath(import.meta.resolve(specifier));
+		}
 	};
 
 	const piCodingAgentEntry = packageIndex;
-	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@dyyz1993/pi-agent-core");
-	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@dyyz1993/pi-tui");
-	const piAiEntry = resolveWorkspaceOrImport("ai/dist/index.js", "@dyyz1993/pi-ai");
-	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@dyyz1993/pi-ai/oauth");
+	const piAgentCoreEntry = resolveWorkspaceOrImport(
+		["agent/dist/index.js", "agent/src/index.ts"],
+		"@dyyz1993/pi-agent-core",
+	);
+	const piTuiEntry = resolveWorkspaceOrImport(["tui/dist/index.js", "tui/src/index.ts"], "@dyyz1993/pi-tui");
+	const piAiEntry = resolveWorkspaceOrImport(["ai/dist/index.js", "ai/src/index.ts"], "@dyyz1993/pi-ai");
+	const piAiOauthEntry = resolveWorkspaceOrImport(["ai/dist/oauth.js", "ai/src/oauth.ts"], "@dyyz1993/pi-ai/oauth");
 
 	_aliases = {
 		"@dyyz1993/pi-coding-agent": piCodingAgentEntry,

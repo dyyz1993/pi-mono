@@ -78,6 +78,7 @@ function createMockExtensionAPI(channelObj: ReturnType<typeof createMockChannel>
 	const sentUserMessages: string[] = [];
 	const sentMessages: Array<{ message: Record<string, unknown>; options?: Record<string, unknown> }> = [];
 	const appendedEntries: Array<{ customType: string; data: unknown }> = [];
+	let toolOperationsProvider: Record<string, unknown> | undefined;
 
 	const api = {
 		on: (_event: string, _handler: unknown) => {},
@@ -94,6 +95,10 @@ function createMockExtensionAPI(channelObj: ReturnType<typeof createMockChannel>
 			sentUserMessages.push(msg);
 			sendUserMessageFn?.(msg, opts);
 		},
+		setToolOperationsProvider: (provider: Record<string, unknown> | undefined) => {
+			toolOperationsProvider = provider;
+		},
+		getToolOperationsProvider: () => toolOperationsProvider,
 	} as unknown as ExtensionAPI;
 
 	return { api, sentUserMessages, sentMessages, appendedEntries };

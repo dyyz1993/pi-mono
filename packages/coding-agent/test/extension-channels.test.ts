@@ -227,7 +227,7 @@ describe("Extension Channel Integration", () => {
 			expect(data!.ok).toBe(true);
 		});
 
-		it("review.approve returns ok for any path", async () => {
+		it("review.approve returns a structured error when no snapshot baseline is available", async () => {
 			const extPath = builtinExtensionPath("file-review");
 			const result = await discoverAndLoadExtensions([extPath], tempDir, tempDir);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
@@ -249,7 +249,8 @@ describe("Extension Channel Integration", () => {
 
 			const data = findResponse(outputs, "file-review", "test-approve-1");
 			expect(data).toBeDefined();
-			expect(data!.ok).toBe(true);
+			expect(data!.ok).toBe(false);
+			expect(data!.error).toBe("No snapshot available for approval");
 		});
 
 		it("review.live returns turnIndex and changes array", async () => {
