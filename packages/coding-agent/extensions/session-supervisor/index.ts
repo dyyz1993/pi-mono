@@ -34,6 +34,7 @@ import {
     GOAL_CHECKLIST_SYSTEM_PROMPT,
     GOAL_CHECKLIST_USER_PROMPT,
 } from "./prompts.ts";
+import { setForensicDir, appendForensic, forensicTs } from "./forensic.ts";
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -207,12 +208,20 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         persistGoalRuntimeState();
         emitStatusChanged();
         channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+        appendForensic({
+            ts: forensicTs(),
+            type: "goal_set",
+            goalId: activeGoal.id,
+            objective: activeGoal.objective,
+            checklistLength: activeGoal.checklist?.length ?? 0,
+        });
         queueGoalChecklistRefinement(activeGoal.id, objective);
 
         return { goal: activeGoal };
     });
 
     channel.handle("clearGoal", async (params) => {
+        const clearedGoalId = activeGoal?.id;
         if (activeGoal) {
             activeGoal = {
                 ...activeGoal,
@@ -225,6 +234,12 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         lastGoldResult = undefined;
         syncSupervisorToolVisibility();
         persistGoalRuntimeState();
+        appendForensic({
+            ts: forensicTs(),
+            type: "goal_cleared",
+            goalId: clearedGoalId,
+            reason: params.reason,
+        });
         channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: undefined, reason: params.reason });
         emitStatusChanged();
         return { cleared: true };
@@ -312,6 +327,13 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         },
         execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
             const summary = String(params.summary ?? "");
+            appendForensic({
+                ts: forensicTs(),
+                type: "supervisor_complete_called",
+                summary: summary.slice(0, 1000),
+                enabled,
+                activeGuardCount: getActiveGuards().length,
+            });
 
             if (!enabled) {
                 return {
@@ -323,6 +345,11 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
 
             const activeGuards = getActiveGuards();
             if (activeGuards.length === 0) {
+                appendForensic({
+                    ts: forensicTs(),
+                    type: "supervisor_complete_approved",
+                    guardsPassed: 0,
+                });
                 return {
                     content: [{ type: "text" as const, text: "Supervisor complete: approved (no active guards)" }],
                     details: { approved: true, reason: "No active guards" },
@@ -336,6 +363,12 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 if (!result.completed && result.remainingItems.length > 0) {
                     const blockMsg = generateBlockMessage(guard, result);
                     log(`supervisor_complete BLOCKED by ${guard.name}: ${result.remainingItems.join(", ")}`);
+                    appendForensic({
+                        ts: forensicTs(),
+                        type: "supervisor_complete_guard_blocked",
+                        guardName: guard.name,
+                        remainingItems: result.remainingItems,
+                    });
                     return {
                         content: [{ type: "text" as const, text: blockMsg }],
                         details: {
@@ -348,6 +381,11 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 }
             }
 
+            appendForensic({
+                ts: forensicTs(),
+                type: "supervisor_complete_approved",
+                guardsPassed: activeGuards.length,
+            });
             return {
                 content: [{ type: "text" as const, text: "Supervisor complete: approved — all guards passed." }],
                 details: { approved: true, reason: "All guards passed" },
@@ -394,6 +432,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
     pi.on("session_start", async (_event, ctx) => {
         sessionDataDir = ctx.sessionDataDir;
+        setForensicDir(sessionDataDir);
         config = loadConfig(ctx.sessionDataDir, ctx.projectDataDir);
         enabled = config.enable;
         specsIterationCount = 0;
@@ -421,6 +460,15 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             config.smallModel = modelFlag;
         }
 
+        appendForensic({
+            ts: forensicTs(),
+            type: "session_start",
+            enabled,
+            guardCount: getActiveGuards().length,
+            smallModel: config.smallModel,
+            maxContinueCount: config.maxContinueCount,
+        });
+
         // projectRoot is the git root (worktree-aware), correct for specs file resolution
         projectRoot = ctx.projectRoot ?? ctx.cwd;
 
@@ -443,16 +491,50 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
     pi.on("agent_end", async (event: AgentEndEvent, ctx) => {
         log(`agent_end: enabled=${enabled}, checkOnAgentEnd=${config.checkOnAgentEnd}`);
-        if (!enabled || !config.checkOnAgentEnd) return;
+        appendForensic({
+            ts: forensicTs(),
+            type: "agent_end_triggered",
+            enabled,
+            checkOnAgentEnd: config.checkOnAgentEnd,
+            schedulerExhausted: schedulerInstance?.isExhausted() ?? false,
+            hasActiveGoal: Boolean(activeGoal),
+            agentEndMs: Date.now(),
+        });
+        if (!enabled || !config.checkOnAgentEnd) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "agent_end_skipped",
+                reason: !enabled ? "disabled" : "checkOnAgentEnd=false",
+            });
+            return;
+        }
         if (activeGoal && ["complete", "cancelled", "blocked"].includes(activeGoal.status)) {
             currentState = "idle";
             log(`agent_end: skipping supervisor check for terminal goal status=${activeGoal.status}`);
+            appendForensic({
+                ts: forensicTs(),
+                type: "agent_end_skipped",
+                reason: `terminal goal status=${activeGoal.status}`,
+            });
             emitStatusChanged();
             return;
         }
-        if (pi.getFlag("disable-supervisor") === true) return;
+        if (pi.getFlag("disable-supervisor") === true) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "agent_end_skipped",
+                reason: "disable-supervisor flag",
+            });
+            return;
+        }
         if (schedulerInstance.isExhausted()) {
             log(`agent_end: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`);
+            appendForensic({
+                ts: forensicTs(),
+                type: "scheduler_exhausted",
+                continueCount: schedulerInstance.getContinueCount(),
+                maxContinueCount: config.maxContinueCount,
+            });
             return;
         }
 
@@ -514,6 +596,19 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 if (currentSignature === lastIncompleteSignature) {
                     stagnationCount++;
                     log(`Stagnation detected (count=${stagnationCount}), signature=${currentSignature}`);
+                    appendForensic({
+                        ts: forensicTs(),
+                        type: "stagnation_detected",
+                        stagnationCount,
+                        currentSignature,
+                        previousSignature: lastIncompleteSignature,
+                        guardResults: guardResults.map((r) => ({
+                            guardName: r.guardName,
+                            completed: r.completed,
+                            remainingItems: r.remainingItems,
+                            confidence: r.confidence,
+                        })),
+                    });
                 } else {
                     stagnationCount = 0;
                 }
@@ -775,6 +870,18 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             }
         });
 
+        if (result.scheduled) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "continue_scheduled",
+                reason: continueMessage.slice(0, 500),
+                delayMs,
+                continueCount: schedulerInstance.getContinueCount(),
+                maxContinueCount: config.maxContinueCount,
+                shouldPause,
+            });
+        }
+
         if (result.scheduled && shouldPause) {
             pendingPause = {
                 scheduledAt: result.scheduledAt ?? Date.now() + delayMs,
@@ -792,6 +899,17 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
         if (!result.scheduled) {
             log(`scheduleContinue: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}), not scheduling`);
+            appendForensic({
+                ts: forensicTs(),
+                type: "continue_skipped",
+                reason: `scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`,
+            });
+            appendForensic({
+                ts: forensicTs(),
+                type: "scheduler_exhausted",
+                continueCount: schedulerInstance.getContinueCount(),
+                maxContinueCount: config.maxContinueCount,
+            });
         }
     }
 
@@ -805,6 +923,14 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         guard: GuardConfig,
         context: string,
     ): Promise<GuardCheckResult> {
+        const startedAt = Date.now();
+        appendForensic({
+            ts: forensicTs(),
+            type: "guard_check_start",
+            guardName: guard.name,
+            guardType: guard.type,
+            contextLength: context.length,
+        });
         const base: GuardCheckResult = {
             guardName: guard.name,
             completed: true,
@@ -813,26 +939,54 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         };
 
         try {
+            let result: GuardCheckResult;
             switch (guard.type) {
                 case "todo":
-                    return await checkTodoGuard(guard, context);
+                    result = await checkTodoGuard(guard, context);
+                    break;
                 case "specs":
-                    return await checkSpecsGuard(guard, context);
+                    result = await checkSpecsGuard(guard, context);
+                    break;
                 case "ci":
-                    return await checkCiGuard(guard, context);
+                    result = await checkCiGuard(guard, context);
+                    break;
                 case "keyword":
-                    return checkKeywordGuard(guard, context);
+                    result = checkKeywordGuard(guard, context);
+                    break;
                 case "custom":
-                    return await checkCustomGuard(guard, context);
+                    result = await checkCustomGuard(guard, context);
+                    break;
                 default:
-                    return base;
+                    result = base;
+                    break;
             }
+            appendForensic({
+                ts: forensicTs(),
+                type: "guard_check_end",
+                guardName: guard.name,
+                guardType: guard.type,
+                completed: result.completed,
+                confidence: result.confidence,
+                remainingItems: result.remainingItems,
+                detail: result.detail,
+                durationMs: Date.now() - startedAt,
+            });
+            return result;
         } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            appendForensic({
+                ts: forensicTs(),
+                type: "guard_check_error",
+                guardName: guard.name,
+                guardType: guard.type,
+                error,
+                durationMs: Date.now() - startedAt,
+            });
             return {
                 ...base,
                 completed: false,
                 confidence: 0,
-                detail: `Guard check error: ${err instanceof Error ? err.message : String(err)}`,
+                detail: `Guard check error: ${error}`,
             };
         }
     }
@@ -1482,6 +1636,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
     function setGoalStatus(status: GoalState["status"], blocker?: GoalState["blockers"][number]): void {
         if (!activeGoal) return;
+        const oldStatus = activeGoal.status;
         activeGoal = applyChecklistProgress({
             ...activeGoal,
             status,
@@ -1490,6 +1645,15 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             blockers: blocker ? [...activeGoal.blockers, blocker] : activeGoal.blockers,
         });
         persistGoalRuntimeState();
+        if (oldStatus !== activeGoal.status) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "goal_status_changed",
+                goalId: activeGoal.id,
+                oldStatus,
+                newStatus: activeGoal.status,
+            });
+        }
         channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
     }
 
@@ -1500,6 +1664,11 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             checkedAt: Date.now(),
         };
         persistGoalRuntimeState();
+        appendForensic({
+            ts: forensicTs(),
+            type: "gold_result_emitted",
+            goldResult: lastGoldResult,
+        });
         channel.emit("supervisor.goldResult", { type: "goldResult" as const, ...lastGoldResult });
     }
 
