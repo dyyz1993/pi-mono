@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { interpretHookOutput } from "../extensions/pi-hooks/handler-runner.ts";
+import { interpretHookOutput, runHandler } from "../extensions/pi-hooks/handler-runner.ts";
+import type { HookHandler, HookStdinData } from "../extensions/pi-hooks/types.ts";
 
 describe("pi-hooks hook output interpretation", () => {
 	it("uses stderr as the block reason for exit code 2 (Claude Code compat)", () => {
@@ -57,5 +58,28 @@ describe("pi-hooks hook output interpretation", () => {
 
 		expect(result.shouldBlock).toBe(true);
 		expect(result.reason).toBe("配置热更新第二次验证");
+	});
+
+	it("ignores stdin EPIPE when a command hook exits before reading input", async () => {
+		const handler: HookHandler = {
+			type: "command",
+			command: "exit 0",
+			timeout: 1,
+		};
+		const stdinData: HookStdinData = {
+			session_id: "session-1",
+			transcript_path: "/tmp/transcript.jsonl",
+			cwd: process.cwd(),
+			permission_mode: "normal",
+			hook_event_name: "PreToolUse",
+			tool_name: "bash",
+			tool_input: { command: "echo ok" },
+			tool_use_id: "tool-1",
+			large_payload: "x".repeat(1024 * 1024),
+		};
+
+		await expect(runHandler(handler, stdinData, { cwd: process.cwd(), hasUI: false })).resolves.toMatchObject({
+			exitCode: 0,
+		});
 	});
 });

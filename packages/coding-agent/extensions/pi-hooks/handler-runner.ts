@@ -137,6 +137,11 @@ function runCommandHandler(handler: HookHandler, stdinData: HookStdinData, ctx: 
 			env,
 		});
 
+		proc.stdin.on("error", (err: NodeJS.ErrnoException) => {
+			if (err.code === "EPIPE") return;
+			stderr += stderr ? `\n${err.message}` : err.message;
+		});
+
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
@@ -144,8 +149,15 @@ function runCommandHandler(handler: HookHandler, stdinData: HookStdinData, ctx: 
 			resolve({ exitCode: 1, stdout: "", stderr: "Hook timed out" });
 		}, timeout);
 
-		proc.stdin.write(JSON.stringify(stdinData));
-		proc.stdin.end();
+		try {
+			proc.stdin.write(JSON.stringify(stdinData));
+			proc.stdin.end();
+		} catch (err) {
+			const error = err as NodeJS.ErrnoException;
+			if (error.code !== "EPIPE") {
+				stderr += stderr ? `\n${error.message}` : error.message;
+			}
+		}
 
 		proc.stdout.on("data", (d: Buffer) => {
 			stdout += d.toString();
