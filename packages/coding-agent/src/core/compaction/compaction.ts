@@ -742,6 +742,12 @@ export function prepareCompaction(
 		}
 	}
 
+	// If there's nothing to summarize (no messages to discard and no turn prefix to split),
+	// compaction is a no-op. This happens when the session is smaller than keepRecentTokens.
+	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) {
+		return undefined;
+	}
+
 	// Extract file operations from messages and previous compaction
 	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);
 

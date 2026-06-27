@@ -12,6 +12,8 @@ import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { FileSnapshotManager } from "../file-store/file-snapshot-manager.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { PermissionProvider } from "../permissions/provider.ts";
+import type { PermissionDecision, PermissionRequest } from "../permissions/types.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { Channel } from "./channel-types.ts";
@@ -44,6 +46,8 @@ import type {
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
+	PermissionRequestEvent,
+	PermissionRequestResult,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
@@ -234,6 +238,7 @@ export async function emitProjectTrustEvent(
 }
 
 const noOpUIContext: ExtensionUIContext = {
+	askUserQuestion: async () => undefined,
 	select: async () => undefined,
 	confirm: async () => false,
 	input: async () => undefined,
@@ -296,6 +301,14 @@ export class ExtensionRunner {
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
 	private getPermissionModeFn: () => string = () => "normal";
+	private permissionAskFn: (
+		request: PermissionRequest,
+		input?: Record<string, unknown>,
+	) => Promise<PermissionDecision> = async (request) => ({
+		type: "deny",
+		reason: `Permission request "${request.title}" cannot be handled.`,
+	});
+	private permissionProviders = new Map<string, PermissionProvider>();
 	private _currentExtensionName = "";
 	private getProjectRootFn: () => string = () => this.cwd;
 	private getSessionDataDirFn: () => string = () => "";
@@ -354,6 +367,16 @@ export class ExtensionRunner {
 
 	setPermissionModeFn(fn: () => string): void {
 		this.getPermissionModeFn = fn;
+	}
+
+	setPermissionAskFn(
+		fn: (request: PermissionRequest, input?: Record<string, unknown>) => Promise<PermissionDecision>,
+	): void {
+		this.permissionAskFn = fn;
+	}
+
+	getPermissionProvider(name: string): PermissionProvider | undefined {
+		return this.permissionProviders.get(name);
 	}
 
 	bindCore(
@@ -434,9 +457,24 @@ export class ExtensionRunner {
 			}
 			this.modelRegistry.unregisterProvider(name);
 		};
+
+		for (const { provider } of this.runtime.pendingPermissionProviderRegistrations) {
+			this.permissionProviders.set(provider.name, provider);
+		}
+		this.runtime.pendingPermissionProviderRegistrations = [];
+
+		this.runtime.registerPermissionProvider = (provider) => {
+			this.permissionProviders.set(provider.name, provider);
+		};
+		this.runtime.unregisterPermissionProvider = (name) => {
+			this.permissionProviders.delete(name);
+		};
 	}
 
 	flushPendingChannels(registerChannel: (name: string) => Channel): void {
+		console.error(
+			`[DIAG:flushPendingChannels] pending=${this.runtime.pendingChannelRegistrations.length} names=[${this.runtime.pendingChannelRegistrations.map((p) => p.name).join(",")}] resolved=[${[...this.runtime.resolvedChannels.keys()].join(",")}]`,
+		);
 		if (this.runtime.pendingChannelRegistrations.length === 0) return;
 
 		for (const pending of this.runtime.pendingChannelRegistrations) {
@@ -444,7 +482,11 @@ export class ExtensionRunner {
 				const channel = registerChannel(pending.name);
 				this.runtime.resolvedChannels.set(pending.name, channel);
 				pending.resolve(channel);
+				console.error(`[DIAG:flushPendingChannels] resolved "${pending.name}" OK`);
 			} catch (err) {
+				console.error(
+					`[DIAG:flushPendingChannels] FAILED to resolve "${pending.name}": ${err instanceof Error ? err.message : String(err)}`,
+				);
 				pending.reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		}
@@ -690,6 +732,7 @@ export class ExtensionRunner {
 	}
 
 	private wrapUIForInterception(uiContext: ExtensionUIContext): ExtensionUIContext {
+		const effectiveUIContext: ExtensionUIContext = { ...noOpUIContext, ...uiContext };
 		const wrapAsyncMethod = <TArgs extends unknown[], TResult>(
 			_methodName: "confirm" | "select" | "input" | "editor",
 			original: (...args: TArgs) => Promise<TResult>,
@@ -723,7 +766,7 @@ export class ExtensionRunner {
 
 		const wrappedConfirm = wrapAsyncMethod(
 			"confirm",
-			uiContext.confirm.bind(uiContext) as (
+			effectiveUIContext.confirm.bind(effectiveUIContext) as (
 				title: string,
 				message: string,
 				opts?: ExtensionUIDialogOptions,
@@ -739,12 +782,12 @@ export class ExtensionRunner {
 				signal: opts?.signal,
 				timeout: opts?.timeout,
 			}),
-			(result) => result.confirmed,
+			(result) => ("confirmed" in result ? result.confirmed : false),
 		);
 
 		const wrappedSelect = wrapAsyncMethod(
 			"select",
-			uiContext.select.bind(uiContext) as (
+			effectiveUIContext.select.bind(effectiveUIContext) as (
 				title: string,
 				options: string[],
 				opts?: ExtensionUIDialogOptions,
@@ -760,12 +803,12 @@ export class ExtensionRunner {
 				timeout: opts?.timeout,
 				permissionMeta: opts?.permissionMeta,
 			}),
-			(result) => result.value,
+			(result) => ("value" in result ? result.value : undefined),
 		);
 
 		const wrappedInput = wrapAsyncMethod(
 			"input",
-			uiContext.input.bind(uiContext) as (
+			effectiveUIContext.input.bind(effectiveUIContext) as (
 				title: string,
 				placeholder?: string,
 				opts?: ExtensionUIDialogOptions,
@@ -779,12 +822,15 @@ export class ExtensionRunner {
 				signal: opts?.signal,
 				timeout: opts?.timeout,
 			}),
-			(result) => result.value,
+			(result) => ("value" in result ? result.value : undefined),
 		);
 
 		const wrappedEditor = wrapAsyncMethod(
 			"editor",
-			uiContext.editor.bind(uiContext) as (title: string, prefill?: string) => Promise<string | undefined>,
+			effectiveUIContext.editor.bind(effectiveUIContext) as (
+				title: string,
+				prefill?: string,
+			) => Promise<string | undefined>,
 			(id, [title, prefill]) => ({
 				type: "ui" as const,
 				id,
@@ -792,10 +838,46 @@ export class ExtensionRunner {
 				title,
 				prefill,
 			}),
-			(result) => result.value,
+			(result) => ("value" in result ? result.value : undefined),
 		);
 
-		const originalNotify = uiContext.notify.bind(uiContext);
+		const wrappedAskUserQuestion = async (
+			questions: Parameters<ExtensionUIContext["askUserQuestion"]>[0],
+			opts?: Parameters<ExtensionUIContext["askUserQuestion"]>[1],
+		): Promise<Awaited<ReturnType<ExtensionUIContext["askUserQuestion"]>>> => {
+			const id = randomUUID();
+			const event: UIEvent = {
+				type: "ui",
+				id,
+				method: "askUserQuestion",
+				title: opts?.title ?? "Question",
+				questions,
+				toolCallId: opts?.toolCallId,
+				signal: opts?.signal,
+				timeout: opts?.timeout,
+			};
+
+			const handlerResult = await this.emitUIEventAsync(event);
+			if (handlerResult?.action === "responded" && "answers" in handlerResult) {
+				return handlerResult;
+			}
+
+			const originalPromise = effectiveUIContext.askUserQuestion(questions, opts);
+			const asyncPromise = this.createAsyncUIPromise(id).then((asyncResult) => {
+				if (asyncResult?.action === "responded" && "answers" in asyncResult) {
+					return asyncResult;
+				}
+				return effectiveUIContext.askUserQuestion(questions, opts);
+			});
+
+			try {
+				return await Promise.race([originalPromise, asyncPromise]);
+			} finally {
+				this.pendingUIResponses.delete(id);
+			}
+		};
+
+		const originalNotify = effectiveUIContext.notify.bind(effectiveUIContext);
 		const wrappedNotify = (message: string, type?: "info" | "warning" | "error"): void => {
 			const id = randomUUID();
 			const event: UIEvent = {
@@ -810,7 +892,8 @@ export class ExtensionRunner {
 		};
 
 		return {
-			...uiContext,
+			...effectiveUIContext,
+			askUserQuestion: wrappedAskUserQuestion,
 			confirm: wrappedConfirm,
 			select: wrappedSelect,
 			input: wrappedInput,
@@ -907,6 +990,20 @@ export class ExtensionRunner {
 			get permissionMode() {
 				runner.assertActive();
 				return runner.getPermissionModeFn();
+			},
+			permissions: {
+				ask: (request, input) => {
+					runner.assertActive();
+					return runner.permissionAskFn(request, input);
+				},
+				registerProvider: (provider) => {
+					runner.assertActive();
+					runner.runtime.registerPermissionProvider(provider, runner._currentExtensionName);
+				},
+				unregisterProvider: (name) => {
+					runner.assertActive();
+					runner.runtime.unregisterPermissionProvider(name, runner._currentExtensionName);
+				},
 			},
 			isIdle: () => {
 				runner.assertActive();
@@ -1179,6 +1276,42 @@ export class ExtensionRunner {
 		}
 
 		return result;
+	}
+
+	async emitPermissionRequest(event: PermissionRequestEvent): Promise<PermissionRequestResult | undefined> {
+		const ctx = this.createContext();
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("permission_request");
+			if (!handlers || handlers.length === 0) continue;
+
+			this._currentExtensionName = getExtensionName(ext.path);
+			for (const handler of handlers) {
+				try {
+					const handlerResult = await handler(event, ctx);
+					if (handlerResult) {
+						const result = handlerResult as PermissionRequestResult;
+						// First extension to return allow/deny wins
+						return result;
+					}
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "permission_request",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return undefined;
+	}
+
+	hasPermissionRequestHandlers(): boolean {
+		return this.extensions.some((ext) => (ext.handlers.get("permission_request")?.length ?? 0) > 0);
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {

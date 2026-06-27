@@ -7,18 +7,24 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as _bundledAnthropicSandboxRuntime from "@anthropic-ai/sandbox-runtime";
 import * as _bundledPiAgentCore from "@dyyz1993/pi-agent-core";
 import * as _bundledPiAi from "@dyyz1993/pi-ai";
 import * as _bundledPiAiOauth from "@dyyz1993/pi-ai/oauth";
 import type { KeyId } from "@dyyz1993/pi-tui";
 import * as _bundledPiTui from "@dyyz1993/pi-tui";
+import * as _bundledDiff from "diff";
+import _bundledIgnore from "ignore";
 import { createJiti } from "jiti/static";
+import * as _bundledMinimatch from "minimatch";
+import _bundledStripAnsi from "strip-ansi";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
 import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
+import * as _bundledYaml from "yaml";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @dyyz1993/pi-coding-agent.
@@ -54,6 +60,12 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@dyyz1993/pi-ai": _bundledPiAi,
 	"@dyyz1993/pi-ai/oauth": _bundledPiAiOauth,
 	"@dyyz1993/pi-coding-agent": _bundledPiCodingAgent,
+	"@anthropic-ai/sandbox-runtime": _bundledAnthropicSandboxRuntime,
+	diff: _bundledDiff,
+	ignore: { default: _bundledIgnore },
+	minimatch: _bundledMinimatch,
+	"strip-ansi": { default: _bundledStripAnsi },
+	yaml: _bundledYaml,
 	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
 	"@mariozechner/pi-tui": _bundledPiTui,
 	"@mariozechner/pi-ai": _bundledPiAi,
@@ -80,19 +92,28 @@ function getAliases(): Record<string, string> {
 	const typeboxValueEntry = require.resolve("typebox/value");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
-	const resolveWorkspaceOrImport = (workspaceRelativePath: string, specifier: string): string => {
-		const workspacePath = path.join(packagesRoot, workspaceRelativePath);
-		if (fs.existsSync(workspacePath)) {
-			return workspacePath;
+	const resolveWorkspaceOrImport = (workspaceRelativePaths: string[], specifier: string): string => {
+		for (const workspaceRelativePath of workspaceRelativePaths) {
+			const workspacePath = path.join(packagesRoot, workspaceRelativePath);
+			if (fs.existsSync(workspacePath)) {
+				return workspacePath;
+			}
 		}
-		return fileURLToPath(import.meta.resolve(specifier));
+		try {
+			return require.resolve(specifier);
+		} catch {
+			return fileURLToPath(import.meta.resolve(specifier));
+		}
 	};
 
 	const piCodingAgentEntry = packageIndex;
-	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@dyyz1993/pi-agent-core");
-	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@dyyz1993/pi-tui");
-	const piAiEntry = resolveWorkspaceOrImport("ai/dist/index.js", "@dyyz1993/pi-ai");
-	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@dyyz1993/pi-ai/oauth");
+	const piAgentCoreEntry = resolveWorkspaceOrImport(
+		["agent/dist/index.js", "agent/src/index.ts"],
+		"@dyyz1993/pi-agent-core",
+	);
+	const piTuiEntry = resolveWorkspaceOrImport(["tui/dist/index.js", "tui/src/index.ts"], "@dyyz1993/pi-tui");
+	const piAiEntry = resolveWorkspaceOrImport(["ai/dist/index.js", "ai/src/index.ts"], "@dyyz1993/pi-ai");
+	const piAiOauthEntry = resolveWorkspaceOrImport(["ai/dist/oauth.js", "ai/src/oauth.ts"], "@dyyz1993/pi-ai/oauth");
 
 	_aliases = {
 		"@dyyz1993/pi-coding-agent": piCodingAgentEntry,
@@ -157,6 +178,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		callLLM: () => Promise.reject(new Error("Extension runtime not initialized")),
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
+		pendingPermissionProviderRegistrations: [],
 		pendingChannelRegistrations: [],
 		resolvedChannels: new Map(),
 		assertActive,
@@ -172,6 +194,14 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		},
 		unregisterProvider: (name) => {
 			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
+		},
+		registerPermissionProvider: (provider, extensionPath = "<unknown>") => {
+			runtime.pendingPermissionProviderRegistrations.push({ provider, extensionPath });
+		},
+		unregisterPermissionProvider: (name) => {
+			runtime.pendingPermissionProviderRegistrations = runtime.pendingPermissionProviderRegistrations.filter(
+				(r) => r.provider.name !== name,
+			);
 		},
 	};
 
@@ -325,7 +355,7 @@ function createExtensionAPI(
 			runtime.sendUserMessage(content, options);
 		},
 
-		appendEntry(customType: string, data?: unknown): void {
+		appendEntry(customType: string, data?: unknown, _options?: { display?: boolean }): void {
 			runtime.assertActive();
 			runtime.appendEntry(customType, data);
 		},
@@ -409,6 +439,17 @@ function createExtensionAPI(
 		registerChannel(name: string) {
 			runtime.assertActive();
 			return runtime.registerChannel(name);
+		},
+
+		permissions: {
+			registerProvider(provider) {
+				runtime.assertActive();
+				runtime.registerPermissionProvider(provider, extension.path);
+			},
+			unregisterProvider(name: string) {
+				runtime.assertActive();
+				runtime.unregisterPermissionProvider(name, extension.path);
+			},
 		},
 
 		setModel(model) {
@@ -660,6 +701,9 @@ function discoverExtensionsInDir(dir: string): string[] {
 
 		for (const entry of entries) {
 			const entryPath = path.join(dir, entry.name);
+
+			// Skip directories/files starting with _ (disabled extensions)
+			if (entry.name.startsWith("_")) continue;
 
 			// 1. Direct files: *.ts or *.js
 			if ((entry.isFile() || entry.isSymbolicLink()) && isExtensionFile(entry.name)) {

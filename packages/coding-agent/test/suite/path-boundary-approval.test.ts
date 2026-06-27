@@ -4,7 +4,26 @@ import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ExtensionUIContext } from "../../src/core/extensions/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
+
+function makePermissionUi(choice: string): ExtensionUIContext {
+	return {
+		select: async () => choice,
+		confirm: async () => false,
+		input: async () => undefined,
+		askUserQuestion: async () => undefined,
+		notify: () => undefined,
+		onTerminalInput: () => () => undefined,
+		setStatus: () => undefined,
+		setWorkingMessage: () => undefined,
+		setWorkingVisible: () => undefined,
+		setWorkingIndicator: () => undefined,
+		setHiddenThinkingLabel: () => undefined,
+		setWidget: () => undefined,
+		setFooter: () => undefined,
+	} as unknown as ExtensionUIContext;
+}
 
 describe("path boundary approval", () => {
 	const harnesses: Harness[] = [];
@@ -83,7 +102,7 @@ describe("path boundary approval", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("write", { file_path: "/tmp/outside.txt", content: "data" }), {
+			fauxAssistantMessage(fauxToolCall("write", { file_path: "/etc/pi-outside.txt", content: "data" }), {
 				stopReason: "toolUse",
 			}),
 			fauxAssistantMessage("done"),
@@ -91,6 +110,44 @@ describe("path boundary approval", () => {
 
 		await harness.session.prompt("write file outside");
 		expect(executed).toBe(false);
+	});
+
+	it("stores always-allow path boundary decisions in the permission store", async () => {
+		let executed = false;
+		const writeTool: AgentTool = {
+			name: "write",
+			label: "Write",
+			description: "Write file",
+			parameters: Type.Object({ file_path: Type.String(), content: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+
+		const harness = await createHarness({ tools: [writeTool] });
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ uiContext: makePermissionUi("2. Always allow"), mode: "rpc" });
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("write", { file_path: "/etc/pi-outside.txt", content: "data" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("write file outside");
+
+		expect(executed).toBe(true);
+		expect(harness.settingsManager.getProjectSettings().permissions?.rules).toEqual([
+			expect.objectContaining({
+				provider: "path-access",
+				subject: "file.write",
+				pattern: "/etc/**",
+				action: "allow",
+				scope: "project",
+			}),
+		]);
 	});
 
 	it("allows tools without file paths (e.g. bash)", async () => {

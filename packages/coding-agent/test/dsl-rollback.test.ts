@@ -311,7 +311,7 @@ describe("FileSnapshotManager", () => {
 			writeFile(dir, "c.txt", "new");
 			mgr.onTurnEnd(dir, 0, appendEntry);
 
-			const result = mgr.getBatchDiffs();
+			const result = mgr.getBatchDiffs({ cwd: dir });
 			expect(result.summary.added).toBe(1);
 			expect(result.summary.modified).toBe(1);
 			expect(result.summary.totalFiles).toBe(2);
@@ -323,7 +323,7 @@ describe("FileSnapshotManager", () => {
 			mgr.initialize(dir);
 			mgr.onTurnEnd(dir, 0, appendEntry);
 
-			const result = mgr.getBatchDiffs();
+			const result = mgr.getBatchDiffs({ cwd: dir });
 			expect(result.summary.totalFiles).toBe(0);
 			expect(result.files).toHaveLength(0);
 		});
@@ -737,7 +737,7 @@ describe("FileSnapshotManager", () => {
 		});
 
 		it("getBatchFileContents returns empty map for no paths", () => {
-			const result = mgr.getBatchFileContents([]);
+			const result = mgr.getBatchFileContents([], dir);
 			expect(result.size).toBe(0);
 		});
 	});

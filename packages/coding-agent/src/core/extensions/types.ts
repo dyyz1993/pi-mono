@@ -50,6 +50,8 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { PermissionProvider } from "../permissions/provider.ts";
+import type { PermissionAction, PermissionDecision, PermissionRequest } from "../permissions/types.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -98,26 +100,76 @@ export interface ExtensionUIDialogOptions {
 	multiple?: boolean;
 	/** Tool call associated with the dialog, if any. */
 	toolCallId?: string;
+	/** Confirm button label override for confirmation dialogs. */
+	confirmText?: string;
+	/** Cancel button label override for confirmation dialogs. */
+	cancelText?: string;
 	/** Hook-specific metadata used by RPC clients to render permission prompts. */
 	hookMeta?: {
 		toolName?: string;
 		matcher?: string;
+		description?: string;
 		command?: string;
 		hookCommand?: string;
 		eventName?: string;
 		source?: string;
 		reason?: string;
+		confirmText?: string;
+		cancelText?: string;
 	};
 	/** Path permission metadata for rendering approval cards in RPC clients. */
-	permissionMeta?: {
-		type: "path_boundary";
-		path: string;
-		cwd: string;
-		toolName: string;
-		scope: "read" | "write";
-		relativeTo: string;
-	};
+	permissionMeta?: ExtensionUIPermissionMeta;
 }
+
+export interface AskUserQuestionOption {
+	label: string;
+	description?: string;
+	preview?: string;
+}
+
+export interface AskUserQuestion {
+	id: string;
+	header: string;
+	question: string;
+	options: AskUserQuestionOption[];
+	multiSelect?: boolean;
+}
+
+export interface AskUserQuestionAnswer {
+	selected: string[];
+	text?: string;
+}
+
+export interface AskUserQuestionResponse {
+	action: "responded";
+	answers: Record<string, AskUserQuestionAnswer>;
+	annotations?: Record<string, unknown>;
+}
+
+export type AskUserQuestionOptions = ExtensionUIDialogOptions & {
+	title?: string;
+	message?: string;
+};
+
+export type ExtensionUIPermissionMeta =
+	| {
+			type: "path_boundary";
+			path: string;
+			cwd: string;
+			toolName: string;
+			scope: "read" | "write";
+			relativeTo: string;
+	  }
+	| {
+			type: "permission_runtime";
+			requestId: string;
+			provider: string;
+			subject: string;
+			actions: PermissionAction[];
+			rememberOptions?: PermissionRequest["rememberOptions"];
+			toolCallId?: string;
+			metadata?: Record<string, unknown>;
+	  };
 
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
@@ -156,6 +208,12 @@ export interface ExtensionUIContext {
 
 	/** Show a text input dialog. */
 	input(title: string, placeholder?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+
+	/** Ask one or more structured questions and return the collected answers. */
+	askUserQuestion(
+		questions: AskUserQuestion[],
+		opts?: AskUserQuestionOptions,
+	): Promise<AskUserQuestionResponse | undefined>;
 
 	/** Show a notification to the user. */
 	notify(message: string, type?: "info" | "warning" | "error"): void;
@@ -310,6 +368,87 @@ export interface ContextUsage {
 	contextWindow: number;
 	/** Context usage as percentage of context window, or null if tokens is unknown. */
 	percent: number | null;
+	/** Estimated token breakdown by prompt/message source. */
+	breakdown?: ContextUsageBreakdownItem[];
+	/** Lightweight summary of the latest provider payload, without raw prompt content. */
+	providerRequest?: ProviderRequestContextUsage;
+}
+
+export type ContextUsageBreakdownId =
+	| "system_base"
+	| "tools"
+	| "mcp_tools"
+	| "context_files"
+	| "skills"
+	| "agents"
+	| "tool_inputs"
+	| "tool_outputs"
+	| "conversation"
+	| "thinking"
+	| "memory"
+	| "rules"
+	| "lsp"
+	| "provider_system"
+	| "provider_messages"
+	| "provider_tools"
+	| "provider_options"
+	| "unclassified";
+
+export interface ContextUsageCompactionInfo {
+	count: number;
+	tokensBefore: number;
+	summaryTokens: number;
+	estimatedSavedTokens: number;
+}
+
+export interface ContextUsageBreakdownItem {
+	id: ContextUsageBreakdownId;
+	label: string;
+	tokens: number;
+	source: "core" | "extension";
+	estimated: boolean;
+	details?: Array<{ label: string; tokens: number }>;
+	compaction?: ContextUsageCompactionInfo;
+}
+
+export interface ProviderRequestContextUsageSection {
+	id: "system" | "messages" | "tools" | "options";
+	label: string;
+	chars: number;
+	tokens: number;
+	count?: number;
+}
+
+export interface ProviderRequestToolDefinitionUsage {
+	name: string;
+	chars: number;
+	tokens: number;
+}
+
+export interface ProviderRequestToolInteractionUsage {
+	name: string;
+	inputCount: number;
+	inputChars: number;
+	inputTokens: number;
+	avgInputTokens: number;
+	outputCount: number;
+	outputChars: number;
+	outputTokens: number;
+	avgOutputTokens: number;
+}
+
+export interface ProviderRequestContextUsage {
+	version: 1;
+	provider: string;
+	modelId: string;
+	api?: string;
+	timestamp: string;
+	payloadChars: number;
+	payloadTokens: number;
+	topLevelKeys: string[];
+	sections: ProviderRequestContextUsageSection[];
+	toolDefinitions?: ProviderRequestToolDefinitionUsage[];
+	toolInteractions?: ProviderRequestToolInteractionUsage[];
 }
 
 export interface CompactOptions {
@@ -340,6 +479,8 @@ export interface ExtensionContext {
 	model: Model<any> | undefined;
 	/** Current permission mode used by the active agent session. */
 	permissionMode?: string;
+	/** Unified permission request service for extensions that implement policy gates. */
+	permissions: ExtensionPermissionService;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
 	/** Whether project-local trust is active for this context. */
@@ -382,14 +523,26 @@ export interface ExtensionContext {
 	respondUI(id: string, result: UIEventResult): () => void;
 }
 
+export interface ExtensionPermissionRegistrationService {
+	/** Register or override a permission provider by its provider.name. */
+	registerProvider(provider: PermissionProvider): void;
+	/** Remove a permission provider previously registered by this extension runtime. */
+	unregisterProvider(name: string): void;
+}
+
+export interface ExtensionPermissionService extends ExtensionPermissionRegistrationService {
+	ask(request: PermissionRequest, input?: Record<string, unknown>): Promise<PermissionDecision>;
+}
+
 /** UI event emitted to extensions for remote response. */
 export interface UIEvent {
 	type: "ui";
 	id: string;
-	method: "confirm" | "select" | "input" | "notify" | "editor";
+	method: "askUserQuestion" | "confirm" | "select" | "input" | "notify" | "editor";
 	title: string;
 	message?: string;
 	options?: string[];
+	questions?: AskUserQuestion[];
 	placeholder?: string;
 	prefill?: string;
 	notifyType?: "info" | "warning" | "error";
@@ -398,26 +551,24 @@ export interface UIEvent {
 	hookMeta?: {
 		toolName?: string;
 		matcher?: string;
+		description?: string;
 		command?: string;
 		hookCommand?: string;
 		eventName?: string;
 		source?: string;
 		reason?: string;
 	};
-	permissionMeta?: {
-		type: "path_boundary";
-		path: string;
-		cwd: string;
-		toolName: string;
-		scope: "read" | "write";
-		relativeTo: string;
-	};
+	permissionMeta?: ExtensionUIPermissionMeta;
 	signal?: AbortSignal;
 	timeout?: number;
 }
 
 /** Result of a UI event response. */
-export type UIEventResult = { action: "responded"; confirmed?: boolean; value?: string } | undefined;
+export type UIEventResult =
+	| { action: "responded"; confirmed: boolean }
+	| { action: "responded"; value: string }
+	| AskUserQuestionResponse
+	| undefined;
 
 /**
  * Extended context for command handlers.
@@ -711,6 +862,8 @@ export interface SessionTreeEvent {
 	oldLeafId: string | null;
 	summaryEntry?: BranchSummaryEntry;
 	fromExtension?: boolean;
+	skipFiles?: boolean;
+	preview?: boolean;
 }
 
 /** Fired when entries are removed from or replaced in LLM context. */
@@ -1131,6 +1284,36 @@ export interface ToolCallEventResult {
 	reason?: string;
 }
 
+// ============================================================================
+// Permission Request Event (Claude Code PermissionRequest compat)
+// ============================================================================
+
+export interface PermissionRequestEvent {
+	type: "permission_request";
+	toolName: string;
+	toolCallId: string;
+	input: Record<string, unknown>;
+	/** What kind of permission is needed (e.g. "path_boundary"). */
+	reason: string;
+	/** The path or resource that needs approval (if applicable). */
+	path?: string;
+	/** New PermissionRuntime request shape, when the request originated from a provider. */
+	request?: PermissionRequest;
+	subject?: string;
+	title?: string;
+	message?: string;
+	actions?: PermissionAction[];
+}
+
+export interface PermissionRequestResult {
+	/** "allow" = skip the user dialog and proceed. "deny" = block the tool call. */
+	decision: "allow" | "deny";
+	/** Reason shown to the model/user. */
+	message?: string;
+	/** Modified tool input (only for "allow"). */
+	updatedInput?: Record<string, unknown>;
+}
+
 /** Result from user_bash event handler */
 export interface UserBashEventResult {
 	/** Custom operations to use for execution */
@@ -1268,6 +1451,7 @@ export interface ExtensionAPI {
 	on(event: "thinking_level_select", handler: ExtensionHandler<ThinkingLevelSelectEvent>): void;
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
+	on(event: "permission_request", handler: ExtensionHandler<PermissionRequestEvent, PermissionRequestResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
 	on(event: "ui", handler: ExtensionHandler<UIEvent, UIEventResult>): void;
@@ -1337,7 +1521,7 @@ export interface ExtensionAPI {
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	appendEntry<T = unknown>(customType: string, data?: T, options?: { display?: boolean }): void;
 
 	/** Hide existing entries from LLM context by appending a deletion marker. */
 	deleteEntries(targetIds: string[]): void;
@@ -1387,6 +1571,9 @@ export interface ExtensionAPI {
 
 	/** Register a bidirectional RPC channel for extension/client communication. */
 	registerChannel(name: string): Channel;
+
+	/** Permission provider registration API for policy extensions. */
+	permissions: ExtensionPermissionRegistrationService;
 
 	// =========================================================================
 	// Model and Thinking Level
@@ -1604,7 +1791,7 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp" },
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: { display?: boolean }) => void;
 
 export type DeleteEntriesHandler = (targetIds: string[]) => void;
 
@@ -1666,6 +1853,8 @@ export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+	/** Permission provider registrations queued during extension loading. */
+	pendingPermissionProviderRegistrations: Array<{ provider: PermissionProvider; extensionPath: string }>;
 	pendingChannelRegistrations: Array<{
 		name: string;
 		resolve: (channel: Channel) => void;
@@ -1684,6 +1873,8 @@ export interface ExtensionRuntimeState {
 	 */
 	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
 	unregisterProvider: (name: string, extensionPath?: string) => void;
+	registerPermissionProvider: (provider: PermissionProvider, extensionPath?: string) => void;
+	unregisterPermissionProvider: (name: string, extensionPath?: string) => void;
 }
 
 /**

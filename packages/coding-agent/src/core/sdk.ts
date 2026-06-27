@@ -7,7 +7,16 @@ import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { AuthStorage } from "./auth-storage.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type {
+	ExtensionRunner,
+	LoadExtensionsResult,
+	ProviderRequestContextUsage,
+	ProviderRequestContextUsageSection,
+	ProviderRequestToolDefinitionUsage,
+	ProviderRequestToolInteractionUsage,
+	SessionStartEvent,
+	ToolDefinition,
+} from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findInitialModel } from "./model-resolver.ts";
@@ -128,6 +137,190 @@ export {
 
 function getDefaultAgentDir(): string {
 	return getAgentDir();
+}
+
+function estimatePayloadTokens(chars: number): number {
+	return Math.ceil(Math.max(chars, 0) / 4);
+}
+
+function safeJsonChars(value: unknown): number {
+	try {
+		return JSON.stringify(value)?.length ?? 0;
+	} catch {
+		return 0;
+	}
+}
+
+function asPayloadRecord(payload: unknown): Record<string, unknown> | null {
+	return payload && typeof payload === "object" && !Array.isArray(payload)
+		? (payload as Record<string, unknown>)
+		: null;
+}
+
+function section(
+	id: ProviderRequestContextUsageSection["id"],
+	label: string,
+	value: unknown,
+	count?: number,
+): ProviderRequestContextUsageSection {
+	const chars = safeJsonChars(value);
+	return {
+		id,
+		label,
+		chars,
+		tokens: estimatePayloadTokens(chars),
+		...(count !== undefined ? { count } : {}),
+	};
+}
+
+function countArray(value: unknown): number | undefined {
+	return Array.isArray(value) ? value.length : undefined;
+}
+
+function toolNameFromDefinition(tool: unknown): string {
+	const record = asPayloadRecord(tool);
+	const fn = asPayloadRecord(record?.function);
+	const name = record?.name ?? fn?.name;
+	return typeof name === "string" && name.length > 0 ? name : "unknown";
+}
+
+function summarizeToolDefinitions(tools: unknown): ProviderRequestToolDefinitionUsage[] | undefined {
+	if (!Array.isArray(tools)) return undefined;
+	return tools
+		.map((tool) => {
+			const chars = safeJsonChars(tool);
+			return {
+				name: toolNameFromDefinition(tool),
+				chars,
+				tokens: estimatePayloadTokens(chars),
+			};
+		})
+		.sort((a, b) => b.tokens - a.tokens);
+}
+
+function addToolInteraction(
+	map: Map<string, ProviderRequestToolInteractionUsage>,
+	name: string,
+	kind: "input" | "output",
+	chars: number,
+): void {
+	const existing =
+		map.get(name) ??
+		({
+			name,
+			inputCount: 0,
+			inputChars: 0,
+			inputTokens: 0,
+			avgInputTokens: 0,
+			outputCount: 0,
+			outputChars: 0,
+			outputTokens: 0,
+			avgOutputTokens: 0,
+		} satisfies ProviderRequestToolInteractionUsage);
+	if (kind === "input") {
+		existing.inputCount += 1;
+		existing.inputChars += chars;
+		existing.inputTokens += estimatePayloadTokens(chars);
+		existing.avgInputTokens = Math.round(existing.inputTokens / existing.inputCount);
+	} else {
+		existing.outputCount += 1;
+		existing.outputChars += chars;
+		existing.outputTokens += estimatePayloadTokens(chars);
+		existing.avgOutputTokens = Math.round(existing.outputTokens / existing.outputCount);
+	}
+	map.set(name, existing);
+}
+
+function summarizeToolInteractions(messages: unknown): ProviderRequestToolInteractionUsage[] | undefined {
+	if (!Array.isArray(messages)) return undefined;
+	const byToolCallId = new Map<string, string>();
+	const byToolName = new Map<string, ProviderRequestToolInteractionUsage>();
+
+	for (const message of messages) {
+		const record = asPayloadRecord(message);
+		if (!record) continue;
+
+		const toolCalls = Array.isArray(record.tool_calls) ? record.tool_calls : [];
+		for (const toolCall of toolCalls) {
+			const toolCallRecord = asPayloadRecord(toolCall);
+			const fn = asPayloadRecord(toolCallRecord?.function);
+			const nameValue = fn?.name ?? toolCallRecord?.name;
+			const name = typeof nameValue === "string" && nameValue.length > 0 ? nameValue : "unknown";
+			const idValue = toolCallRecord?.id;
+			if (typeof idValue === "string" && idValue.length > 0) byToolCallId.set(idValue, name);
+			addToolInteraction(byToolName, name, "input", safeJsonChars(fn?.arguments ?? toolCallRecord));
+		}
+
+		const content = record.content;
+		if (Array.isArray(content)) {
+			for (const part of content) {
+				const partRecord = asPayloadRecord(part);
+				if (!partRecord) continue;
+				if (partRecord.type === "tool_use") {
+					const nameValue = partRecord.name;
+					const name = typeof nameValue === "string" && nameValue.length > 0 ? nameValue : "unknown";
+					const idValue = partRecord.id;
+					if (typeof idValue === "string" && idValue.length > 0) byToolCallId.set(idValue, name);
+					addToolInteraction(byToolName, name, "input", safeJsonChars(partRecord.input));
+				} else if (partRecord.type === "tool_result") {
+					const toolUseId = partRecord.tool_use_id;
+					const name = typeof toolUseId === "string" ? (byToolCallId.get(toolUseId) ?? "unknown") : "unknown";
+					addToolInteraction(byToolName, name, "output", safeJsonChars(partRecord.content));
+				}
+			}
+		}
+
+		if (record.role === "tool") {
+			const toolCallId = record.tool_call_id;
+			const name = typeof toolCallId === "string" ? (byToolCallId.get(toolCallId) ?? "unknown") : "unknown";
+			addToolInteraction(byToolName, name, "output", safeJsonChars(record.content));
+		}
+	}
+
+	const result = Array.from(byToolName.values()).sort(
+		(a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens),
+	);
+	return result.length > 0 ? result : undefined;
+}
+
+export function summarizeProviderPayloadForContextUsage(
+	payload: unknown,
+	model: Model<any>,
+): ProviderRequestContextUsage {
+	const record = asPayloadRecord(payload);
+	const topLevelKeys = record ? Object.keys(record).sort() : [];
+	const systemValue = record?.system ?? record?.instructions ?? record?.developer ?? null;
+	const messagesValue = record?.messages ?? record?.input ?? null;
+	const toolsValue = record?.tools ?? null;
+	const optionsValue = record
+		? Object.fromEntries(
+				Object.entries(record).filter(
+					([key]) => !["system", "instructions", "developer", "messages", "input", "tools"].includes(key),
+				),
+			)
+		: null;
+	const payloadChars = safeJsonChars(payload);
+	const toolDefinitions = summarizeToolDefinitions(toolsValue);
+	const toolInteractions = summarizeToolInteractions(messagesValue);
+
+	return {
+		version: 1,
+		provider: model.provider,
+		modelId: model.id,
+		api: model.api,
+		timestamp: new Date().toISOString(),
+		payloadChars,
+		payloadTokens: estimatePayloadTokens(payloadChars),
+		topLevelKeys,
+		sections: [
+			section("system", "Provider system/instructions", systemValue),
+			section("messages", "Provider messages/input", messagesValue, countArray(messagesValue)),
+			section("tools", "Provider tools", toolsValue, countArray(toolsValue)),
+			section("options", "Provider options/metadata", optionsValue),
+		],
+		...(toolDefinitions ? { toolDefinitions } : {}),
+		...(toolInteractions ? { toolInteractions } : {}),
+	};
 }
 
 /**
@@ -329,12 +522,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				),
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, payloadModel) => {
 			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
+			let providerPayload = payload;
+			if (runner?.hasHandlers("before_provider_request")) {
+				const nextPayload = await runner.emitBeforeProviderRequest(providerPayload);
+				if (nextPayload !== undefined) {
+					providerPayload = nextPayload;
+				}
 			}
-			return runner.emitBeforeProviderRequest(payload);
+			sessionManager.appendCustomEntry(
+				"provider_request_context_usage",
+				summarizeProviderPayloadForContextUsage(providerPayload, payloadModel),
+			);
+			return providerPayload;
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;

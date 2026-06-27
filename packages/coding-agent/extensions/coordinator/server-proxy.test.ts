@@ -16,7 +16,7 @@ vi.mock("console", () => ({
   // silence debug logs from serverProxy catch blocks
 }));
 
-import { createServerProxy } from "./index.ts";
+import { createServerProxy } from "./server-proxy.ts";
 import type { ProcessManagerApi } from "./handler.ts";
 
 // ── Mock client that simulates typed channel client.call() ──
@@ -156,7 +156,21 @@ describe("serverProxy delegate", () => {
 
     expect(client.call).toHaveBeenCalledWith(
       "session_delegate",
-      { task: "run tests", projectPath: "/tmp/project" },
+      { task: "run tests", projectPath: "/tmp/project", replyMode: undefined },
+    );
+  });
+
+  it("passes replyMode to client.call", async () => {
+    client.mockCall("session_delegate", () => ({
+      sessionId: "sess-del-3",
+      status: "started",
+    }));
+
+    await proxy.delegate("run tests", "/tmp/project", "interrupt");
+
+    expect(client.call).toHaveBeenCalledWith(
+      "session_delegate",
+      { task: "run tests", projectPath: "/tmp/project", replyMode: "interrupt" },
     );
   });
 });
@@ -179,6 +193,21 @@ describe("serverProxy delegate_send", () => {
     const result = await proxy.delegate_send("from-1", "to-2", "hello");
     expect(result.delivered).toBe(true);
     expect(result.targetStatus).toBe("active");
+  });
+
+  it("passes mode to client.call('session_delegate_send', ...)", async () => {
+    client.mockCall("session_delegate_send", () => ({
+      delivered: true,
+      targetStatus: "active",
+    }));
+
+    await proxy.delegate_send("from-1", "to-2", "hello", "steer");
+
+    expect(client.call).toHaveBeenCalledWith("session_delegate_send", {
+      targetSessionId: "to-2",
+      message: "hello",
+      mode: "steer",
+    });
   });
 
   it("returns empty array on error", async () => {

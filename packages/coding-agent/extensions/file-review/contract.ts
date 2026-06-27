@@ -36,6 +36,10 @@ export interface FileApproval {
 	path: string;
 	status: ApprovalStatus;
 	timestamp: number;
+	/** Explicit step-snapshot entry approved for this file. */
+	snapshotEntryId?: string;
+	/** Snapshot tree hash for diagnostics; snapshotEntryId remains authoritative. */
+	snapshotTreeHash?: string;
 }
 
 export interface PendingChange {
@@ -84,7 +88,7 @@ export interface FileReviewChannelContract extends ChannelContract {
 		};
 		"review.approve": {
 			params: { path: string };
-			return: { ok: boolean };
+			return: { ok: boolean; snapshotEntryId?: string; error?: string };
 		};
 		"review.reject": {
 			params: { path: string };

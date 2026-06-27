@@ -20,7 +20,9 @@ import type { Theme } from "../../src/modes/interactive/theme/theme.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 // Load subagent-v2 extension factory
-const subagentV2Factory: ExtensionFactory = (await import("../../extensions/subagent-v2/index.ts")).default;
+const subagentV2Module = await import("../../extensions/subagent-v2/index.ts");
+const subagentV2Factory: ExtensionFactory = subagentV2Module.default;
+const { resolveSubagentAgentName } = subagentV2Module;
 
 // ── Helpers ──
 
@@ -29,8 +31,14 @@ const mockContext = {} as ToolRenderContext;
 
 const harnesses: Harness[] = [];
 const tempDirs: string[] = [];
+const originalRemoteSshToolProxy = process.env.PI_REMOTE_SSH_TOOL_PROXY;
 
 afterEach(() => {
+	if (originalRemoteSshToolProxy === undefined) {
+		delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
+	} else {
+		process.env.PI_REMOTE_SSH_TOOL_PROXY = originalRemoteSshToolProxy;
+	}
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
 	}
@@ -105,12 +113,61 @@ describe("subagent-v2 tool registration", () => {
 		expect(schema.properties).toHaveProperty("model");
 	});
 
-	it("subagent tool has required fields: agent and task", async () => {
+	it("subagent tool only requires task and can resolve agent automatically", async () => {
 		const harness = await createSubagentHarness();
 		const tool = harness.session.getToolDefinition("subagent");
 		const schema = tool!.parameters as { required: string[] };
-		expect(schema.required).toContain("agent");
 		expect(schema.required).toContain("task");
+		expect(schema.required).not.toContain("agent");
+	});
+
+	it("does not mention local agent directories in SSH tool-proxy mode", async () => {
+		process.env.PI_REMOTE_SSH_TOOL_PROXY = "1";
+		const harness = await createSubagentHarness();
+		const tool = harness.session.getToolDefinition("subagent") as { description?: string } | undefined;
+
+		expect(tool?.description).toContain("SSH tool-proxy mode");
+		expect(tool?.description).not.toContain("~/.pi/agent/agents");
+		expect(tool?.description).not.toContain(".pi/agents");
+	});
+});
+
+describe("subagent agent resolution", () => {
+	it("resolves omitted, default, and auto to worker when available", () => {
+		const agents = [{ name: "build" }, { name: "worker" }, { name: "interactive-worker" }];
+		expect(resolveSubagentAgentName(undefined, agents)).toMatchObject({
+			resolvedAgentName: "worker",
+			usedDefaultAgent: true,
+		});
+		expect(resolveSubagentAgentName("default", agents)).toMatchObject({
+			requestedAgentName: "default",
+			resolvedAgentName: "worker",
+			usedDefaultAgent: true,
+		});
+		expect(resolveSubagentAgentName("auto", agents)).toMatchObject({
+			requestedAgentName: "auto",
+			resolvedAgentName: "worker",
+			usedDefaultAgent: true,
+		});
+	});
+
+	it("falls back to build and then first available agent", () => {
+		expect(resolveSubagentAgentName("default", [{ name: "build" }, { name: "plan" }])).toMatchObject({
+			resolvedAgentName: "build",
+			usedDefaultAgent: true,
+		});
+		expect(resolveSubagentAgentName("default", [{ name: "plan" }])).toMatchObject({
+			resolvedAgentName: "plan",
+			usedDefaultAgent: true,
+		});
+	});
+
+	it("keeps explicit non-default names for normal unknown-agent errors", () => {
+		expect(resolveSubagentAgentName("reviewer", [{ name: "worker" }])).toMatchObject({
+			requestedAgentName: "reviewer",
+			resolvedAgentName: "reviewer",
+			usedDefaultAgent: false,
+		});
 	});
 });
 
@@ -384,11 +441,13 @@ function createCrossWiredChannels(delegateHandler: DelegateSyncHandler) {
 	// Set up the server-side mock handler
 	const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
 	coordinatorServer.handle("session_delegate_sync", delegateHandler);
+	coordinatorServer.handle("session_delegate_list", async () => ({ tasks: [] }));
 
 	return {
 		clientManager,
 		serverManager,
 		clientCoordinatorRaw: clientRaw,
+		coordinatorServer,
 		registerChannel: (name: string): Channel => {
 			if (name === "coordinator_client") {
 				return clientRaw;
@@ -541,6 +600,39 @@ describe("subagent tool normal execution path", () => {
 		expect(capturedParams!.agent).toBe("test-worker");
 	});
 
+	it("resolves default agent before calling coordinator", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-default-agent",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "ok",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "default",
+					task: "check default agent param",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a default subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.agent).toEqual(expect.any(String));
+		expect(capturedParams!.agent).not.toBe("default");
+	});
+
 	it("passes model override to coordinator", async () => {
 		let capturedParams: Record<string, unknown> | undefined;
 
@@ -641,6 +733,267 @@ describe("subagent tool normal execution path", () => {
 			exitCode: 0,
 			finalText: "entry test done",
 		});
+	});
+
+	it("forwards delegate_progress events as subagent_progress custom_entry", async () => {
+		// Custom cross-wired setup: handler gets access to coordinatorServer for emit
+		const managers: { client?: ChannelManager; server?: ChannelManager } = {};
+		const clientManager = new ChannelManager((msg: ChannelDataMessage) => {
+			setImmediate(() => managers.server!.handleInbound(msg));
+		});
+		const serverManager = new ChannelManager((msg: ChannelDataMessage) => {
+			setImmediate(() => managers.client!.handleInbound(msg));
+		});
+		managers.client = clientManager;
+		managers.server = serverManager;
+
+		const serverRaw = serverManager.register("coordinator_client");
+		const clientRaw = clientManager.register("coordinator_client");
+
+		const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
+
+		// Handler emits progress events before returning the result
+		coordinatorServer.handle("session_delegate_sync", async (params) => {
+			// Emit progress events (simulating child process lifecycle)
+			coordinatorServer.emit("delegate_progress", {
+				sessionId: "sess-prog",
+				toolCallId: params.toolCallId ?? "unknown",
+				eventType: "agent_start",
+			});
+			coordinatorServer.emit("delegate_progress", {
+				sessionId: "sess-prog",
+				toolCallId: params.toolCallId ?? "unknown",
+				eventType: "tool_execution_start",
+				data: { tool: "read" },
+			});
+			coordinatorServer.emit("delegate_progress", {
+				sessionId: "sess-prog",
+				toolCallId: params.toolCallId ?? "unknown",
+				eventType: "message_end",
+			});
+
+			return {
+				sessionId: "sess-prog",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "progress test done",
+			};
+		});
+		coordinatorServer.handle("session_delegate_list", async () => ({ tasks: [] }));
+
+		const h = await createHarness({
+			extensionFactories: [subagentV2Factory],
+		});
+		harnesses.push(h);
+
+		const agentsDir = join(h.tempDir, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "test-worker.md"),
+			[
+				"---",
+				"name: test-worker",
+				"description: A test worker agent",
+				"mode: subagent",
+				"---",
+				"You are a test worker agent.",
+			].join("\n"),
+		);
+
+		await h.session.bindExtensions({
+			registerChannel: (name: string): Channel => {
+				if (name === "coordinator_client") return clientRaw;
+				return clientManager.register(name);
+			},
+		});
+
+		h.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "emit progress",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("parent done"),
+		]);
+
+		await h.session.prompt("run a subagent with progress");
+
+		// Verify subagent_progress custom_entry events were emitted
+		const customEntries = h.eventsOfType("custom_entry");
+		const progressEntries = customEntries.filter((e) => e.customType === "subagent_progress");
+		expect(progressEntries.length).toBe(3);
+
+		const eventTypes = progressEntries.map((e) => (e.data as { eventType: string }).eventType);
+		expect(eventTypes).toContain("agent_start");
+		expect(eventTypes).toContain("tool_execution_start");
+		expect(eventTypes).toContain("message_end");
+	});
+
+	it("subagent entry includes timing (startedAt/completedAt)", async () => {
+		const testStartedAt = Date.now();
+		const { harness } = await createHarnessWithCoordinator(async () => {
+			// Small delay to ensure startedAt < completedAt
+			await new Promise((r) => setTimeout(r, 10));
+			return {
+				sessionId: "sess-timing",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "timing test",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "timing test",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		const subagentEntries = harness.eventsOfType("custom_entry").filter((e) => e.customType === "subagent");
+		expect(subagentEntries.length).toBe(1);
+
+		const data = subagentEntries[0]!.data as { startedAt: number; completedAt: number };
+		expect(data.startedAt).toBeGreaterThanOrEqual(testStartedAt);
+		expect(data.completedAt).toBeGreaterThan(data.startedAt);
+	});
+
+	it("subagent entry persists to sessionManager for reload recovery", async () => {
+		const { harness } = await createHarnessWithCoordinator(async () => ({
+			sessionId: "sess-persist",
+			status: "completed" as const,
+			exitCode: 0,
+			finalText: "persist test",
+		}));
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "persistence test",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		// The subagent custom_entry should be persisted in sessionManager entries
+		const entries = harness.sessionManager.getEntries();
+		const subagentEntries = entries.filter(
+			(e) => e.type === "custom" && (e as { customType: string }).customType === "subagent",
+		);
+		expect(subagentEntries.length).toBe(1);
+
+		const entryData = (subagentEntries[0] as { data: { sessionId: string; finalText: string } }).data;
+		expect(entryData.sessionId).toBe("sess-persist");
+		expect(entryData.finalText).toBe("persist test");
+	});
+
+	it("subagent_progress events filtered by toolCallId", async () => {
+		const managers: { client?: ChannelManager; server?: ChannelManager } = {};
+		const clientManager = new ChannelManager((msg: ChannelDataMessage) => {
+			setImmediate(() => managers.server!.handleInbound(msg));
+		});
+		const serverManager = new ChannelManager((msg: ChannelDataMessage) => {
+			setImmediate(() => managers.client!.handleInbound(msg));
+		});
+		managers.client = clientManager;
+		managers.server = serverManager;
+
+		const serverRaw = serverManager.register("coordinator_client");
+		const clientRaw = clientManager.register("coordinator_client");
+
+		const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
+
+		coordinatorServer.handle("session_delegate_sync", async (params) => {
+			// Emit events with matching toolCallId
+			coordinatorServer.emit("delegate_progress", {
+				sessionId: "sess-filter",
+				toolCallId: params.toolCallId ?? "unknown",
+				eventType: "agent_start",
+			});
+			// Emit events with WRONG toolCallId (should be filtered out)
+			coordinatorServer.emit("delegate_progress", {
+				sessionId: "sess-filter",
+				toolCallId: "wrong-id",
+				eventType: "tool_execution_start",
+			});
+
+			return {
+				sessionId: "sess-filter",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "filter test done",
+			};
+		});
+		coordinatorServer.handle("session_delegate_list", async () => ({ tasks: [] }));
+
+		const h = await createHarness({
+			extensionFactories: [subagentV2Factory],
+		});
+		harnesses.push(h);
+
+		const agentsDir = join(h.tempDir, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "test-worker.md"),
+			[
+				"---",
+				"name: test-worker",
+				"description: A test worker agent",
+				"mode: subagent",
+				"---",
+				"You are a test worker agent.",
+			].join("\n"),
+		);
+
+		await h.session.bindExtensions({
+			registerChannel: (name: string): Channel => {
+				if (name === "coordinator_client") return clientRaw;
+				return clientManager.register(name);
+			},
+		});
+
+		h.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "filter test",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await h.session.prompt("run a subagent");
+
+		// Only the event with matching toolCallId should be forwarded
+		const progressEntries = h.eventsOfType("custom_entry").filter((e) => e.customType === "subagent_progress");
+		expect(progressEntries.length).toBe(1);
+
+		const eventType = (progressEntries[0]!.data as { eventType: string }).eventType;
+		expect(eventType).toBe("agent_start");
+		// The "tool_execution_start" with wrong toolCallId should NOT be present
+		expect(progressEntries.some((e) => (e.data as { eventType: string }).eventType === "tool_execution_start")).toBe(
+			false,
+		);
 	});
 });
 

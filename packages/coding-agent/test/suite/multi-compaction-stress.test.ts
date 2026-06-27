@@ -18,7 +18,8 @@ import {
 	type ToolResultMessage,
 } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import multiCompaction from "../../extensions/multi-compaction/index.ts";
+import { DEFAULT_CONFIG } from "../../extensions/_multi-compaction/config.ts";
+import multiCompaction, { createMultiCompaction } from "../../extensions/_multi-compaction/index.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -238,7 +239,7 @@ describe("Multi-compaction stress tests", () => {
 	it("handles 50 consecutive compaction cycles without degradation", async () => {
 		const harness = await createHarness({
 			extensionFactories: [multiCompaction],
-			settings: { compaction: { keepRecentTokens: 100 } },
+			settings: { compaction: { keepRecentTokens: 1 } },
 		});
 		harnesses.push(harness);
 		useSummaryStreamFn(harness, "Repeated compaction summary");
@@ -257,6 +258,7 @@ describe("Multi-compaction stress tests", () => {
 				harness.sessionManager.appendMessage(
 					createToolResultMsg("read", `Result data for cycle ${cycle} msg ${j}: ${"x ".repeat(200)}`),
 				);
+				harness.sessionManager.appendMessage(createAssistantMsg(`Cycle ${cycle} response ${j}`));
 			}
 
 			const success = await sessionInternals._runAutoCompaction("threshold", false);
@@ -287,7 +289,7 @@ describe("Multi-compaction stress tests", () => {
 	it("handles alternating compact and overflow recovery", async () => {
 		const harness = await createHarness({
 			extensionFactories: [multiCompaction],
-			settings: { compaction: { keepRecentTokens: 100 } },
+			settings: { compaction: { keepRecentTokens: 1 } },
 		});
 		harnesses.push(harness);
 		useSummaryStreamFn(harness, "Alternating recovery summary");
@@ -307,6 +309,7 @@ describe("Multi-compaction stress tests", () => {
 				harness.sessionManager.appendMessage(
 					createToolResultMsg("bash", `Output round ${round} cmd ${j}: ${"output ".repeat(100)}`),
 				);
+				harness.sessionManager.appendMessage(createAssistantMsg(`Round ${round} response ${j}`));
 			}
 
 			// Alternate between threshold and overflow
@@ -330,7 +333,16 @@ describe("Multi-compaction stress tests", () => {
 
 	it("determinism under repeated transformContext calls (cache safety)", async () => {
 		const harness = await createHarness({
-			extensionFactories: [multiCompaction],
+			extensionFactories: [
+				createMultiCompaction({
+					contextFold: { ...DEFAULT_CONFIG.contextFold, enabled: false },
+					lineFold: { ...DEFAULT_CONFIG.lineFold, enabled: false },
+					microcompact: { ...DEFAULT_CONFIG.microcompact, minIntervalMs: 0 },
+					sessionMemory: { ...DEFAULT_CONFIG.sessionMemory, enabled: false },
+					snipCompact: { ...DEFAULT_CONFIG.snipCompact, enabled: false },
+					toolResultBudget: { ...DEFAULT_CONFIG.toolResultBudget, enabled: false },
+				}),
+			],
 		});
 		harnesses.push(harness);
 
@@ -350,7 +362,7 @@ describe("Multi-compaction stress tests", () => {
 
 		// Run transformContext 10 times on the same input
 		for (let i = 0; i < 10; i++) {
-			const transformed = await harness.session.agent.transformContext!(context.messages);
+			const transformed = await harness.session.agent.transformContext!(structuredClone(context.messages));
 			outputs.push(JSON.stringify(transformed));
 		}
 

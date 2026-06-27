@@ -5,6 +5,8 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@dyyz1993/pi-ai";
 import { ProcessTerminal, setKeybindings, TUI } from "@dyyz1993/pi-tui";
@@ -23,11 +25,13 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
+import type { AgentConfig } from "./core/agent-types.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { discoverAgents } from "./core/index.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
@@ -47,6 +51,7 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { parseFrontmatter } from "./utils/frontmatter.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { resolveSchema } from "./utils/structured-output.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
@@ -736,6 +741,44 @@ export async function main(args: string[], options?: MainOptions) {
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRegistry, searchPattern);
 		process.exit(0);
+	}
+
+	// Apply --agent config if specified
+	if (parsed.agent) {
+		// Check if the value is a file path (relative or absolute)
+		const agentPath = parsed.agent.endsWith(".md") ? parsed.agent : `${parsed.agent}.md`;
+		const resolvedPath = resolve(sessionManager.getCwd(), agentPath);
+		if (existsSync(resolvedPath)) {
+			const content = readFileSync(resolvedPath, "utf-8");
+			const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+			if (!frontmatter.name) {
+				process.stderr.write(`Agent file "${resolvedPath}" is missing a "name" in frontmatter.\n`);
+				process.exit(1);
+			}
+			const agent: AgentConfig = {
+				name: `${frontmatter.name}`,
+				description: `${frontmatter.description ?? ""}`,
+				tools: Array.isArray(frontmatter.tools) ? (frontmatter.tools as string[]) : undefined,
+				disallowedTools: Array.isArray(frontmatter.disallowedTools)
+					? (frontmatter.disallowedTools as string[])
+					: undefined,
+				permissionMode: frontmatter.permissionMode as AgentConfig["permissionMode"],
+				paths: frontmatter.paths as AgentConfig["paths"],
+				systemPrompt: body,
+				source: "user",
+				filePath: resolvedPath,
+			};
+			session.applyAgentConfig(agent);
+		} else {
+			const discovery = discoverAgents(sessionManager.getCwd(), "both");
+			const agent = discovery.agents.find((candidate) => candidate.name === parsed.agent);
+			if (!agent) {
+				const available = discovery.agents.map((a) => a.name).join(", ");
+				process.stderr.write(`Agent "${parsed.agent}" not found. Available: ${available || "none"}\n`);
+				process.exit(1);
+			}
+			session.applyAgentConfig(agent);
+		}
 	}
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC

@@ -4,8 +4,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getRuntimeResourcePolicy } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
+import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
+import type { PermissionProfileInput } from "./permissions/index.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -14,6 +16,15 @@ export type AgentColor = "red" | "blue" | "green" | "yellow" | "purple" | "orang
 export type MemoryScope = "user" | "project" | "local";
 
 export type IsolationMode = "worktree" | "remote";
+
+/**
+ * Discriminated avatar value parsed from the `avatar` frontmatter field.
+ * - `emoji`: short unicode/emoji text rendered as-is (e.g. "🧑‍💻").
+ * - `image`: anything that resolves to a loadable image source — http(s) URL,
+ *   `data:` URI, absolute path, or relative path (relative paths are resolved
+ *   against the agent .md file's directory at the consumer side).
+ */
+export type AgentAvatar = { type: "emoji"; value: string } | { type: "image"; src: string };
 
 export interface AgentHookCommand {
 	type: "command";
@@ -67,7 +78,8 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: AgentSource;
 	filePath: string;
-	permissionMode?: "normal" | "yolo" | "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+	permissionMode?: PermissionProfileInput;
+	permissionProfile?: PermissionProfileInput;
 	maxTurns?: number;
 	effort?: string;
 	color?: AgentColor;
@@ -83,6 +95,7 @@ export interface AgentConfig {
 	mode?: AgentMode;
 	hidden?: boolean;
 	paths?: PathConfig;
+	avatar?: AgentAvatar;
 }
 
 export type AgentSource = "builtin" | "plugin" | "user" | "project" | "flag" | "policy";
@@ -100,6 +113,7 @@ const STRING_FIELDS: ReadonlySet<string> = new Set([
 	"description",
 	"model",
 	"permissionMode",
+	"permissionProfile",
 	"effort",
 	"color",
 	"memory",
@@ -186,12 +200,12 @@ function isStringRecord(raw: unknown): raw is Record<string, string> {
 function parseHooks(raw: unknown): AgentHooks | undefined {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
 	const hooks: AgentHooks = {};
-	for (const [event, handlers] of Object.entries(raw as Record<string, unknown>)) {
+	for (const [event, handlers] of Object.entries(asRecord(raw))) {
 		if (!Array.isArray(handlers)) continue;
 		const parsed: AgentHookEntry[] = [];
 		for (const handler of handlers) {
 			if (!handler || typeof handler !== "object" || Array.isArray(handler)) continue;
-			const obj = handler as Record<string, unknown>;
+			const obj = asRecord(handler);
 			if (Array.isArray(obj.hooks)) {
 				const groupHooks = obj.hooks
 					.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
@@ -221,13 +235,27 @@ function sanitizePatternArray(raw: unknown): string[] | undefined {
 
 function parsePathConfig(raw: unknown): PathConfig | undefined {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-	const obj = raw as Record<string, unknown>;
+	const obj = asRecord(raw);
 	const paths: PathConfig = {
 		write: sanitizePatternArray(obj.write),
 		read: sanitizePatternArray(obj.read),
 		bash: sanitizePatternArray(obj.bash),
 	};
 	return paths.write || paths.read || paths.bash ? paths : undefined;
+}
+
+const AVATAR_IMAGE_SCHEME = /^(https?:|data:|file:)/i;
+// Path-like: starts with `/`, `./`, `../`, or a Windows drive root (e.g. `C:\` or `C:/`).
+const AVATAR_PATH_PREFIX = /^(\/|\.\/|\.\.[/\\]|[A-Za-z]:[\\/])/;
+
+function parseAvatar(raw: unknown): AgentAvatar | undefined {
+	if (typeof raw !== "string") return undefined;
+	const trimmed = raw.trim();
+	if (!trimmed) return undefined;
+	if (AVATAR_IMAGE_SCHEME.test(trimmed) || AVATAR_PATH_PREFIX.test(trimmed)) {
+		return { type: "image", src: trimmed };
+	}
+	return { type: "emoji", value: trimmed };
 }
 
 export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
@@ -256,10 +284,74 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
 		if (!frontmatter.name || !frontmatter.description) continue;
 
+		// Validate: warn on unknown / deprecated fields so authors can fix them early
+		const KNOWN_FIELDS = new Set([
+			"name",
+			"description",
+			"tools",
+			"disallowedTools",
+			"model",
+			"permissionMode",
+			"permissionProfile",
+			"maxTurns",
+			"effort",
+			"color",
+			"background",
+			"memory",
+			"isolation",
+			"initialPrompt",
+			"skills",
+			"hooks",
+			"variables",
+			"tier",
+			"thinkingLevel",
+			"mode",
+			"hidden",
+			"paths",
+			"avatar",
+		]);
+		const fmKeys = Object.keys(frontmatter);
+		const unknownFields = fmKeys.filter((k) => !KNOWN_FIELDS.has(k));
+		if (unknownFields.length > 0) {
+			console.warn(
+				`[agent] "${entry.name}" has unrecognized frontmatter field(s): ${unknownFields.join(", ")}. ` +
+					`Valid fields: ${[...KNOWN_FIELDS].join(", ")}`,
+			);
+		}
+		// Commonly forgotten but useful fields — hint only, not an error
+		const suggestedHints: string[] = [];
+		if (!frontmatter.tier && !frontmatter.model) suggestedHints.push("tier");
+		if (!frontmatter.thinkingLevel) suggestedHints.push("thinkingLevel");
+		if (!frontmatter.effort) suggestedHints.push("effort");
+		if (!frontmatter.tools && !frontmatter.disallowedTools) suggestedHints.push("tools");
+		if (!frontmatter.permissionMode && frontmatter.permission) {
+			console.warn(
+				`[agent] "${entry.name}" uses deprecated "permission" map format. ` +
+					`Use "permissionMode" with a single value like "always-allow" instead.`,
+			);
+		}
+		if (frontmatter.permissionMode && frontmatter.permissionProfile) {
+			console.warn(
+				`[agent] "${entry.name}" defines both "permissionMode" and "permissionProfile". ` +
+					`Using "permissionProfile".`,
+			);
+		}
+		if (suggestedHints.length > 0) {
+			console.warn(
+				`[agent] "${entry.name}" is missing recommended field(s): ${suggestedHints.join(", ")}. ` +
+					`These affect the Agent panel display.`,
+			);
+		}
+
 		const tools = coerceField("tools", frontmatter.tools) as string[] | undefined;
 		const disallowedTools = coerceField("disallowedTools", frontmatter.disallowedTools) as string[] | undefined;
 		const skills = coerceField("skills", frontmatter.skills) as string[] | undefined;
 		const variables = isStringRecord(frontmatter.variables) ? frontmatter.variables : undefined;
+		const permissionProfile = coerceField(
+			"permissionProfile",
+			frontmatter.permissionProfile,
+		) as AgentConfig["permissionProfile"];
+		const permissionMode = coerceField("permissionMode", frontmatter.permissionMode) as AgentConfig["permissionMode"];
 
 		agents.push({
 			name: coerceField("name", frontmatter.name) as string,
@@ -270,7 +362,8 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			systemPrompt: body,
 			source,
 			filePath,
-			permissionMode: coerceField("permissionMode", frontmatter.permissionMode) as AgentConfig["permissionMode"],
+			permissionMode: permissionProfile ?? permissionMode,
+			permissionProfile,
 			maxTurns: coerceField("maxTurns", frontmatter.maxTurns) as number | undefined,
 			effort: coerceField("effort", frontmatter.effort) as string | undefined,
 			color: coerceField("color", frontmatter.color) as AgentColor | undefined,
@@ -286,6 +379,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			mode: coerceField("mode", frontmatter.mode) as AgentMode | undefined,
 			hidden: coerceField("hidden", frontmatter.hidden) as boolean | undefined,
 			paths: parsePathConfig(frontmatter.paths),
+			avatar: parseAvatar(frontmatter.avatar),
 		});
 	}
 
@@ -322,6 +416,18 @@ export function mergeAgentsByPriority(...groups: AgentConfig[][]): AgentConfig[]
 	return Array.from(agentMap.values());
 }
 
+function builtinAgentAvatar(accent: string, glyph: string): AgentAvatar {
+	const svg =
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+		`<defs><linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">` +
+		`<stop stop-color="${accent}"/><stop offset="1" stop-color="#111827"/></linearGradient></defs>` +
+		`<rect width="64" height="64" rx="18" fill="url(#g)"/>` +
+		`<circle cx="48" cy="16" r="8" fill="rgba(255,255,255,0.18)"/>` +
+		`<text x="32" y="40" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="26" font-weight="700" fill="white">${glyph}</text>` +
+		`</svg>`;
+	return { type: "image", src: `data:image/svg+xml,${encodeURIComponent(svg)}` };
+}
+
 export function getBuiltinAgents(): AgentConfig[] {
 	return [
 		{
@@ -332,6 +438,9 @@ export function getBuiltinAgents(): AgentConfig[] {
 			source: "builtin",
 			filePath: "",
 			mode: "primary",
+			tier: "pro",
+			color: "orange",
+			avatar: builtinAgentAvatar("#F97316", "B"),
 		},
 		{
 			name: "explore",
@@ -345,6 +454,7 @@ export function getBuiltinAgents(): AgentConfig[] {
 			mode: "primary",
 			tier: "fast",
 			color: "blue",
+			avatar: builtinAgentAvatar("#3B82F6", "E"),
 		},
 		{
 			name: "plan",
@@ -359,16 +469,28 @@ export function getBuiltinAgents(): AgentConfig[] {
 			tier: "max",
 			thinkingLevel: "high",
 			color: "purple",
+			avatar: builtinAgentAvatar("#7C3AED", "P"),
 		},
 	];
 }
 
 export function discoverAgents(cwd: string, scope: AgentScope, overrideAgents?: AgentConfig[]): AgentDiscoveryResult {
+	const runtimePolicy = getRuntimeResourcePolicy();
+	if (!runtimePolicy.canLoadUserAgents && !runtimePolicy.canLoadProjectAgents) {
+		return {
+			agents: getBuiltinAgents(),
+			projectAgentsDir: null,
+		};
+	}
+
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+	const userAgents = scope === "project" || !runtimePolicy.canLoadUserAgents ? [] : loadAgentsFromDir(userDir, "user");
+	const projectAgents =
+		scope === "user" || !projectAgentsDir || !runtimePolicy.canLoadProjectAgents
+			? []
+			: loadAgentsFromDir(projectAgentsDir, "project");
 	const flagAgents = overrideAgents ?? [];
 
 	return {
@@ -384,4 +506,49 @@ export function formatAgentList(agents: AgentConfig[], maxItems: number): { text
 		text: listed.map((agent) => `${agent.name} (${agent.source}): ${agent.description}`).join("; "),
 		remaining: agents.length - listed.length,
 	};
+}
+
+/**
+ * Format visible agents for inclusion in a system prompt.
+ * Mirrors formatSkillsForPrompt() so models can choose delegation targets.
+ */
+export function formatAgentsForPrompt(agents: AgentConfig[]): string {
+	const visibleAgents = agents.filter((agent) => !agent.hidden);
+
+	if (visibleAgents.length === 0) {
+		return "";
+	}
+
+	const lines = [
+		"\n\n<available_agents>",
+		"The following agents are available for delegation via subagent or session_delegate tools.",
+		"Choose the agent that best matches the task nature:",
+		"",
+	];
+
+	for (const agent of visibleAgents) {
+		lines.push("  <agent>");
+		lines.push(`    <name>${escapeXml(agent.name)}</name>`);
+		lines.push(`    <description>${escapeXml(agent.description)}</description>`);
+		lines.push(`    <source>${escapeXml(agent.source)}</source>`);
+		lines.push(`    <filePath>${escapeXml(agent.filePath || "(builtin)")}</filePath>`);
+		lines.push("  </agent>");
+	}
+
+	lines.push("</available_agents>");
+	lines.push("");
+	lines.push(
+		'Default agent is "build" when not specified. Use the agent name in the `agent` parameter of subagent/session_delegate tools.',
+	);
+
+	return lines.join("\n");
+}
+
+function escapeXml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;");
 }

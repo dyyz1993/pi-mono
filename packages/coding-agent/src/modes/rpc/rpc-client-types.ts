@@ -90,6 +90,7 @@ export interface RpcClientSurface {
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;
 	abort(): Promise<void>;
+	continue(): Promise<void>;
 
 	newSession(parentSession?: string): Promise<SessionOperationResult>;
 	getState(): Promise<RpcSessionState>;
@@ -113,6 +114,10 @@ export interface RpcClientSurface {
 	exportHtml(outputPath?: string): Promise<{ path: string }>;
 	switchSession(sessionPath: string): Promise<SessionOperationResult>;
 	fork(entryId: string, options?: { position?: "before" | "at" }): Promise<ForkResult>;
+	copyFork(
+		entryId: string,
+		options?: { compact?: boolean },
+	): Promise<{ newSessionFile?: string; newSessionId?: string }>;
 	navigateTree(
 		targetId: string,
 		options?: {
@@ -131,7 +136,7 @@ export interface RpcClientSurface {
 	getLastAssistantText(): Promise<string | null>;
 	setSessionName(name: string): Promise<void>;
 	getMessages(): Promise<AgentMessage[]>;
-	getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
+	getFullMessages(options?: { afterEntryId?: string; beforeEntryId?: string; limit?: number }): Promise<{
 		messages: RpcAgentMessage[];
 		hasMore: boolean;
 		totalCount: number;

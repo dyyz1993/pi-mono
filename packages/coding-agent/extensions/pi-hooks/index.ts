@@ -1,12 +1,21 @@
-import { createTypedChannel, type ExtensionAPI, type ToolResultEvent, type BeforeAgentStartEvent } from "@dyyz1993/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import {
+	createTypedChannel,
+	type BeforeAgentStartEvent,
+	type ExtensionAPI,
+	type PermissionDecision,
+	type PermissionRequest,
+	type ToolResultEvent,
+} from "@dyyz1993/pi-coding-agent";
 import type { MatcherGroup, HookHandler } from "./types.ts";
-import { loadConfigs, loadConfigSources, type ConfigSource } from "./config-loader.ts";
+import { getConfigSignature, loadConfigs, loadConfigSources, type ConfigSource } from "./config-loader.ts";
 import { matchesMatcher } from "./matcher.ts";
 import { matchesIfClause } from "./if-parser.ts";
 import { buildStdinData } from "./stdin-builder.ts";
 import { runHandler, interpretHookOutput } from "./handler-runner.ts";
 import { RingBuffer, extractSnippet, computeRuleStats, type HookLogEntry, type HookLogResult, type HookConfigSnapshot, truncateMiddle } from "./hooks-log.ts";
 import { HOOKS_CHANNEL_NAME, type HooksChannelContract, type SkippedRuleKey } from "./channel-contract.ts";
+import type { HookOutput } from "./types.ts";
 
 function matchesPiVariables(
 	handler: HookHandler,
@@ -32,6 +41,7 @@ export default function (pi: ExtensionAPI) {
 	const logBuffer = new RingBuffer<HookLogEntry>(RING_BUFFER_CAPACITY);
 	let logIdCounter = 0;
 	let configSources: ConfigSource[] = [];
+	let configSignature = "";
 	let runtimeEnabled = true;
 	const skippedRules = new Map<string, SkippedRuleKey>();
 
@@ -82,13 +92,47 @@ export default function (pi: ExtensionAPI) {
 		return { skipped: Array.from(skippedRules.values()) };
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
-		configs = loadConfigs(ctx.cwd);
-		configSources = loadConfigSources(ctx.cwd);
+	function reloadHookConfigs(cwd: string): void {
+		configs = loadConfigs(cwd);
+		configSources = loadConfigSources(cwd);
+		configSignature = getConfigSignature(cwd);
+	}
+
+	pi.on("session_start", async (event, ctx) => {
+		reloadHookConfigs(ctx.cwd);
 		const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } }).sessionManager;
 		currentSessionId = sm?.getSessionId?.()
 			?? (((ctx as unknown) as Record<string, unknown>).variables as Record<string, unknown> | undefined)?.session_id as string | undefined;
+
+		// Fire SessionStart hooks (Claude Code compat)
+		await processHookEvent("SessionStart", { toolName: "", input: { source: "startup" } }, ctx);
+
+		// Fire Setup hooks on first startup (Claude Code compat)
+		// Claude Code: Setup fires on --init or --maintenance
+		// pi: no --init flag yet, so we fire Setup on initial startup as approximation
+		const startEvent = event as { reason?: string };
+		if (startEvent.reason === "startup") {
+			await processHookEvent("Setup", { toolName: "", input: { trigger: "init" } }, ctx);
+		}
 	});
+
+	pi.on("permission_request", async (event, ctx) => {
+		// Claude Code compat: PermissionRequest hook fires when permission is needed
+		// Executes user-configured PermissionRequest hooks and returns allow/deny
+		const result = await processHookEvent("PermissionRequest", {
+			toolName: event.toolName,
+			input: event.input,
+			toolCallId: event.toolCallId,
+		}, ctx);
+			if (result?.block) {
+				return { decision: "deny" as const, message: result.reason };
+			}
+			if (!result) {
+				return undefined;
+			}
+			// If a matching hook exits 0 (no block), treat as allow
+			return { decision: "allow" as const };
+		});
 
 	pi.on("tool_call", async (event, ctx) => {
 		const result = await processHookEvent("PreToolUse", event, ctx);
@@ -141,26 +185,53 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		await processHookEvent("SubagentStop", { toolName: "", input: {} }, ctx);
+		const result = await processHookEvent("SubagentStop", { toolName: "", input: {} }, ctx);
+		// Claude Code compat: SubagentStop exit 2 continues subagent
+		if (result?.block && result.reason) {
+			pi.sendMessage(
+				{
+					customType: "hook_subagent_stop_block",
+					content: `SubagentStop hook blocked: ${result.reason}. Continue working.`,
+					display: true,
+				},
+				{ deliverAs: "followUp" },
+			);
+		}
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		await processHookEvent("Stop", { toolName: "", input: {} }, ctx);
+		const result = await processHookEvent("Stop", { toolName: "", input: {} }, ctx);
+		// Claude Code compat: Stop hook exit 2 continues conversation
+		// The block reason is injected as a user message so the model keeps running
+		if (result?.block && result.reason) {
+			pi.sendMessage(
+				{
+					customType: "hook_stop_block",
+					content: `Stop hook blocked: ${result.reason}. Continue working on the task.`,
+					display: true,
+				},
+				{ deliverAs: "followUp" },
+			);
+		}
 	});
 
 	async function processHookEvent(
 		hookEventName: string,
 		event: { toolName: string; input: Record<string, unknown>; toolCallId?: string; toolOutput?: string },
-		ctx: { cwd: string; hasUI: boolean },
+		ctx: {
+			cwd: string;
+			hasUI: boolean;
+			permissions?: {
+				ask(request: PermissionRequest, input?: Record<string, unknown>): Promise<PermissionDecision>;
+			};
+		},
 	): Promise<{ block: boolean; reason: string } | undefined> {
 		if (!runtimeEnabled) return undefined;
 
-		// Reload configs lazily if not yet loaded (e.g. session_start didn't fire in tests)
-		if (configs.size === 0) {
-			configs = loadConfigs(ctx.cwd);
-			if (configSources.length === 0) {
-				configSources = loadConfigSources(ctx.cwd);
-			}
+		const nextConfigSignature = getConfigSignature(ctx.cwd);
+		// Reload configs lazily if not yet loaded, or when project/user hook settings changed.
+		if (configs.size === 0 || nextConfigSignature !== configSignature) {
+			reloadHookConfigs(ctx.cwd);
 		}
 
 		if (!currentSessionId) {
@@ -178,6 +249,8 @@ export default function (pi: ExtensionAPI) {
 			((ctx as unknown as { permissionMode?: string }).permissionMode)
 			?? (ctxVars?.permission_mode as string | undefined)
 			?? (ctxVars?.permissionMode as string | undefined);
+		const sm = (ctx as unknown as { sessionManager?: { getSessionFile?: () => string | undefined } }).sessionManager;
+		const transcriptPath = sm?.getSessionFile?.() ?? "";
 		const stdinData = buildStdinData(hookEventName, {
 			toolName: event.toolName,
 			toolInput: event.input,
@@ -186,6 +259,8 @@ export default function (pi: ExtensionAPI) {
 			cwd: ctx.cwd,
 			agentType,
 			permissionMode,
+			transcriptPath,
+			sessionId: currentSessionId,
 		});
 
 		for (const group of groups) {
@@ -237,17 +312,23 @@ export default function (pi: ExtensionAPI) {
 							if (decision === "block") channel.emit("hook_blocked", entry);
 
 							if (output.exitCode === 3 && result.shouldBlock) {
-								pi.sendMessage({
-									customType: "hook_ask_no_ui",
-									content: `Hook requires confirmation but is running in async mode: ${result.reason}`,
-									display: true,
-								});
+								pi.sendMessage(
+									{
+										customType: "hook_ask_no_ui",
+										content: `Hook requires confirmation but is running in async mode: ${result.reason}`,
+										display: true,
+									},
+									{ deliverAs: "nextTurn" },
+								);
 							} else if (handler.asyncRewake && output.exitCode === 2 && result.reason) {
-								pi.sendMessage({
-									customType: "hook_async_block",
-									content: result.reason,
-									display: true,
-								});
+								pi.sendMessage(
+									{
+										customType: "hook_async_block",
+										content: result.reason,
+										display: true,
+									},
+									{ deliverAs: "nextTurn" },
+								);
 							}
 
 							// After prompt hook succeeds in async mode, inject the prompt text into conversation
@@ -290,35 +371,46 @@ export default function (pi: ExtensionAPI) {
 				if (result.shouldBlock) {
 					if (output.exitCode === 3) {
 						const question = result.reason || "Confirm this operation?";
-						const uiCtx = ((ctx as Record<string, unknown>).ui) as {
-							confirm?: (title: string, message: string, opts?: Record<string, unknown>) => Promise<unknown>;
-						} | undefined;
-						if (uiCtx?.confirm) {
-							const toolLabel = formatToolLabel(event.toolName);
-							const command = extractCommand(event.input);
-							const hookCommand = truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200);
-							const confirmResult = await uiCtx.confirm(
-								`${toolLabel} 确认`,
-								question,
-								{
+						if (hookEventName === "PreToolUse" && ctx.permissions?.ask) {
+								const toolLabel = formatToolLabel(event.toolName);
+								const command = extractCommand(event.input);
+								const description = event.toolName === "bash" ? extractDescription(event.input) : undefined;
+								const hookCommand = truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200);
+								const labels = extractConfirmLabels(output);
+							const permissionDecision = await ctx.permissions.ask(
+								buildHookApprovalRequest({
+									sessionId: currentSessionId ?? "unknown",
 									toolCallId: event.toolCallId,
-									hookMeta: {
-										toolName: event.toolName,
-										matcher: group.matcher ?? "*",
-										command,
-										hookCommand,
-										eventName: hookEventName,
-										source: group.__source__ ?? "unknown",
-										reason: question,
-									},
-								},
-							) as boolean | { confirmed: boolean };
-							const confirmed = typeof confirmResult === "object" ? confirmResult.confirmed : !!confirmResult;
-							if (confirmed) {
+									title: `${toolLabel} 确认`,
+									message: question,
+									toolName: event.toolName,
+									matcher: group.matcher ?? "*",
+									description,
+									command,
+									hookCommand,
+									eventName: hookEventName,
+									source: group.__source__ ?? "unknown",
+									confirmText: labels.confirmText,
+									cancelText: labels.cancelText,
+								}),
+								event.input,
+							);
+							if (permissionDecision.type === "allow" || permissionDecision.type === "pass") {
 								entry.decision = "allow";
 								return undefined;
 							}
-							return { block: true, reason: `用户拒绝: ${question}` };
+							if (permissionDecision.type === "mutate") {
+								for (const key of Object.keys(event.input)) {
+									delete event.input[key];
+								}
+								Object.assign(event.input, permissionDecision.input);
+								entry.decision = "allow";
+								return undefined;
+							}
+							if (permissionDecision.type === "deny") {
+								return { block: true, reason: permissionDecision.reason };
+							}
+							return { block: true, reason: `需要确认但权限请求未完成: ${question}` };
 						}
 						return { block: true, reason: `需要确认但当前没有可用 UI: ${question}` };
 					}
@@ -336,6 +428,32 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		return undefined;
+	}
+
+	function extractConfirmLabels(output: HookOutput): { confirmText?: string; cancelText?: string } {
+		const parsed = output.parsed ?? parseOutputJson(output.stdout);
+		return {
+			confirmText: firstString(parsed?.allowText, parsed?.confirmText),
+			cancelText: firstString(parsed?.denyText, parsed?.cancelText),
+		};
+	}
+
+	function parseOutputJson(stdout: string): HookOutput["parsed"] | undefined {
+		const trimmed = stdout.trim();
+		if (!trimmed.startsWith("{")) return undefined;
+		try {
+			return JSON.parse(trimmed) as HookOutput["parsed"];
+		} catch {
+			return undefined;
+		}
+	}
+
+	function firstString(...values: Array<string | undefined>): string | undefined {
+		for (const value of values) {
+			const trimmed = value?.trim();
+			if (trimmed) return trimmed;
+		}
 		return undefined;
 	}
 
@@ -414,6 +532,123 @@ function extractCommand(input: Record<string, unknown>): string | undefined {
 	if (typeof input.path === "string") return input.path;
 	if (typeof input.pattern === "string") return input.pattern;
 	return undefined;
+}
+
+function buildHookApprovalRequest(input: {
+	sessionId: string;
+	toolCallId?: string;
+	title: string;
+	message: string;
+	toolName: string;
+	matcher: string;
+	description?: string;
+	command?: string;
+	hookCommand: string;
+	eventName: string;
+	source: string;
+	confirmText?: string;
+	cancelText?: string;
+}): PermissionRequest {
+	const permissionValue = hookApprovalValue(input, "exact");
+	const rulePattern = hookApprovalValue(input, "rule");
+	const baseMetadata = {
+		provider: "pi-hooks",
+		eventName: input.eventName,
+		toolName: input.toolName,
+		matcher: input.matcher,
+		hookCommand: input.hookCommand,
+		source: input.source,
+	};
+	return {
+		requestId: `perm_hook_${randomUUID()}`,
+		sessionId: input.sessionId,
+		toolCallId: input.toolCallId,
+		provider: "pi-hooks",
+		subject: "hook.approval",
+		title: input.title,
+		message: input.message,
+		actions: ["allow_once", "always_allow_project", "deny_once", "always_deny_project"],
+		rememberOptions: [
+			{
+				id: "allow-hook-exact",
+				label: "This exact hook request",
+				subject: "hook.approval",
+				pattern: permissionValue,
+				scope: "project",
+				action: "allow",
+				metadata: { ...baseMetadata, matchKind: "exact" },
+			},
+			{
+				id: "allow-hook-rule",
+				label: "This hook rule",
+				subject: "hook.approval",
+				pattern: rulePattern,
+				scope: "project",
+				action: "allow",
+				metadata: { ...baseMetadata, matchKind: "rule" },
+			},
+			{
+				id: "deny-hook-exact",
+				label: "This exact hook request",
+				subject: "hook.approval",
+				pattern: permissionValue,
+				scope: "project",
+				action: "deny",
+				metadata: { ...baseMetadata, matchKind: "exact" },
+			},
+			{
+				id: "deny-hook-rule",
+				label: "This hook rule",
+				subject: "hook.approval",
+				pattern: rulePattern,
+				scope: "project",
+				action: "deny",
+				metadata: { ...baseMetadata, matchKind: "rule" },
+			},
+		],
+		metadata: {
+			...baseMetadata,
+			description: input.description,
+			command: input.command,
+			permissionValue,
+			reason: input.message,
+			confirmText: input.confirmText,
+			cancelText: input.cancelText,
+		},
+		createdAt: new Date().toISOString(),
+	};
+}
+
+function hookApprovalValue(
+	input: {
+		eventName: string;
+		toolName: string;
+		matcher: string;
+		hookCommand: string;
+		command?: string;
+	},
+	scope: "exact" | "rule",
+): string {
+	const command = scope === "exact" ? normalizeHookValuePart(input.command ?? "") : "*";
+	return [
+		input.eventName,
+		input.toolName,
+		input.matcher,
+		input.hookCommand,
+		command,
+	]
+		.map((part) => encodeURIComponent(normalizeHookValuePart(part)))
+		.join("|");
+}
+
+function normalizeHookValuePart(value: string): string {
+	return value.trim().replace(/\s+/g, " ");
+}
+
+function extractDescription(input: Record<string, unknown>): string | undefined {
+	if (typeof input.description !== "string") return undefined;
+	const description = input.description.trim();
+	return description.length > 0 ? description : undefined;
 }
 
 function formatToolLabel(toolName: string): string {

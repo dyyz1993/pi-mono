@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadConfigSources, loadConfigs } from "../extensions/pi-hooks/config-loader.ts";
+import { getConfigSignature, loadConfigSources, loadConfigs } from "../extensions/pi-hooks/config-loader.ts";
 import { matchesIfClause } from "../extensions/pi-hooks/if-parser.ts";
 import { matchesMatcher } from "../extensions/pi-hooks/matcher.ts";
 
@@ -129,6 +129,32 @@ describe("pi-hooks config-loader", () => {
 		const piProjectSource = sources.find((s) => s.scope === "pi-project");
 		expect(piProjectSource).toBeDefined();
 		expect(piProjectSource!.exists).toBe(false);
+	});
+
+	it("changes config signature when pi project settings change", () => {
+		mkdirSync(join(projectDir, ".pi"));
+		const settingsPath = join(projectDir, ".pi", "settings.json");
+		writeFileSync(
+			settingsPath,
+			JSON.stringify({
+				hooks: {
+					PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo one" }] }],
+				},
+			}),
+		);
+
+		const before = getConfigSignature(projectDir);
+
+		writeFileSync(
+			settingsPath,
+			JSON.stringify({
+				hooks: {
+					PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo two" }] }],
+				},
+			}),
+		);
+
+		expect(getConfigSignature(projectDir)).not.toBe(before);
 	});
 });
 

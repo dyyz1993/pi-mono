@@ -13,11 +13,12 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@dyyz1993/pi-agent-core";
 import { Agent as CoreAgent } from "@dyyz1993/pi-agent-core";
-import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent } from "@dyyz1993/pi-ai";
+import type { AssistantMessage, Context, ImageContent, Message, Model, TextContent, Usage } from "@dyyz1993/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -27,13 +28,14 @@ import {
 	resetApiProviders,
 	streamSimple,
 } from "@dyyz1993/pi-ai";
-import { minimatch } from "minimatch";
 import { getAgentDir } from "../config.ts";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
-import type { AgentConfig, PathConfig } from "./agent-types.ts";
+import { asRecord, getPathArg, type UnknownRecord } from "../utils/type-helpers.ts";
+import { type AgentConfig, discoverAgents, type PathConfig } from "./agent-types.ts";
+import { askPermission } from "./ask-permission.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -41,7 +43,10 @@ import {
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	computeFileLists,
 	estimateContextTokens,
+	estimateTokens,
+	formatFileOperations,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
@@ -53,6 +58,7 @@ import type { Channel } from "./extensions/channel-types.ts";
 import {
 	type CallLLMOptions,
 	type ContextUsage,
+	type ContextUsageBreakdownItem,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	type ExtensionMode,
@@ -62,6 +68,7 @@ import {
 	type MessageEndEvent,
 	type MessageStartEvent,
 	type MessageUpdateEvent,
+	type ProviderRequestContextUsage,
 	type ReplacedSessionContext,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
@@ -86,10 +93,31 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.ts";
 import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
-import { matchPathGlob, PathPermissionStore } from "./path-permission-store.ts";
+import {
+	createDangerousCommandProvider,
+	createPathAccessProvider,
+	createPiHooksProvider,
+	createReadonlyProvider,
+	createStoredDecisionProvider,
+	createToolGateProvider,
+	getPermissionProfile,
+	isPermissionProfileInput,
+	type LegacyPermissionProfileName,
+	matchPathGlob,
+	normalizePermissionProfile,
+	type PermissionContext,
+	type PermissionDecision,
+	type PermissionProfile,
+	type PermissionProfileName,
+	type PermissionProvider,
+	type PermissionProviderId,
+	type PermissionRequest,
+	PermissionRuntime,
+	PermissionStore,
+} from "./permissions/index.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, CompactionEntry, CustomEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -101,7 +129,21 @@ import {
 	getSessionDataDir,
 	resolveProjectIdentity,
 } from "./storage.ts";
-import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import type { SubtaskContext } from "./subtask.ts";
+import {
+	type BuildSystemPromptOptions,
+	buildSystemPromptWithBreakdown,
+	type SystemPromptBreakdown,
+} from "./system-prompt.ts";
+import { normalizeTierModelsForAvailableModels } from "./tier-models.ts";
+import {
+	checkToolEnd,
+	createLoopDetectionState,
+	type LoopDetectionResult,
+	type LoopDetectionState,
+	recordToolStart,
+	resetLoopDetection,
+} from "./tool-loop-detector.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import {
 	createAllToolDefinitions,
@@ -206,6 +248,7 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "auto_continue"; reason: string; iteration: number }
 	| { type: "custom_entry"; customType: string; data?: unknown; id: string };
 
 /** Listener function for agent session events */
@@ -303,13 +346,12 @@ export interface SessionStats {
 	contextUsage?: ContextUsage;
 }
 
-export type PermissionMode = "normal" | "yolo";
+export type PermissionMode = PermissionProfileName;
 /** @deprecated Use "normal" or "yolo" */
-export type LegacyPermissionMode = "auto" | "acceptEdits" | "dontAsk" | "always-allow" | "always-deny";
+export type LegacyPermissionMode = LegacyPermissionProfileName;
 
 function normalizePermissionMode(mode: string): PermissionMode {
-	if (mode === "dontAsk" || mode === "always-allow") return "yolo";
-	return "normal";
+	return normalizePermissionProfile(mode);
 }
 
 interface ToolDefinitionEntry {
@@ -329,7 +371,7 @@ function isThinkingLevel(level: string): level is ThinkingLevel {
 }
 
 function isPermissionMode(mode: string): mode is PermissionMode | LegacyPermissionMode {
-	return ["normal", "yolo", "auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"].includes(mode);
+	return isPermissionProfileInput(mode);
 }
 
 function buildAgentSystemPrompt(agent: AgentConfig): string | undefined {
@@ -397,31 +439,109 @@ function resolvePathAgainstCwd(filePath: string, cwd: string): string {
 	return `/${resolved.join("/")}`;
 }
 
-function matchesAgentPath(filePath: string, pattern: string): boolean {
-	if (pattern === "**") return true;
-	const normalized = normalizeAgentPath(filePath);
-	const parts = normalized.split("/");
-	for (let i = 0; i < parts.length; i++) {
-		const subpath = parts.slice(i).join("/");
-		if (minimatch(subpath, pattern, { dot: true })) {
-			return true;
+function estimateCharsAsTokens(chars: number): number {
+	return Math.ceil(Math.max(chars, 0) / 4);
+}
+
+function textAndImageContentToText(content: string | Array<{ type: string; text?: string }>): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	return content
+		.filter(
+			(block): block is { type: string; text: string } => block.type === "text" && typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
+}
+
+function getMessageText(message: AgentMessage): string {
+	switch (message.role) {
+		case "user":
+		case "custom":
+		case "toolResult":
+			return textAndImageContentToText(message.content);
+		case "assistant":
+			return message.content
+				.map((block) => {
+					if (block.type === "text") return block.text;
+					if (block.type === "thinking") return block.thinking;
+					if (block.type === "toolCall") return `${block.name} ${JSON.stringify(block.arguments)}`;
+					return "";
+				})
+				.filter((text) => text.length > 0)
+				.join("\n");
+		case "bashExecution":
+			return `${message.command}\n${message.output}`;
+		case "branchSummary":
+		case "compactionSummary":
+			return message.summary;
+	}
+}
+
+function classifyContextMessage(message: AgentMessage): "conversation" | "memory" | "rules" | "lsp" {
+	const text = getMessageText(message);
+	if (message.role === "custom") {
+		if (message.customType === "lsp_diagnostics") return "lsp";
+		if (message.customType === "memory_relevant") return "memory";
+		if (message.customType === "rules-engine") return "rules";
+	}
+	if ((message.role === "user" || message.role === "custom") && text.includes("<memory_context")) return "memory";
+	if ((message.role === "user" || message.role === "custom") && text.includes("<system-reminder")) return "rules";
+	return "conversation";
+}
+
+function estimateAssistantMessageParts(message: AssistantMessage): {
+	conversation: number;
+	thinking: number;
+	toolInputs: number;
+} {
+	let conversationChars = 0;
+	let thinkingChars = 0;
+	let toolInputChars = 0;
+
+	for (const block of message.content) {
+		if (block.type === "thinking") {
+			thinkingChars += block.thinking.length;
+		} else if (block.type === "text") {
+			conversationChars += block.text.length;
+		} else if (block.type === "toolCall") {
+			toolInputChars += block.name.length + JSON.stringify(block.arguments).length;
 		}
 	}
-	return false;
+
+	return {
+		conversation: estimateCharsAsTokens(conversationChars),
+		thinking: estimateCharsAsTokens(thinkingChars),
+		toolInputs: estimateCharsAsTokens(toolInputChars),
+	};
 }
 
-function matchesAnyAgentPath(filePath: string, patterns: string[] | undefined): boolean {
-	return patterns?.some((pattern) => matchesAgentPath(filePath, pattern)) ?? false;
+function providerSectionTokens(
+	providerRequest: ProviderRequestContextUsage | undefined,
+	id: "system" | "messages" | "tools" | "options",
+): number {
+	return providerRequest?.sections.find((section) => section.id === id)?.tokens ?? 0;
 }
 
-function getPathArg(args: unknown): string | undefined {
-	if (typeof args !== "object" || args === null) return undefined;
-	const record = args as Record<string, unknown>;
-	for (const key of ["file_path", "filePath", "path"]) {
-		const value = record[key];
-		if (typeof value === "string" && value.length > 0) {
-			return value;
-		}
+function positiveDeltaTokens(actual: number, accounted: number): number {
+	return Math.max(0, Math.round(actual) - Math.round(accounted));
+}
+
+function providerToolInteractionTokens(
+	providerRequest: ProviderRequestContextUsage | undefined,
+	kind: "input" | "output",
+): number {
+	return (providerRequest?.toolInteractions ?? []).reduce(
+		(sum, tool) => sum + (kind === "input" ? tool.inputTokens : tool.outputTokens),
+		0,
+	);
+}
+
+function getLastAssistantUsage(messages: AgentMessage[]): Usage | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role === "assistant") return message.usage;
 	}
 	return undefined;
 }
@@ -451,12 +571,15 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
-	private _overflowRecoveryAttempted = false;
+	private _overflowRecoveryAttempts = 0;
 	private _skipNextThresholdCheck = false;
 	private _consecutiveAutoCompactFailures = 0;
 
 	private static readonly MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES = 3;
 	private static readonly MAX_COMPACT_STREAMING_RETRIES = 2;
+	private static readonly MAX_OVERFLOW_RECOVERY_ROUNDS = 5;
+	/** Safety limit: max post-agent-run iterations before forcing the loop to stop. */
+	private static readonly MAX_POST_RUN_ITERATIONS = 10;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -468,6 +591,15 @@ export class AgentSession {
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
+
+	/** Set to true when abort() is called, checked by _handlePostAgentRun to break loops. */
+	private _aborted = false;
+
+	// Tool-loop detection state
+	// Persists across compaction (in-memory, not in message stream) so loops
+	// are detected even after contextFold erases the message history.
+	private _loopState: LoopDetectionState = createLoopDetectionState();
+	private _loopAbortInProgress = false;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -507,14 +639,23 @@ export class AgentSession {
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 	private _permissionMode: PermissionMode = "normal";
 	private _mcpManager: McpManager | undefined;
+	private _mcpToolNames: Set<string> = new Set();
 	private _currentAgentName = "build";
 	private _agentSystemPromptOverride: string | undefined;
 	private _currentAgentPaths: PathConfig | undefined;
-	private _pathPermissionStore: PathPermissionStore;
+	private _currentAgentTools: string[] | undefined;
+	private _currentAgentDisallowedTools: string[] | undefined;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	private _baseSystemPromptBreakdown: SystemPromptBreakdown = {
+		systemBaseChars: 0,
+		toolsChars: 0,
+		contextFilesChars: 0,
+		skillsChars: 0,
+		agentsChars: 0,
+	};
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -538,7 +679,6 @@ export class AgentSession {
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
-		this._pathPermissionStore = new PathPermissionStore(getAgentDir());
 		this._installAgentToolHooks();
 
 		this._buildRuntime({
@@ -614,34 +754,144 @@ export class AgentSession {
 	 * registered tool execution to the extension context. Tool call and tool result interception now
 	 * happens here instead of in wrappers.
 	 */
+	private async _evaluateToolPermission(
+		toolName: string,
+		toolCallId: string | undefined,
+		args: unknown,
+	): Promise<{ block: true; reason: string } | undefined> {
+		const input = asRecord(args);
+		const context = this._createPermissionContext(toolName, toolCallId, input);
+		const profile = this._getPermissionProfile();
+
+		const preDecision = await new PermissionRuntime({
+			providers: this._createToolPermissionProviders(profile.preProviders),
+			defaultDecision: { type: "pass" },
+		}).evaluate(context);
+		const preResult = await this._applyPermissionDecision(preDecision, input);
+		if (preResult) return preResult;
+		if (preDecision.type === "allow") return undefined;
+
+		const postDecision = await new PermissionRuntime({
+			providers: this._createToolPermissionProviders(profile.postProviders),
+		}).evaluate({ ...context, input });
+		return this._applyPermissionDecision(postDecision, input);
+	}
+
+	private _createPermissionContext(
+		toolName: string,
+		toolCallId: string | undefined,
+		input: Record<string, unknown>,
+	): PermissionContext {
+		return {
+			sessionId: this.sessionManager.getSessionId(),
+			cwd: this._cwd,
+			permissionProfile: this._permissionMode,
+			toolName,
+			toolCallId,
+			input,
+			agent: {
+				name: this._currentAgentName,
+				tools: this._currentAgentTools,
+				disallowedTools: this._currentAgentDisallowedTools,
+				paths: this._currentAgentPaths,
+			},
+		};
+	}
+
+	private _getPermissionProfile(): PermissionProfile {
+		return getPermissionProfile(this._permissionMode);
+	}
+
+	private _createToolPermissionProviders(providerIds: PermissionProviderId[]): PermissionProvider[] {
+		const providers: PermissionProvider[] = [];
+		for (const [index, providerId] of providerIds.entries()) {
+			const provider = this._createToolPermissionProvider(providerId, (index + 1) * 10);
+			if (provider) providers.push(provider);
+		}
+		return providers;
+	}
+
+	private _createToolPermissionProvider(
+		providerId: PermissionProviderId,
+		priority: number,
+	): PermissionProvider | undefined {
+		switch (providerId) {
+			case "tool-gate":
+				return createToolGateProvider({ priority });
+			case "readonly":
+				return createReadonlyProvider({ priority });
+			case "stored-decision":
+				return createStoredDecisionProvider({
+					priority,
+					store: new PermissionStore(this.settingsManager),
+				});
+			case "pi-hooks": {
+				const runner = this._extensionRunner;
+				if (!runner.hasHandlers("tool_call")) return undefined;
+				return createPiHooksProvider({
+					priority,
+					emitToolCall: (event) => runner.emitToolCall(event),
+				});
+			}
+			case "path-access":
+				return createPathAccessProvider({ priority });
+			case "dangerous-command":
+				return createDangerousCommandProvider({ priority, action: "ask" });
+			case "file-time-guard":
+				return undefined;
+			default: {
+				const provider = this._extensionRunner.getPermissionProvider(providerId);
+				if (!provider) return undefined;
+				return { ...provider, priority };
+			}
+		}
+	}
+
+	private async _applyPermissionDecision(
+		decision: PermissionDecision,
+		input: Record<string, unknown>,
+	): Promise<{ block: true; reason: string } | undefined> {
+		switch (decision.type) {
+			case "deny":
+				return { block: true, reason: decision.reason };
+			case "ask":
+				return this._applyPermissionDecision(await this._askPermission(decision.request, input), input);
+			case "mutate":
+				for (const key of Object.keys(input)) {
+					delete input[key];
+				}
+				Object.assign(input, decision.input);
+				return undefined;
+			case "allow":
+			case "pass":
+				return undefined;
+		}
+	}
+
+	private async _askPermission(
+		request: PermissionRequest,
+		input: Record<string, unknown>,
+	): Promise<PermissionDecision> {
+		const runner = this._extensionRunner;
+		return askPermission({
+			request,
+			input,
+			uiContext: runner.hasUI() ? runner.getUIContext() : null,
+			emitPermissionRequest: runner.hasPermissionRequestHandlers()
+				? (event) => runner.emitPermissionRequest(event)
+				: undefined,
+			store: new PermissionStore(this.settingsManager),
+		});
+	}
+
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
-			this._assertAgentPathAllowed(toolCall.name, args);
+			const permissionResult = await this._evaluateToolPermission(toolCall.name, toolCall.id, args);
+			if (permissionResult) return permissionResult;
 
-			// Path boundary check with interactive approval
-			const uiCtx = this._extensionRunner.hasUI() ? this._extensionRunner.getUIContext() : null;
-			const boundaryResult = await this._checkPathBoundary(toolCall.name, args, uiCtx);
+			const boundaryResult = await this._checkPathBoundary(toolCall.name, toolCall.id, args);
 			if (boundaryResult?.block) {
 				return { block: true, reason: boundaryResult.reason };
-			}
-
-			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_call")) {
-				return undefined;
-			}
-
-			try {
-				return await runner.emitToolCall({
-					type: "tool_call",
-					toolName: toolCall.name,
-					toolCallId: toolCall.id,
-					input: args as Record<string, unknown>,
-				});
-			} catch (err) {
-				if (err instanceof Error) {
-					throw err;
-				}
-				throw new Error(`Extension failed, blocking execution: ${String(err)}`);
 			}
 		};
 
@@ -655,7 +905,7 @@ export class AgentSession {
 				type: "tool_result",
 				toolName: toolCall.name,
 				toolCallId: toolCall.id,
-				input: args as Record<string, unknown>,
+				input: asRecord(args),
 				content: result.content,
 				details: result.details,
 				isError,
@@ -748,7 +998,8 @@ export class AgentSession {
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
-			this._overflowRecoveryAttempted = false;
+			this._overflowRecoveryAttempts = 0;
+			resetLoopDetection(this._loopState);
 			const messageText = this._getUserMessageText(event.message);
 			if (messageText) {
 				// Check steering queue first
@@ -798,7 +1049,7 @@ export class AgentSession {
 
 				const assistantMsg = event.message as AssistantMessage;
 				if (assistantMsg.stopReason !== "error") {
-					this._overflowRecoveryAttempted = false;
+					this._overflowRecoveryAttempts = 0;
 				}
 
 				// Reset retry counter immediately on successful assistant response
@@ -870,7 +1121,7 @@ export class AgentSession {
 			return;
 		}
 
-		const targetRecord = target as unknown as Record<string, unknown>;
+		const targetRecord = target as unknown as UnknownRecord;
 		for (const key of Object.keys(targetRecord)) {
 			delete targetRecord[key];
 		}
@@ -937,6 +1188,14 @@ export class AgentSession {
 				timestamp: event.timestamp,
 			};
 			await this._extensionRunner.emit(extensionEvent);
+
+			// Cache args for loop detection (tool_execution_end doesn't carry args)
+			recordToolStart(
+				this._loopState,
+				event.toolCallId,
+				event.toolName,
+				event.args as Record<string, unknown> | undefined,
+			);
 		} else if (event.type === "tool_execution_update") {
 			const extensionEvent: ToolExecutionUpdateEvent = {
 				type: "tool_execution_update",
@@ -957,6 +1216,41 @@ export class AgentSession {
 				durationMs: event.durationMs,
 			};
 			await this._extensionRunner.emit(extensionEvent);
+
+			// Check for tool-call loops (consecutive identical calls with errors)
+			// Fire-and-forget: abort must happen after this handler returns to avoid
+			// deadlocking with agent.waitForIdle() inside the event emission chain.
+			void this._checkToolLoop(event.toolCallId, event.toolName, event.isError);
+		}
+	}
+
+	/**
+	 * Check for tool-call loops after each tool_execution_end.
+	 * If a loop is detected (consecutive identical calls with errors),
+	 * aborts the current run and injects a corrective message.
+	 */
+	private async _checkToolLoop(toolCallId: string, toolName: string, isError: boolean): Promise<void> {
+		const result: LoopDetectionResult | undefined = checkToolEnd(this._loopState, toolCallId, toolName, isError);
+		if (!result || !result.detected) return;
+		if (this._loopAbortInProgress) return; // Prevent re-entrant aborts
+
+		this._loopAbortInProgress = true;
+		try {
+			// Abort the current agent run
+			await this.abort();
+
+			// Inject corrective message that triggers a new turn
+			await this.sendCustomMessage(
+				{
+					customType: "tool_loop_detected",
+					content: result.message,
+					display: true,
+					details: { toolName: result.toolName, count: result.count, hadErrors: result.hadErrors },
+				},
+				{ triggerTurn: true },
+			);
+		} finally {
+			this._loopAbortInProgress = false;
 		}
 	}
 
@@ -1036,7 +1330,7 @@ export class AgentSession {
 	}
 
 	getTierModels(): Record<string, string> {
-		return { ...this._tierModels };
+		return normalizeTierModelsForAvailableModels(this._tierModels, this.modelRegistry.getAvailable(), this.model);
 	}
 
 	setTierModels(mapping: Record<string, string>): void {
@@ -1125,33 +1419,12 @@ export class AgentSession {
 		return this._currentAgentName;
 	}
 
-	private _assertAgentPathAllowed(toolName: string, args: unknown): void {
-		const paths = this._currentAgentPaths;
-		if (!paths) return;
-
-		const rawPath = getPathArg(args);
-		if (!rawPath) return;
-
-		const normalizedPath = normalizeAgentPath(rawPath);
-		if (
-			paths.write &&
-			["edit", "write", "multiedit", "patch"].includes(toolName) &&
-			!matchesAnyAgentPath(normalizedPath, paths.write)
-		) {
-			throw new Error(`Path ${normalizedPath} is not in the allowed write paths: ${paths.write.join(", ")}`);
-		}
-
-		if (paths.read && toolName === "read" && !matchesAnyAgentPath(normalizedPath, paths.read)) {
-			throw new Error(`Path ${normalizedPath} is not in the allowed read paths: ${paths.read.join(", ")}`);
-		}
-	}
-
 	private static readonly _SYSTEM_PATH_ALLOWLIST = ["/tmp/**", "/private/tmp/**", "/var/folders/**", "/dev/null"];
 
 	private async _checkPathBoundary(
 		toolName: string,
+		toolCallId: string | undefined,
 		args: unknown,
-		uiContext: ExtensionUIContext | null,
 	): Promise<{ block: true; reason: string } | undefined> {
 		const FILE_TOOLS = new Set(["read", "edit", "write", "multiedit", "patch"]);
 		if (!FILE_TOOLS.has(toolName)) return undefined;
@@ -1172,55 +1445,65 @@ export class AgentSession {
 			if (matchPathGlob(normalizedPath, pattern)) return undefined;
 		}
 
-		// YOLO mode: skip approval
-		if (this._permissionMode === "yolo") return undefined;
+		if (this._getPermissionProfile().skipPathBoundaryApproval) return undefined;
 
-		// Check store for prior decision
 		const scope = ["edit", "write", "multiedit", "patch"].includes(toolName) ? "write" : "read";
-		const decision = this._pathPermissionStore.check(this._cwd, normalizedPath, scope);
-		if (decision === "allow") return undefined;
-		if (decision === "deny") {
-			return { block: true, reason: `Access to ${normalizedPath} was previously denied.` };
-		}
-
-		// No prior decision — ask user via UI
-		if (!uiContext) {
-			return { block: true, reason: `Path ${normalizedPath} is outside the project directory (${this._cwd}).` };
-		}
-
-		const choice = await uiContext.select(
-			`Path outside project\n\n${toolName} ${normalizedPath}\n(outside ${this._cwd})`,
-			["1. Allow once", "2. Always allow", "3. Deny"],
-			{
-				permissionMeta: {
-					type: "path_boundary",
-					path: normalizedPath,
-					cwd: this._cwd,
-					toolName,
-					scope,
-					relativeTo: "outside project directory",
+		const subject = scope === "write" ? "file.write" : "file.read";
+		const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
+		const input = asRecord(args);
+		const request: PermissionRequest = {
+			requestId: `perm_${randomUUID()}`,
+			sessionId: this.sessionManager.getSessionId(),
+			toolCallId,
+			provider: "path-access",
+			subject,
+			title: "Path outside project",
+			message: `Allow ${toolName} to ${scope} ${normalizedPath} outside ${this._cwd}?`,
+			actions: ["allow_once", "always_allow_project", "deny_once", "always_deny_project"],
+			rememberOptions: [
+				{
+					id: "path-allow-parent",
+					label: "This parent directory",
+					subject,
+					pattern: parentDir,
+					scope: "project",
+					action: "allow",
+					metadata: { provider: "path-access", type: "path_boundary" },
 				},
+				{
+					id: "path-deny-exact",
+					label: "This exact path",
+					subject,
+					pattern: normalizedPath,
+					scope: "project",
+					action: "deny",
+					metadata: { provider: "path-access", type: "path_boundary" },
+				},
+			],
+			metadata: {
+				type: "path_boundary",
+				path: normalizedPath,
+				cwd: this._cwd,
+				toolName,
+				scope,
+				relativeTo: "outside project directory",
 			},
-		);
+			createdAt: new Date().toISOString(),
+		};
 
-		if (!choice || choice.startsWith("3")) {
-			return { block: true, reason: `User denied access to ${normalizedPath}.` };
-		}
-
-		if (choice.startsWith("2")) {
-			const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
-			this._pathPermissionStore.allow(this._cwd, parentDir, scope);
-		}
-
-		return undefined;
+		return this._applyPermissionDecision(await this._askPermission(request, input), input);
 	}
 
 	applyAgentConfig(agent: AgentConfig): void {
 		this._currentAgentName = agent.name;
 		this._currentAgentPaths = agent.paths;
+		this._currentAgentTools = agent.tools && agent.tools.length > 0 ? agent.tools : undefined;
+		this._currentAgentDisallowedTools =
+			agent.disallowedTools && agent.disallowedTools.length > 0 ? agent.disallowedTools : undefined;
 
-		if (agent.permissionMode && isPermissionMode(agent.permissionMode)) {
-			this.setPermissionMode(agent.permissionMode);
+		const permissionProfile = agent.permissionProfile ?? agent.permissionMode;
+		if (permissionProfile && isPermissionMode(permissionProfile)) {
+			this.setPermissionMode(permissionProfile);
 		}
 
 		if (agent.thinkingLevel && isThinkingLevel(agent.thinkingLevel)) {
@@ -1249,7 +1532,7 @@ export class AgentSession {
 			description: agent.description,
 			tools: agent.tools,
 			disallowedTools: agent.disallowedTools,
-			permissionMode: agent.permissionMode,
+			permissionMode: permissionProfile,
 			tier: agent.tier,
 			thinkingLevel: agent.thinkingLevel,
 			model: agent.model,
@@ -1363,10 +1646,12 @@ export class AgentSession {
 			? loadedSkills.filter((skill) => this._activeSkillNames?.has(skill.name))
 			: loadedSkills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		const availableAgents = discoverAgents(this._cwd, "both").agents;
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: activeSkills,
+			agents: availableAgents,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
@@ -1374,7 +1659,9 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 		};
-		return buildSystemPrompt(this._baseSystemPromptOptions);
+		const result = buildSystemPromptWithBreakdown(this._baseSystemPromptOptions);
+		this._baseSystemPromptBreakdown = result.breakdown;
+		return result.prompt;
 	}
 
 	// =========================================================================
@@ -1384,15 +1671,38 @@ export class AgentSession {
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		try {
 			await this.agent.prompt(messages);
-			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
-			}
+			await this._runPostAgentLoop("Post-run");
 		} finally {
 			this._flushPendingBashMessages();
 		}
 	}
 
+	private async _runPostAgentLoop(label: string): Promise<void> {
+		let iterations = 0;
+		while (await this._handlePostAgentRun()) {
+			if (++iterations > AgentSession.MAX_POST_RUN_ITERATIONS) {
+				console.warn(
+					`[AgentSession] ${label} loop exceeded ${AgentSession.MAX_POST_RUN_ITERATIONS} iterations, breaking.`,
+				);
+				break;
+			}
+			// Notify user when a plugin/extension triggers an automatic continue.
+			// This makes implicit loops visible so users aren't confused by
+			// unexpected additional LLM turns.
+			if (this.agent.hasQueuedMessages()) {
+				this._emit({
+					type: "auto_continue",
+					reason: "queued messages",
+					iteration: iterations,
+				});
+			}
+			await this.agent.continue();
+		}
+	}
+
 	private async _handlePostAgentRun(): Promise<boolean> {
+		if (this._aborted) return false;
+
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
 		if (!msg) {
@@ -1411,6 +1721,14 @@ export class AgentSession {
 				finalError: msg.errorMessage,
 			});
 			this._retryAttempt = 0;
+		}
+
+		// Non-retryable provider limit errors (billing/balance/quota) should not
+		// trigger compaction or continuation — the error is permanent until the
+		// user fixes their account. Without this, compaction succeeds on the
+		// summarized context and loops indefinitely on the same billing error.
+		if (msg.stopReason === "error" && msg.errorMessage && this._isNonRetryableProviderLimitError(msg.errorMessage)) {
+			return false;
 		}
 
 		if (await this._checkCompaction(msg)) {
@@ -1432,6 +1750,8 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		this._aborted = false;
+		resetLoopDetection(this._loopState);
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
@@ -1512,14 +1832,37 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
+			// Pre-flight: estimate current context size independently of stale usage data.
+			// After session resume or rollback, agent.state.messages may contain far more
+			// content than the last assistant message's usage reflects. Re-estimate from
+			// scratch so we compact before sending an oversized request.
+			const contextWindow = this.model?.contextWindow ?? 0;
+			const compactionSettings = this.settingsManager.getCompactionSettings();
+			if (compactionSettings.enabled && contextWindow > 0) {
+				const currentMessages = this.agent.state.messages;
+				let estimatedTotal = 0;
+				for (const msg of currentMessages) {
+					estimatedTotal += estimateTokens(msg);
+				}
+				if (shouldCompact(estimatedTotal, contextWindow, compactionSettings)) {
+					// When context is extremely large (>2x window), LLM summarization
+					// will also overflow. Use emergency truncation instead: find cut point
+					// and use a plain-text summary instead of calling the LLM.
+					const useEmergencyTruncation = estimatedTotal > contextWindow * 2;
+					if (useEmergencyTruncation) {
+						await this._emergencyTruncation(estimatedTotal);
+					} else {
+						await this._runAutoCompaction("threshold", false);
+					}
+				}
+			}
+
 			// Check if we need to compact before sending (catches aborted responses)
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant && (await this._checkCompaction(lastAssistant, false))) {
 				try {
 					await this.agent.continue();
-					while (await this._handlePostAgentRun()) {
-						await this.agent.continue();
-					}
+					await this._runPostAgentLoop("Pre-prompt post-run");
 				} finally {
 					this._flushPendingBashMessages();
 				}
@@ -1666,6 +2009,10 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const { text: finalText } = handleLargeInput(expandedText);
+		if (!this.isStreaming) {
+			await this.prompt(finalText, { images, expandPromptTemplates: false });
+			return;
+		}
 		await this._queueSteer(finalText, images);
 	}
 
@@ -1687,7 +2034,27 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const { text: finalText } = handleLargeInput(expandedText);
+		if (!this.isStreaming) {
+			await this.prompt(finalText, { images, expandPromptTemplates: false });
+			return;
+		}
 		await this._queueFollowUp(finalText, images);
+	}
+
+	/**
+	 * Continue from the current transcript without adding a new user message.
+	 * Calls the underlying agent.continue() then runs the post-agent-run loop
+	 * (compaction, retry, queued messages). Useful for re-prompting after a
+	 * model switch or billing error where the last message is already a valid
+	 * user/tool-result message.
+	 */
+	async continue(): Promise<void> {
+		this._aborted = false;
+		this._overflowRecoveryAttempts = 0;
+		resetLoopDetection(this._loopState);
+		await this.agent.continue();
+		await this._runPostAgentLoop("Continue post-run");
+		this._flushPendingBashMessages();
 	}
 
 	/**
@@ -1864,6 +2231,7 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		this._aborted = true;
 		this.abortRetry();
 		this.agent.abort();
 		await this.agent.waitForIdle();
@@ -2275,26 +2643,33 @@ export class AgentSession {
 		}
 
 		// Case 1: Overflow - LLM returned context overflow error
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
-			if (this._overflowRecoveryAttempted) {
+		// Note: we intentionally don't gate on sameModel here. The overflow
+		// happened because the current messages exceed *some* model's context
+		// window, and compaction reduces the context — this is always the
+		// right move regardless of which model last produced the error.
+		if (isContextOverflow(assistantMessage, contextWindow)) {
+			if (this._overflowRecoveryAttempts >= AgentSession.MAX_OVERFLOW_RECOVERY_ROUNDS) {
 				this._emit({
 					type: "compaction_end",
 					reason: "overflow",
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage:
-						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					errorMessage: `Context overflow recovery failed after ${AgentSession.MAX_OVERFLOW_RECOVERY_ROUNDS} compact-and-retry attempts. Try reducing context or switching to a larger-context model.`,
 				});
 				return false;
 			}
 
-			this._overflowRecoveryAttempted = true;
-			// Remove the error message from agent state (it IS saved to session for history,
-			// but we don't want it in context for the retry)
+			this._overflowRecoveryAttempts++;
+			// Remove trailing assistant error messages from agent state (they ARE saved
+			// to session for history, but we don't want them in context for the retry)
 			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.state.messages = messages.slice(0, -1);
+			while (
+				messages.length > 0 &&
+				messages[messages.length - 1].role === "assistant" &&
+				(messages[messages.length - 1] as AssistantMessage).stopReason === "error"
+			) {
+				messages.pop();
 			}
 			return await this._runAutoCompaction("overflow", true);
 		}
@@ -2329,6 +2704,90 @@ export class AgentSession {
 			return await this._runAutoCompaction("threshold", false);
 		}
 		return false;
+	}
+
+	/**
+	 * Emergency truncation: when context is so large that LLM summarization would also
+	 * overflow, skip the LLM call and use a plain-text summary. This handles the case
+	 * where session resume or rollback produces a context >>2x the model's window.
+	 */
+	private async _emergencyTruncation(estimatedTokens: number): Promise<void> {
+		const settings = this.settingsManager.getCompactionSettings();
+		const pathEntries = this.sessionManager.getBranch();
+
+		this._emit({ type: "compaction_start", reason: "overflow" });
+		this._autoCompactionAbortController = new AbortController();
+
+		try {
+			if (!this.model) {
+				this._emit({
+					type: "compaction_end",
+					reason: "overflow",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+				});
+				return;
+			}
+
+			const preparation = prepareCompaction(pathEntries, settings);
+			if (!preparation) {
+				this._emit({
+					type: "compaction_end",
+					reason: "overflow",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+				});
+				return;
+			}
+
+			// Build a plain-text summary instead of calling the LLM
+			const msgCount = preparation.messagesToSummarize.length;
+			const summary =
+				`[Emergency truncation] ${msgCount} messages (${Math.round(estimatedTokens / 1000)}k tokens) ` +
+				`were truncated to fit within the model's context window. ` +
+				`The conversation history has been preserved in the session file.`;
+
+			// Extract file operations from the discarded messages
+			const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
+			const summaryWithFiles = summary + formatFileOperations(readFiles, modifiedFiles);
+
+			this.sessionManager.appendCompaction(
+				summaryWithFiles,
+				preparation.firstKeptEntryId,
+				preparation.tokensBefore,
+				{ readFiles, modifiedFiles },
+				false,
+			);
+
+			const sessionContext = this.sessionManager.buildSessionContext();
+			this.agent.state.messages = sessionContext.messages;
+			this._overflowRecoveryAttempts = 0;
+
+			this._emit({
+				type: "compaction_end",
+				reason: "overflow",
+				result: {
+					summary: summaryWithFiles,
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: preparation.tokensBefore,
+					details: { readFiles, modifiedFiles },
+				},
+				aborted: false,
+				willRetry: false,
+			});
+		} catch (err) {
+			this._consecutiveAutoCompactFailures++;
+			this._emit({
+				type: "compaction_end",
+				reason: "overflow",
+				result: undefined,
+				aborted: false,
+				willRetry: false,
+				errorMessage: `Emergency truncation failed: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		}
 	}
 
 	/**
@@ -2512,10 +2971,16 @@ export class AgentSession {
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
+				// Remove trailing assistant error messages so agent.continue() can proceed.
+				// buildSessionContext() may include multiple error messages from previous
+				// overflow attempts — we need to strip all of them.
 				const messages = this.agent.state.messages;
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
-					this.agent.state.messages = messages.slice(0, -1);
+				while (
+					messages.length > 0 &&
+					messages[messages.length - 1].role === "assistant" &&
+					(messages[messages.length - 1] as AssistantMessage).stopReason === "error"
+				) {
+					messages.pop();
 				}
 				return true;
 			}
@@ -2605,11 +3070,16 @@ export class AgentSession {
 	}
 
 	private async _initMcpServers(): Promise<void> {
+		// 子代理进程跳过 MCP 连接（环境变量 PI_SKIP_MCP=1）
+		// 避免 multiple CLI 进程竞争同一个 stdio MCP server 导致死锁
+		if (process.env.PI_SKIP_MCP === "1") return;
+
 		// Dispose any existing MCP manager (e.g., on reload)
 		if (this._mcpManager) {
 			await this._mcpManager.dispose();
 			this._mcpManager = undefined;
 		}
+		this._mcpToolNames = new Set();
 
 		const mcpSettings = this.settingsManager.getMcpSettings();
 		const servers = mcpSettings.servers;
@@ -2622,7 +3092,7 @@ export class AgentSession {
 			},
 		});
 
-		await this._mcpManager.connectAll(servers as Record<string, McpServerConfig>);
+		await this._mcpManager.connectAll(servers as UnknownRecord as Record<string, McpServerConfig>);
 
 		// Register discovered tools into the extension system
 		this._registerMcpTools();
@@ -2631,6 +3101,7 @@ export class AgentSession {
 	private _registerMcpTools(): void {
 		if (!this._mcpManager) return;
 		const tools = this._mcpManager.getAllTools();
+		this._mcpToolNames = new Set(tools.map((tool) => tool.fullName));
 		for (const tool of tools) {
 			const definition = createMcpToolDefinition(tool, this._mcpManager);
 			this._customTools = [...(this._customTools ?? []), definition];
@@ -3089,8 +3560,46 @@ export class AgentSession {
 		// Register skill tool with access to resource loader
 		const skills = this._resourceLoader.getSkills().skills;
 		if (skills.length > 0) {
+			const subtaskContext: SubtaskContext = {
+				modelRegistry: this._modelRegistry,
+				resourceLoader: this._resourceLoader,
+				model: this.model ?? this._modelRegistry.getAvailable()[0],
+				getApiKey: (provider: string) => {
+					const auth = this._modelRegistry.authStorage.get(provider);
+					return auth?.type === "api_key" ? auth.key : undefined;
+				},
+				cwd: this._cwd,
+				messages: this.agent.state.messages,
+			};
 			baseDefs.skill = createSkillToolDefinition({
 				getSkills: () => this._resourceLoader.getSkills().skills,
+				subtaskContext,
+				onSubtaskEvent: (subtaskId, label, inner) => {
+					const id = this.sessionManager.appendCustomEntry("subtask_progress", {
+						subtaskId,
+						label,
+						eventType: inner.type,
+						data: inner,
+					});
+					this._emit({
+						type: "custom_entry",
+						customType: "subtask_progress",
+						data: { subtaskId, label, eventType: inner.type, data: inner },
+						id,
+					});
+				},
+				onSubtaskComplete: (subtaskId, label, result) => {
+					const id = this.sessionManager.appendCustomEntry("subtask", {
+						subtaskId,
+						label,
+						success: result.success,
+						text: result.text,
+						error: result.error,
+						startedAt: result.startedAt,
+						completedAt: result.completedAt,
+					});
+					this._emit({ type: "custom_entry", customType: "subtask", data: { subtaskId, label, ...result }, id });
+				},
 			}) as ToolDefinition;
 		}
 
@@ -3130,6 +3639,7 @@ export class AgentSession {
 		this._initFileSnapshotManager();
 		this._extensionRunner.setFileSnapshotManagerFn(() => this._fileSnapshotManager);
 		this._extensionRunner.setPermissionModeFn(() => this._permissionMode);
+		this._extensionRunner.setPermissionAskFn((request, input) => this._askPermission(request, input ?? {}));
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
@@ -3147,6 +3657,9 @@ export class AgentSession {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 		await this.settingsManager.reload();
+		this._modelRegistry.authStorage.reload();
+		this._modelRegistry.refresh();
+		this._refreshCurrentModelFromRegistry();
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();
@@ -3173,7 +3686,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private _isNonRetryableProviderLimitError(errorMessage: string): boolean {
-		return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing/i.test(
+		return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient[_ ]?balance|insufficient_quota|out of budget|quota exceeded|billing|\b402\b/i.test(
 			errorMessage,
 		);
 	}
@@ -3305,7 +3818,7 @@ export class AgentSession {
 			const result = await executeBashWithOperations(
 				resolvedCommand,
 				this.sessionManager.getCwd(),
-				options?.operations ?? createLocalBashOperations({ shellPath }),
+				options?.operations ?? this._toolOperationsProvider?.bash ?? createLocalBashOperations({ shellPath }),
 				{
 					onChunk,
 					signal: this._bashAbortController.signal,
@@ -3714,8 +4227,11 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
+		const breakdown = this._buildContextUsageBreakdown();
+		const breakdownTokens = this._sumContextUsageBreakdownTokens(breakdown);
 		const branchEntries = this.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
+		const providerRequest = this._getLatestProviderRequestContextUsage();
 
 		if (latestCompaction) {
 			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
@@ -3726,10 +4242,16 @@ export class AgentSession {
 					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
 						const contextTokens = calculateContextTokens(assistant.usage);
 						if (contextTokens > 0) {
+							const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, contextTokens, {
+								usage: assistant.usage,
+								trailingTokens: 0,
+							});
 							return {
 								tokens: contextTokens,
 								contextWindow,
 								percent: (contextTokens / contextWindow) * 100,
+								breakdown: reconciledBreakdown,
+								...(providerRequest ? { providerRequest } : {}),
 							};
 						}
 					}
@@ -3739,12 +4261,319 @@ export class AgentSession {
 		}
 
 		const estimate = estimateContextTokens(this.messages);
-		const percent = (estimate.tokens / contextWindow) * 100;
+		const tokens = estimate.usageTokens > 0 ? estimate.tokens : breakdownTokens;
+		const percent = (tokens / contextWindow) * 100;
+		const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, {
+			usage: getLastAssistantUsage(this.messages),
+			trailingTokens: estimate.trailingTokens,
+		});
 
 		return {
-			tokens: estimate.tokens,
+			tokens,
 			contextWindow,
 			percent,
+			breakdown: reconciledBreakdown,
+			...(providerRequest ? { providerRequest } : {}),
+		};
+	}
+
+	private _getLatestProviderRequestContextUsage(): ProviderRequestContextUsage | undefined {
+		const branchEntries = this.sessionManager.getBranch();
+		for (let i = branchEntries.length - 1; i >= 0; i--) {
+			const entry = branchEntries[i];
+			if (entry.type !== "custom" || entry.customType !== "provider_request_context_usage") continue;
+			const data = (entry as CustomEntry).data as ProviderRequestContextUsage | undefined;
+			if (data?.version === 1 && typeof data.payloadChars === "number") {
+				return data;
+			}
+		}
+		return undefined;
+	}
+
+	private _sumContextUsageBreakdownTokens(breakdown: ContextUsageBreakdownItem[]): number {
+		return breakdown.reduce((sum, item) => sum + item.tokens, 0);
+	}
+
+	private _reconcileContextUsageBreakdown(
+		breakdown: ContextUsageBreakdownItem[],
+		totalTokens: number | null | undefined,
+		evidence?: { usage?: Usage; trailingTokens?: number },
+	): ContextUsageBreakdownItem[] {
+		if (!totalTokens || totalTokens <= 0) return breakdown;
+		const knownTokens = this._sumContextUsageBreakdownTokens(breakdown);
+		if (knownTokens > totalTokens) {
+			const capped = breakdown.map((item) => ({ ...item }));
+			let excess = knownTokens - totalTokens;
+			for (let i = capped.length - 1; i >= 0 && excess > 0; i--) {
+				const item = capped[i];
+				if (!item.id.startsWith("provider_") || item.tokens <= 0) continue;
+				const reduction = Math.min(item.tokens, excess);
+				item.tokens -= reduction;
+				excess -= reduction;
+			}
+			return capped;
+		}
+		const unclassifiedTokens = Math.max(0, totalTokens - knownTokens);
+		if (unclassifiedTokens <= 0) return breakdown;
+		return [
+			...breakdown,
+			{
+				id: "unclassified",
+				label: "未归因差额",
+				tokens: unclassifiedTokens,
+				source: "core",
+				estimated: true,
+				details: [
+					...(evidence?.usage
+						? [
+								{ label: "Provider input", tokens: evidence.usage.input },
+								{ label: "Provider cacheRead", tokens: evidence.usage.cacheRead },
+								{ label: "Provider cacheWrite", tokens: evidence.usage.cacheWrite },
+							]
+						: []),
+					...(evidence?.trailingTokens ? [{ label: "本地尾部估算", tokens: evidence.trailingTokens }] : []),
+					{ label: "本地已归因合计", tokens: knownTokens },
+					{ label: "差额", tokens: unclassifiedTokens },
+				].filter((item) => item.tokens > 0),
+			},
+		];
+	}
+
+	private _buildContextUsageBreakdown(): ContextUsageBreakdownItem[] {
+		const systemBreakdown = { ...this._baseSystemPromptBreakdown };
+		const currentSystemPrompt = this.agent.state.systemPrompt || this._baseSystemPrompt;
+		const extraSystemChars = Math.max(0, currentSystemPrompt.length - this._baseSystemPrompt.length);
+		systemBreakdown.systemBaseChars += extraSystemChars;
+		const toolDefinitionChars = this._estimateActiveToolDefinitionChars();
+		const providerRequest = this._getLatestProviderRequestContextUsage();
+
+		const messageTokens = {
+			conversation: 0,
+			thinking: 0,
+			toolInputs: 0,
+			toolOutputs: 0,
+			memory: 0,
+			rules: 0,
+			lsp: 0,
+		};
+
+		for (const message of this.messages) {
+			if (message.role === "assistant") {
+				const assistantTokens = estimateAssistantMessageParts(message);
+				messageTokens.conversation += assistantTokens.conversation;
+				messageTokens.thinking += assistantTokens.thinking;
+				messageTokens.toolInputs += assistantTokens.toolInputs;
+				continue;
+			}
+			if (message.role === "toolResult") {
+				messageTokens.toolOutputs += estimateTokens(message);
+				continue;
+			}
+			const category = classifyContextMessage(message);
+			messageTokens[category] += estimateTokens(message);
+		}
+
+		const compaction = this._getContextUsageCompactionInfo();
+		const systemTokens = estimateCharsAsTokens(systemBreakdown.systemBaseChars);
+		const contextFileTokens = estimateCharsAsTokens(systemBreakdown.contextFilesChars);
+		const skillTokens = estimateCharsAsTokens(systemBreakdown.skillsChars);
+		const agentTokens = estimateCharsAsTokens(systemBreakdown.agentsChars);
+		const builtinAndExtensionToolTokens = estimateCharsAsTokens(toolDefinitionChars.builtinAndExtensionChars);
+		const mcpToolTokens = estimateCharsAsTokens(toolDefinitionChars.mcpChars);
+		const providerToolInputTokens = providerToolInteractionTokens(providerRequest, "input");
+		const providerToolOutputTokens = providerToolInteractionTokens(providerRequest, "output");
+		const toolInputTokens = providerToolInputTokens > 0 ? providerToolInputTokens : messageTokens.toolInputs;
+		const toolOutputTokens = providerToolOutputTokens > 0 ? providerToolOutputTokens : messageTokens.toolOutputs;
+		const localMessageTokens =
+			messageTokens.conversation +
+			messageTokens.thinking +
+			toolInputTokens +
+			toolOutputTokens +
+			messageTokens.memory +
+			messageTokens.rules +
+			messageTokens.lsp;
+		const localSystemTokens = systemTokens + contextFileTokens + skillTokens + agentTokens;
+		const localToolTokens = builtinAndExtensionToolTokens + mcpToolTokens;
+		const providerDeltas = {
+			system: positiveDeltaTokens(providerSectionTokens(providerRequest, "system"), localSystemTokens),
+			messages: positiveDeltaTokens(providerSectionTokens(providerRequest, "messages"), localMessageTokens),
+			tools: positiveDeltaTokens(providerSectionTokens(providerRequest, "tools"), localToolTokens),
+			options: providerSectionTokens(providerRequest, "options"),
+		};
+
+		return [
+			{
+				id: "system_base",
+				label: "系统提示词",
+				tokens: systemTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "tools",
+				label: "内置/扩展工具定义",
+				tokens: builtinAndExtensionToolTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "mcp_tools",
+				label: "MCP 工具定义",
+				tokens: mcpToolTokens,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "context_files",
+				label: "项目上下文文件",
+				tokens: contextFileTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "skills",
+				label: "Skills",
+				tokens: skillTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "agents",
+				label: "Agents",
+				tokens: agentTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "conversation",
+				label: "对话历史",
+				tokens: messageTokens.conversation,
+				source: "core",
+				estimated: true,
+				...(compaction ? { compaction } : {}),
+			},
+			{
+				id: "tool_inputs",
+				label: "工具输入/调用参数",
+				tokens: toolInputTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "tool_outputs",
+				label: "工具输出/结果",
+				tokens: toolOutputTokens,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "thinking",
+				label: "思考",
+				tokens: messageTokens.thinking,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "memory",
+				label: "记忆",
+				tokens: messageTokens.memory,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "rules",
+				label: "规则",
+				tokens: messageTokens.rules,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "lsp",
+				label: "LSP 诊断",
+				tokens: messageTokens.lsp,
+				source: "extension",
+				estimated: true,
+			},
+			{
+				id: "provider_system",
+				label: "Provider 系统包装/转换差额",
+				tokens: providerDeltas.system,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "provider_messages",
+				label: "Provider 消息包装/转换差额",
+				tokens: providerDeltas.messages,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "provider_tools",
+				label: "Provider 工具 schema 差额",
+				tokens: providerDeltas.tools,
+				source: "core",
+				estimated: true,
+			},
+			{
+				id: "provider_options",
+				label: "Provider 选项/元数据",
+				tokens: providerDeltas.options,
+				source: "core",
+				estimated: true,
+			},
+		];
+	}
+
+	private _estimateActiveToolDefinitionChars(): { builtinAndExtensionChars: number; mcpChars: number } {
+		let builtinAndExtensionChars = 0;
+		let mcpChars = 0;
+
+		for (const name of this.getActiveToolNames()) {
+			const definition = this._toolDefinitions.get(name)?.definition;
+			if (!definition) continue;
+			const text = [
+				definition.name,
+				definition.label,
+				definition.description,
+				definition.promptSnippet,
+				...(definition.promptGuidelines ?? []),
+				JSON.stringify(definition.parameters ?? {}),
+			]
+				.filter((part): part is string => typeof part === "string" && part.length > 0)
+				.join("\n");
+
+			if (this._mcpToolNames.has(name)) {
+				mcpChars += text.length;
+			} else {
+				builtinAndExtensionChars += text.length;
+			}
+		}
+
+		return { builtinAndExtensionChars, mcpChars };
+	}
+
+	private _getContextUsageCompactionInfo(): ContextUsageBreakdownItem["compaction"] | undefined {
+		let count = 0;
+		let tokensBefore = 0;
+		let summaryTokens = 0;
+
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "compaction") continue;
+			count++;
+			tokensBefore += entry.tokensBefore;
+			summaryTokens += estimateCharsAsTokens(entry.summary.length);
+		}
+
+		if (count === 0) {
+			return undefined;
+		}
+
+		return {
+			count,
+			tokensBefore,
+			summaryTokens,
+			estimatedSavedTokens: Math.max(0, tokensBefore - summaryTokens),
 		};
 	}
 

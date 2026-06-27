@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { asRecord } from "../../utils/type-helpers.ts";
 import type { Channel, ChannelDataMessage, ChannelEntry, ChannelOutputFn } from "./channel-types.ts";
 
 const DEFAULT_INVOKE_TIMEOUT = 30_000;
@@ -35,7 +36,7 @@ export class ChannelManager {
 				this.outputFn({
 					type: "channel_data",
 					name,
-					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+					data: { ...(asRecord(data) ?? {}), invokeId },
 				});
 			});
 		};
@@ -61,9 +62,12 @@ export class ChannelManager {
 
 	handleInbound(message: ChannelDataMessage): void {
 		const entry = this.channels.get(message.name);
-		if (!entry) return;
+		if (!entry) {
+			console.error(`[channel-manager] handleInbound: unknown channel "${message.name}"`);
+			return;
+		}
 
-		const data = message.data as Record<string, unknown>;
+		const data = asRecord(message.data);
 		if (data && typeof data === "object" && typeof data.invokeId === "string") {
 			const pending = entry.pendingInvokes.get(data.invokeId);
 			if (pending) {
@@ -77,8 +81,12 @@ export class ChannelManager {
 		for (const handler of entry.handlers) {
 			try {
 				handler(message.data);
-			} catch {
+			} catch (err: unknown) {
 				// Ignore channel handler errors so one subscriber cannot break delivery.
+				console.error(
+					`[channel-manager] handler error for "${message.name}":`,
+					err instanceof Error ? err.message : String(err),
+				);
 			}
 		}
 	}

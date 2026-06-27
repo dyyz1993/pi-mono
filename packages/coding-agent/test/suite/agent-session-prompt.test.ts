@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Model } from "@dyyz1993/pi-ai";
+import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Model } from "@dyyz1993/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { InputEvent } from "../../src/core/extensions/index.ts";
@@ -248,6 +248,58 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
+	it("disambiguates duplicate command names from multiple extensions", async () => {
+		const calls: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				{
+					path: "<alpha>",
+					factory: (pi) => {
+						pi.registerCommand("shared-cmd", {
+							description: "Alpha command",
+							handler: async (args) => {
+								calls.push(`alpha:${args}`);
+							},
+						});
+					},
+				},
+				{
+					path: "<beta>",
+					factory: (pi) => {
+						pi.registerCommand("shared-cmd", {
+							description: "Beta command",
+							handler: async (args) => {
+								calls.push(`beta:${args}`);
+							},
+						});
+					},
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const runner = harness.session.extensionRunner;
+		expect(runner).toBeDefined();
+
+		const commands = runner!.getRegisteredCommands();
+		expect(
+			commands.map((command) => ({
+				name: command.name,
+				invocationName: command.invocationName,
+				description: command.description,
+				path: command.sourceInfo.path,
+			})),
+		).toEqual([
+			{ name: "shared-cmd", invocationName: "shared-cmd:1", description: "Alpha command", path: "<alpha>" },
+			{ name: "shared-cmd", invocationName: "shared-cmd:2", description: "Beta command", path: "<beta>" },
+		]);
+
+		await runner!.getCommand("shared-cmd:1")?.handler("first", runner!.createCommandContext());
+		await runner!.getCommand("shared-cmd:2")?.handler("second", runner!.createCommandContext());
+
+		expect(calls).toEqual(["alpha:first", "beta:second"]);
+	});
+
 	it("sendUserMessage while idle triggers a turn", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -394,5 +446,41 @@ describe("AgentSession prompt characterization", () => {
 		await expect(harness.session.prompt("hi")).rejects.toThrow(
 			`No API key found for ${harness.getModel().provider}.`,
 		);
+	});
+
+	it("sequences multiple prompt responses correctly", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage("first"),
+			fauxAssistantMessage("second"),
+			fauxAssistantMessage("third"),
+		]);
+
+		await harness.session.prompt("a");
+		await harness.session.prompt("b");
+		await harness.session.prompt("c");
+
+		expect(harness.faux.state.callCount).toBe(3);
+
+		const assistantTexts = harness.session.messages
+			.filter((m): m is AssistantMessage => m.role === "assistant")
+			.map((m) => getMessageText(m));
+
+		expect(assistantTexts).toEqual(["first", "second", "third"]);
+	});
+
+	it("persists messages through sessionManager entries", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("persisted")]);
+
+		await harness.session.prompt("hi");
+
+		const entries = harness.sessionManager.getEntries();
+		const messageEntries = entries.filter((e) => e.type === "message");
+		expect(messageEntries.length).toBeGreaterThanOrEqual(2);
 	});
 });

@@ -58,6 +58,23 @@ export function getProjectDataDir(projectRoot: string, extName: string): string 
 	return dir;
 }
 
+export function getProjectUserStateDir(projectRoot: string): string {
+	const encoded = encodeProjectPath(projectRoot);
+	const dir = join(getAgentDir(), "projects", encoded);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	return dir;
+}
+
+export function getProjectPrivateSkillsDir(projectRoot: string): string {
+	const dir = join(getProjectUserStateDir(projectRoot), "skills");
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	return dir;
+}
+
 export function getCwdDataDir(cwd: string, extName: string): string {
 	const encoded = encodeProjectPath(cwd);
 	const dir = join(getAgentDir(), "cwd-data", encoded, extName);

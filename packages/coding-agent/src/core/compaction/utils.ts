@@ -4,6 +4,7 @@
 
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { Message } from "@dyyz1993/pi-ai";
+import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 
 // ============================================================================
 // File Operation Tracking
@@ -35,7 +36,7 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 		if (!("type" in block) || block.type !== "toolCall") continue;
 		if (!("arguments" in block) || !("name" in block)) continue;
 
-		const args = block.arguments as Record<string, unknown> | undefined;
+		const args = block.arguments as UnknownRecord | undefined;
 		if (!args) continue;
 
 		const path = typeof args.path === "string" ? args.path : undefined;
@@ -130,7 +131,7 @@ export function serializeConversation(messages: Message[]): string {
 				} else if (block.type === "thinking") {
 					thinkingParts.push(block.thinking);
 				} else if (block.type === "toolCall") {
-					const args = block.arguments as Record<string, unknown>;
+					const args = asRecord(block.arguments);
 					const argsStr = Object.entries(args)
 						.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
 						.join(", ");

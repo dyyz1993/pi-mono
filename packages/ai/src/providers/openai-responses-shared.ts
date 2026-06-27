@@ -276,7 +276,7 @@ export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesT
 		type: "function",
 		name: tool.name,
 		description: tool.description,
-		parameters: tool.parameters as any, // TypeBox already generates JSON Schema
+		parameters: tool.parameters as Record<string, unknown>, // TypeBox already generates JSON Schema
 		strict,
 	}));
 }

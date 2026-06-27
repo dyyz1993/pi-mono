@@ -6,7 +6,6 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@dyyz1993/pi-agent-core";
-import { getModel } from "@dyyz1993/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -24,7 +23,20 @@ import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { createCodingTools } from "../src/index.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
-const API_KEY = process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+const API_KEY = process.env.ZHIPUAI_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+
+const zhipuaiModel = {
+	id: "glm-4.7",
+	name: "GLM-4.7",
+	api: "openai-completions" as const,
+	provider: "zhipuai",
+	baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+	reasoning: true,
+	input: ["text" as const],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 204000,
+	maxTokens: 16384,
+};
 
 describe.skipIf(!API_KEY)("Compaction extensions", () => {
 	let session: AgentSession;
@@ -86,7 +98,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 	}
 
 	function createSession(extensions: Extension[]) {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = zhipuaiModel;
 		const agent = new Agent({
 			getApiKey: () => API_KEY,
 			initialState: {

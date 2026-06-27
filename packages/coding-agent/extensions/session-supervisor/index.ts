@@ -13,6 +13,7 @@ import type {
     GuardConfig,
     GuardCheckResult,
     GoalState,
+    GoalChecklistItem,
     GoldResult,
 } from "./types.ts";
 import { loadConfig, DEFAULT_CONFIG } from "./config.ts";
@@ -30,15 +31,19 @@ import {
     SPECS_CHECK_PROMPT,
     REFINE_GOAL_SYSTEM_PROMPT,
     REFINE_GOAL_USER_PROMPT,
+    GOAL_CHECKLIST_SYSTEM_PROMPT,
+    GOAL_CHECKLIST_USER_PROMPT,
 } from "./prompts.ts";
+import { setForensicDir, appendForensic, forensicTs } from "./forensic.ts";
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-const LOG_FILE = "/tmp/supervisor-debug.log";
+const LOG_DIR = "/tmp/supervisor-debug";
+let logFile = `${LOG_DIR}/default.log`;
 function log(msg: string) {
     const ts = new Date().toISOString();
     const line = `[${ts}] ${msg}\n`;
-    appendFileSync(LOG_FILE, line);
+    try { appendFileSync(logFile, line); } catch { /* ignore write failures */ }
 }
 
 const DEFAULT_GUARDS: GuardConfig[] = [
@@ -46,10 +51,20 @@ const DEFAULT_GUARDS: GuardConfig[] = [
 ];
 
 const GOAL_RUNTIME_STATE_FILE = "supervisor-goal-runtime.json";
+const TRIGGER_LOG_DIR = "supervisor-logs";
+const TRIGGER_HISTORY_LIMIT = 200;
+const SUPERVISOR_COMPLETE_TOOL = "supervisor_complete";
 
 interface GoalRuntimeState {
     activeGoal?: GoalState;
     lastGoldResult?: GoldResult;
+    enabled?: boolean;
+}
+
+interface PendingPauseState {
+    scheduledAt: number;
+    delayMs: number;
+    reason?: string;
 }
 
 export default function sessionSupervisorExtension(pi: ExtensionAPI) {
@@ -68,6 +83,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     let triggerSeq = 0;
     let stagnationCount = 0;
     let lastIncompleteSignature = "";
+    let pendingPause: PendingPauseState | undefined;
 
     // ── Flags ──
 
@@ -105,13 +121,21 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             "manual-pause",
             delayMs,
             () => {
+                pendingPause = undefined;
                 currentState = "continuing";
                 emitStatusChanged();
                 triggerContinue("Manual pause completed, resuming");
             },
         );
         if (result.scheduled) {
-            channel.emit("supervisor.pauseRequested", { delayMs, reason: params.reason });
+            pendingPause = {
+                scheduledAt: result.scheduledAt ?? Date.now() + delayMs,
+                delayMs,
+                reason: params.reason,
+            };
+            currentState = "paused";
+            emitStatusChanged();
+            channel.emit("supervisor.pauseRequested", { type: "pauseRequested" as const, delayMs, reason: params.reason });
         }
         return result;
     });
@@ -120,7 +144,10 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         if (!schedulerInstance) return { cancelled: false, error: "Not initialized" };
         const cancelled = schedulerInstance.cancelTimer("manual-pause");
         if (cancelled) {
-            channel.emit("supervisor.pauseCancelled", { reason: "Cancelled via channel" });
+            pendingPause = undefined;
+            currentState = enabled ? "idle" : "disabled";
+            emitStatusChanged();
+            channel.emit("supervisor.pauseCancelled", { type: "pauseCancelled" as const, reason: "Cancelled via channel" });
         }
         return { cancelled };
     });
@@ -128,6 +155,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     channel.handle("forceContinue", async (params) => {
         if (!schedulerInstance) return { triggered: false, error: "Not initialized" };
         schedulerInstance.cancelAll();
+        pendingPause = undefined;
         currentState = "continuing";
         emitStatusChanged();
         triggerContinue(params.reason ?? "Force continue via channel");
@@ -137,63 +165,82 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     channel.handle("disable", async () => {
         enabled = false;
         schedulerInstance?.cancelAll();
+        pendingPause = undefined;
         currentState = "disabled";
+        syncSupervisorToolVisibility();
         emitStatusChanged();
+        persistGoalRuntimeState();
         return { disabled: true };
     });
 
     channel.handle("enable", async () => {
         enabled = true;
         currentState = "idle";
+        syncSupervisorToolVisibility();
         emitStatusChanged();
+        persistGoalRuntimeState();
         return { enabled: true };
     });
 
     channel.handle("getTaskReport", async () => ({ tasks: lastTaskReports }));
     channel.handle("setGoal", async (params) => {
         const now = Date.now();
-        activeGoal = {
+        const objective = params.objective.trim();
+        const checklist = createFallbackGoalChecklist(objective);
+        const nextGoal = applyChecklistProgress({
             id: `goal_${now.toString(36)}`,
-            objective: params.objective.trim(),
+            objective,
             status: "running",
             startedAt: now,
             updatedAt: now,
-            continuationCount: schedulerInstance?.getContinueCount() ?? 0,
+            currentMilestone: checklist[0]?.text,
+            checklist,
+            continuationCount: 0,
             blockers: [],
-        };
+        });
+        enabled = true;
+        currentState = "idle";
+        activeGoal = nextGoal;
         lastGoldResult = undefined;
         stagnationCount = 0;
         lastIncompleteSignature = "";
+        syncSupervisorToolVisibility();
         persistGoalRuntimeState();
         emitStatusChanged();
-        channel.emit("supervisor.goalChanged", { goal: activeGoal });
-
-        // Trigger a new turn so the LLM immediately sees the goal in its
-        // system prompt (injected by the before_agent_start handler).
-        pi.sendMessage(
-            {
-                customType: "supervisor_goal_start",
-                content: `Goal activated: ${params.objective.trim()}`,
-                display: true,
-            },
-            { triggerTurn: true },
-        );
+        channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+        appendForensic({
+            ts: forensicTs(),
+            type: "goal_set",
+            goalId: activeGoal.id,
+            objective: activeGoal.objective,
+            checklistLength: activeGoal.checklist?.length ?? 0,
+        });
+        queueGoalChecklistRefinement(activeGoal.id, objective);
 
         return { goal: activeGoal };
     });
 
     channel.handle("clearGoal", async (params) => {
+        const clearedGoalId = activeGoal?.id;
         if (activeGoal) {
             activeGoal = {
                 ...activeGoal,
                 status: "cancelled",
                 updatedAt: Date.now(),
             };
-            channel.emit("supervisor.goalChanged", { goal: activeGoal, reason: params.reason });
+            channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal, reason: params.reason });
         }
         activeGoal = undefined;
         lastGoldResult = undefined;
+        syncSupervisorToolVisibility();
         persistGoalRuntimeState();
+        appendForensic({
+            ts: forensicTs(),
+            type: "goal_cleared",
+            goalId: clearedGoalId,
+            reason: params.reason,
+        });
+        channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: undefined, reason: params.reason });
         emitStatusChanged();
         return { cleared: true };
     });
@@ -265,7 +312,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     // LLM calls this to declare completion. Guards can reject it.
 
     pi.registerTool({
-        name: "supervisor_complete",
+        name: SUPERVISOR_COMPLETE_TOOL,
         label: "Supervisor Complete",
         description: "Declare that the current task is complete. The supervisor will verify with active guards before allowing the session to end.",
         parameters: {
@@ -280,19 +327,33 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         },
         execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
             const summary = String(params.summary ?? "");
+            appendForensic({
+                ts: forensicTs(),
+                type: "supervisor_complete_called",
+                summary: summary.slice(0, 1000),
+                enabled,
+                activeGuardCount: getActiveGuards().length,
+            });
 
             if (!enabled) {
                 return {
-                    content: [{ type: "text" as const, text: "Supervisor complete: approved (supervisor disabled)" }],
-                    details: { approved: true, reason: "Supervisor is disabled" },
+                    content: [{ type: "text" as const, text: "Supervisor complete ignored: supervisor is disabled for this session." }],
+                    details: { approved: false, reason: "Supervisor is disabled" },
+                    terminate: false,
                 };
             }
 
             const activeGuards = getActiveGuards();
             if (activeGuards.length === 0) {
+                appendForensic({
+                    ts: forensicTs(),
+                    type: "supervisor_complete_approved",
+                    guardsPassed: 0,
+                });
                 return {
                     content: [{ type: "text" as const, text: "Supervisor complete: approved (no active guards)" }],
                     details: { approved: true, reason: "No active guards" },
+                    terminate: true,
                 };
             }
 
@@ -302,6 +363,12 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 if (!result.completed && result.remainingItems.length > 0) {
                     const blockMsg = generateBlockMessage(guard, result);
                     log(`supervisor_complete BLOCKED by ${guard.name}: ${result.remainingItems.join(", ")}`);
+                    appendForensic({
+                        ts: forensicTs(),
+                        type: "supervisor_complete_guard_blocked",
+                        guardName: guard.name,
+                        remainingItems: result.remainingItems,
+                    });
                     return {
                         content: [{ type: "text" as const, text: blockMsg }],
                         details: {
@@ -314,9 +381,15 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 }
             }
 
+            appendForensic({
+                ts: forensicTs(),
+                type: "supervisor_complete_approved",
+                guardsPassed: activeGuards.length,
+            });
             return {
                 content: [{ type: "text" as const, text: "Supervisor complete: approved — all guards passed." }],
                 details: { approved: true, reason: "All guards passed" },
+                terminate: true,
             };
         },
     });
@@ -330,17 +403,26 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             return {};
         }
 
+        const checklistSection =
+            activeGoal.checklist && activeGoal.checklist.length > 0
+                ? `
+**Derived Checklist**:
+${activeGoal.checklist.map((item, index) => `${index + 1}. [${item.status}] ${item.text}`).join("\n")}
+`
+                : "";
+
         const goalSection = `
 
 ## Active Goal
 
-You are working toward the following objective. All actions should advance this goal.
+You are working toward the following user goal. The user goal text is authoritative and must not be rewritten.
 
-**Objective**: ${activeGoal.objective}
+**User Goal**: ${activeGoal.objective}
 **Status**: ${activeGoal.status}
 **Started**: ${new Date(activeGoal.startedAt).toISOString()}
+${checklistSection}
 
-When you believe the objective is fully achieved, call the \`supervisor_complete\` tool with a summary of what was accomplished.
+Use the checklist as your working contract. Do not call \`supervisor_complete\` until the user goal and checklist are satisfied. When you believe the objective is fully achieved, call the \`supervisor_complete\` tool with a concise summary of what was accomplished and verified.
 `;
 
         return {
@@ -350,12 +432,18 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 
     pi.on("session_start", async (_event, ctx) => {
         sessionDataDir = ctx.sessionDataDir;
+        setForensicDir(sessionDataDir);
         config = loadConfig(ctx.sessionDataDir, ctx.projectDataDir);
         enabled = config.enable;
         specsIterationCount = 0;
         stagnationCount = 0;
         lastIncompleteSignature = "";
+        // Per-session log file to avoid concurrent write conflicts
+        const sessionId = ctx.sessionDataDir.split("/").pop() || "unknown";
+        try { mkdirSync(LOG_DIR, { recursive: true }); } catch { /* ignore */ }
+        logFile = `${LOG_DIR}/${sessionId}.log`;
         loadGoalRuntimeState();
+        loadTriggerHistoryFromLogs();
 
         log(`session_start: enabled=${enabled}, guards=${config.guards.length}, smallModel=${config.smallModel}`);
 
@@ -372,6 +460,15 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             config.smallModel = modelFlag;
         }
 
+        appendForensic({
+            ts: forensicTs(),
+            type: "session_start",
+            enabled,
+            guardCount: getActiveGuards().length,
+            smallModel: config.smallModel,
+            maxContinueCount: config.maxContinueCount,
+        });
+
         // projectRoot is the git root (worktree-aware), correct for specs file resolution
         projectRoot = ctx.projectRoot ?? ctx.cwd;
 
@@ -381,20 +478,12 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         );
 
         currentState = enabled ? "idle" : "disabled";
+        syncSupervisorToolVisibility();
         emitStatusChanged();
 
-        // If a running goal was restored, resume it immediately by triggering
-        // a new turn so the LLM sees the goal in its system prompt.
         if (enabled && activeGoal && (activeGoal.status === "running" || activeGoal.status === "checking")) {
             log(`session_start: resuming goal '${activeGoal.objective.slice(0, 60)}'`);
-            pi.sendMessage(
-                {
-                    customType: "supervisor_goal_resume",
-                    content: `Resuming goal: ${activeGoal.objective}`,
-                    display: true,
-                },
-                { triggerTurn: true },
-            );
+            setGoalStatus("running");
         }
     });
 
@@ -402,10 +491,50 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 
     pi.on("agent_end", async (event: AgentEndEvent, ctx) => {
         log(`agent_end: enabled=${enabled}, checkOnAgentEnd=${config.checkOnAgentEnd}`);
-        if (!enabled || !config.checkOnAgentEnd) return;
-        if (pi.getFlag("disable-supervisor") === true) return;
+        appendForensic({
+            ts: forensicTs(),
+            type: "agent_end_triggered",
+            enabled,
+            checkOnAgentEnd: config.checkOnAgentEnd,
+            schedulerExhausted: schedulerInstance?.isExhausted() ?? false,
+            hasActiveGoal: Boolean(activeGoal),
+            agentEndMs: Date.now(),
+        });
+        if (!enabled || !config.checkOnAgentEnd) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "agent_end_skipped",
+                reason: !enabled ? "disabled" : "checkOnAgentEnd=false",
+            });
+            return;
+        }
+        if (activeGoal && ["complete", "cancelled", "blocked"].includes(activeGoal.status)) {
+            currentState = "idle";
+            log(`agent_end: skipping supervisor check for terminal goal status=${activeGoal.status}`);
+            appendForensic({
+                ts: forensicTs(),
+                type: "agent_end_skipped",
+                reason: `terminal goal status=${activeGoal.status}`,
+            });
+            emitStatusChanged();
+            return;
+        }
+        if (pi.getFlag("disable-supervisor") === true) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "agent_end_skipped",
+                reason: "disable-supervisor flag",
+            });
+            return;
+        }
         if (schedulerInstance.isExhausted()) {
             log(`agent_end: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`);
+            appendForensic({
+                ts: forensicTs(),
+                type: "scheduler_exhausted",
+                continueCount: schedulerInstance.getContinueCount(),
+                maxContinueCount: config.maxContinueCount,
+            });
             return;
         }
 
@@ -447,7 +576,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             }
 
             lastTaskReports = reports;
-            channel.emit("supervisor.taskReport", { tasks: reports });
+            channel.emit("supervisor.taskReport", { type: "taskReport" as const, tasks: reports });
 
             // Phase 2: If any guard says incomplete → continue immediately
             const hasIncompleteGuards = guardResults.some((r) => !r.completed && r.remainingItems.length > 0);
@@ -467,13 +596,26 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                 if (currentSignature === lastIncompleteSignature) {
                     stagnationCount++;
                     log(`Stagnation detected (count=${stagnationCount}), signature=${currentSignature}`);
+                    appendForensic({
+                        ts: forensicTs(),
+                        type: "stagnation_detected",
+                        stagnationCount,
+                        currentSignature,
+                        previousSignature: lastIncompleteSignature,
+                        guardResults: guardResults.map((r) => ({
+                            guardName: r.guardName,
+                            completed: r.completed,
+                            remainingItems: r.remainingItems,
+                            confidence: r.confidence,
+                        })),
+                    });
                 } else {
                     stagnationCount = 0;
                 }
                 lastIncompleteSignature = currentSignature;
 
-                if (stagnationCount >= 2) {
-                    log(`Stagnation threshold reached (${stagnationCount} consecutive identical results), stopping loop`);
+                if (stagnationCount >= 1) {
+                    log(`Stagnation threshold reached (${stagnationCount + 1} consecutive identical results), stopping loop`);
 
                     const checkDurationMs = Date.now() - checkStartedAt;
                     currentState = "idle";
@@ -496,7 +638,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                         durationMs: checkDurationMs,
                     });
 
-                    const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "blocked", 0.5, guardResults, guardTimings, undefined, "idle", "Stagnation detected, stopping loop");
+                    const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "blocked", 0.5, guardResults, guardTimings, undefined, "paused", "Stagnation detected, stopping loop");
                     appendTriggerRecord(record);
 
                     pi.sendMessage(
@@ -579,8 +721,14 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
                 const record = buildTriggerRecord(
                     checkStartedAt, checkDurationMs, "complete", modelCheck.confidence,
                     guardResults, guardTimings,
-                    { passed: true, confidence: modelCheck.confidence, response: modelCheck.modelResponse, durationMs: modelCheckDurationMs },
-                    "idle", "All guards and model check passed",
+                    {
+                        passed: true,
+                        confidence: modelCheck.confidence,
+                        response: modelCheck.modelResponse,
+                        durationMs: modelCheckDurationMs,
+                        model: config.smallModel,
+                    },
+                    "complete", "All guards and model check passed",
                 );
                 appendTriggerRecord(record);
 
@@ -644,7 +792,13 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             const record = buildTriggerRecord(
                 checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
                 guardResults, guardTimings,
-                { passed: false, confidence: modelCheck.confidence, response: modelCheck.modelResponse, durationMs: modelCheckDurationMs },
+                {
+                    passed: false,
+                    confidence: modelCheck.confidence,
+                    response: modelCheck.modelResponse,
+                    durationMs: modelCheckDurationMs,
+                    model: config.smallModel,
+                },
                 "continue", modelCheck.modelResponse ?? "Model detected incomplete tasks",
             );
             appendTriggerRecord(record);
@@ -687,21 +841,19 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
     function scheduleContinue(continueMessage: string): void {
         const delayMs = config.defaultDelayMs;
 
-        if (schedulerInstance.shouldPause(delayMs)) {
-            currentState = "paused";
-            emitStatusChanged();
-            channel.emit("supervisor.pauseRequested", {
-                delayMs,
-                reason: continueMessage.slice(0, 200),
-            });
-        }
-
+        const shouldPause = schedulerInstance.shouldPause(delayMs);
         const seq = schedulerInstance.getContinueCount();
         const id = `auto-continue-${seq}`;
         const result = schedulerInstance.scheduleContinue(id, delayMs, () => {
+            pendingPause = undefined;
             currentState = "continuing";
             setGoalStatus("running");
             emitStatusChanged();
+            channel.emit("supervisor.continueTriggered", {
+                type: "continueTriggered" as const,
+                reason: continueMessage.slice(0, 200),
+                delayMs,
+            });
             try {
                 pi.sendMessage(
                     {
@@ -718,8 +870,46 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             }
         });
 
+        if (result.scheduled) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "continue_scheduled",
+                reason: continueMessage.slice(0, 500),
+                delayMs,
+                continueCount: schedulerInstance.getContinueCount(),
+                maxContinueCount: config.maxContinueCount,
+                shouldPause,
+            });
+        }
+
+        if (result.scheduled && shouldPause) {
+            pendingPause = {
+                scheduledAt: result.scheduledAt ?? Date.now() + delayMs,
+                delayMs,
+                reason: continueMessage.slice(0, 200),
+            };
+            currentState = "paused";
+            emitStatusChanged();
+            channel.emit("supervisor.pauseRequested", {
+                type: "pauseRequested" as const,
+                delayMs,
+                reason: continueMessage.slice(0, 200),
+            });
+        }
+
         if (!result.scheduled) {
             log(`scheduleContinue: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}), not scheduling`);
+            appendForensic({
+                ts: forensicTs(),
+                type: "continue_skipped",
+                reason: `scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`,
+            });
+            appendForensic({
+                ts: forensicTs(),
+                type: "scheduler_exhausted",
+                continueCount: schedulerInstance.getContinueCount(),
+                maxContinueCount: config.maxContinueCount,
+            });
         }
     }
 
@@ -733,6 +923,14 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         guard: GuardConfig,
         context: string,
     ): Promise<GuardCheckResult> {
+        const startedAt = Date.now();
+        appendForensic({
+            ts: forensicTs(),
+            type: "guard_check_start",
+            guardName: guard.name,
+            guardType: guard.type,
+            contextLength: context.length,
+        });
         const base: GuardCheckResult = {
             guardName: guard.name,
             completed: true,
@@ -741,26 +939,54 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         };
 
         try {
+            let result: GuardCheckResult;
             switch (guard.type) {
                 case "todo":
-                    return await checkTodoGuard(guard, context);
+                    result = await checkTodoGuard(guard, context);
+                    break;
                 case "specs":
-                    return await checkSpecsGuard(guard, context);
+                    result = await checkSpecsGuard(guard, context);
+                    break;
                 case "ci":
-                    return await checkCiGuard(guard, context);
+                    result = await checkCiGuard(guard, context);
+                    break;
                 case "keyword":
-                    return checkKeywordGuard(guard, context);
+                    result = checkKeywordGuard(guard, context);
+                    break;
                 case "custom":
-                    return await checkCustomGuard(guard, context);
+                    result = await checkCustomGuard(guard, context);
+                    break;
                 default:
-                    return base;
+                    result = base;
+                    break;
             }
+            appendForensic({
+                ts: forensicTs(),
+                type: "guard_check_end",
+                guardName: guard.name,
+                guardType: guard.type,
+                completed: result.completed,
+                confidence: result.confidence,
+                remainingItems: result.remainingItems,
+                detail: result.detail,
+                durationMs: Date.now() - startedAt,
+            });
+            return result;
         } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            appendForensic({
+                ts: forensicTs(),
+                type: "guard_check_error",
+                guardName: guard.name,
+                guardType: guard.type,
+                error,
+                durationMs: Date.now() - startedAt,
+            });
             return {
                 ...base,
                 completed: false,
                 confidence: 0,
-                detail: `Guard check error: ${err instanceof Error ? err.message : String(err)}`,
+                detail: `Guard check error: ${error}`,
             };
         }
     }
@@ -1042,6 +1268,189 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         return items;
     }
 
+    function queueGoalChecklistRefinement(goalId: string, objective: string): void {
+        void (async () => {
+            const refinedChecklist = await deriveGoalChecklistWithLLM(objective);
+            if (refinedChecklist.length === 0) return;
+            if (!activeGoal || activeGoal.id !== goalId) return;
+            if (activeGoal.status !== "running" && activeGoal.status !== "checking") return;
+
+            activeGoal = applyChecklistProgress({
+                ...activeGoal,
+                checklist: mergeChecklistProgress(activeGoal.checklist ?? [], refinedChecklist),
+                updatedAt: Date.now(),
+            });
+            persistGoalRuntimeState();
+            channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+            emitStatusChanged();
+        })().catch((err) => {
+            log(`queueGoalChecklistRefinement failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    }
+
+    async function deriveGoalChecklistWithLLM(objective: string): Promise<GoalChecklistItem[]> {
+        try {
+            const context = projectRoot ? gatherProjectContext(projectRoot) : "";
+            const raw = await pi.callLLM({
+                systemPrompt: GOAL_CHECKLIST_SYSTEM_PROMPT,
+                messages: [{ role: "user", content: GOAL_CHECKLIST_USER_PROMPT(objective, context) }],
+                model: config.smallModel,
+                maxTokens: 1024,
+            });
+            const parsed = parseGoalChecklist(raw);
+            if (parsed.length > 0) {
+                return parsed;
+            }
+        } catch (err) {
+            log(`deriveGoalChecklistWithLLM failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return [];
+    }
+
+    function mergeChecklistProgress(
+        existing: GoalChecklistItem[],
+        incoming: GoalChecklistItem[],
+    ): GoalChecklistItem[] {
+        const now = Date.now();
+        return incoming.map((item, index) => {
+            const previous = existing[index];
+            return {
+                ...item,
+                status: previous?.status ?? item.status,
+                updatedAt: now,
+            };
+        });
+    }
+
+    function createFallbackGoalChecklist(objective: string): GoalChecklistItem[] {
+        const now = Date.now();
+        const mentionedPaths = extractMentionedPaths(objective);
+        const scopeText = mentionedPaths.length > 0
+            ? `确认目标范围和涉及路径：${mentionedPaths.slice(0, 3).join(", ")}`
+            : "确认目标范围、约束和验收方式";
+        return [
+            makeChecklistItem(1, scopeText, "scope", now),
+            makeChecklistItem(2, "完成用户目标要求的实际改动或操作", "implementation", now),
+            makeChecklistItem(3, "运行相关检查、测试或人工可验证步骤", "verification", now),
+            makeChecklistItem(4, "总结完成结果、验证证据和剩余风险", "report", now),
+        ];
+    }
+
+    function parseGoalChecklist(raw: string): GoalChecklistItem[] {
+        if (!raw.trim()) return [];
+        try {
+            const jsonStr = raw
+                .replace(/^```(?:json)?\s*\n?/m, "")
+                .replace(/\n?```\s*$/m, "")
+                .trim();
+            const parsed = JSON.parse(jsonStr) as unknown;
+            const items = Array.isArray((parsed as { items?: unknown }).items)
+                ? (parsed as { items: unknown[] }).items
+                : Array.isArray(parsed)
+                    ? parsed
+                    : [];
+            const now = Date.now();
+            return items
+                .map((item, index) => normalizeChecklistDraft(item, index + 1, now))
+                .filter((item): item is GoalChecklistItem => Boolean(item))
+                .slice(0, 6);
+        } catch {
+            return [];
+        }
+    }
+
+    function normalizeChecklistDraft(item: unknown, index: number, now: number): GoalChecklistItem | undefined {
+        if (!item || typeof item !== "object") return undefined;
+        const record = item as Record<string, unknown>;
+        const text = typeof record.text === "string" ? record.text.trim() : "";
+        if (!text) return undefined;
+        return makeChecklistItem(index, text, normalizeChecklistKind(record.kind), now);
+    }
+
+    function normalizeChecklistKind(kind: unknown): GoalChecklistItem["kind"] {
+        if (kind === "scope" || kind === "implementation" || kind === "verification" || kind === "report") {
+            return kind;
+        }
+        return "implementation";
+    }
+
+    function makeChecklistItem(
+        index: number,
+        text: string,
+        kind: GoalChecklistItem["kind"],
+        now: number,
+    ): GoalChecklistItem {
+        return {
+            id: `check_${index.toString().padStart(2, "0")}`,
+            text,
+            kind,
+            status: "pending",
+            updatedAt: now,
+        };
+    }
+
+    function extractMentionedPaths(text: string): string[] {
+        const matches = text.match(/(?:[\w.-]+\/)+[\w.-]+|[\w.-]+\.(?:ts|tsx|js|jsx|json|md|txt|css|scss|html|mjs|cjs)/g);
+        return Array.from(new Set(matches ?? []));
+    }
+
+    function applyChecklistProgress(goal: GoalState): GoalState {
+        const checklist = goal.checklist;
+        if (!checklist || checklist.length === 0) return goal;
+        const now = Date.now();
+
+        if (goal.status === "complete") {
+            const completedChecklist = checklist.map((item) => ({
+                ...item,
+                status: "done" as const,
+                updatedAt: now,
+            }));
+            return {
+                ...goal,
+                currentMilestone: undefined,
+                checklist: completedChecklist,
+            };
+        }
+
+        if (goal.status === "blocked" || goal.status === "needs_user") {
+            const blockedChecklist = checklist.map((item) =>
+                item.status === "in_progress"
+                    ? { ...item, status: "blocked" as const, updatedAt: now }
+                    : item,
+            );
+            return {
+                ...goal,
+                currentMilestone: blockedChecklist.find((item) => item.status !== "done")?.text,
+                checklist: blockedChecklist,
+            };
+        }
+
+        const hasActiveItem = checklist.some((item) => item.status === "in_progress");
+        if (hasActiveItem) {
+            return {
+                ...goal,
+                currentMilestone: checklist.find((item) => item.status === "in_progress")?.text
+                    ?? checklist.find((item) => item.status !== "done")?.text,
+            };
+        }
+
+        let promoted = false;
+        const promotedChecklist = checklist.map((item) => {
+            if (!promoted && item.status === "pending") {
+                promoted = true;
+                return { ...item, status: "in_progress" as const, updatedAt: now };
+            }
+            return item;
+        });
+
+        return {
+            ...goal,
+            currentMilestone: promotedChecklist.find((item) => item.status === "in_progress")?.text
+                ?? promotedChecklist.find((item) => item.status !== "done")?.text,
+            checklist: promotedChecklist,
+        };
+    }
+
     function getStatus(): SupervisorStatus {
         return {
             enabled,
@@ -1052,11 +1461,12 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             lastCheckResult,
             goal: activeGoal,
             lastGoldResult,
+            pendingPause,
         };
     }
 
     function emitStatusChanged(): void {
-        channel.emit("supervisor.statusChanged", getStatus());
+        channel.emit("supervisor.statusChanged", { type: "statusChanged" as const, status: getStatus() });
     }
 
     function getGoalRuntimeStatePath(): string {
@@ -1071,7 +1481,8 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             typeof goal.objective === "string" &&
             typeof goal.status === "string" &&
             typeof goal.startedAt === "number" &&
-            typeof goal.updatedAt === "number"
+            typeof goal.updatedAt === "number" &&
+            (goal.checklist === undefined || Array.isArray(goal.checklist))
         );
     }
 
@@ -1087,6 +1498,68 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
         );
     }
 
+    function isTriggerRecord(value: unknown): value is TriggerRecord {
+        if (!value || typeof value !== "object") return false;
+        const record = value as Partial<TriggerRecord>;
+        return (
+            typeof record.seq === "number" &&
+            typeof record.startedAt === "number" &&
+            typeof record.durationMs === "number" &&
+            typeof record.verdict === "string" &&
+            typeof record.confidence === "number" &&
+            Array.isArray(record.guardResults) &&
+            typeof record.action === "string"
+        );
+    }
+
+    function taskReportsFromTriggerRecord(record: TriggerRecord): TaskReport[] {
+        return record.guardResults.map((result) => ({
+            guardName: result.guardName,
+            guardType: result.guardType,
+            status: result.passed ? "completed" : "incomplete",
+            details: result.detail,
+            remainingItems: result.remainingItems,
+        }));
+    }
+
+    function getTriggerLogDir(): string {
+        return join(sessionDataDir, TRIGGER_LOG_DIR);
+    }
+
+    function loadTriggerHistoryFromLogs(): void {
+        triggerHistory = [];
+        triggerSeq = 0;
+        lastTaskReports = [];
+        if (!sessionDataDir) return;
+
+        const logDir = getTriggerLogDir();
+        if (!existsSync(logDir)) return;
+
+        try {
+            const records = readdirSync(logDir)
+                .filter((name) => name.endsWith(".json"))
+                .map((name) => {
+                    const filePath = join(logDir, name);
+                    try {
+                        const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
+                        return isTriggerRecord(parsed) ? parsed : undefined;
+                    } catch {
+                        return undefined;
+                    }
+                })
+                .filter((record): record is TriggerRecord => Boolean(record))
+                .sort((a, b) => (a.startedAt - b.startedAt) || (a.seq - b.seq));
+
+            triggerHistory = records.slice(-TRIGGER_HISTORY_LIMIT);
+            triggerSeq = triggerHistory.reduce((max, record) => Math.max(max, record.seq), 0);
+            const latestWithGuards = [...triggerHistory].reverse().find((record) => record.guardResults.length > 0);
+            lastTaskReports = latestWithGuards ? taskReportsFromTriggerRecord(latestWithGuards) : [];
+            log(`loadTriggerHistoryFromLogs: restored ${triggerHistory.length} record(s), seq=${triggerSeq}`);
+        } catch (err) {
+            log(`loadTriggerHistoryFromLogs failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
     function loadGoalRuntimeState(): void {
         activeGoal = undefined;
         lastGoldResult = undefined;
@@ -1097,6 +1570,12 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as GoalRuntimeState;
             activeGoal = isGoalState(parsed.activeGoal) ? parsed.activeGoal : undefined;
             lastGoldResult = isGoldResult(parsed.lastGoldResult) ? parsed.lastGoldResult : undefined;
+            // Restore enabled state from persisted runtime state
+            if (typeof parsed.enabled === "boolean" && parsed.enabled) {
+                enabled = true;
+                currentState = "idle";
+                log(`loadGoalRuntimeState: restored enabled=true`);
+            }
         } catch (err) {
             log(`loadGoalRuntimeState failed: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -1105,7 +1584,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
     function persistGoalRuntimeState(): void {
         if (!sessionDataDir) return;
         const filePath = getGoalRuntimeStatePath();
-        if (!activeGoal && !lastGoldResult) {
+        if (!activeGoal && !lastGoldResult && !enabled) {
             try {
                 if (existsSync(filePath)) unlinkSync(filePath);
             } catch (err) {
@@ -1113,11 +1592,26 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             }
             return;
         }
-        const state: GoalRuntimeState = { activeGoal, lastGoldResult };
+        const state: GoalRuntimeState = { activeGoal, lastGoldResult, enabled };
         try {
             writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
         } catch (err) {
             log(`persistGoalRuntimeState failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
+    function syncSupervisorToolVisibility(): void {
+        try {
+            const activeTools = pi.getActiveTools();
+            const hasTool = activeTools.includes(SUPERVISOR_COMPLETE_TOOL);
+            const shouldExpose = enabled;
+            if (shouldExpose && !hasTool) {
+                pi.setActiveTools([...activeTools, SUPERVISOR_COMPLETE_TOOL]);
+            } else if (!shouldExpose && hasTool) {
+                pi.setActiveTools(activeTools.filter((name) => name !== SUPERVISOR_COMPLETE_TOOL));
+            }
+        } catch (err) {
+            log(`syncSupervisorToolVisibility failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 
@@ -1142,15 +1636,25 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
 
     function setGoalStatus(status: GoalState["status"], blocker?: GoalState["blockers"][number]): void {
         if (!activeGoal) return;
-        activeGoal = {
+        const oldStatus = activeGoal.status;
+        activeGoal = applyChecklistProgress({
             ...activeGoal,
             status,
             updatedAt: Date.now(),
             continuationCount: schedulerInstance?.getContinueCount() ?? activeGoal.continuationCount,
             blockers: blocker ? [...activeGoal.blockers, blocker] : activeGoal.blockers,
-        };
+        });
         persistGoalRuntimeState();
-        channel.emit("supervisor.goalChanged", { goal: activeGoal });
+        if (oldStatus !== activeGoal.status) {
+            appendForensic({
+                ts: forensicTs(),
+                type: "goal_status_changed",
+                goalId: activeGoal.id,
+                oldStatus,
+                newStatus: activeGoal.status,
+            });
+        }
+        channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
     }
 
     function recordGoldResult(result: Omit<GoldResult, "goalId" | "checkedAt"> & { durationMs?: number }): void {
@@ -1160,7 +1664,12 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
             checkedAt: Date.now(),
         };
         persistGoalRuntimeState();
-        channel.emit("supervisor.goldResult", lastGoldResult);
+        appendForensic({
+            ts: forensicTs(),
+            type: "gold_result_emitted",
+            goldResult: lastGoldResult,
+        });
+        channel.emit("supervisor.goldResult", { type: "goldResult" as const, ...lastGoldResult });
     }
 
     function buildTriggerRecord(
@@ -1176,6 +1685,7 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
     ): TriggerRecord {
         triggerSeq++;
         return {
+            goalId: activeGoal?.id,
             seq: triggerSeq,
             startedAt,
             finishedAt: startedAt + durationMs,
@@ -1198,15 +1708,17 @@ When you believe the objective is fully achieved, call the \`supervisor_complete
     }
 
     function appendTriggerRecord(record: TriggerRecord): void {
-        triggerHistory.push(record);
-        channel.emit("supervisor.triggerRecord", record);
+        triggerHistory = [...triggerHistory.filter((item) => item.seq !== record.seq), record]
+            .sort((a, b) => (a.startedAt - b.startedAt) || (a.seq - b.seq))
+            .slice(-TRIGGER_HISTORY_LIMIT);
+        channel.emit("supervisor.triggerRecord", { type: "triggerRecord" as const, record });
         writeStructuredLog(record);
         log(`trigger #${record.seq}: verdict=${record.verdict}, action=${record.action}, duration=${record.durationMs}ms`);
     }
 
     function writeStructuredLog(record: TriggerRecord): void {
         if (!sessionDataDir) return;
-        const logDir = join(sessionDataDir, "supervisor-logs");
+        const logDir = getTriggerLogDir();
         try {
             if (!existsSync(logDir)) {
                 mkdirSync(logDir, { recursive: true });

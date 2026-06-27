@@ -49,6 +49,7 @@ export interface Args {
 	outputSchema?: string;
 	maxTurns?: number;
 	projectTrustOverride?: boolean;
+	agent?: string;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -195,6 +196,8 @@ export function parseArgs(args: string[]): Args {
 			result.projectTrustOverride = false;
 		} else if (arg === "--offline") {
 			result.offline = true;
+		} else if (arg === "--agent" && i + 1 < args.length) {
+			result.agent = args[++i];
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
@@ -270,6 +273,8 @@ ${chalk.bold("Options:")}
                                  Applies to built-in, extension, and custom tools
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
                                  Applies to built-in, extension, and custom tools
+  --agent <name|path>              Start with a named agent (applies its tools, permissions, system prompt)
+                                 Also accepts a path to a .md file (relative or absolute)
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -305,6 +310,12 @@ ${chalk.bold("Examples:")}
 
   # Non-interactive mode (process and exit)
   ${APP_NAME} -p "List all .ts files in src/"
+
+  # Start with a named agent
+  ${APP_NAME} --agent read-only
+
+  # Start with an agent from a file path
+  ${APP_NAME} --agent ./agent-configs/reviewer.md -p "Review commit history"
 
   # Multiple messages (interactive)
   ${APP_NAME} "Read package.json" "What dependencies do we have?"

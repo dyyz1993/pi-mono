@@ -27,12 +27,13 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME } from "../config.ts";
+import { CONFIG_DIR_NAME, getRuntimeResourcePolicy } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
+import { getProjectPrivateSkillsDir, getProjectUserStateDir, resolveProjectIdentity } from "./storage.ts";
 
 const NETWORK_TIMEOUT_MS = 10000;
 const UPDATE_CHECK_CONCURRENCY = 4;
@@ -871,6 +872,10 @@ export class DefaultPackageManager implements PackageManager {
 		const accumulator = this.createAccumulator();
 		const globalSettings = this.settingsManager.getGlobalSettings();
 		const projectSettings = this.settingsManager.getProjectSettings();
+		const runtimePolicy = getRuntimeResourcePolicy();
+		if (!runtimePolicy.canLoadPlugins && !runtimePolicy.canLoadUserSkills && !runtimePolicy.canLoadProjectSkills) {
+			return this.toResolvedPaths(accumulator);
+		}
 
 		// Collect all packages with scope (project first so cwd resources win collisions)
 		const allPackages: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
@@ -2273,6 +2278,9 @@ export class DefaultPackageManager implements PackageManager {
 		const projectAgentsSkillDirs = projectTrusted
 			? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
 			: [];
+		const projectRoot = resolveProjectIdentity(this.cwd);
+		const projectPrivateSkillsDir = getProjectPrivateSkillsDir(projectRoot);
+		const projectPrivateBaseDir = getProjectUserStateDir(projectRoot);
 
 		const addResources = (
 			resourceType: ResourceType,
@@ -2305,6 +2313,19 @@ export class DefaultPackageManager implements PackageManager {
 				projectMetadata,
 				projectOverrides.skills,
 				projectBaseDir,
+			);
+
+			addResources(
+				"skills",
+				collectAutoSkillEntries(projectPrivateSkillsDir, "pi"),
+				{
+					source: "auto",
+					scope: "project",
+					origin: "top-level",
+					baseDir: projectPrivateBaseDir,
+				},
+				projectOverrides.skills,
+				projectPrivateBaseDir,
 			);
 		}
 

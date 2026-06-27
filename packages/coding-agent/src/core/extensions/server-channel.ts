@@ -1,3 +1,4 @@
+import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import type { Channel } from "./channel-types.ts";
 
 export interface ChannelContract {
@@ -31,28 +32,45 @@ export class ServerChannel<T extends ChannelContract = ChannelContract> {
 		this.raw = raw;
 
 		this.raw.onReceive((data: unknown) => {
-			const msg = data as Record<string, unknown>;
+			const msg = asRecord(data);
 			if (!("__call" in msg)) return;
 
 			const method = msg.__call as string;
 			const handler = this.methodHandlers.get(method);
-			if (!handler) return;
+			if (!handler) {
+				console.error(`[server-channel] no handler for method "${method}" on channel "${this.raw.name}"`);
+				return;
+			}
 
 			const { invokeId, ...paramsWithCall } = msg;
 			delete paramsWithCall.__call;
-			const result = handler(paramsWithCall);
+			let result: unknown;
+			try {
+				result = handler(paramsWithCall);
+			} catch (err: unknown) {
+				console.error(
+					`[server-channel] handler error for "${method}":`,
+					err instanceof Error ? err.message : String(err),
+				);
+				return;
+			}
 
 			const sendResponse = (res: unknown) => {
 				if (!invokeId) return;
 				if (Array.isArray(res)) {
 					this.raw.send({ result: res, invokeId });
 				} else {
-					this.raw.send({ ...((res as Record<string, unknown>) ?? {}), invokeId });
+					this.raw.send({ ...(asRecord(res) ?? {}), invokeId });
 				}
 			};
 
 			if (result instanceof Promise) {
-				result.then(sendResponse);
+				result.then(sendResponse).catch((err: unknown) => {
+					console.error(
+						`[server-channel] async handler error for "${method}":`,
+						err instanceof Error ? err.message : String(err),
+					);
+				});
 			} else {
 				sendResponse(result);
 			}

@@ -1,17 +1,18 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
-import type { Api, ImageContent, Model, TextContent } from "@dyyz1993/pi-ai";
+import type { ImageContent, TextContent } from "@dyyz1993/pi-ai";
 import { Text } from "@dyyz1993/pi-tui";
-import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
+import { constants, createReadStream } from "fs";
+import { access as fsAccess, readFile as fsReadFile, stat as fsStat } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
-import { formatDimensionNote, resizeImage } from "../../utils/image-resize.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
+import { createLocalImageAssetStore, type ImageAssetRef, type ImageAssetStore } from "../assets.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { createDefaultFileResolvers, type FileResolver, resolveFileWithResolvers } from "../file-resolvers.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -27,6 +28,8 @@ export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
 	truncation?: TruncationResult;
+	asset?: ImageAssetRef;
+	resolver?: string;
 }
 
 interface CompactReadClassification {
@@ -43,6 +46,10 @@ const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.m
 export interface ReadOperations {
 	/** Read file contents as a Buffer */
 	readFile: (absolutePath: string) => Promise<Buffer>;
+	/** Read file metadata without loading file contents */
+	stat?: (absolutePath: string) => Promise<{ size: number }>;
+	/** Create a readable stream for large text files */
+	createReadStream?: typeof createReadStream;
 	/** Check if file is readable (throw if not) */
 	access: (absolutePath: string) => Promise<void>;
 	/** Detect image MIME type, return null or undefined for non-images */
@@ -51,6 +58,8 @@ export interface ReadOperations {
 
 const defaultReadOperations: ReadOperations = {
 	readFile: (path) => fsReadFile(path),
+	stat: (path) => fsStat(path),
+	createReadStream,
 	access: (path) => fsAccess(path, constants.R_OK),
 	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
 };
@@ -60,6 +69,10 @@ export interface ReadToolOptions {
 	autoResizeImages?: boolean;
 	/** Custom operations for file reading. Default: local filesystem */
 	operations?: ReadOperations;
+	/** Asset store for image metadata and preview reuse. Default: project-local store. */
+	assetStore?: ImageAssetStore | false;
+	/** Pluggable file resolvers. Default includes image resolver. */
+	fileResolvers?: readonly FileResolver[] | false;
 }
 
 type ReadRenderArgs = { path?: string; file_path?: string; offset?: number; limit?: number };
@@ -82,13 +95,6 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 		end--;
 	}
 	return lines.slice(0, end);
-}
-
-function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
-	if (!model || model.input.includes("image")) {
-		return undefined;
-	}
-	return "[Current model does not support images. The image will be omitted from this request.]";
 }
 
 function toPosixPath(filePath: string): string {
@@ -206,6 +212,12 @@ export function createReadToolDefinition(
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const ops = options?.operations ?? defaultReadOperations;
+	const assetStore =
+		options?.assetStore === false
+			? undefined
+			: (options?.assetStore ?? createLocalImageAssetStore({ projectRoot: cwd }));
+	const fileResolvers =
+		options?.fileResolvers === false ? [] : (options?.fileResolvers ?? createDefaultFileResolvers());
 	return {
 		name: "read",
 		label: "read",
@@ -240,38 +252,20 @@ export function createReadToolDefinition(
 							// Check if file exists and is readable.
 							await ops.access(absolutePath);
 							if (aborted) return;
-							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
-							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
-							if (mimeType) {
-								// Read image as binary.
-								const buffer = await ops.readFile(absolutePath);
-								if (autoResizeImages) {
-									// Resize image if needed before sending it back to the model.
-									const resized = await resizeImage(buffer, mimeType);
-									if (!resized) {
-										let textNote = `Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`;
-										if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
-										content = [{ type: "text", text: textNote }];
-									} else {
-										const dimensionNote = formatDimensionNote(resized);
-										let textNote = `Read image file [${resized.mimeType}]`;
-										if (dimensionNote) textNote += `\n${dimensionNote}`;
-										if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
-										content = [
-											{ type: "text", text: textNote },
-											{ type: "image", data: resized.data, mimeType: resized.mimeType },
-										];
-									}
-								} else {
-									let textNote = `Read image file [${mimeType}]`;
-									if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
-									content = [
-										{ type: "text", text: textNote },
-										{ type: "image", data: buffer.toString("base64"), mimeType },
-									];
-								}
+							const resolved = await resolveFileWithResolvers(fileResolvers, {
+								absolutePath,
+								cwd,
+								operations: ops,
+								autoResizeImages,
+								assetStore,
+								model: ctx?.model,
+								text: { offset, limit },
+							});
+							if (resolved) {
+								content = resolved.content;
+								details = resolved.details;
 							} else {
 								// Read text content.
 								const buffer = await ops.readFile(absolutePath);

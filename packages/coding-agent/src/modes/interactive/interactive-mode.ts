@@ -62,6 +62,7 @@ import {
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type {
+	AskUserQuestionResponse,
 	AutocompleteProviderFactory,
 	EditorFactory,
 	ExtensionCommandContext,
@@ -95,6 +96,7 @@ import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
+import type { UnknownRecord } from "../../utils/type-helpers.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -558,10 +560,12 @@ export class InteractiveMode {
 		const triggerCharacters: string[] = [];
 		for (const wrapProvider of this.autocompleteProviderWrappers) {
 			provider = wrapProvider(provider);
-			triggerCharacters.push(...(provider.triggerCharacters ?? []));
+			triggerCharacters.push(
+				...(((provider as unknown as Record<string, unknown>).triggerCharacters as string[]) ?? []),
+			);
 		}
 		if (triggerCharacters.length > 0) {
-			provider.triggerCharacters = [...new Set(triggerCharacters)];
+			(provider as unknown as Record<string, unknown>).triggerCharacters = [...new Set(triggerCharacters)];
 		}
 
 		this.autocompleteProvider = provider;
@@ -1675,6 +1679,14 @@ export class InteractiveMode {
 			model: this.session.model,
 			isIdle: () => !this.session.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
+			permissions: {
+				ask: async (request) => ({
+					type: "deny",
+					reason: `Permission request "${request.title}" cannot be handled from a shortcut context.`,
+				}),
+				registerProvider: () => {},
+				unregisterProvider: () => {},
+			},
 			signal: this.session.agent.signal,
 			sessionSignal: this.session.agent.signal,
 			abort: () => {
@@ -2026,6 +2038,7 @@ export class InteractiveMode {
 
 	private createExtensionUIContext(): ExtensionUIContext {
 		return {
+			askUserQuestion: (questions, opts) => this.showExtensionAskUserQuestion(questions, opts),
 			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
 			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
 			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
@@ -2079,6 +2092,36 @@ export class InteractiveMode {
 			getToolsExpanded: () => this.toolOutputExpanded,
 			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
 		};
+	}
+
+	private async showExtensionAskUserQuestion(
+		questions: Parameters<ExtensionUIContext["askUserQuestion"]>[0],
+		opts?: Parameters<ExtensionUIContext["askUserQuestion"]>[1],
+	): Promise<Awaited<ReturnType<ExtensionUIContext["askUserQuestion"]>>> {
+		const answers: AskUserQuestionResponse["answers"] = {};
+		const customLabel = "Custom answer...";
+		const skipLabel = "Skip";
+
+		for (const question of questions) {
+			const title = `${opts?.title ?? "Question"}\n${question.header}\n${question.question}`;
+			const labels = question.options.map((option) => option.label);
+			const choice = await this.showExtensionSelector(title, [...labels, customLabel, skipLabel], opts);
+			if (choice === undefined) return undefined;
+			if (choice === skipLabel) {
+				answers[question.id] = { selected: [] };
+				continue;
+			}
+			if (choice === customLabel) {
+				const text = await this.showExtensionInput(question.header, question.question, opts);
+				if (text === undefined) return undefined;
+				answers[question.id] = { selected: [], text };
+				continue;
+			}
+
+			answers[question.id] = { selected: [choice] };
+		}
+
+		return { action: "responded", answers };
 	}
 
 	/**
@@ -2287,7 +2330,7 @@ export class InteractiveMode {
 
 			// If extending CustomEditor, copy app-level handlers
 			// Use duck typing since instanceof fails across jiti module boundaries
-			const customEditor = newEditor as unknown as Record<string, unknown>;
+			const customEditor = newEditor as unknown as UnknownRecord;
 			if ("actionHandlers" in customEditor && customEditor.actionHandlers instanceof Map) {
 				if (!customEditor.onEscape) {
 					customEditor.onEscape = () => this.defaultEditor.onEscape?.();

@@ -71,6 +71,7 @@ const stubActions: ExtensionActions = {
 const stubContextActions: ExtensionContextActions = {
 	getModel: () => undefined,
 	isIdle: () => true,
+	isProjectTrusted: () => true,
 	getSignal: () => undefined,
 	abort: () => {},
 	hasPendingMessages: () => false,

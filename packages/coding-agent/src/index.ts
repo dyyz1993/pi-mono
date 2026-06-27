@@ -3,7 +3,22 @@
 export { type Args, parseArgs } from "./cli/args.ts";
 
 // Config paths
-export { getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION } from "./config.ts";
+export {
+	getAgentDir,
+	getDocsPath,
+	getExamplesPath,
+	getPackageDir,
+	getReadmePath,
+	getRemoteSshToolProxyCwd,
+	getRuntimeContext,
+	getRuntimeKind,
+	getRuntimeResourcePolicy,
+	isRemoteSshToolProxyMode,
+	type RuntimeContext,
+	type RuntimeKind,
+	type RuntimeResourcePolicy,
+	VERSION,
+} from "./config.ts";
 export {
 	AgentSession,
 	type AgentSessionConfig,
@@ -26,9 +41,23 @@ export type {
 export {
 	discoverAgents,
 	formatAgentList,
+	formatAgentsForPrompt,
 	getBuiltinAgents,
 	loadAgentsFromDir,
 } from "./core/agent-types.ts";
+export {
+	type AskPermissionOptions,
+	type AskPermissionStore,
+	askPermission,
+} from "./core/ask-permission.ts";
+export {
+	createLocalImageAssetStore,
+	type ImageAssetRef,
+	type ImageAssetStore,
+	LocalImageAssetStore,
+	type LocalImageAssetStoreOptions,
+	type PutImageAssetInput,
+} from "./core/assets.ts";
 // Auth and model registry
 export {
 	type ApiKeyCredential,
@@ -188,6 +217,16 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export {
+	createDefaultFileResolvers,
+	createImageFileResolver,
+	createTextFileResolver,
+	type FileResolver,
+	type FileResolverContext,
+	type FileResolverDetails,
+	type FileResolverResult,
+	resolveFileWithResolvers,
+} from "./core/file-resolvers.ts";
 // File store
 export type { GCResult } from "./core/file-store/index.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
@@ -203,6 +242,48 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+export {
+	createDangerousCommandProvider,
+	createPathAccessProvider,
+	createPiHooksProvider,
+	createStoredDecisionProvider,
+	createToolGateProvider,
+	type DangerousCommandAction,
+	type DangerousCommandPattern,
+	type DangerousCommandProviderOptions,
+	DEFAULT_DANGEROUS_COMMAND_PATTERNS,
+	defaultStoredDecisionCandidates,
+	findDangerousCommandMatch,
+	inputToPermissionRecord,
+	matchesAnyPathPattern,
+	matchesToolPattern,
+	matchPathGlob,
+	normalizePermissionPath,
+	type PathAccessProviderOptions,
+	type PermissionAction,
+	type PermissionContext,
+	type PermissionDecision,
+	type PermissionProvider,
+	type PermissionProviderFailure,
+	type PermissionRememberOption,
+	type PermissionRequest,
+	type PermissionRule,
+	type PermissionRuleAction,
+	type PermissionRuleDecision,
+	type PermissionRuleInput,
+	type PermissionRuleMatchInput,
+	type PermissionRuleScope,
+	PermissionRuntime,
+	type PermissionRuntimeOptions,
+	type PermissionSettings,
+	PermissionStore,
+	type PermissionStoreSettingsHost,
+	type PiHooksProviderOptions,
+	readPermissionRules,
+	type StoredDecisionLookup,
+	type StoredDecisionProviderOptions,
+	type ToolGateProviderOptions,
+} from "./core/permissions/index.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage
@@ -331,6 +412,7 @@ export {
 	type SpawnedProcess,
 	type SpawnOptions,
 	spawnManagedProcess,
+	type ToolOperationsProvider,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,

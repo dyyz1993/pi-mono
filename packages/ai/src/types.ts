@@ -252,6 +252,22 @@ export interface ImageContent {
 	type: "image";
 	data: string; // base64 encoded image data
 	mimeType: string; // e.g., "image/jpeg", "image/png"
+	asset?: ImageAssetRef;
+}
+
+export interface ImageAssetRef {
+	type: "image";
+	id: string;
+	mimeType: string;
+	size: number;
+	sha256: string;
+	storage: "inline" | "local" | "remote";
+	visibility: "local" | "signed-url" | "public";
+	sourcePath?: string;
+	localPath?: string;
+	previewUrl?: string;
+	remoteUrl?: string;
+	expiresAt?: string;
 }
 
 export interface ToolCall {

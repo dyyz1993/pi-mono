@@ -1,4 +1,14 @@
 export {
+	createDefaultFileResolvers,
+	createImageFileResolver,
+	createTextFileResolver,
+	type FileResolver,
+	type FileResolverContext,
+	type FileResolverDetails,
+	type FileResolverResult,
+	resolveFileWithResolvers,
+} from "../file-resolvers.ts";
+export {
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -79,7 +89,9 @@ export {
 } from "./write.ts";
 
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
+import type { ImageAssetStore } from "../assets.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
+import type { FileResolver } from "../file-resolvers.ts";
 import { type BashOperations, type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditOperations, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindOperations, type FindToolOptions } from "./find.ts";
@@ -107,6 +119,8 @@ export interface ToolsOptions {
 export interface ToolOperationsProvider {
 	bash?: BashOperations;
 	read?: ReadOperations;
+	readAssetStore?: ImageAssetStore | false;
+	fileResolvers?: readonly FileResolver[] | false;
 	write?: WriteOperations;
 	edit?: EditOperations;
 	grep?: GrepOperations;
@@ -117,7 +131,13 @@ export interface ToolOperationsProvider {
 export function toolsOptionsFromProvider(provider: ToolOperationsProvider): ToolsOptions {
 	const options: ToolsOptions = {};
 	if (provider.bash) options.bash = { operations: provider.bash };
-	if (provider.read) options.read = { operations: provider.read };
+	if (provider.read || provider.readAssetStore !== undefined || provider.fileResolvers !== undefined) {
+		options.read = {
+			...(provider.read ? { operations: provider.read } : {}),
+			...(provider.readAssetStore !== undefined ? { assetStore: provider.readAssetStore } : {}),
+			...(provider.fileResolvers !== undefined ? { fileResolvers: provider.fileResolvers } : {}),
+		};
+	}
 	if (provider.write) options.write = { operations: provider.write };
 	if (provider.edit) options.edit = { operations: provider.edit };
 	if (provider.grep) options.grep = { operations: provider.grep };

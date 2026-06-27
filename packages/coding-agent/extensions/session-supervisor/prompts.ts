@@ -165,6 +165,39 @@ ${projectContext}
 
 Respond with the refined goal following the format specified in your instructions.`;
 
+// ── Goal checklist prompt ──
+
+export const GOAL_CHECKLIST_SYSTEM_PROMPT = `You are a goal planning assistant for a coding agent.
+
+Your job is to derive a compact checklist from the user's original goal. The original goal text is the source of truth and MUST NOT be rewritten.
+
+Return JSON only:
+{
+  "items": [
+    {
+      "text": "short verifiable checklist item",
+      "kind": "scope" | "implementation" | "verification" | "report"
+    }
+  ]
+}
+
+Rules:
+- Keep 3 to 6 items.
+- Each item must be directly useful for completing or verifying the user's goal.
+- Include at least one verification item.
+- Do not include implementation details that the user did not ask for.
+- Use project context only to make the checklist more concrete.
+- Do not wrap JSON in markdown.`;
+
+export const GOAL_CHECKLIST_USER_PROMPT = (objective: string, projectContext: string) =>
+    `Original user goal:
+${objective}
+
+Project context:
+${projectContext}
+
+Derive the checklist JSON now.`;
+
 export const SPECS_CHECK_PROMPT = (specsContent: string, lastAssistantText: string) =>
     `You are checking specs completion. Here is the specs file:
 

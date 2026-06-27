@@ -44,6 +44,10 @@ export type {
 	AppendEntryHandler,
 	// App keybindings (for custom editors)
 	AppKeybinding,
+	AskUserQuestion,
+	AskUserQuestionAnswer,
+	AskUserQuestionOption,
+	AskUserQuestionResponse,
 	AutocompleteProviderFactory,
 	// Events - Tool (ToolCallEvent types)
 	BashToolCallEvent,
@@ -62,6 +66,9 @@ export type {
 	// Event Results
 	ContextEventResult,
 	ContextUsage,
+	ContextUsageBreakdownId,
+	ContextUsageBreakdownItem,
+	ContextUsageCompactionInfo,
 	CustomToolCallEvent,
 	CustomToolResultEvent,
 	EditorFactory,
@@ -89,6 +96,7 @@ export type {
 	ExtensionShortcut,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
+	ExtensionUIPermissionMeta,
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,
@@ -115,6 +123,8 @@ export type {
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ModelSelectSource,
+	PermissionRequestEvent,
+	PermissionRequestResult,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventDecision,
@@ -123,6 +133,10 @@ export type {
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
+	ProviderRequestContextUsage,
+	ProviderRequestContextUsageSection,
+	ProviderRequestToolDefinitionUsage,
+	ProviderRequestToolInteractionUsage,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
 	// Commands

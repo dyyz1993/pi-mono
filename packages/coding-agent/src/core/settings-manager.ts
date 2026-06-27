@@ -5,9 +5,11 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 import { DEFAULT_TIER_ALIASES } from "./defaults.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import type { McpSettings } from "./mcp/types.ts";
+import type { PermissionSettings } from "./permissions/store.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -123,6 +125,7 @@ export interface Settings {
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	tierModels?: Record<string, string>;
 	mcp?: McpSettings;
+	permissions?: PermissionSettings;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -146,10 +149,10 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 			baseValue !== null &&
 			!Array.isArray(baseValue)
 		) {
-			(result as Record<string, unknown>)[key] = { ...baseValue, ...overrideValue };
+			(result as UnknownRecord)[key] = { ...baseValue, ...overrideValue };
 		} else {
 			// For primitives and arrays, override value wins
-			(result as Record<string, unknown>)[key] = overrideValue;
+			(result as UnknownRecord)[key] = overrideValue;
 		}
 	}
 
@@ -339,7 +342,7 @@ export class SettingsManager {
 	/** Create an in-memory SettingsManager (no file I/O) */
 	static inMemory(settings: Partial<Settings> = {}): SettingsManager {
 		const storage = new InMemorySettingsStorage();
-		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as Record<string, unknown>);
+		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as UnknownRecord);
 		storage.withLock("global", () => JSON.stringify(initialSettings, null, 2));
 		return SettingsManager.fromStorage(storage);
 	}
@@ -416,10 +419,10 @@ export class SettingsManager {
 			settings.retry !== null &&
 			!Array.isArray(settings.retry)
 		) {
-			const retrySettings = settings.retry as Record<string, unknown>;
+			const retrySettings = asRecord(settings.retry);
 			const providerSettings =
 				typeof retrySettings.provider === "object" && retrySettings.provider !== null
-					? (retrySettings.provider as Record<string, unknown>)
+					? asRecord(retrySettings.provider)
 					: undefined;
 			if (
 				typeof retrySettings.maxDelayMs === "number" &&
@@ -603,22 +606,22 @@ export class SettingsManager {
 	): void {
 		this.storage.withLock(scope, (current) => {
 			const currentFileSettings = current
-				? SettingsManager.migrateSettings(JSON.parse(current) as Record<string, unknown>)
+				? SettingsManager.migrateSettings(JSON.parse(current) as UnknownRecord)
 				: {};
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
 				const value = snapshotSettings[field];
 				if (modifiedNestedFields.has(field) && typeof value === "object" && value !== null) {
 					const nestedModified = modifiedNestedFields.get(field)!;
-					const baseNested = (currentFileSettings[field] as Record<string, unknown>) ?? {};
-					const inMemoryNested = value as Record<string, unknown>;
+					const baseNested = (currentFileSettings[field] as UnknownRecord) ?? {};
+					const inMemoryNested = value as UnknownRecord;
 					const mergedNested = { ...baseNested };
 					for (const nestedKey of nestedModified) {
 						mergedNested[nestedKey] = inMemoryNested[nestedKey];
 					}
-					(mergedSettings as Record<string, unknown>)[field] = mergedNested;
+					(mergedSettings as UnknownRecord)[field] = mergedNested;
 				} else {
-					(mergedSettings as Record<string, unknown>)[field] = value;
+					(mergedSettings as UnknownRecord)[field] = value;
 				}
 			}
 

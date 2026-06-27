@@ -65,6 +65,25 @@ describe("loadEntriesFromFile", () => {
 		expect(entries).toHaveLength(2);
 	});
 
+	it("skips non-header entries without valid tree fields", () => {
+		const file = join(tempDir, "invalid-tree-entry.jsonl");
+		writeFileSync(
+			file,
+			'{"type":"session","version":3,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+				'{"type":"delegate_info","delegateParentSessionId":"parent","delegateType":"subagent"}\n' +
+				'{"type":"delegate_info","id":"delegate_info","parentId":null,"timestamp":"2025-01-01T00:00:01Z","delegateParentSessionId":"parent","delegateType":"subagent"}\n',
+		);
+
+		const entries = loadEntriesFromFile(file);
+		expect(entries).toHaveLength(2);
+		expect(entries[0].type).toBe("session");
+		expect(entries[1]).toMatchObject({
+			type: "delegate_info",
+			id: "delegate_info",
+			parentId: null,
+		});
+	});
+
 	it("opens session files larger than Node's max string length", () => {
 		const file = join(tempDir, "large.jsonl");
 		writeFileSync(

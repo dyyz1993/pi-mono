@@ -10,10 +10,10 @@ import {
 	type ToolResultMessage,
 } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CompactionManagerConfig, DEFAULT_CONFIG } from "../../extensions/multi-compaction/config.ts";
-import multiCompaction from "../../extensions/multi-compaction/index.ts";
-import { prepareSegmentCompaction } from "../../extensions/multi-compaction/segment-compaction.ts";
-import { applySlidingWindow } from "../../extensions/multi-compaction/sliding-window.ts";
+import { type CompactionManagerConfig, DEFAULT_CONFIG } from "../../extensions/_multi-compaction/config.ts";
+import multiCompaction, { createMultiCompaction } from "../../extensions/_multi-compaction/index.ts";
+import { prepareSegmentCompaction } from "../../extensions/_multi-compaction/segment-compaction.ts";
+import { applySlidingWindow } from "../../extensions/_multi-compaction/sliding-window.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/runner.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -98,18 +98,20 @@ function useSummaryStreamFn(harness: Harness, summary: string): () => number {
 
 function seedCompactableSession(harness: Harness): void {
 	const now = Date.now();
-	harness.sessionManager.appendMessage({
-		role: "user",
-		content: [{ type: "text", text: "message to compact" }],
-		timestamp: now - 1000,
-	});
-	harness.sessionManager.appendMessage(
-		createAssistant(harness, {
-			stopReason: "stop",
-			totalTokens: 100,
-			timestamp: now - 500,
-		}),
-	);
+	for (let i = 0; i < 4; i++) {
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: `message ${i} to compact ${"x ".repeat(200)}` }],
+			timestamp: now - 1000 + i * 100,
+		});
+		harness.sessionManager.appendMessage(
+			createAssistant(harness, {
+				stopReason: "stop",
+				totalTokens: 100,
+				timestamp: now - 950 + i * 100,
+			}),
+		);
+	}
 	harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 }
 
@@ -119,28 +121,7 @@ function seedCompactableSession(harness: Harness): void {
  * so we write the config to the tempDir and use process.chdir during loading.
  */
 function multiCompactionWithConfig(overrides: Partial<CompactionManagerConfig>) {
-	return (pi: Parameters<typeof multiCompaction>[0]) => {
-		// Build full config with overrides
-		const config: CompactionManagerConfig = {
-			toolResultBudget: { ...DEFAULT_CONFIG.toolResultBudget, ...(overrides.toolResultBudget ?? {}) },
-			snipCompact: { ...DEFAULT_CONFIG.snipCompact, ...(overrides.snipCompact ?? {}) },
-			lineFold: { ...DEFAULT_CONFIG.lineFold, ...(overrides.lineFold ?? {}) },
-			microcompact: { ...DEFAULT_CONFIG.microcompact, ...(overrides.microcompact ?? {}) },
-			sessionMemory: { ...DEFAULT_CONFIG.sessionMemory, ...(overrides.sessionMemory ?? {}) },
-			reactive: { ...DEFAULT_CONFIG.reactive, ...(overrides.reactive ?? {}) },
-			contextFold: { ...DEFAULT_CONFIG.contextFold, ...(overrides.contextFold ?? {}) },
-			strategy: overrides.strategy ?? DEFAULT_CONFIG.strategy,
-			halfCompaction: { ...DEFAULT_CONFIG.halfCompaction, ...(overrides.halfCompaction ?? {}) },
-			segmentCompaction: { ...DEFAULT_CONFIG.segmentCompaction, ...(overrides.segmentCompaction ?? {}) },
-			slidingWindow: { ...DEFAULT_CONFIG.slidingWindow, ...(overrides.slidingWindow ?? {}) },
-			postCompactRecovery: { ...DEFAULT_CONFIG.postCompactRecovery, ...(overrides.postCompactRecovery ?? {}) },
-		};
-
-		// Disable everything not explicitly overridden to isolate features
-		// Then re-enable only what's in the overrides
-		// For simplicity, just call the real extension after setting up config
-		multiCompaction(pi);
-	};
+	return createMultiCompaction(overrides);
 }
 
 describe("Multi-compaction extension harness", () => {
@@ -480,7 +461,9 @@ describe("Multi-compaction extension harness", () => {
 	// === 8. Circuit breaker integration ===
 
 	it("circuit breaker stops auto-compaction after 3 consecutive failures", async () => {
-		const harness = await createHarness();
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+		});
 		harnesses.push(harness);
 
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
@@ -523,7 +506,9 @@ describe("Multi-compaction extension harness", () => {
 	// === 9. Streaming retry integration ===
 
 	it("streaming retry attempts up to MAX_COMPACT_STREAMING_RETRIES on failure", async () => {
-		const harness = await createHarness({ withConfiguredAuth: false });
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+		});
 		harnesses.push(harness);
 		seedCompactableSession(harness);
 
@@ -1014,6 +999,7 @@ describe("Multi-compaction extension harness", () => {
 	it("session memory overrides compaction with memory files", async () => {
 		const harness = await createHarness({
 			extensionFactories: [multiCompaction],
+			settings: { compaction: { keepRecentTokens: 1 } },
 		});
 		harnesses.push(harness);
 
@@ -1169,7 +1155,12 @@ describe("Multi-compaction extension harness", () => {
 
 	it("transformContext produces identical output across 5 calls", async () => {
 		const harness = await createHarness({
-			extensionFactories: [multiCompaction],
+			extensionFactories: [
+				multiCompactionWithConfig({
+					contextFold: { ...DEFAULT_CONFIG.contextFold, enabled: false },
+					microcompact: { ...DEFAULT_CONFIG.microcompact, minIntervalMs: 0 },
+				}),
+			],
 		});
 		harnesses.push(harness);
 

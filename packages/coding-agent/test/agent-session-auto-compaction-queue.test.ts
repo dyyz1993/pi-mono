@@ -122,7 +122,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
-	it("should not compact repeatedly after overflow recovery already attempted", async () => {
+	it("should not compact repeatedly after overflow recovery rounds exhausted", async () => {
 		const model = session.model!;
 		const overflowMessage: AssistantMessage = {
 			role: "assistant",
@@ -165,15 +165,20 @@ describe("AgentSession auto-compaction queue resume", () => {
 			}
 		)._checkCompaction.bind(session);
 
-		await checkCompaction(overflowMessage);
-		await checkCompaction({ ...overflowMessage, timestamp: Date.now() + 1 });
+		// First 5 rounds: each triggers compaction
+		for (let i = 0; i < 5; i++) {
+			await checkCompaction({ ...overflowMessage, timestamp: Date.now() + i });
+		}
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(5);
 
-		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(1);
+		// 6th round: max exceeded, no compaction
+		await checkCompaction({ ...overflowMessage, timestamp: Date.now() + 100 });
+		expect(runAutoCompactionSpy).toHaveBeenCalledTimes(5);
 		expect(events).toContainEqual({
 			type: "compaction_end",
 			reason: "overflow",
 			errorMessage:
-				"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+				"Context overflow recovery failed after 5 compact-and-retry attempts. Try reducing context or switching to a larger-context model.",
 		});
 	});
 

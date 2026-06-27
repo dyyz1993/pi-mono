@@ -127,6 +127,61 @@ describe("AgentSession concurrent prompt guard", () => {
 		return session;
 	}
 
+	function createFiniteSession() {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const seenUserTexts: string[][] = [];
+
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context) => {
+				const userTexts = context.messages
+					.filter((message) => message.role === "user")
+					.map((message) => {
+						if (typeof message.content === "string") {
+							return message.content;
+						}
+						return message.content
+							.filter(
+								(part): part is TextContent =>
+									typeof part === "object" && part !== null && part.type === "text",
+							)
+							.map((part) => part.text)
+							.join("\n");
+					});
+				seenUserTexts.push(userTexts);
+
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Done") });
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		return { session, seenUserTexts };
+	}
+
 	it("should throw when prompt() called while streaming", async () => {
 		createSession();
 
@@ -179,6 +234,26 @@ describe("AgentSession concurrent prompt guard", () => {
 		// Cleanup
 		await session.abort();
 		await firstPrompt.catch(() => {});
+	});
+
+	it("should auto-consume followUp() when the session is idle", async () => {
+		const { session, seenUserTexts } = createFiniteSession();
+
+		await session.followUp("Follow-up while idle");
+
+		expect(session.isStreaming).toBe(false);
+		expect(session.pendingMessageCount).toBe(0);
+		expect(seenUserTexts.at(-1)).toContain("Follow-up while idle");
+	});
+
+	it("should auto-consume steer() when the session is idle", async () => {
+		const { session, seenUserTexts } = createFiniteSession();
+
+		await session.steer("Steer while idle");
+
+		expect(session.isStreaming).toBe(false);
+		expect(session.pendingMessageCount).toBe(0);
+		expect(seenUserTexts.at(-1)).toContain("Steer while idle");
 	});
 
 	it("should queue extension-origin steering messages while streaming", async () => {
@@ -422,6 +497,19 @@ describe("AgentSession concurrent prompt guard", () => {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const snapshots: string[][] = [];
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				pi.on("tool_call", async () => {
+					snapshots.push(
+						sessionManager
+							.getEntries()
+							.filter((entry) => entry.type === "message")
+							.map((entry) => entry.message.role),
+					);
+				});
+			},
+		]);
 
 		session = new AgentSession({
 			agent,
@@ -429,49 +517,9 @@ describe("AgentSession concurrent prompt guard", () => {
 			settingsManager,
 			cwd: tempDir,
 			modelRegistry,
-			resourceLoader: createTestResourceLoader(),
+			resourceLoader: createTestResourceLoader({ extensionsResult }),
 			baseToolsOverride: { dummy: tool },
 		});
-
-		const snapshots: string[][] = [];
-		const sessionWithRunner = session as unknown as {
-			_extensionRunner?: {
-				hasHandlers: (eventType: string) => boolean;
-				emit: (event: { type: string; message?: { role?: string } }) => Promise<void>;
-				emitMessageEnd: (event: { type: string; message?: { role?: string } }) => Promise<undefined>;
-				emitToolCall: (event: { type: string; toolCallId: string }) => Promise<undefined>;
-				emitInput: (
-					text: string,
-					images: unknown,
-					source: "interactive" | "rpc" | "extension",
-					streamingBehavior?: "steer" | "followUp",
-				) => Promise<{ action: "continue" }>;
-				emitBeforeAgentStart: (
-					prompt: string,
-					images: unknown,
-					systemPrompt: string,
-					systemPromptOptions: BuildSystemPromptOptions,
-				) => Promise<undefined>;
-				invalidate: (message?: string) => void;
-			};
-		};
-		sessionWithRunner._extensionRunner = {
-			hasHandlers: (eventType) => eventType === "tool_call",
-			emit: async () => {},
-			emitMessageEnd: async () => undefined,
-			emitToolCall: async () => {
-				snapshots.push(
-					sessionManager
-						.getEntries()
-						.filter((entry) => entry.type === "message")
-						.map((entry) => entry.message.role),
-				);
-				return undefined;
-			},
-			emitInput: async () => ({ action: "continue" }),
-			emitBeforeAgentStart: async () => undefined,
-			invalidate: () => {},
-		};
 
 		await session.prompt("hi");
 		await session.agent.waitForIdle();

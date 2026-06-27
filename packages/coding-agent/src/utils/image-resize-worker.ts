@@ -1,5 +1,6 @@
 import { parentPort } from "node:worker_threads";
 import { type ImageResizeOptions, type ResizedImage, resizeImageInProcess } from "./image-resize-core.ts";
+import { asRecord } from "./type-helpers.ts";
 
 interface ResizeImageWorkerRequest {
 	inputBytes: Uint8Array;
@@ -14,7 +15,7 @@ interface ResizeImageWorkerResponse {
 
 function isResizeImageWorkerRequest(value: unknown): value is ResizeImageWorkerRequest {
 	if (!value || typeof value !== "object") return false;
-	const record = value as Record<string, unknown>;
+	const record = asRecord(value);
 	return record.inputBytes instanceof Uint8Array && typeof record.mimeType === "string";
 }
 

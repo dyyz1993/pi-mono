@@ -2,12 +2,14 @@
  * Process @file CLI arguments into text content and image attachments
  */
 
+import { createReadStream } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import type { ImageContent } from "@dyyz1993/pi-ai";
 import chalk from "chalk";
 import { resolve } from "path";
+import { createLocalImageAssetStore, type ImageAssetStore } from "../core/assets.ts";
+import { createDefaultFileResolvers, type FileResolver, resolveFileWithResolvers } from "../core/file-resolvers.ts";
 import { resolveReadPath } from "../core/tools/path-utils.ts";
-import { formatDimensionNote, resizeImage } from "../utils/image-resize.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../utils/mime.ts";
 
 export interface ProcessedFiles {
@@ -18,11 +20,21 @@ export interface ProcessedFiles {
 export interface ProcessFileOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
+	/** Asset store for image metadata and preview reuse. Default: project-local store. */
+	assetStore?: ImageAssetStore | false;
+	/** Pluggable file resolvers. Default includes image resolver. */
+	fileResolvers?: readonly FileResolver[] | false;
 }
 
 /** Process @file arguments into text content and image attachments */
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
+	const assetStore =
+		options?.assetStore === false
+			? undefined
+			: (options?.assetStore ?? createLocalImageAssetStore({ projectRoot: process.cwd() }));
+	const fileResolvers =
+		options?.fileResolvers === false ? [] : (options?.fileResolvers ?? createDefaultFileResolvers());
 	let text = "";
 	const images: ImageContent[] = [];
 
@@ -45,43 +57,22 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			continue;
 		}
 
-		const mimeType = await detectSupportedImageMimeTypeFromFile(absolutePath);
+		const resolved = await resolveFileWithResolvers(fileResolvers, {
+			absolutePath,
+			cwd: process.cwd(),
+			operations: {
+				readFile,
+				stat,
+				createReadStream,
+				detectImageMimeType: detectSupportedImageMimeTypeFromFile,
+			},
+			autoResizeImages,
+			assetStore,
+		});
 
-		if (mimeType) {
-			// Handle image file
-			const content = await readFile(absolutePath);
-
-			let attachment: ImageContent;
-			let dimensionNote: string | undefined;
-
-			if (autoResizeImages) {
-				const resized = await resizeImage(content, mimeType);
-				if (!resized) {
-					text += `<file name="${absolutePath}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
-					continue;
-				}
-				dimensionNote = formatDimensionNote(resized);
-				attachment = {
-					type: "image",
-					mimeType: resized.mimeType,
-					data: resized.data,
-				};
-			} else {
-				attachment = {
-					type: "image",
-					mimeType,
-					data: content.toString("base64"),
-				};
-			}
-
-			images.push(attachment);
-
-			// Add text reference to image with optional dimension note
-			if (dimensionNote) {
-				text += `<file name="${absolutePath}">${dimensionNote}</file>\n`;
-			} else {
-				text += `<file name="${absolutePath}"></file>\n`;
-			}
+		if (resolved) {
+			text += resolved.fileReferenceText ?? "";
+			images.push(...(resolved.images ?? []));
 		} else {
 			// Handle text file
 			try {

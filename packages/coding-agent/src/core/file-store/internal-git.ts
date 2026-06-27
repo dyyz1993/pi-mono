@@ -292,6 +292,47 @@ export class InternalGit {
 		return files;
 	}
 
+	/**
+	 * Returns a Map of file paths to file content hashes from a tree, without
+	 * reading the actual file contents. Useful when only the file listing or
+	 * hash comparison is needed.
+	 * Disk IO: 1 tree read, 0 file content reads.
+	 */
+	listTreeFiles(treeHash: string): Map<string, string> | null {
+		if (!this.hasObject(treeHash)) return null;
+		const files = new Map<string, string>();
+		for (const line of this.readObject(treeHash).split("\n")) {
+			if (!line) continue;
+			const sep = line.indexOf("\0");
+			if (sep === -1) continue;
+			files.set(line.slice(0, sep), line.slice(sep + 1));
+		}
+		return files;
+	}
+
+	/**
+	 * Like readTree but only reads file contents for paths in the `wanted` set.
+	 * Skips reading file objects for paths not in the set, reducing disk IO
+	 * from O(N) to O(M) where M = |wanted|.
+	 */
+	readTreeFiles(treeHash: string, wanted: Set<string>): Map<string, string> | null {
+		if (!this.hasObject(treeHash)) return null;
+		if (wanted.size === 0) return new Map();
+		const files = new Map<string, string>();
+		for (const line of this.readObject(treeHash).split("\n")) {
+			if (!line) continue;
+			const sep = line.indexOf("\0");
+			if (sep === -1) continue;
+			const path = line.slice(0, sep);
+			if (!wanted.has(path)) continue;
+			const hash = line.slice(sep + 1);
+			if (this.hasObject(hash)) {
+				files.set(path, this.readObject(hash));
+			}
+		}
+		return files;
+	}
+
 	computeDiff(oldEntries: Map<string, TreeEntry>, newEntries: Map<string, TreeEntry>): StepDiff {
 		const added: string[] = [];
 		const modified: string[] = [];

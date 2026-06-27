@@ -369,8 +369,8 @@ function buildParams(
 	if (options.thinking?.enabled && model.reasoning) {
 		const thinkingConfig: ThinkingConfig = { includeThoughts: true };
 		if (options.thinking.level !== undefined) {
-			// Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
-			thinkingConfig.thinkingLevel = options.thinking.level as any;
+			// GoogleThinkingLevel mirrors Google's ThinkingLevel enum; bridge the type gap
+			thinkingConfig.thinkingLevel = options.thinking.level as unknown as ThinkingConfig["thinkingLevel"];
 		} else if (options.thinking.budgetTokens !== undefined) {
 			thinkingConfig.thinkingBudget = options.thinking.budgetTokens;
 		}
@@ -414,13 +414,13 @@ function getDisabledThinkingConfig(model: Model<"google-generative-ai">): Thinki
 	// do not support full thinking-off either. For Gemini 3 models, use the lowest supported
 	// thinkingLevel without includeThoughts so hidden thinking remains invisible to pi.
 	if (isGemini3ProModel(model)) {
-		return { thinkingLevel: "LOW" as any };
+		return { thinkingLevel: "LOW" as unknown as ThinkingConfig["thinkingLevel"] };
 	}
 	if (isGemini3FlashModel(model)) {
-		return { thinkingLevel: "MINIMAL" as any };
+		return { thinkingLevel: "MINIMAL" as unknown as ThinkingConfig["thinkingLevel"] };
 	}
 	if (isGemma4Model(model)) {
-		return { thinkingLevel: "MINIMAL" as any };
+		return { thinkingLevel: "MINIMAL" as unknown as ThinkingConfig["thinkingLevel"] };
 	}
 
 	// Gemini 2.x supports disabling via thinkingBudget = 0.

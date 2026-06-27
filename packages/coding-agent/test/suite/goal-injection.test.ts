@@ -466,6 +466,59 @@ describe("goal lifecycle via harness", () => {
 		expect(providerSystemPrompt).not.toContain("Active Goal");
 	});
 
+	it("can complete goal one, clear it, then activate and check goal two", async () => {
+		const { controller, factory } = createSupervisorLikeExtension();
+		controller.setGoal("Create goal-one.txt");
+
+		const harness = await createHarness({ extensionFactories: [factory] });
+		harnesses.push(harness);
+
+		let firstPrompt = "";
+		harness.setResponses([
+			(context) => {
+				firstPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("Created goal-one.txt");
+			},
+			fauxAssistantMessage('{"completed": true, "confidence": 0.91}'),
+		]);
+
+		await harness.session.prompt("run goal one");
+
+		expect(firstPrompt).toContain("Active Goal");
+		expect(firstPrompt).toContain("Create goal-one.txt");
+		expect(controller.getGoal()?.status).toBe("complete");
+		expect(controller.getTriggerHistory()).toHaveLength(1);
+		expect(controller.getTriggerHistory()[0]!.verdict).toBe("complete");
+
+		controller.clearGoal();
+		expect(controller.getGoal()).toBeUndefined();
+
+		controller.setGoal("Create goal-two.txt");
+
+		let secondPrompt = "";
+		harness.setResponses([
+			(context) => {
+				secondPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("Created goal-two.txt");
+			},
+			fauxAssistantMessage('{"completed": true, "confidence": 0.93}'),
+		]);
+
+		await harness.session.prompt("run goal two");
+
+		expect(secondPrompt).toContain("Active Goal");
+		expect(secondPrompt).toContain("Create goal-two.txt");
+		expect(secondPrompt).not.toContain("Create goal-one.txt");
+		expect(controller.getGoal()?.objective).toBe("Create goal-two.txt");
+		expect(controller.getGoal()?.status).toBe("complete");
+
+		const history = controller.getTriggerHistory();
+		expect(history).toHaveLength(2);
+		expect(history[1]!.seq).toBe(2);
+		expect(history[1]!.verdict).toBe("complete");
+		expect(history[1]!.confidence).toBe(0.93);
+	});
+
 	// ── Phase 5: supervisor_complete tool ──
 
 	it("supervisor_complete tool approves when no guards block", async () => {

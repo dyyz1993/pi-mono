@@ -381,7 +381,7 @@ The default export can also be `async`. pi waits for async extension factories b
 - Custom tools (or replace built-in tools entirely)
 - Sub-agents and plan mode
 - Custom compaction and summarization
-- Permission gates and path protection
+- Permission gates and path protection (enforced in core for all sub-agents; see [Sub-agent Permission Gating](docs/security.md#sub-agent-permission-gating))
 - Custom editors and UI components
 - Status lines, headers, footers
 - Git checkpointing and auto-commit

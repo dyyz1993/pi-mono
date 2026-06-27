@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { PermissionMode } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
@@ -20,6 +21,7 @@ import { generateSegmentSummary } from "../../core/compaction/branch-summarizati
 import { ChannelManager } from "../../core/extensions/channel-manager.ts";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.ts";
 import type {
+	AskUserQuestionResponse,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -33,8 +35,10 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import { isPermissionProfileInput, listPermissionProfiles } from "../../core/permissions/index.ts";
 import type { CompactionEntry, CustomEntry, SessionEntry, SessionMessageEntry } from "../../core/session-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import type { UnknownRecord } from "../../utils/type-helpers.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
@@ -64,10 +68,14 @@ export type {
 	RpcSessionState,
 } from "./rpc-types.ts";
 
-const PERMISSION_MODES = ["normal", "yolo", "auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"] as const;
-
 function isPermissionMode(mode: string): mode is PermissionMode {
-	return (PERMISSION_MODES as readonly string[]).includes(mode);
+	return isPermissionProfileInput(mode);
+}
+
+function formatPermissionModes(): string {
+	const builtin = listPermissionProfiles().map((profile) => profile.name);
+	const legacy = ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"];
+	return [...builtin, ...legacy].join(", ");
 }
 
 function getTreeEntryLabel(entry: SessionEntry): string | undefined {
@@ -137,7 +145,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	// Pending extension UI requests waiting for response
 	const pendingExtensionRequests = new Map<
 		string,
-		{ resolve: (value: any) => void; reject: (error: Error) => void }
+		{ request: RpcExtensionUIRequest; resolve: (value: any) => void; reject: (error: Error) => void }
 	>();
 
 	// Pending remote tool results waiting for response
@@ -184,14 +192,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}, opts.timeout);
 			}
 
+			const uiRequest = { type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest;
 			pendingExtensionRequests.set(id, {
+				request: uiRequest,
 				resolve: (response: RpcExtensionUIResponse) => {
 					cleanup("responded");
 					resolve(parseResponse(response));
 				},
 				reject,
 			});
-			output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
+			output(uiRequest);
 		});
 	}
 
@@ -199,6 +209,26 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	 * Create an extension UI context that uses the RPC protocol.
 	 */
 	const createExtensionUIContext = (): ExtensionUIContext => ({
+		askUserQuestion: (questions, opts) =>
+			createDialogPromise<AskUserQuestionResponse | undefined>(
+				opts,
+				undefined,
+				{
+					method: "askUserQuestion",
+					title: opts?.title ?? "Question",
+					questions,
+					timeout: opts?.timeout,
+					toolCallId: opts?.toolCallId,
+				},
+				(response) =>
+					"action" in response && response.action === "responded" && "answers" in response
+						? {
+								action: "responded",
+								answers: response.answers,
+								annotations: response.annotations,
+							}
+						: undefined,
+			),
 		select: (title, options, opts) =>
 			createDialogPromise(
 				opts,
@@ -225,6 +255,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					message,
 					timeout: opts?.timeout,
 					toolCallId: opts?.toolCallId,
+					confirmText: opts?.confirmText,
+					cancelText: opts?.cancelText,
 					hookMeta: opts?.hookMeta,
 				},
 				(r) => ("cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
@@ -340,8 +372,21 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		async editor(title: string, prefill?: string): Promise<string | undefined> {
 			const id = crypto.randomUUID();
 			return new Promise((resolve, reject) => {
+				const cleanup = (reason: "responded" | "timeout" | "aborted" = "responded") => {
+					pendingExtensionRequests.delete(id);
+					output({ type: "extension_ui_resolved", id, reason });
+				};
+				const uiRequest = {
+					type: "extension_ui_request",
+					id,
+					method: "editor",
+					title,
+					prefill,
+				} as RpcExtensionUIRequest;
 				pendingExtensionRequests.set(id, {
+					request: uiRequest,
 					resolve: (response: RpcExtensionUIResponse) => {
+						cleanup("responded");
 						if ("cancelled" in response && response.cancelled) {
 							resolve(undefined);
 						} else if ("value" in response) {
@@ -352,7 +397,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					},
 					reject,
 				});
-				output({ type: "extension_ui_request", id, method: "editor", title, prefill } as RpcExtensionUIRequest);
+				output(uiRequest);
 			});
 		},
 
@@ -511,6 +556,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "follow_up");
 			}
 
+			case "continue": {
+				await session.continue();
+				return success(id, "continue");
+			}
+
 			case "abort": {
 				await session.abort();
 				return success(id, "abort");
@@ -537,6 +587,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					isCompacting: session.isCompacting,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
+					permissionMode: session.permissionMode,
 					sessionFile: session.sessionFile,
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
@@ -544,6 +595,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					streamingMessage: session.state.streamingMessage,
+					pendingUIRequests: Array.from(pendingExtensionRequests.values()).map((pending) => pending.request),
 				};
 				return success(id, "get_state", state);
 			}
@@ -701,6 +753,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					await rebindSession();
 				}
 				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
+			}
+
+			case "copy_fork": {
+				const newSessionFile = session.sessionManager.copyBranchedSession(command.entryId, {
+					compact: command.compact,
+				});
+				if (!newSessionFile) {
+					return success(id, "copy_fork", {});
+				}
+				// Extract sessionId from the JSONL header
+				const firstLine = readFileSync(newSessionFile, "utf-8").split("\n")[0];
+				const newSessionId = firstLine ? JSON.parse(firstLine).id : undefined;
+				return success(id, "copy_fork", { newSessionFile, newSessionId });
 			}
 
 			case "navigate_tree": {
@@ -870,6 +935,37 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}));
 
 				if (command.limit !== undefined) {
+					// Backward pagination: load messages before a given entryId
+					// Used for "scroll up to load older history"
+					if (command.beforeEntryId) {
+						const endIndex = messageEntries.findIndex((entry) => entry.entryId === command.beforeEntryId);
+						if (endIndex === -1 || endIndex === 0) {
+							return success(id, "get_full_messages", {
+								messages: [],
+								hasMore: false,
+								totalCount,
+								nextCursor: null,
+								tree: { entries: treeEntries, leafId: session.sessionManager.getLeafId() },
+								customEntries,
+								compactionEntries,
+							});
+						}
+						const startIndex = Math.max(0, endIndex - command.limit);
+						const page = messages.slice(startIndex, endIndex);
+						const hasMore = startIndex > 0;
+						const prevCursorEntry = hasMore ? messageEntries[startIndex] : undefined;
+						return success(id, "get_full_messages", {
+							messages: page,
+							hasMore,
+							totalCount,
+							nextCursor: prevCursorEntry?.entryId ?? null,
+							tree: { entries: treeEntries, leafId: session.sessionManager.getLeafId() },
+							customEntries,
+							compactionEntries,
+						});
+					}
+
+					// Forward pagination: load messages after a given entryId (or from start)
 					const startIndex = command.afterEntryId
 						? Math.max(0, messageEntries.findIndex((entry) => entry.entryId === command.afterEntryId) + 1)
 						: 0;
@@ -988,6 +1084,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					fileSnapshotManager.getBatchDiffs({
 						fromEntryId: command.fromEntryId,
 						toEntryId: command.toEntryId,
+						cwd: runtimeHost.cwd,
 					}),
 				);
 			}
@@ -1195,6 +1292,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					permissionMode: agent.permissionMode,
 					source: agent.source,
 					filePath: agent.filePath,
+					color: agent.color,
+					avatar: agent.avatar,
 				}));
 				return success(id, "get_agents", { agents });
 			}
@@ -1256,7 +1355,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return error(
 						id,
 						"set_permission_mode",
-						`Invalid permission mode: "${command.mode}". Valid modes: ${PERMISSION_MODES.join(", ")}`,
+						`Invalid permission mode: "${command.mode}". Valid modes: ${formatPermissionModes()}`,
 					);
 				}
 				session.setPermissionMode(command.mode);

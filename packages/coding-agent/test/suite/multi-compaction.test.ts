@@ -7,37 +7,37 @@ import {
 	estimateMessageTokens as contextFoldEstimateTokens,
 	extractFoldSummary,
 	findFoldableEntries,
-} from "../../extensions/multi-compaction/context-fold.ts";
-import type { HalfCompactionConfig } from "../../extensions/multi-compaction/half-compaction.ts";
-import { buildHalfSummary, prepareHalfCompaction } from "../../extensions/multi-compaction/half-compaction.ts";
-import type { LineFoldConfig } from "../../extensions/multi-compaction/line-fold.ts";
-import { foldDuplicateLines, foldText } from "../../extensions/multi-compaction/line-fold.ts";
+} from "../../extensions/_multi-compaction/context-fold.ts";
+import type { HalfCompactionConfig } from "../../extensions/_multi-compaction/half-compaction.ts";
+import { buildHalfSummary, prepareHalfCompaction } from "../../extensions/_multi-compaction/half-compaction.ts";
+import type { LineFoldConfig } from "../../extensions/_multi-compaction/line-fold.ts";
+import { foldDuplicateLines, foldText } from "../../extensions/_multi-compaction/line-fold.ts";
 import {
 	cachedMicrocompact,
 	microcompactMessages,
 	stripThinkingBlocks,
-} from "../../extensions/multi-compaction/microcompact.ts";
-import type { RecoveryConfig } from "../../extensions/multi-compaction/post-compact-recovery.ts";
+} from "../../extensions/_multi-compaction/microcompact.ts";
+import type { RecoveryConfig } from "../../extensions/_multi-compaction/post-compact-recovery.ts";
 import {
 	buildRecoveryMessages,
 	estimateFileTokens,
 	readFileContent,
-} from "../../extensions/multi-compaction/post-compact-recovery.ts";
-import type { SegmentCompactionConfig } from "../../extensions/multi-compaction/segment-compaction.ts";
-import { prepareSegmentCompaction, splitIntoSegments } from "../../extensions/multi-compaction/segment-compaction.ts";
-import type { SlidingWindowConfig } from "../../extensions/multi-compaction/sliding-window.ts";
+} from "../../extensions/_multi-compaction/post-compact-recovery.ts";
+import type { SegmentCompactionConfig } from "../../extensions/_multi-compaction/segment-compaction.ts";
+import { prepareSegmentCompaction, splitIntoSegments } from "../../extensions/_multi-compaction/segment-compaction.ts";
+import type { SlidingWindowConfig } from "../../extensions/_multi-compaction/sliding-window.ts";
 import {
 	applySlidingWindow,
 	estimateMessageTokens as slidingWindowEstimateTokens,
-} from "../../extensions/multi-compaction/sliding-window.ts";
-import type { SnipCompactConfig } from "../../extensions/multi-compaction/snip-compact.ts";
+} from "../../extensions/_multi-compaction/sliding-window.ts";
+import type { SnipCompactConfig } from "../../extensions/_multi-compaction/snip-compact.ts";
 import {
 	adjustTailBoundary,
 	findAssistantToolCallGroupEnd,
 	snipCompact,
-} from "../../extensions/multi-compaction/snip-compact.ts";
-import type { ToolResultBudgetConfig } from "../../extensions/multi-compaction/tool-result-budget.ts";
-import { budgetToolResults } from "../../extensions/multi-compaction/tool-result-budget.ts";
+} from "../../extensions/_multi-compaction/snip-compact.ts";
+import type { ToolResultBudgetConfig } from "../../extensions/_multi-compaction/tool-result-budget.ts";
+import { budgetToolResults } from "../../extensions/_multi-compaction/tool-result-budget.ts";
 import type { CompactionPreparation } from "../../src/core/compaction/compaction.ts";
 import type { SessionEntry, SessionMessageEntry } from "../../src/core/session-manager.ts";
 
@@ -798,7 +798,7 @@ describe("sliding-window", () => {
 		const result = applySlidingWindow(messages, { ...defaultConfig, truncationNotice: true });
 		expect(result).toBeDefined();
 		// Should contain a notice message
-		const noticeMsg = result!.messages.find((m) => {
+		const noticeMsg = result!.messages.find((m: AgentMessage) => {
 			if (m.role !== "user") return false;
 			const content = (m as { content: Array<{ type: string; text: string }> }).content;
 			return content.some((b) => b.text.includes("Sliding window"));
@@ -810,7 +810,7 @@ describe("sliding-window", () => {
 		const messages: AgentMessage[] = Array.from({ length: 10 }, () => createUser("a".repeat(100)));
 		const result = applySlidingWindow(messages, { ...defaultConfig, truncationNotice: false });
 		expect(result).toBeDefined();
-		const hasNotice = result!.messages.some((m) => {
+		const hasNotice = result!.messages.some((m: AgentMessage) => {
 			if (m.role !== "user") return false;
 			const content = (m as { content: Array<{ type: string; text: string }> }).content;
 			return content.some((b) => b.text.includes("Sliding window"));

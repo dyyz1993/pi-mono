@@ -14,6 +14,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.ts";
 import type { Settings } from "../../core/settings-manager.ts";
+import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcAgentMessage,
@@ -49,6 +50,21 @@ export interface RpcClientOptions {
 	cwd?: string;
 	/** Environment variables */
 	env?: Record<string, string>;
+	/** Run the RPC child on a remote host via SSH instead of spawning local node. */
+	remoteSsh?: {
+		/** SSH target, e.g. a ~/.ssh/config host or user@host. */
+		target: string;
+		/** Remote working directory for the agent process. */
+		cwd: string;
+		/** Extra ssh arguments, such as -p or identity options. */
+		sshArgs?: string[];
+		/** Remote node executable. Defaults to node. Set to "" when cliPath is directly executable. */
+		nodePath?: string;
+		/** Environment variables to set for the remote agent command. */
+		env?: Record<string, string>;
+		/** Remote shell command used to run the agent command. Defaults to /bin/bash -lc. */
+		shell?: string;
+	};
 	/** Provider to use */
 	provider?: string;
 	/** Model ID to use */
@@ -65,6 +81,44 @@ export interface ModelInfo {
 }
 
 export type RpcEventListener = (event: AgentEvent) => void;
+
+export function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function shellDoubleQuoteBody(value: string): string {
+	return value.replace(/["\\`$]/g, (char) => `\\${char}`);
+}
+
+export function remoteShellQuote(value: string): string {
+	if (value.startsWith("~/")) {
+		return `"${"${HOME}"}/${shellDoubleQuoteBody(value.slice(2))}"`;
+	}
+	return shellQuote(value);
+}
+
+export function buildRemoteShellCommand(options: {
+	remoteCwd: string;
+	nodePath: string;
+	cliPath: string;
+	args: string[];
+	env?: Record<string, string>;
+	shell: string;
+}): string {
+	const envPrefix = Object.entries(options.env ?? {})
+		.filter(([, value]) => value !== undefined)
+		.map(([key, value]) => `${key}=${remoteShellQuote(value)}`);
+	const agentCommand = [
+		"cd --",
+		remoteShellQuote(options.remoteCwd),
+		"&&",
+		...(envPrefix.length > 0 ? ["env", ...envPrefix] : []),
+		...(options.nodePath ? [remoteShellQuote(options.nodePath)] : []),
+		remoteShellQuote(options.cliPath),
+		...options.args.map(remoteShellQuote),
+	].join(" ");
+	return `${options.shell} ${shellQuote(agentCommand)}`;
+}
 
 export interface TreeWithLeaf {
 	entries: TreeEntry[];
@@ -126,6 +180,7 @@ export class RpcClient {
 	private readyReject: ((error: Error) => void) | null = null;
 	private requestId = 0;
 	private stderr = "";
+	private stdout = "";
 	private exitError: Error | null = null;
 	private options: RpcClientOptions;
 
@@ -156,17 +211,44 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		const childProcess = spawn("node", [cliPath, ...args], {
-			cwd: this.options.cwd,
-			env: { ...process.env, ...this.options.env },
-			stdio: ["pipe", "pipe", "pipe"],
-		});
+		const remoteSsh = this.options.remoteSsh;
+		const childProcess = remoteSsh
+			? spawn(
+					"ssh",
+					[
+						...(remoteSsh.sshArgs ?? []),
+						remoteSsh.target,
+						buildRemoteShellCommand({
+							remoteCwd: remoteSsh.cwd,
+							nodePath: remoteSsh.nodePath ?? "node",
+							cliPath,
+							args,
+							env: remoteSsh.env,
+							shell: remoteSsh.shell ?? "/bin/bash -lc",
+						}),
+					],
+					{
+						cwd: this.options.cwd,
+						env: { ...process.env, ...this.options.env },
+						stdio: ["pipe", "pipe", "pipe"],
+					},
+				)
+			: spawn("node", [cliPath, ...args], {
+					cwd: this.options.cwd,
+					env: { ...process.env, ...this.options.env },
+					stdio: ["pipe", "pipe", "pipe"],
+				});
 		this.process = childProcess;
 
-		// Collect stderr for debugging
+		// Collect stderr for debugging (limit accumulation to prevent backpressure)
+		let _stderrLen = 0;
 		childProcess.stderr?.on("data", (data) => {
-			this.stderr += data.toString();
-			process.stderr.write(data);
+			const str = data.toString();
+			if (_stderrLen < 10000) {
+				this.stderr += str;
+				_stderrLen += str.length;
+			}
+			// Do NOT forward to process.stderr — causes backpressure on the parent
 		});
 
 		childProcess.once("exit", (code, signal) => {
@@ -253,6 +335,24 @@ export class RpcClient {
 		return this.stderr;
 	}
 
+	/**
+	 * Get collected stdout tail (useful for debugging startup/ready issues).
+	 */
+	getStdout(): string {
+		return this.stdout;
+	}
+
+	/**
+	 * Get current child process state for startup diagnostics.
+	 */
+	getProcessSnapshot(): { pid?: number; exitCode: number | null; signalCode: NodeJS.Signals | null } {
+		return {
+			pid: this.process?.pid,
+			exitCode: this.process?.exitCode ?? null,
+			signalCode: this.process?.signalCode ?? null,
+		};
+	}
+
 	// =========================================================================
 	// Command Methods
 	// =========================================================================
@@ -285,6 +385,14 @@ export class RpcClient {
 	 */
 	async abort(): Promise<void> {
 		await this.send({ type: "abort" });
+	}
+
+	/**
+	 * Continue the agent from where it stopped (e.g. after an error or abort).
+	 * Re-runs the agent loop on the current session state without adding a new user message.
+	 */
+	async continue(): Promise<void> {
+		await this.send({ type: "continue" });
 	}
 
 	/**
@@ -452,6 +560,18 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	/**
+	 * Copy-fork: creates a branched session file without switching the current session.
+	 * The current CLI process remains untouched.
+	 */
+	async copyFork(
+		entryId: string,
+		options?: { compact?: boolean },
+	): Promise<{ newSessionFile?: string; newSessionId?: string }> {
+		const response = await this.send({ type: "copy_fork", entryId, compact: options?.compact });
+		return this.getData(response);
+	}
+
 	async navigateTree(
 		targetId: string,
 		options?: {
@@ -537,7 +657,7 @@ export class RpcClient {
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
 	}
 
-	async getFullMessages(options?: { afterEntryId?: string; limit?: number }): Promise<{
+	async getFullMessages(options?: { afterEntryId?: string; beforeEntryId?: string; limit?: number }): Promise<{
 		messages: RpcAgentMessage[];
 		hasMore: boolean;
 		totalCount: number;
@@ -549,6 +669,7 @@ export class RpcClient {
 		const response = await this.send({
 			type: "get_full_messages",
 			afterEntryId: options?.afterEntryId,
+			beforeEntryId: options?.beforeEntryId,
 			limit: options?.limit,
 		});
 		return this.getData(response);
@@ -812,7 +933,7 @@ export class RpcClient {
 				const invokeId = `inv_${randomUUID().slice(0, 8)}`;
 				let timer: ReturnType<typeof setTimeout>;
 				const handler = (responseData: unknown) => {
-					const payload = responseData as Record<string, unknown> | undefined;
+					const payload = responseData as UnknownRecord | undefined;
 					if (payload?.invokeId !== invokeId) return;
 					clearTimeout(timer);
 					const handlers = this.channelHandlers.get(name);
@@ -837,7 +958,7 @@ export class RpcClient {
 				this.writeLine({
 					type: "channel_data",
 					name,
-					data: { ...((data as Record<string, unknown>) ?? {}), invokeId },
+					data: { ...((data as UnknownRecord) ?? {}), invokeId },
 				} as ChannelDataMessage);
 			});
 		};
@@ -871,6 +992,12 @@ export class RpcClient {
 	// =========================================================================
 
 	private handleLine(line: string): void {
+		if (this.stdout.length < 20000) {
+			this.stdout += `${line}\n`;
+		} else {
+			this.stdout = `${this.stdout.slice(-15000)}${line}\n`;
+		}
+
 		try {
 			const data = JSON.parse(line);
 
@@ -891,17 +1018,26 @@ export class RpcClient {
 				const handlers = this.channelHandlers.get(data.name as string);
 				if (handlers) {
 					for (const handler of handlers) {
-						const payload = data.data as Record<string, unknown> | undefined;
-						const invokeId = payload?.invokeId as string | undefined;
-						const result = handler(data.data);
-						if (invokeId && result !== undefined) {
-							const responseData =
-								result && typeof result === "object" ? (result as Record<string, unknown>) : { value: result };
-							this.writeLine({
-								type: "channel_data",
-								name: data.name,
-								data: { ...responseData, invokeId },
-							} as ChannelDataMessage);
+						try {
+							const payload = data.data as UnknownRecord | undefined;
+							const invokeId = payload?.invokeId as string | undefined;
+							const result = handler(data.data);
+							if (invokeId && result !== undefined) {
+								const responseData =
+									result && typeof result === "object" ? (result as UnknownRecord) : { value: result };
+								this.writeLine({
+									type: "channel_data",
+									name: data.name,
+									data: { ...responseData, invokeId },
+								} as ChannelDataMessage);
+							}
+						} catch (handlerError: unknown) {
+							// Prevent one handler's error from breaking delivery to other handlers
+							// (e.g., invoke response handler must still run even if onReceive handler throws)
+							console.error(
+								`[rpc-client] channel handler error for "${data.name}":`,
+								handlerError instanceof Error ? handlerError.message : String(handlerError),
+							);
 						}
 					}
 				}
@@ -938,7 +1074,7 @@ export class RpcClient {
 				this.readyResolve = null;
 				this.readyReject = null;
 				reject(new Error(`Agent process did not become ready. Stderr: ${this.stderr}`));
-			}, 15000);
+			}, 60000);
 
 			this.readyResolve = () => {
 				clearTimeout(timeout);
@@ -1068,12 +1204,12 @@ export class RpcClient {
 	}
 
 	onRemoteToolCall(
-		handler: (call: { toolCallId: string; toolName: string; args: Record<string, unknown> }) => void,
+		handler: (call: { toolCallId: string; toolName: string; args: UnknownRecord }) => void,
 	): () => void {
 		const wrapped = (event: AgentEvent) => {
-			const raw = event as unknown as Record<string, unknown>;
+			const raw = event as unknown as UnknownRecord;
 			if (raw.type === "remote_tool_call") {
-				handler(raw as unknown as { toolCallId: string; toolName: string; args: Record<string, unknown> });
+				handler(raw as unknown as { toolCallId: string; toolName: string; args: UnknownRecord });
 			}
 		};
 		return this.onEvent(wrapped);

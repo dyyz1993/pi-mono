@@ -1,0 +1,1640 @@
+import { existsSync, mkdirSync, readFileSync, type Stats, writeFileSync } from "node:fs";
+import { mkdir, readFile, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type { AgentMessage, AgentToolResult } from "@dyyz1993/pi-agent-core";
+import { Type } from "typebox";
+import {
+	createTypedChannel,
+	type CallLLMOptions,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@dyyz1993/pi-coding-agent";
+import type { MemoryChannelContract } from "./contract.ts";
+import { getExtensionRuntimeResourcePolicy } from "../runtime-policy.ts";
+
+function stripMarkdownCodeBlock(text: string): string {
+	let cleaned = text.trim();
+	if (cleaned.startsWith("```")) {
+		const firstNewline = cleaned.indexOf("\n");
+		if (firstNewline !== -1) cleaned = cleaned.slice(firstNewline + 1);
+		const lastBacktick = cleaned.lastIndexOf("```");
+		if (lastBacktick !== -1) cleaned = cleaned.slice(0, lastBacktick);
+		cleaned = cleaned.trim();
+	}
+	return cleaned;
+}
+
+function slugifyMemoryFilename(input: string, fallback = "memory"): string {
+	const base = input
+		.trim()
+		.toLowerCase()
+		.replace(/\.md$/i, "")
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.replace(/--+/g, "-")
+		.slice(0, 64);
+	return `${base || fallback}.md`;
+}
+
+async function uniqueMemoryFilePath(memoryDir: string, filename: string): Promise<{ filename: string; filePath: string }> {
+	const stem = filename.replace(/\.md$/i, "") || "memory";
+	let candidate = `${stem}.md`;
+	let filePath = join(memoryDir, candidate);
+	let suffix = 2;
+	while (existsSync(filePath)) {
+		candidate = `${stem}-${suffix}.md`;
+		filePath = join(memoryDir, candidate);
+		suffix += 1;
+	}
+	return { filename: candidate, filePath };
+}
+
+import {
+	addHistoryEntry,
+	applyPurification,
+	evaluateRules,
+	getDefaultRules,
+	getGlobalMemoryDir,
+	type HistoryEntry,
+	loadSkipWordStore,
+	type PurificationResult,
+	type SkipRule,
+	type SkipWordStore,
+	saveSkipWordStore,
+} from "./skip-rules.ts";
+import {
+	BOOKMARK_SUMMARY_PROMPT,
+	DREAM_PROMPT,
+	EXTRACTION_PROMPT,
+	MEMORY_SYSTEM_PROMPT,
+	PURIFICATION_PROMPT,
+	SELECT_MEMORIES_PROMPT,
+} from "./prompts.ts";
+import {
+	buildBookmarkFrontmatter,
+	buildFrontmatter,
+	DREAM_MIN_HOURS,
+	DREAM_MIN_SESSIONS,
+	ENTRYPOINT_NAME,
+	formatManifest,
+	getEntrypointPath,
+	getMemoryDir,
+	isBookmarkType,
+	MAX_MEMORY_BYTES_PER_FILE,
+	MAX_RELEVANT_MEMORIES,
+	type MemoryHeader,
+	type MemoryType,
+	scanMemoryFiles,
+	truncateEntrypoint,
+} from "./utils.ts";
+
+type CallLLMFn = (options: CallLLMOptions) => Promise<string>;
+
+function extractMessageText(msg: AgentMessage): string {
+	if ("content" in msg) {
+		const content = (msg as { content: unknown }).content;
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("");
+		}
+	}
+	return "";
+}
+
+function findExistingMemoryContext(messages: AgentMessage[]): string | null {
+	for (const msg of messages) {
+		const text = extractMessageText(msg);
+		const match = text.match(/<memory_context\s+fingerprint="([^"]+)"/);
+		if (match) return match[1]!;
+	}
+	return null;
+}
+
+function serializeMessages(messages: AgentMessage[], options?: { lastN?: number }): string {
+	const slice = options?.lastN ? messages.slice(-options.lastN) : messages;
+	return slice
+		.map((m) => {
+			if ((m.role === "user" || m.role === "assistant") && "content" in m) {
+				const content = (m as { content: unknown }).content;
+				const text = Array.isArray(content)
+					? (content as Array<{ type: string; text?: string }>)
+							.filter(
+								(c: { type: string; text?: string }): c is { type: "text"; text: string } => c.type === "text",
+							)
+							.map((c: { type: "text"; text: string }) => c.text)
+							.join("\n")
+					: String(content);
+				return `[${m.role}]: ${text}`;
+			}
+			return null;
+		})
+		.filter(Boolean)
+		.join("\n");
+}
+
+export function buildPrefetchUserMessage(query: string, manifest: string, rules: SkipRule[], history: HistoryEntry[]): string {
+	const customRules = rules.filter((r) => !r.builtin);
+	const rulesSummary = customRules.length > 0
+		? customRules
+				.map((r) => `{ "pattern": "${r.pattern}", "mode": "${r.mode}", "action": "${r.action}" }`)
+				.join("\n")
+		: "(no custom rules)";
+
+	const historySummary = JSON.stringify(
+		history.map((h) => ({
+			query: h.query,
+			selected: h.selected,
+			skipped: h.skipped,
+			userMarkedIrrelevant: h.userMarkedIrrelevant ?? false,
+			irrelevantFiles: h.irrelevantFiles ?? [],
+		})),
+	);
+
+	return `## 当前查询\n${query}\n\n## 可用文件\n${manifest}\n\n## 自定义规则库\n${rulesSummary}\n\n## 最近 Prefetch 历史\n${historySummary}`;
+}
+
+interface PrefetchDebugInfo {
+	selectedFiles: string[];
+	durationMs: number;
+	layer: "skip" | "llm" | "none" | "auto";
+	skipHits: Array<{ pattern: string; mode: string }>;
+	guardHits: Array<{ pattern: string; mode: string }>;
+	availableFiles: number;
+	excludedFiles?: number;
+	query: string;
+}
+
+const PREFETCH_MIN_INTERVAL_MS = 30_000;
+const PREFETCH_REPEAT_THRESHOLD = 3;
+
+class MemoryPrefetch {
+	private promise: Promise<string> | null = null;
+	private settled = false;
+	private result: string | null = null;
+	private lastSelected: string[] = [];
+	private resultEntryWritten = false;
+	private _operationId: string | null = null;
+	private store: SkipWordStore | null = null;
+	private _debugInfo: PrefetchDebugInfo | null = null;
+	private lastPrefetchTime = 0;
+	private consecutiveSameCount = 0;
+	private cachedFileCount = -1;
+	private dirtyFiles = true;
+
+	get debugInfo(): PrefetchDebugInfo | null {
+		return this._debugInfo;
+	}
+
+	get selectedFiles(): string[] {
+		return this.lastSelected;
+	}
+
+	get operationId(): string | null {
+		return this._operationId;
+	}
+
+	markResultEntryWritten(operationId?: string): boolean {
+		if (operationId && this._operationId !== operationId) return true;
+		if (this.resultEntryWritten) return true;
+		this.resultEntryWritten = true;
+		return false;
+	}
+
+	markDirty(): void {
+		this.dirtyFiles = true;
+	}
+
+	getStore(): SkipWordStore {
+		return this.ensureStore();
+	}
+
+	start(query: string, memoryDir: string, callLLM: CallLLMFn, operationId: string): void {
+		this._operationId = operationId;
+		const now = Date.now();
+		const elapsed = now - this.lastPrefetchTime;
+
+		// Layer 0: 30s 内复用上次结果
+		if (this.lastPrefetchTime > 0 && elapsed < PREFETCH_MIN_INTERVAL_MS) {
+			this._debugInfo = {
+				selectedFiles: this.lastSelected,
+				durationMs: 0,
+				layer: "skip",
+				skipHits: [{ pattern: `min-interval(${Math.round(elapsed / 1000)}s<${PREFETCH_MIN_INTERVAL_MS / 1000}s)`, mode: "builtin" }],
+				guardHits: [],
+				availableFiles: this.cachedFileCount >= 0 ? this.cachedFileCount : 0,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.result = this.result ?? "";
+			this.resultEntryWritten = false;
+			this.promise = Promise.resolve(this.result);
+			return;
+		}
+
+		// Layer 1: 文件少且没变化 → 直接全注入，不调 LLM
+		if (!this.dirtyFiles && this.cachedFileCount >= 0 && this.cachedFileCount <= MAX_RELEVANT_MEMORIES && this.result !== null) {
+			this._debugInfo = {
+				selectedFiles: this.lastSelected,
+				durationMs: 0,
+				layer: "auto",
+				skipHits: [{ pattern: `all-cached(${this.cachedFileCount}f)`, mode: "builtin" }],
+				guardHits: [],
+				availableFiles: this.cachedFileCount,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.resultEntryWritten = false;
+			this.lastPrefetchTime = now;
+			this.promise = this.runReadCached(this.lastSelected, memoryDir);
+			void this.promise.then((r) => {
+				this.result = r;
+			});
+			return;
+		}
+
+		// Layer 2: 连续相同结果检测
+		if (this.consecutiveSameCount >= PREFETCH_REPEAT_THRESHOLD && this.lastSelected.length > 0) {
+			this._debugInfo = {
+				selectedFiles: this.lastSelected,
+				durationMs: 0,
+				layer: "skip",
+				skipHits: [{ pattern: `repeat-detect(${this.consecutiveSameCount}x)`, mode: "builtin" }],
+				guardHits: [],
+				availableFiles: this.cachedFileCount >= 0 ? this.cachedFileCount : 0,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.resultEntryWritten = false;
+			this.lastPrefetchTime = now;
+			this.promise = this.runReadCached(this.lastSelected, memoryDir);
+			void this.promise.then((r) => {
+				this.result = r;
+			});
+			return;
+		}
+
+		// Layer 3: skip/guard 规则
+		const store = this.ensureStore();
+		const { shouldSkip, skipHits, guardHits } = evaluateRules(query, store.rules);
+		if (shouldSkip) {
+			const matchedRules = store.rules
+				.filter((r) => skipHits.includes(r.pattern) || guardHits.includes(r.pattern))
+				.map((r) => ({ pattern: r.pattern, mode: r.mode, action: r.action }));
+			const matchedSkip = matchedRules.filter((r) => r.action === "skip").map(({ pattern, mode }) => ({ pattern, mode }));
+			const matchedGuard = matchedRules.filter((r) => r.action !== "skip").map(({ pattern, mode }) => ({ pattern, mode }));
+
+			this._debugInfo = {
+				selectedFiles: [],
+				durationMs: 0,
+				layer: "skip",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: this.cachedFileCount >= 0 ? this.cachedFileCount : 0,
+				query: query.slice(0, 200),
+			};
+			this.settled = true;
+			this.result = "";
+			this.resultEntryWritten = false;
+			this.lastPrefetchTime = now;
+			this.promise = Promise.resolve("");
+			return;
+		}
+
+		// Layer 4: 走 LLM（或 auto-inject）
+		this.lastPrefetchTime = now;
+		this.settled = false;
+		this.result = null;
+		this._debugInfo = null;
+		this.resultEntryWritten = false;
+		this.promise = this.run(query, memoryDir, callLLM);
+		void this.promise.then((r) => {
+			this.result = r;
+			this.settled = true;
+		});
+	}
+
+	get started(): boolean {
+		return this.promise !== null;
+	}
+
+	collect(): string | null {
+		return this.settled ? this.result : null;
+	}
+
+	async awaitResult(timeoutMs = 30_000): Promise<string | null> {
+		if (this.promise) {
+			await Promise.race([
+				this.promise,
+				new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+			]);
+		}
+		return this.collect();
+	}
+
+	async waitForOperation(operationId: string): Promise<string | null> {
+		const promise = this.promise;
+		if (!promise || this._operationId !== operationId) return null;
+		try {
+			const result = await promise;
+			return this._operationId === operationId ? result : null;
+		} catch {
+			return this._operationId === operationId ? "" : null;
+		}
+	}
+
+	private ensureStore(): SkipWordStore {
+		if (!this.store) {
+			this.store = loadSkipWordStore(getGlobalMemoryDir());
+		}
+		return this.store;
+	}
+
+	private async run(query: string, memoryDir: string, callLLM: CallLLMFn): Promise<string> {
+		try {
+			let store = this.ensureStore();
+			const { skipHits, guardHits } = evaluateRules(query, store.rules);
+
+			const matchedRules = store.rules
+				.filter((r) => skipHits.includes(r.pattern) || guardHits.includes(r.pattern))
+				.map((r) => ({ pattern: r.pattern, mode: r.mode, action: r.action }));
+			const matchedSkip = matchedRules.filter((r) => r.action === "skip").map(({ pattern, mode }) => ({ pattern, mode }));
+			const matchedGuard = matchedRules.filter((r) => r.action !== "skip").map(({ pattern, mode }) => ({ pattern, mode }));
+
+		const memories = await scanMemoryFiles(memoryDir);
+		this.cachedFileCount = memories.length;
+
+		// 用 excludeKeywords 过滤：排除包含这些关键词的记忆条目
+		let filteredMemories = memories;
+		if (store.excludeKeywords.length > 0) {
+			const keywords = store.excludeKeywords.map((k) => k.toLowerCase());
+			filteredMemories = memories.filter((m) => {
+				const content = (m.filename + " " + (m.description ?? "")).toLowerCase();
+				return !keywords.some((kw) => content.includes(kw));
+			});
+		}
+
+		if (filteredMemories.length === 0) {
+			this.dirtyFiles = false;
+			this._debugInfo = {
+				selectedFiles: [],
+				durationMs: 0,
+				layer: "none",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: memories.length,
+				excludedFiles: memories.length - filteredMemories.length,
+				query: query.slice(0, 200),
+			};
+			return "";
+		}
+
+		// Auto-inject: 文件少 → 全部注入，不调 LLM
+		if (filteredMemories.length <= MAX_RELEVANT_MEMORIES) {
+			const allFiles = filteredMemories.map((m) => m.filename);
+			this.lastSelected = allFiles;
+			this.dirtyFiles = false;
+			this._debugInfo = {
+				selectedFiles: allFiles,
+				durationMs: 0,
+				layer: "auto",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: filteredMemories.length,
+				excludedFiles: memories.length - filteredMemories.length,
+				query: query.slice(0, 200),
+			};
+			return await this.readFiles(allFiles, memoryDir);
+		}
+
+			const manifest = formatManifest(filteredMemories);
+			const recentHistory = this.buildHistoryForLLM(store.history);
+			const startTime = Date.now();
+
+			const llmResult = await callLLM({
+				systemPrompt: SELECT_MEMORIES_PROMPT,
+				messages: [
+					{
+						role: "user",
+						content: buildPrefetchUserMessage(query, manifest, store.rules, recentHistory),
+					},
+				],
+			});
+
+			let parsed: { selected?: string[]; purification?: PurificationResult };
+			try {
+				parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
+			} catch (err) {
+				console.debug("[auto-memory] prefetch LLM parse failed:", err instanceof Error ? err.message : err);
+				this._debugInfo = {
+					selectedFiles: [],
+					durationMs: Date.now() - startTime,
+					layer: "llm",
+					skipHits: matchedSkip,
+					guardHits: matchedGuard,
+					availableFiles: memories.length,
+					query: query.slice(0, 200),
+				};
+				return "";
+			}
+
+			const selected = (parsed.selected ?? []).slice(0, MAX_RELEVANT_MEMORIES);
+
+			if (this.arraysEqual(selected, this.lastSelected)) {
+				this.consecutiveSameCount++;
+			} else {
+				this.consecutiveSameCount = 0;
+			}
+			this.lastSelected = selected;
+
+			if (parsed.purification && typeof parsed.purification === "object") {
+				try {
+					store = applyPurification(store, parsed.purification);
+				} catch (err) {
+					console.debug("[auto-memory] purification failed:", err instanceof Error ? err.message : err);
+				}
+			}
+
+			store = addHistoryEntry(store, {
+				query: query.slice(0, 200),
+				selected,
+				skipped: false,
+				skip_hits: skipHits,
+				guard_hits: guardHits,
+				timestamp: Date.now(),
+			});
+			this.store = store;
+			await saveSkipWordStore(getGlobalMemoryDir(), this.store);
+
+			this._debugInfo = {
+				selectedFiles: selected,
+				durationMs: Date.now() - startTime,
+				layer: "llm",
+				skipHits: matchedSkip,
+				guardHits: matchedGuard,
+				availableFiles: memories.length,
+				query: query.slice(0, 200),
+			};
+
+			if (selected.length === 0) return "";
+
+			return await this.readFiles(selected, memoryDir);
+		} catch (err) {
+			console.debug("[auto-memory] prefetch failed:", err instanceof Error ? err.message : err);
+			this._debugInfo = {
+				selectedFiles: [],
+				durationMs: 0,
+				layer: "none",
+				skipHits: [],
+				guardHits: [],
+				availableFiles: 0,
+				query: query.slice(0, 200),
+			};
+			return "";
+		}
+	}
+
+	private async readFiles(filenames: string[], memoryDir: string): Promise<string> {
+		const parts: string[] = [];
+		for (const name of filenames) {
+			try {
+				const content = await readFile(join(memoryDir, name), "utf-8");
+				parts.push(`### ${name}\n${content}`);
+			} catch (err) {
+				console.debug("[auto-memory] memory file read failed:", err instanceof Error ? err.message : err);
+			}
+		}
+		return parts.join("\n\n");
+	}
+
+	private async runReadCached(filenames: string[], memoryDir: string): Promise<string> {
+		return await this.readFiles(filenames, memoryDir);
+	}
+
+	private arraysEqual(a: string[], b: string[]): boolean {
+		if (a.length !== b.length) return false;
+		const setB = new Set(b);
+		return a.every((item) => setB.has(item));
+	}
+
+	private buildHistoryForLLM(history: HistoryEntry[]): HistoryEntry[] {
+		const recent = history.slice(-3);
+		const marked = history.filter((h) => h.userMarkedIrrelevant);
+		const seen = new Set(recent.map((h) => h.timestamp));
+		const extra = marked.filter((h) => !seen.has(h.timestamp)).slice(-5);
+		return [...recent, ...extra].sort((a, b) => a.timestamp - b.timestamp);
+	}
+}
+
+interface MemoryFileEntry {
+	filename: string;
+	name: string;
+	description: string;
+}
+
+interface ExtractResult {
+	created: MemoryFileEntry[];
+	updated: MemoryFileEntry[];
+}
+
+class MemoryExtractor {
+	private inProgress = false;
+	private pendingMessages: AgentMessage[] | null = null;
+	private turnsSinceLastExtraction = 0;
+	private mainAgentWroteMemory = false;
+
+	onToolCall(toolName: string, args: Record<string, unknown>, memoryDir: string): void {
+		if ((toolName === "write" || toolName === "edit") && typeof args.path === "string") {
+			const normalizedPath = args.path.replace(/\\/g, "/");
+			const normalizedDir = memoryDir.replace(/\\/g, "/");
+			if (normalizedPath.startsWith(`${normalizedDir}/`)) {
+				this.mainAgentWroteMemory = true;
+			}
+		}
+	}
+
+	async maybeExtract(
+		messages: AgentMessage[],
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<ExtractResult | null> {
+		if (this.inProgress) {
+			this.pendingMessages = messages;
+			return null;
+		}
+
+		if (this.mainAgentWroteMemory) {
+			this.mainAgentWroteMemory = false;
+			this.turnsSinceLastExtraction = 0;
+			return null;
+		}
+
+		this.turnsSinceLastExtraction++;
+		if (this.turnsSinceLastExtraction < 2) return null;
+		this.turnsSinceLastExtraction = 0;
+
+		return await this.runExtraction(messages, memoryDir, callLLM);
+	}
+
+	private async runExtraction(
+		messages: AgentMessage[],
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<ExtractResult | null> {
+		this.inProgress = true;
+		try {
+			const recent = serializeMessages(messages, { lastN: 20 });
+			const manifest = formatManifest(await scanMemoryFiles(memoryDir));
+
+			const llmResult = await callLLM({
+				systemPrompt: EXTRACTION_PROMPT(manifest),
+				messages: [
+					{
+						role: "user",
+						content: `Recent conversation:\n${recent}\n\nExisting memories:\n${manifest}`,
+					},
+				],
+			});
+
+			let parsed: { actions?: Array<Record<string, string>> };
+			try {
+				parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
+			} catch (err) {
+				console.debug("[auto-memory] extraction LLM parse failed:", err instanceof Error ? err.message : err);
+				return null;
+			}
+
+			const actions = parsed.actions ?? [];
+			if (actions.length === 0) return null;
+
+			const result = await this.applyActions(actions, memoryDir);
+			return result;
+		} finally {
+			this.inProgress = false;
+			if (this.pendingMessages) {
+				const pending = this.pendingMessages;
+				this.pendingMessages = null;
+				await this.runExtraction(pending, memoryDir, callLLM);
+			}
+		}
+	}
+
+	private async applyActions(
+		actions: Array<Record<string, string>>,
+		memoryDir: string,
+	): Promise<ExtractResult> {
+		const created: MemoryFileEntry[] = [];
+		const updated: MemoryFileEntry[] = [];
+		for (const action of actions) {
+			const op = action.op;
+
+			if (op === "create") {
+				const filename = action.filename;
+				const content = action.content ?? "";
+				if (!filename || !content) continue;
+
+				const name = action.name ?? filename;
+				const description = action.description ?? "";
+				const type = (action.type as MemoryType) ?? "project";
+				const fm = buildFrontmatter({ name, description, type });
+				const body = content.slice(0, MAX_MEMORY_BYTES_PER_FILE);
+				await writeFile(join(memoryDir, filename), `${fm}\n\n${body}`);
+				created.push({ filename, name, description });
+			} else if (op === "update") {
+				const filename = action.filename;
+				const append = action.append;
+				if (!filename || !append) continue;
+
+				const filePath = join(memoryDir, filename);
+				if (!existsSync(filePath)) continue;
+
+				const existing = await readFile(filePath, "utf-8");
+				await writeFile(filePath, existing + append);
+				const name = action.name ?? filename;
+				const description = action.description ?? append.slice(0, 80);
+				updated.push({ filename, name, description });
+			}
+		}
+		await updateMemoryIndex(memoryDir);
+		return { created, updated };
+	}
+}
+
+class BookmarkCreator {
+	async create(
+		messageContent: string,
+		sessionId: string,
+		messageIds: string[],
+		memoryDir: string,
+		callLLM: (opts: CallLLMOptions) => Promise<string>,
+	): Promise<{ filename: string; filePath: string } | null> {
+		try {
+			const manifest = formatManifest((await scanMemoryFiles(memoryDir)).filter((m) => isBookmarkType(m)));
+
+			const llmResult = await callLLM({
+				systemPrompt: BOOKMARK_SUMMARY_PROMPT(messageContent, manifest),
+				messages: [{ role: "user", content: "Create a bookmark summary for this content." }],
+			});
+
+			let parsed: { title?: string; description?: string; summary?: string; tags?: string[] };
+			try {
+				parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
+			} catch (err) {
+				console.debug("[auto-memory] bookmark LLM parse failed:", err instanceof Error ? err.message : err);
+				return null;
+			}
+
+			if (!parsed.title) return null;
+
+			const safeTitle = parsed.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_").slice(0, 50);
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const filename = `${timestamp}_${safeTitle}.md`;
+			const filePath = join(memoryDir, filename);
+
+			const fm = buildBookmarkFrontmatter({
+				name: parsed.title,
+				description: parsed.description ?? "",
+				sourceSession: sessionId,
+				sourceMessageIds: messageIds,
+				tags: parsed.tags ?? [],
+				createdAt: new Date().toISOString(),
+			});
+
+			const body = `## ${parsed.title}\n\n${parsed.summary ?? ""}\n\n---\n\n## \u539F\u59CB\u5185\u5BB9\u9884\u89C8\n\n> ${messageContent.slice(0, 500)}${messageContent.length > 500 ? "..." : ""}`;
+
+			await writeFile(filePath, `${fm}\n\n${body}`);
+			await updateMemoryIndex(memoryDir);
+
+			return { filename, filePath };
+		} catch (err) {
+			console.debug("[auto-memory] bookmark creation failed:", err instanceof Error ? err.message : err);
+			return null;
+		}
+	}
+}
+
+class MemoryDream {
+	async maybeRun(
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<{ merges: number; deletions: number; updates: number } | null> {
+		const lockPath = join(memoryDir, ".consolidate-lock");
+
+		if (!existsSync(lockPath)) {
+			await writeFile(lockPath, "");
+			await utimes(lockPath, new Date(0), new Date(0));
+		}
+
+		let lockStat: Stats;
+		try {
+			lockStat = await stat(lockPath);
+		} catch (err) {
+			console.debug("[auto-memory] dream lock stat failed:", err instanceof Error ? err.message : err);
+			return null;
+		}
+		const hoursSince = (Date.now() - lockStat.mtimeMs) / 3_600_000;
+		if (hoursSince < DREAM_MIN_HOURS) return null;
+
+		const sessionCount = await countSessionsSince(memoryDir, lockStat.mtimeMs);
+		if (sessionCount < DREAM_MIN_SESSIONS) return null;
+
+		try {
+			const result = await this.runDream(memoryDir, callLLM);
+			await utimes(lockPath, new Date(), new Date());
+			return result;
+		} catch (err) {
+			console.debug("[auto-memory] dream consolidation failed:", err instanceof Error ? err.message : err);
+			await utimes(lockPath, new Date(lockStat.mtimeMs), new Date(lockStat.mtimeMs));
+			return null;
+		}
+	}
+
+	private async runDream(
+		memoryDir: string,
+		callLLM: CallLLMFn,
+	): Promise<{ merges: number; deletions: number; updates: number } | null> {
+		const memories = await scanMemoryFiles(memoryDir);
+		if (memories.length === 0) return null;
+
+		const allContent = await readAllMemories(memories);
+		const entrypointPath = join(memoryDir, ENTRYPOINT_NAME);
+		let indexContent = "";
+		try {
+			indexContent = await readFile(entrypointPath, "utf-8");
+		} catch (err) {
+			console.debug("[auto-memory] dream entrypoint read failed:", err instanceof Error ? err.message : err);
+		}
+
+		const llmResult = await callLLM({
+			systemPrompt: DREAM_PROMPT(allContent, indexContent, memoryDir),
+			messages: [
+				{
+					role: "user",
+					content: "Perform dream consolidation. Analyze memories and decide what to merge, delete, or update.",
+				},
+			],
+		});
+
+		let parsed: {
+			merges?: Array<{ sources?: string[]; target?: string; content?: string }>;
+			deletions?: string[];
+			updates?: Array<{ filename?: string; newContent?: string }>;
+			newIndex?: string;
+		};
+		try {
+			parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
+		} catch (err) {
+			console.debug("[auto-memory] dream LLM parse failed:", err instanceof Error ? err.message : err);
+			return null;
+		}
+
+		return await this.applyDreamActions(parsed, memoryDir);
+	}
+
+	private async applyDreamActions(
+		parsed: {
+			merges?: Array<{ sources?: string[]; target?: string; content?: string }>;
+			deletions?: string[];
+			updates?: Array<{ filename?: string; newContent?: string }>;
+			newIndex?: string;
+		},
+		memoryDir: string,
+	): Promise<{ merges: number; deletions: number; updates: number }> {
+		const allHeaders = await scanMemoryFiles(memoryDir);
+		const bookmarkSet = new Set(allHeaders.filter(isBookmarkType).map((h) => h.filename));
+
+		if (parsed.merges) {
+			for (const merge of parsed.merges) {
+				if (!merge.sources || !merge.target || merge.content === undefined) continue;
+
+				const sources = merge.sources;
+				const hasBookmark = sources.some((s) => bookmarkSet.has(s));
+				const hasNonBookmark = sources.some((s) => !bookmarkSet.has(s));
+				if (hasBookmark && hasNonBookmark) continue;
+
+				await writeFile(join(memoryDir, merge.target), merge.content);
+				for (const source of sources) {
+					if (source === merge.target) continue;
+					const sourcePath = join(memoryDir, source);
+					if (existsSync(sourcePath)) {
+						await unlink(sourcePath);
+					}
+				}
+			}
+		}
+
+		if (parsed.deletions) {
+			for (const filename of parsed.deletions) {
+				if (bookmarkSet.has(filename)) continue;
+				const filePath = join(memoryDir, filename);
+				if (existsSync(filePath)) {
+					await unlink(filePath);
+				}
+			}
+		}
+
+		if (parsed.updates) {
+			for (const update of parsed.updates) {
+				if (!update.filename || !update.newContent) continue;
+				await writeFile(join(memoryDir, update.filename), update.newContent);
+			}
+		}
+
+		const mergeCount = parsed.merges?.length ?? 0;
+		const deletionCount = parsed.deletions?.length ?? 0;
+		const updateCount = parsed.updates?.length ?? 0;
+
+		if (parsed.newIndex !== undefined) {
+			const { content } = truncateEntrypoint(parsed.newIndex);
+			await writeFile(join(memoryDir, ENTRYPOINT_NAME), content);
+		}
+
+		return { merges: mergeCount, deletions: deletionCount, updates: updateCount };
+	}
+}
+
+async function readAllMemories(memories: MemoryHeader[]): Promise<string> {
+	const parts = await Promise.all(
+		memories.map(async (m) => {
+			const content = await readFile(m.filePath, "utf-8");
+			return `=== ${m.filename} ===\n${content}`;
+		}),
+	);
+	return parts.join("\n\n");
+}
+
+async function updateMemoryIndex(memoryDir: string): Promise<void> {
+	const memories = await scanMemoryFiles(memoryDir);
+	const lines = memories.map((m) => {
+		const title = m.filename.replace(/\.md$/, "");
+		const desc = m.description ? ` — ${m.description}` : "";
+		const line = `- [${title}](./${m.filename})${desc}`;
+		return line.slice(0, 150);
+	});
+
+	const truncated = truncateEntrypoint(lines.join("\n"));
+	await writeFile(join(memoryDir, ENTRYPOINT_NAME), truncated.content);
+}
+
+async function countSessionsSince(memoryDir: string, _sinceMs: number): Promise<number> {
+	try {
+		const sessionsPath = join(memoryDir, ".session-count");
+		if (!existsSync(sessionsPath)) {
+			await writeFile(sessionsPath, "1");
+			return 1;
+		}
+		const content = await readFile(sessionsPath, "utf-8");
+		const count = Number.parseInt(content.trim(), 10) || 0;
+		await writeFile(sessionsPath, String(count + 1));
+		return count + 1;
+	} catch (err) {
+		console.debug("[auto-memory] session count update failed:", err instanceof Error ? err.message : err);
+		return DREAM_MIN_SESSIONS;
+	}
+}
+
+async function maybePurify(memoryDir: string, callLLM: CallLLMFn): Promise<string[] | null> {
+	const store = loadSkipWordStore(getGlobalMemoryDir());
+	const unprocessed = store.history.filter((h) => h.userMarkedIrrelevant && h.irrelevantFiles?.length);
+
+	// 需要至少 2 条未处理的标记才触发
+	if (unprocessed.length < 2) return null;
+
+	// 收集标记的文件内容（去重）
+	const fileSet = new Set<string>();
+	for (const entry of unprocessed) {
+		for (const f of entry.irrelevantFiles ?? []) {
+			fileSet.add(f);
+		}
+	}
+
+	const markedFiles: Array<{ filename: string; content: string }> = [];
+	for (const filename of fileSet) {
+		const filePath = join(memoryDir, filename);
+		if (!existsSync(filePath)) continue;
+		try {
+			const content = await readFile(filePath, "utf-8");
+			markedFiles.push({ filename, content });
+		} catch {
+			markedFiles.push({ filename, content: "" });
+		}
+	}
+
+	if (markedFiles.length === 0) return null;
+
+	const llmResult = await callLLM({
+		systemPrompt: PURIFICATION_PROMPT(markedFiles, store.excludeKeywords),
+		messages: [{ role: "user", content: "Extract exclusion keywords from the marked files." }],
+	});
+
+	let parsed: { keywords?: string[] };
+	try {
+		parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
+	} catch (err) {
+		console.debug("[auto-memory] purification LLM parse failed:", err instanceof Error ? err.message : err);
+		return null;
+	}
+
+	const newKeywords = (parsed.keywords ?? []).filter(
+		(k) => typeof k === "string" && k.length >= 2 && k.length <= 30 && !store.excludeKeywords.includes(k),
+	);
+
+	if (newKeywords.length === 0) return null;
+
+	// 合并到 store
+	store.excludeKeywords = [...store.excludeKeywords, ...newKeywords];
+	await saveSkipWordStore(getGlobalMemoryDir(), store);
+
+	return newKeywords;
+}
+
+export {
+	MemoryPrefetch,
+	MemoryExtractor,
+	MemoryDream,
+	BookmarkCreator,
+	serializeMessages,
+	updateMemoryIndex,
+	type CallLLMFn,
+	extractMessageText,
+	findExistingMemoryContext,
+};
+
+export default function autoMemoryExtension(pi: ExtensionAPI): void {
+	const cwd = process.cwd();
+	const memoryDir = getMemoryDir(cwd);
+	const prefetch = new MemoryPrefetch();
+	const extractor = new MemoryExtractor();
+	const dream = new MemoryDream();
+	const bookmarkCreator = new BookmarkCreator();
+	let draining = false;
+	let activeExtraction: Promise<void> | null = null;
+	let ctx: ExtensionContext | null = null;
+
+	const callLLMWithRetry: CallLLMFn = async (opts) => {
+		try {
+			return await pi.callLLM(opts);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (/stale/i.test(msg)) throw err;
+			console.debug("[auto-memory] LLM call failed:", msg);
+			throw err;
+		}
+	};
+
+	const runtimePolicy = getExtensionRuntimeResourcePolicy();
+	if (!runtimePolicy.canLoadUserMemory && !runtimePolicy.canLoadProjectMemory) {
+		try {
+			const raw = pi.registerChannel("memory");
+			const disabledChannel = createTypedChannel<MemoryChannelContract>(raw).server;
+			const emptyStatus = () => ({
+				skipRules: { builtin: [], custom: [] },
+				guardRules: { builtin: [], custom: [] },
+				excludeKeywords: [],
+				recentQueries: [],
+				dream: { lastRunAt: null },
+			});
+			disabledChannel.handle("memory.list", async () => ({
+				type: "list_result" as const,
+				files: [],
+				entrypointContent: null,
+				memoryDir: "",
+			}));
+			disabledChannel.handle("memory.userRemember", async () => ({ ok: false }));
+			disabledChannel.handle("memory.markIrrelevant", async () => ({ ok: false }));
+			disabledChannel.handle("memory.getStatus", async () => emptyStatus());
+			disabledChannel.handle("memory.removeRule", async () => ({ ok: false }));
+			disabledChannel.handle("memory.addRule", async () => ({ ok: false }));
+		} catch {
+			// registerChannel is unavailable outside RPC mode.
+		}
+		pi.on("session_start", (_event, context) => {
+			(context as ExtensionContext).ui.setStatus("auto-memory", "memory disabled for SSH tool proxy");
+		});
+		pi.on("session_shutdown", (_event, context) => {
+			(context as ExtensionContext | undefined)?.ui.setStatus("auto-memory", undefined);
+		});
+		return;
+	}
+
+	pi.registerTool({
+		name: "create_bookmark",
+		label: "create_bookmark",
+		description:
+			"Create a bookmark memory file from analyzed content. Use this tool to save a structured bookmark with title, description, summary and tags.",
+		parameters: Type.Object({
+			title: Type.String({ description: "Bookmark title, concise and descriptive" }),
+			description: Type.String({ description: "One-line description of the bookmark" }),
+			summary: Type.String({ description: "Detailed summary of the bookmarked content" }),
+			tags: Type.Array(Type.String(), { description: "Relevant tags for categorization" }),
+		}),
+		execute: async (
+			_toolCallId: string,
+			params: { title: string; description: string; summary: string; tags: string[] },
+			_signal?: AbortSignal,
+			_onUpdate?: unknown,
+			_ctx?: ExtensionContext,
+		): Promise<AgentToolResult<{ filename: string } | null>> => {
+			const content = `## ${params.title}\n\n${params.summary}`;
+			const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
+			const result = await bookmarkCreator.create(
+				content,
+				sessionId,
+				[],
+				memoryDir,
+				callLLMWithRetry,
+			);
+			if (result) {
+				markMemorySelectionDirty();
+				pi.appendEntry("memory_created", { filename: result.filename });
+				const updatedMemories = await scanMemoryFiles(memoryDir);
+				memoryChannel?.emit("memory_updated", {
+					type: "memory_updated",
+					files: updatedMemories.map((m) => ({
+						filename: m.filename,
+						filePath: m.filePath,
+						description: m.description ?? null,
+						type: m.type ?? null,
+						mtimeMs: m.mtimeMs,
+					})),
+				});
+				return {
+					content: [{ type: "text", text: `Bookmark created: ${result.filename}` }],
+					details: { filename: result.filename },
+				};
+			}
+			return { content: [{ type: "text", text: "Failed to create bookmark" }], details: null };
+		},
+	});
+
+	pi.registerTool({
+		name: "save_memory",
+		label: "save_memory",
+		description:
+			"Persist a durable memory entry through the memory system. Use this instead of write/edit/bash for memory files, especially in SSH or remote runtime sessions.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Short stable memory name" }),
+			description: Type.String({ description: "One-line description used in the memory index" }),
+			type: Type.Union(
+				[
+					Type.Literal("user"),
+					Type.Literal("feedback"),
+					Type.Literal("project"),
+					Type.Literal("reference"),
+				],
+				{ description: "Memory category. Do not use bookmark here." },
+			),
+			content: Type.String({
+				description: "Memory body. Include Why and How to apply for feedback/project entries.",
+			}),
+			filename: Type.Optional(Type.String({ description: "Optional markdown filename. The system will sanitize it." })),
+		}),
+		execute: async (
+			_toolCallId: string,
+			params: {
+				name: string;
+				description: string;
+				type: "user" | "feedback" | "project" | "reference";
+				content: string;
+				filename?: string;
+			},
+			_signal?: AbortSignal,
+			_onUpdate?: unknown,
+			_ctx?: ExtensionContext,
+		): Promise<AgentToolResult<{ filename: string }>> => {
+			await mkdir(memoryDir, { recursive: true });
+			const requestedFilename = slugifyMemoryFilename(params.filename ?? params.name, "memory");
+			const { filename, filePath } = await uniqueMemoryFilePath(memoryDir, requestedFilename);
+			const fm = buildFrontmatter({
+				name: params.name,
+				description: params.description,
+				type: params.type,
+			});
+			const body = params.content.trim().slice(0, MAX_MEMORY_BYTES_PER_FILE);
+			await writeFile(filePath, `${fm}\n\n${body}\n`, "utf-8");
+			await updateMemoryIndex(memoryDir);
+			markMemorySelectionDirty();
+			pi.appendEntry("memory_created", { filename });
+			const updatedMemories = await scanMemoryFiles(memoryDir);
+			memoryChannel?.emit("memory_updated", {
+				type: "memory_updated",
+				files: updatedMemories.map((m) => ({
+					filename: m.filename,
+					filePath: m.filePath,
+					description: m.description ?? null,
+					type: m.type ?? null,
+					mtimeMs: m.mtimeMs,
+				})),
+			});
+			return {
+				content: [{ type: "text", text: `Memory saved: ${filename}` }],
+				details: { filename },
+			};
+		},
+	});
+
+	const rawMemoryChannel = pi.registerChannel("memory");
+	const memoryChannel = createTypedChannel<MemoryChannelContract>(rawMemoryChannel).server;
+
+	function status(msg?: string): void {
+		ctx?.ui.setStatus("auto-memory", msg);
+	}
+
+	function notify(message: string, type?: "info" | "warning" | "error"): void {
+		ctx?.ui.notify(message, type);
+	}
+
+	const MEMORY_PREFETCH_PHASE = {
+		start: { phase: "prefetch_started", phaseOrder: 1 },
+		result: { phase: "prefetch_result", phaseOrder: 2 },
+		inject: { phase: "inject", phaseOrder: 3 },
+	} as const;
+
+	function appendPrefetchResult(memoryText: string | null): void {
+		const debug = prefetch.debugInfo;
+		const selectedFiles = debug?.selectedFiles ?? [];
+		if (prefetch.markResultEntryWritten(prefetch.operationId ?? undefined)) return;
+		status(memoryText ? "memories selected" : "no memories found");
+		pi.appendEntry("memory_prefetch_result", {
+			operationId: prefetch.operationId,
+			...MEMORY_PREFETCH_PHASE.result,
+			occurredAt: Date.now(),
+			summary: memoryText ? "Selected relevant memories" : "No relevant memories",
+			snippet: memoryText ? memoryText.slice(0, 500) : "",
+			injectedBytes: memoryText ? memoryText.length : 0,
+			selectedFiles,
+			durationMs: debug?.durationMs ?? 0,
+			layer: debug?.layer ?? "unknown",
+			skipHits: debug?.skipHits ?? [],
+			guardHits: debug?.guardHits ?? [],
+			availableFiles: debug?.availableFiles ?? 0,
+		});
+	}
+
+	const writtenMemoryInjectEntries = new Set<string>();
+	const writtenMemoryInjectEntryOrder: string[] = [];
+	const maxWrittenMemoryInjectEntries = 200;
+	const activeInjectedMemoryFingerprints = new Set<string>();
+	const activeInjectedMemoryFingerprintOrder: string[] = [];
+	const maxActiveInjectedMemoryFingerprints = 200;
+	const injectedFingerprintStateFileName = "auto-memory-injected-fingerprints.json";
+
+	function getInjectedFingerprintStateFile(): string | null {
+		const sessionDataDir = (ctx as (ExtensionContext & { sessionDataDir?: string }) | null)?.sessionDataDir;
+		return sessionDataDir ? join(sessionDataDir, injectedFingerprintStateFileName) : null;
+	}
+
+	function persistActiveInjectedMemoryFingerprints(): void {
+		const filePath = getInjectedFingerprintStateFile();
+		if (!filePath) return;
+		try {
+			mkdirSync(dirname(filePath), { recursive: true });
+			writeFileSync(
+				filePath,
+				JSON.stringify(
+					{
+						version: 1,
+						fingerprints: activeInjectedMemoryFingerprintOrder.filter((fingerprint) =>
+							activeInjectedMemoryFingerprints.has(fingerprint),
+						),
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+		} catch (err) {
+			console.debug(
+				"[auto-memory] persist injected memory fingerprints failed:",
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
+	function restoreActiveInjectedMemoryFingerprints(): void {
+		const filePath = getInjectedFingerprintStateFile();
+		if (!filePath || !existsSync(filePath)) return;
+		try {
+			const raw = readFileSync(filePath, "utf-8");
+			const parsed = JSON.parse(raw) as { fingerprints?: unknown };
+			const fingerprints = Array.isArray(parsed.fingerprints)
+				? parsed.fingerprints.filter((value): value is string => typeof value === "string" && value.length > 0)
+				: [];
+			for (const fingerprint of fingerprints.slice(-maxActiveInjectedMemoryFingerprints)) {
+				markActiveInjectedMemoryFingerprint(fingerprint, { persist: false });
+			}
+		} catch (err) {
+			console.debug(
+				"[auto-memory] restore injected memory fingerprints failed:",
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
+	function clearActiveInjectedMemoryFingerprints(options: { persist?: boolean } = {}): void {
+		activeInjectedMemoryFingerprints.clear();
+		activeInjectedMemoryFingerprintOrder.length = 0;
+		writtenMemoryInjectEntries.clear();
+		writtenMemoryInjectEntryOrder.length = 0;
+		if (options.persist !== false) persistActiveInjectedMemoryFingerprints();
+	}
+
+	function markMemorySelectionDirty(): void {
+		prefetch.markDirty();
+		clearActiveInjectedMemoryFingerprints();
+	}
+
+	function hasActiveInjectedMemoryFingerprint(fingerprint: string): boolean {
+		return activeInjectedMemoryFingerprints.has(fingerprint);
+	}
+
+	function markActiveInjectedMemoryFingerprint(fingerprint: string, options: { persist?: boolean } = {}): void {
+		if (activeInjectedMemoryFingerprints.has(fingerprint)) return;
+		activeInjectedMemoryFingerprints.add(fingerprint);
+		activeInjectedMemoryFingerprintOrder.push(fingerprint);
+		while (activeInjectedMemoryFingerprintOrder.length > maxActiveInjectedMemoryFingerprints) {
+			const oldest = activeInjectedMemoryFingerprintOrder.shift();
+			if (oldest) activeInjectedMemoryFingerprints.delete(oldest);
+		}
+		if (options.persist !== false) persistActiveInjectedMemoryFingerprints();
+	}
+
+	function markMemoryInjectEntryWritten(entryKey: string): boolean {
+		if (writtenMemoryInjectEntries.has(entryKey)) return true;
+		writtenMemoryInjectEntries.add(entryKey);
+		writtenMemoryInjectEntryOrder.push(entryKey);
+		while (writtenMemoryInjectEntryOrder.length > maxWrittenMemoryInjectEntries) {
+			const oldest = writtenMemoryInjectEntryOrder.shift();
+			if (oldest) writtenMemoryInjectEntries.delete(oldest);
+		}
+		return false;
+	}
+
+	function appendMemoryInject(memoryText: string, selectedFiles: string[], fingerprint: string): void {
+		status("memories injected");
+		const operationId = prefetch.operationId ?? "unknown";
+		const entryKey = `${operationId}:${fingerprint}`;
+		if (markMemoryInjectEntryWritten(entryKey)) return;
+		markActiveInjectedMemoryFingerprint(fingerprint);
+		pi.appendEntry("memory_inject", {
+			operationId,
+			...MEMORY_PREFETCH_PHASE.inject,
+			occurredAt: Date.now(),
+			summary: "Injected memory context",
+			snippet: memoryText.slice(0, 500),
+			injectedBytes: memoryText.length,
+			selectedFiles,
+			fingerprint,
+		});
+	}
+
+	function appendMemoryInjectSkipped(
+		memoryText: string,
+		selectedFiles: string[],
+		fingerprint: string,
+		reason: "already_in_context" | "already_in_session",
+	): void {
+		status("memory already injected");
+		const operationId = prefetch.operationId ?? "unknown";
+		if (writtenMemoryInjectEntries.has(`${operationId}:${fingerprint}`)) return;
+		const entryKey = `${operationId}:${fingerprint}:skipped:${reason}`;
+		if (markMemoryInjectEntryWritten(entryKey)) return;
+		pi.appendEntry("memory_inject", {
+			operationId,
+			...MEMORY_PREFETCH_PHASE.inject,
+			occurredAt: Date.now(),
+			summary: "Memory context already injected",
+			snippet: memoryText.slice(0, 500),
+			injectedBytes: 0,
+			originalBytes: memoryText.length,
+			selectedFiles,
+			fingerprint,
+			skipped: true,
+			alreadyInjected: true,
+			skipReason: reason,
+		});
+	}
+
+	pi.on("session_start", async (_event, context) => {
+		ctx = context as ExtensionContext;
+		clearActiveInjectedMemoryFingerprints({ persist: false });
+		restoreActiveInjectedMemoryFingerprints();
+		await mkdir(memoryDir, { recursive: true });
+		status("memory ready");
+	});
+
+	pi.on("before_agent_start", async (event) => {
+		let memoryContent = "";
+		try {
+			memoryContent = await readFile(getEntrypointPath(cwd), "utf-8");
+		} catch (err) {
+			console.debug("[auto-memory] entrypoint read failed:", err instanceof Error ? err.message : err);
+		}
+		const truncated = truncateEntrypoint(memoryContent);
+		const memoryPrompt = MEMORY_SYSTEM_PROMPT(memoryDir, truncated.content);
+
+		const lastUserText = event.prompt ?? "";
+			if (lastUserText) {
+				status("selecting memories...");
+				const operationId = `memory-prefetch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+				pi.appendEntry("memory_prefetch", {
+					operationId,
+					...MEMORY_PREFETCH_PHASE.start,
+					occurredAt: Date.now(),
+					query: lastUserText.slice(0, 200),
+					availableFiles: (await scanMemoryFiles(memoryDir)).length,
+				});
+			prefetch.start(lastUserText, memoryDir, callLLMWithRetry, operationId);
+			void prefetch.waitForOperation(operationId).then((memoryText) => {
+				if (prefetch.operationId !== operationId) return;
+				appendPrefetchResult(memoryText);
+			});
+		}
+
+		return { systemPrompt: `${event.systemPrompt}\n\n${memoryPrompt}` };
+	});
+
+	pi.on("context", async (event) => {
+		const operationId = prefetch.operationId;
+		const memoryText = operationId
+			? await prefetch.waitForOperation(operationId)
+			: prefetch.collect();
+
+		if (!memoryText) return;
+
+		const selectedFiles = prefetch.selectedFiles;
+		const fingerprint = selectedFiles.slice().sort().join(",") + "|" + memoryText.length;
+
+		const existingMemory = findExistingMemoryContext(event.messages);
+		if (existingMemory && existingMemory === fingerprint) {
+			markActiveInjectedMemoryFingerprint(fingerprint);
+			appendPrefetchResult(memoryText);
+			appendMemoryInjectSkipped(memoryText, selectedFiles, fingerprint, "already_in_context");
+			return;
+		}
+		if (hasActiveInjectedMemoryFingerprint(fingerprint)) {
+			appendPrefetchResult(memoryText);
+			appendMemoryInjectSkipped(memoryText, selectedFiles, fingerprint, "already_in_session");
+			return;
+		}
+
+		const xmlContent = `<memory_context fingerprint="${fingerprint}">
+<files count="${selectedFiles.length}" source="auto-memory">
+${memoryText}
+</files>
+</memory_context>`;
+
+		appendPrefetchResult(memoryText);
+		appendMemoryInject(memoryText, selectedFiles, fingerprint);
+
+		const memoryMessage = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: xmlContent }],
+			timestamp: Date.now(),
+		};
+		return { messages: [...event.messages, memoryMessage] };
+	});
+
+	pi.on("session_compact", () => {
+		markMemorySelectionDirty();
+	});
+
+	pi.on("tool_call", (event) => {
+		const args = (event.input ?? {}) as Record<string, unknown>;
+		extractor.onToolCall(event.toolName, args, memoryDir);
+	});
+
+	pi.on("agent_end", (event) => {
+		if (draining) return;
+		activeExtraction = (async () => {
+			try {
+				status("extracting memories...");
+				const extractResult = await extractor.maybeExtract(event.messages, memoryDir, callLLMWithRetry);
+				if (extractResult) {
+					markMemorySelectionDirty();
+					pi.appendEntry("memory_extract", {
+						status: "completed",
+						created: extractResult.created,
+						updated: extractResult.updated,
+					});
+				}
+
+				status("consolidating memories...");
+				const dreamResult = await dream.maybeRun(memoryDir, callLLMWithRetry);
+				if (dreamResult) {
+					markMemorySelectionDirty();
+					pi.appendEntry("memory_dream", {
+						status: "completed",
+						merges: dreamResult.merges,
+						deletions: dreamResult.deletions,
+						updates: dreamResult.updates,
+					});
+				}
+
+				status("purifying exclusions...");
+				const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
+				if (purifyResult) {
+					markMemorySelectionDirty();
+				}
+
+				status("memory idle");
+			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				if (/stale/i.test(msg)) {
+					return;
+				}
+				status("memory error");
+				notify(`Auto-memory error: ${msg}`, "warning");
+			}
+		})();
+	});
+
+	pi.on("session_shutdown", async () => {
+		draining = true;
+		if (activeExtraction) {
+			status("draining memory...");
+			const timeout = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+			await Promise.race([activeExtraction, timeout]);
+		}
+		status(undefined);
+	});
+
+	memoryChannel.handle("memory.list", async () => {
+		try {
+			const memories = await scanMemoryFiles(memoryDir);
+			const files = memories.map((m) => ({
+				filename: m.filename,
+				filePath: m.filePath,
+				description: m.description ?? null,
+				type: m.type ?? null,
+				mtimeMs: m.mtimeMs,
+			}));
+			let entrypointContent: string | null = null;
+			try {
+				entrypointContent = await readFile(getEntrypointPath(cwd), "utf-8");
+			} catch (err) {
+				console.debug("[auto-memory] entrypoint read failed:", err instanceof Error ? err.message : err);
+			}
+			return { type: "list_result" as const, files, entrypointContent, memoryDir };
+		} catch (err) {
+			console.debug("[auto-memory] memory list failed:", err instanceof Error ? err.message : err);
+			return { type: "list_result" as const, files: [], entrypointContent: null, memoryDir };
+		}
+	});
+
+	memoryChannel.handle("memory.userRemember", async (data) => {
+		memoryChannel.emit("bookmark_creating", { type: "bookmark_creating" });
+		pi.appendEntry("memory_creating", { content: data.content?.slice(0, 200) });
+		try {
+			const result = await bookmarkCreator.create(
+				data.content ?? "",
+				data.sourceSessionId ?? "",
+				data.sourceMessageIds ?? [],
+				memoryDir,
+				callLLMWithRetry,
+			);
+			if (result) {
+				markMemorySelectionDirty();
+				pi.appendEntry("memory_created", { filename: result.filename });
+				const updatedMemories = await scanMemoryFiles(memoryDir);
+				memoryChannel.emit("memory_updated", {
+					type: "memory_updated",
+					files: updatedMemories.map((m) => ({
+						filename: m.filename,
+						filePath: m.filePath,
+						description: m.description ?? null,
+						type: m.type ?? null,
+						mtimeMs: m.mtimeMs,
+					})),
+				});
+			} else {
+				pi.appendEntry("memory_failed", { reason: "LLM failed" });
+				memoryChannel.emit("memory_update_failed", { type: "memory_update_failed", reason: "LLM failed" });
+			}
+		} catch (e) {
+			const errMsg = e instanceof Error ? e.message : String(e);
+			if (/stale/i.test(errMsg)) {
+				return { ok: true };
+			}
+			pi.appendEntry("memory_failed", { reason: errMsg });
+			notify(`Bookmark error: ${errMsg}`, "warning");
+			memoryChannel.emit("memory_update_failed", { type: "memory_update_failed", reason: "Error" });
+		}
+		return { ok: true };
+	});
+
+	memoryChannel.handle("memory.markIrrelevant", async (data) => {
+		const query = (data.query ?? "").slice(0, 200);
+		const selectedFiles = Array.isArray(data.selectedFiles)
+			? (data.selectedFiles as string[]).slice(0, MAX_RELEVANT_MEMORIES)
+			: [];
+
+		if (!query || selectedFiles.length === 0) {
+			return { ok: false };
+		}
+
+		let store = loadSkipWordStore(getGlobalMemoryDir());
+		store = addHistoryEntry(store, {
+			query,
+			selected: selectedFiles,
+			skipped: false,
+			skip_hits: [],
+			guard_hits: [],
+			timestamp: Date.now(),
+			userMarkedIrrelevant: true,
+			irrelevantFiles: selectedFiles,
+		});
+		await saveSkipWordStore(getGlobalMemoryDir(), store);
+
+		pi.appendEntry("memory_irrelevant_marked", {
+			query,
+			selectedFiles,
+		});
+		memoryChannel.emit("memory_irrelevant_marked", {
+			type: "memory_irrelevant_marked",
+			query,
+			selectedFiles,
+		});
+
+		return { ok: true };
+	});
+
+	memoryChannel.handle("memory.getStatus", async () => {
+		const store = prefetch.getStore();
+		const defaultRules = getDefaultRules();
+		const builtinSkips = defaultRules.filter((r) => r.action === "skip").map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const builtinGuards = defaultRules.filter((r) => r.action === "guard").map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const customSkips = store.rules.filter((r) => r.action === "skip" && !r.builtin).map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const customGuards = store.rules.filter((r) => r.action === "guard" && !r.builtin).map((r) => ({ pattern: r.pattern, mode: r.mode }));
+		const recentQueries = store.history.slice(-10).map((h) => ({
+			query: h.query,
+			selected: h.selected,
+			skipped: h.skipped,
+			skip_hits: h.skip_hits,
+			guard_hits: h.guard_hits,
+			timestamp: h.timestamp,
+		}));
+
+		let lastDreamAt: number | null = null;
+		try {
+			const lockPath = join(memoryDir, ".consolidate-lock");
+			if (existsSync(lockPath)) {
+				const lockStat = await stat(lockPath);
+				lastDreamAt = lockStat.mtimeMs;
+			}
+		} catch {}
+
+		return {
+			skipRules: { builtin: builtinSkips, custom: customSkips },
+			guardRules: { builtin: builtinGuards, custom: customGuards },
+			excludeKeywords: store.excludeKeywords,
+			recentQueries,
+			dream: { lastRunAt: lastDreamAt },
+		};
+	});
+
+	memoryChannel.handle("memory.removeRule", async (data) => {
+		const store = prefetch.getStore();
+		let modified = false;
+
+		if (data.rule) {
+			const idx = store.rules.findIndex(
+				(r) => r.pattern === data.rule!.pattern && r.mode === data.rule!.mode && !r.builtin,
+			);
+			if (idx !== -1) {
+				store.rules.splice(idx, 1);
+				modified = true;
+			}
+		}
+
+		if (data.excludeKeyword) {
+			const idx = store.excludeKeywords.indexOf(data.excludeKeyword!);
+			if (idx !== -1) {
+				store.excludeKeywords.splice(idx, 1);
+				modified = true;
+			}
+		}
+
+		if (modified) {
+			await saveSkipWordStore(getGlobalMemoryDir(), store);
+			markMemorySelectionDirty();
+		}
+
+		return { ok: modified };
+	});
+
+	memoryChannel.handle("memory.addRule", async (data) => {
+		const store = prefetch.getStore();
+		const exists = store.rules.some(
+			(r) => r.pattern === data.pattern && r.mode === data.mode && r.action === data.action,
+		);
+		if (!exists) {
+			store.rules.push({ pattern: data.pattern, mode: data.mode, action: data.action, builtin: false });
+			await saveSkipWordStore(getGlobalMemoryDir(), store);
+			markMemorySelectionDirty();
+		}
+		return { ok: true };
+	});
+}

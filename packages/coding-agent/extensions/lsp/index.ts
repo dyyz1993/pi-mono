@@ -82,7 +82,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 					display: true,
 					details: { files: fileSummaries },
 				},
-				{ triggerTurn: true },
+				{ triggerTurn: true, deliverAs: "followUp" },
 			);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -117,6 +117,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		}
 
 		pi.on("session_start", async (_event: any, ctx: any) => {
+		// 1. Register channel handlers synchronously (must complete before RPC ready)
 		try {
 			const raw = pi.registerChannel("lsp");
 			if (raw) {
@@ -162,13 +163,21 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			// registerChannel is only available in RPC mode; gracefully degrade in TUI/print mode
 		}
 
+		// 2. Start LSP servers in background — do NOT await, to avoid blocking session_start
+		//    which would delay the RPC "ready" signal and slow down agent.start()
+		initLspInBackground(ctx).catch((err) => {
+			console.error("[lsp] Background init failed:", err instanceof Error ? err.message : String(err));
+		});
+	});
+
+	async function initLspInBackground(ctx: any): Promise<void> {
 		const config = await configResolver.resolveAsync();
 
 		// Build lazy activation index
 		lazyActivator.buildIndex(config.servers);
 
 		// Scan project for file counts to determine primary languages
-		const cwd = process.cwd();
+		const cwd = typeof ctx.cwd === "string" ? ctx.cwd : process.cwd();
 		const scanResult = await scanProjectFileTypes(cwd);
 		lazyActivator.markPrimary(scanResult.extensionCounts);
 
@@ -248,13 +257,12 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		});
 
 		const readyCount = status.servers.filter((s) => s.status.state === "ready").length;
-		const errorCount = status.servers.filter((s) => s.status.state === "error").length;
 		const readyNames = status.servers.filter((s) => s.status.state === "ready").map((s) => s.name);
 
 		if (readyCount > 0) {
 			ctx.ui.notify(`LSP ready: ${readyCount} primary [${readyNames.join(", ")}] (secondary: lazy)`, "info");
 		}
-	});
+	}
 
 	pi.on("session_shutdown", async () => {
 		// Session metrics report

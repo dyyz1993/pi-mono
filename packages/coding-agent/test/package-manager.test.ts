@@ -72,10 +72,16 @@ describe("DefaultPackageManager", () => {
 	let settingsManager: SettingsManager;
 	let packageManager: DefaultPackageManager;
 	let previousOfflineEnv: string | undefined;
+	let previousRuntimeKindEnv: string | undefined;
+	let previousRemoteToolProxyEnv: string | undefined;
 
 	beforeEach(() => {
 		previousOfflineEnv = process.env.PI_OFFLINE;
+		previousRuntimeKindEnv = process.env.PI_RUNTIME_KIND;
+		previousRemoteToolProxyEnv = process.env.PI_REMOTE_SSH_TOOL_PROXY;
 		delete process.env.PI_OFFLINE;
+		delete process.env.PI_RUNTIME_KIND;
+		delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
 		tempDir = join(tmpdir(), `pm-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		agentDir = join(tempDir, "agent");
@@ -95,12 +101,72 @@ describe("DefaultPackageManager", () => {
 		} else {
 			process.env.PI_OFFLINE = previousOfflineEnv;
 		}
+		if (previousRemoteToolProxyEnv === undefined) {
+			delete process.env.PI_REMOTE_SSH_TOOL_PROXY;
+		} else {
+			process.env.PI_REMOTE_SSH_TOOL_PROXY = previousRemoteToolProxyEnv;
+		}
+		if (previousRuntimeKindEnv === undefined) {
+			delete process.env.PI_RUNTIME_KIND;
+		} else {
+			process.env.PI_RUNTIME_KIND = previousRuntimeKindEnv;
+		}
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	describe("resolve", () => {
+		it("returns no local resources in SSH tool-proxy mode", async () => {
+			const userSkillDir = join(agentDir, "skills", "user-skill");
+			const projectSkillDir = join(tempDir, ".pi", "skills", "project-skill");
+			const userExtDir = join(agentDir, "extensions");
+			mkdirSync(userSkillDir, { recursive: true });
+			mkdirSync(projectSkillDir, { recursive: true });
+			mkdirSync(userExtDir, { recursive: true });
+			writeFileSync(join(userSkillDir, "SKILL.md"), "---\nname: user-skill\ndescription: User skill\n---\n");
+			writeFileSync(
+				join(projectSkillDir, "SKILL.md"),
+				"---\nname: project-skill\ndescription: Project skill\n---\n",
+			);
+			writeFileSync(join(userExtDir, "local-extension.ts"), "export default function() {}");
+			settingsManager.setExtensionPaths(["extensions/local-extension.ts"]);
+			settingsManager.setSkillPaths(["skills/user-skill/SKILL.md"]);
+			settingsManager.setProjectTrusted(true);
+
+			process.env.PI_REMOTE_SSH_TOOL_PROXY = "1";
+			const result = await packageManager.resolve();
+
+			expect(result.extensions).toEqual([]);
+			expect(result.skills).toEqual([]);
+			expect(result.prompts).toEqual([]);
+			expect(result.themes).toEqual([]);
+		});
+
+		it("loads runtime-owned resources in remote-agent-child mode", async () => {
+			const userSkillDir = join(agentDir, "skills", "remote-user-skill");
+			const projectSkillDir = join(tempDir, ".pi", "skills", "remote-project-skill");
+			const userExtDir = join(agentDir, "extensions");
+			mkdirSync(userSkillDir, { recursive: true });
+			mkdirSync(projectSkillDir, { recursive: true });
+			mkdirSync(userExtDir, { recursive: true });
+			writeFileSync(join(userSkillDir, "SKILL.md"), "---\nname: remote-user-skill\ndescription: User skill\n---\n");
+			writeFileSync(
+				join(projectSkillDir, "SKILL.md"),
+				"---\nname: remote-project-skill\ndescription: Project skill\n---\n",
+			);
+			writeFileSync(join(userExtDir, "remote-extension.ts"), "export default function() {}");
+			settingsManager.setExtensionPaths(["extensions/remote-extension.ts"]);
+			settingsManager.setProjectTrusted(true);
+
+			process.env.PI_RUNTIME_KIND = "remote-agent-child";
+			const result = await packageManager.resolve();
+
+			expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/remote-extension.ts"))).toBe(true);
+			expect(result.skills.some((r) => pathEndsWith(r.path, "skills/remote-user-skill/SKILL.md"))).toBe(true);
+			expect(result.skills.some((r) => pathEndsWith(r.path, ".pi/skills/remote-project-skill/SKILL.md"))).toBe(true);
+		});
+
 		it("should return no package-sourced paths when no sources configured", async () => {
 			const result = await packageManager.resolve();
 			expect(result.extensions).toEqual([]);

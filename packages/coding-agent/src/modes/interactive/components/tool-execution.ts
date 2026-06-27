@@ -1,3 +1,4 @@
+import type { ImageContent, TextContent } from "@dyyz1993/pi-ai";
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@dyyz1993/pi-tui";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
@@ -294,7 +295,7 @@ export class ToolExecutionComponent extends Container {
 				} else {
 					try {
 						const component = resultRenderer(
-							{ content: this.result.content as any, details: this.result.details },
+							{ content: this.result.content as ImageContent[] | TextContent[], details: this.result.details },
 							{ expanded: this.expanded, isPartial: this.isPartial },
 							theme,
 							this.getRenderContext(this.resultRendererComponent),

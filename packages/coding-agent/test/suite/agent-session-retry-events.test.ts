@@ -321,6 +321,29 @@ describe("AgentSession retry and event characterization", () => {
 		expect(updateTypes).toContain("toolcall_delta");
 	});
 
+	it("streams thinking then text then tool call in order", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(
+				[fauxThinking("hmm"), { type: "text", text: "I will call a tool" }, fauxToolCall("echo", { text: "x" })],
+				{ stopReason: "toolUse" },
+			),
+		]);
+
+		await harness.session.prompt("do it").catch(() => {});
+
+		const updates = harness.eventsOfType("message_update");
+		const streamTypes = updates.map((e) => e.assistantMessageEvent.type);
+
+		const firstThinking = streamTypes.indexOf("thinking_start");
+		const firstText = streamTypes.indexOf("text_start");
+		const firstToolcall = streamTypes.indexOf("toolcall_start");
+
+		expect(firstThinking).toBeLessThan(firstText);
+		expect(firstText).toBeLessThan(firstToolcall);
+	});
+
 	it("emits agent_end for error responses", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

@@ -71,6 +71,8 @@ export interface SkillFrontmatter {
 	[key: string]: unknown;
 }
 
+export type SkillContext = "inline" | "fork";
+
 export interface Skill {
 	name: string;
 	description: string;
@@ -78,6 +80,8 @@ export interface Skill {
 	baseDir: string;
 	sourceInfo: SourceInfo;
 	disableModelInvocation: boolean;
+	/** Execution context: "inline" (default) injects into main session, "fork" runs in isolated subtask. */
+	context?: SkillContext;
 }
 
 export interface LoadSkillsResult {
@@ -314,6 +318,7 @@ function loadSkillFromFile(
 				baseDir: skillDir,
 				sourceInfo: createSkillSourceInfo(filePath, skillDir, source),
 				disableModelInvocation: frontmatter["disable-model-invocation"] === true,
+				context: frontmatter.context === "fork" ? "fork" : undefined,
 			},
 			diagnostics,
 		};

@@ -42,6 +42,20 @@ describe("TaskStore.buildPrompt()", () => {
     expect(prompt).toContain("STOPPED");
   });
 
+  it("instructs parent sessions not to poll async delegates for completion", () => {
+    tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    const store = new TaskStore(tempDir);
+    store.add(makeTask({ title: "Async task", sessionId: "sess-async-1" }));
+
+    const prompt = store.buildPrompt();
+
+    expect(prompt).toContain("Async delegate contract");
+    expect(prompt).toContain("do not poll `session_delegate_status`");
+    expect(prompt).toContain("session_delegate_send");
+  });
+
   it("includes completed tasks in prompt (by design, for re-activation)", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
@@ -204,7 +218,7 @@ describe("TaskStore.add() sessionId guard", () => {
   });
 });
 
-describe("TaskStore.buildPrompt() stale task filtering", () => {
+describe("TaskStore.buildPrompt() persisted task visibility", () => {
   let tempDir: string;
 
   afterEach(() => {
@@ -213,12 +227,12 @@ describe("TaskStore.buildPrompt() stale task filtering", () => {
     }
   });
 
-  it("hides stopped tasks older than 5 minutes", () => {
+  it("keeps stopped tasks older than 30 minutes visible until explicit cleanup", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
     const store = new TaskStore(tempDir);
-    const oldTime = Date.now() - 10 * 60 * 1000; // 10 minutes ago
+    const oldTime = Date.now() - 31 * 60 * 1000; // 31 minutes ago
 
     store.add(makeTask({
       sessionId: "sess-old-stopped",
@@ -228,7 +242,8 @@ describe("TaskStore.buildPrompt() stale task filtering", () => {
     }));
 
     const prompt = store.buildPrompt();
-    expect(prompt).toBe("");
+    expect(prompt).toContain("Old stopped task");
+    expect(prompt).toContain("STOPPED");
   });
 
   it("keeps recently stopped tasks", () => {
@@ -317,9 +332,9 @@ describe("session_delegate_remove and session_delegate_clear_stopped handlers ex
   });
 });
 
-// ── TDD tests for zombie task bugs ──
+// ── Regression tests for coordinator task retention ──
 
-describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () => {
+describe("TaskStore does not silently evict delegated task indexes", () => {
   let tempDir: string;
 
   afterEach(() => {
@@ -328,7 +343,7 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
     }
   });
 
-  it("auto-evicts stopped tasks older than 5 minutes from the store on save()", () => {
+  it("keeps stopped tasks older than 30 minutes in the store on save()", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -337,15 +352,14 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
       sessionId: "sess-zombie-stop",
       title: "Zombie stopped task",
       status: "stopped",
-      completedAt: Date.now() - 10 * 60 * 1000, // 10 minutes ago
+      completedAt: Date.now() - 31 * 60 * 1000, // 31 minutes ago
     }));
 
-    // After eviction, the task should be gone from the store entirely
-    expect(store.get("sess-zombie-stop")).toBeUndefined();
-    expect(store.list()).toHaveLength(0);
+    expect(store.get("sess-zombie-stop")).toBeDefined();
+    expect(store.list()).toHaveLength(1);
   });
 
-  it("auto-evicts completed tasks older than 5 minutes from the store on save()", () => {
+  it("keeps completed tasks older than 30 minutes in the store on save()", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -354,14 +368,14 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
       sessionId: "sess-zombie-done",
       title: "Zombie completed task",
       status: "completed",
-      completedAt: Date.now() - 10 * 60 * 1000,
+      completedAt: Date.now() - 31 * 60 * 1000,
     }));
 
-    expect(store.get("sess-zombie-done")).toBeUndefined();
-    expect(store.list()).toHaveLength(0);
+    expect(store.get("sess-zombie-done")).toBeDefined();
+    expect(store.list()).toHaveLength(1);
   });
 
-  it("keeps recently stopped tasks (within 5 minutes)", () => {
+  it("keeps recently stopped tasks", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -377,7 +391,7 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
     expect(store.list()).toHaveLength(1);
   });
 
-  it("evicts stale tasks and keeps fresh ones in the same batch", () => {
+  it("keeps stale and fresh tasks in the same batch", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -385,7 +399,7 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
     store.add(makeTask({
       sessionId: "sess-old-stopped",
       status: "stopped",
-      completedAt: Date.now() - 10 * 60 * 1000,
+      completedAt: Date.now() - 31 * 60 * 1000,
     }));
     store.add(makeTask({
       sessionId: "sess-recent-stopped",
@@ -397,24 +411,24 @@ describe("Bug: session_delegate_stop leaves stopped tasks in store forever", () 
       status: "idle",
     }));
 
-    expect(store.list()).toHaveLength(2);
+    expect(store.list()).toHaveLength(3);
     expect(store.list().map((t) => t.sessionId)).toEqual(
-      expect.arrayContaining(["sess-recent-stopped", "sess-active-idle"]),
+      expect.arrayContaining(["sess-old-stopped", "sess-recent-stopped", "sess-active-idle"]),
     );
   });
 });
 
-describe("Bug: delegate_list never removes ghost tasks whose sessions are gone", () => {
-  it("handler session_delegate_list removes tasks whose remote status is 'stopped' and have completedAt older than 5 min", async () => {
+describe("Bug: delegate_list should not eagerly erase stopped or ghost tasks", () => {
+  it("handler session_delegate_list keeps stopped/ghost tasks so parents can observe them until explicit cleanup", async () => {
     const handlerSource = fs.readFileSync(path.join(__dirname, "handler.ts"), "utf-8");
     const listHandlerStart = handlerSource.indexOf('channel.handle("session_delegate_list"');
     expect(listHandlerStart).toBeGreaterThan(-1);
 
-    const listHandlerEnd = handlerSource.indexOf("});", listHandlerStart);
+    const listHandlerEnd = handlerSource.indexOf('channel.handle("session_delegate_stop"', listHandlerStart);
     const listHandlerBlock = handlerSource.slice(listHandlerStart, listHandlerEnd);
 
-    // The list handler should remove (not just update) tasks whose remote session is gone
-    expect(listHandlerBlock).toContain("store.remove(");
+    expect(listHandlerBlock).not.toContain("store.remove(");
+    expect(listHandlerBlock).toContain("store.markStopped(");
   });
 });
 
@@ -433,7 +447,7 @@ describe("Bug: session_delegate_stop registered twice in index.ts", () => {
 
 // ── Regression tests for bugs found during audit ──
 
-describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)", () => {
+describe("buildPrompt() keeps completed task history until explicit cleanup", () => {
   let tempDir: string;
 
   afterEach(() => {
@@ -442,7 +456,7 @@ describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)
     }
   });
 
-  it("hides completed tasks older than 5 minutes", () => {
+  it("shows completed tasks older than 30 minutes", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -451,13 +465,15 @@ describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)
       sessionId: "sess-old-completed",
       title: "Old completed task",
       status: "completed",
-      completedAt: Date.now() - 10 * 60 * 1000, // 10 minutes ago
+      completedAt: Date.now() - 31 * 60 * 1000, // 31 minutes ago
     }));
 
-    expect(store.buildPrompt()).toBe("");
+    const prompt = store.buildPrompt();
+    expect(prompt).toContain("Old completed task");
+    expect(prompt).toContain("DONE");
   });
 
-  it("keeps recently completed tasks (within 5 minutes)", () => {
+  it("keeps recently completed tasks", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -474,7 +490,7 @@ describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)
     expect(prompt).toContain("DONE");
   });
 
-  it("mixed: old completed hidden, recent completed visible, idle always visible", () => {
+  it("mixed: old completed, recent completed, and idle tasks are all visible", () => {
     tempDir = path.join(os.tmpdir(), `coordinator-test-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -483,7 +499,7 @@ describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)
       sessionId: "sess-old-completed",
       title: "Old Completed",
       status: "completed",
-      completedAt: Date.now() - 10 * 60 * 1000,
+      completedAt: Date.now() - 31 * 60 * 1000,
     }));
     store.add(makeTask({
       sessionId: "sess-recent-completed",
@@ -498,7 +514,7 @@ describe("buildPrompt() filters completed tasks older than 5 minutes (Bug 2 fix)
     }));
 
     const prompt = store.buildPrompt();
-    expect(prompt).not.toContain("Old Completed");
+    expect(prompt).toContain("Old Completed");
     expect(prompt).toContain("Recent Completed");
     expect(prompt).toContain("Active Task");
   });
@@ -638,7 +654,7 @@ describe("no double store operations in tool handlers (Bug 3/4/6 fix)", () => {
 
 // ── TDD tests for pi-hooks agent param passthrough (P0) ──
 
-describe("Bug: session_delegate_sync handler missing (hooks not activated in subagent)", () => {
+describe("session_delegate_sync internal channel support", () => {
   it("handler.ts registers session_delegate_sync handler", () => {
     const handlerSource = fs.readFileSync(path.join(__dirname, "handler.ts"), "utf-8");
     expect(handlerSource).toContain('channel.handle("session_delegate_sync"');
@@ -650,11 +666,11 @@ describe("Bug: session_delegate_sync handler missing (hooks not activated in sub
   });
 
   it("serverProxy passes agent param through to delegate_sync", () => {
-    const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
+    const proxySource = fs.readFileSync(path.join(__dirname, "server-proxy.ts"), "utf-8");
 
     // The serverProxy should have a delegate_sync method that passes agent
-    expect(indexSource).toContain("delegate_sync");
-    expect(indexSource).toContain("agent");
+    expect(proxySource).toContain("delegate_sync");
+    expect(proxySource).toContain("agent");
   });
 
   it("session_delegate_sync handler passes agent to delegate_sync", () => {
@@ -670,24 +686,14 @@ describe("Bug: session_delegate_sync handler missing (hooks not activated in sub
     expect(syncHandlerBlock).toContain("delegate_sync");
   });
 
-  it("session_delegate_sync tool is registered in index.ts with agent param", () => {
+  it("session_delegate_sync is not registered as a public tool", () => {
     const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
-    expect(indexSource).toContain('name: "session_delegate_sync"');
+    expect(indexSource).not.toContain('name: "session_delegate_sync"');
   });
 
-  it("session_delegate_sync DelegateSyncParams schema includes agent field", () => {
+  it("DelegateSyncParams schema is not exposed by the coordinator public tools", () => {
     const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
-
-    // Find the DelegateSyncParams schema (or inline schema for session_delegate_sync tool)
-    const syncToolStart = indexSource.indexOf('name: "session_delegate_sync"');
-    if (syncToolStart === -1) {
-      // Tool doesn't exist yet - this is the RED test failing as expected
-      expect(syncToolStart).toBeGreaterThan(-1);
-      return;
-    }
-    const syncToolEnd = indexSource.indexOf("});", syncToolStart);
-    const syncToolBlock = indexSource.slice(syncToolStart, syncToolEnd);
-    expect(syncToolBlock).toMatch(/agent/i);
+    expect(indexSource).not.toContain("DelegateSyncParams");
   });
 });
 
@@ -702,9 +708,8 @@ describe("message_received handler tracks task status (Bug 7 fix)", () => {
     expect(msgReceivedStart).toBeGreaterThan(-1);
 
     const msgReceivedBlock = indexSource.slice(msgReceivedStart);
-    // Should detect [completed], [done], or "task completed" signals
-    expect(msgReceivedBlock).toContain("[completed]");
-    expect(msgReceivedBlock).toContain("isCompletion");
+    // Should use parseCompletionSignal for structured + legacy completion detection
+    expect(msgReceivedBlock).toContain("parseCompletionSignal");
     expect(msgReceivedBlock).toContain("status: \"completed\"");
     // Should also update streaming status for regular messages
     expect(msgReceivedBlock).toContain("status: \"streaming\"");

@@ -11,6 +11,11 @@ import type { PermissionMode, SessionStats } from "../../core/agent-session.ts";
 import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type {
+	AskUserQuestion,
+	AskUserQuestionResponse,
+	ExtensionUIPermissionMeta,
+} from "../../core/extensions/types.ts";
 import type { BatchDiffResult, FileDiffInfo, FileHistoryEntry, ModifiedFileInfo } from "../../core/file-store/index.ts";
 import type { AgentChangeEntry } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
@@ -25,6 +30,7 @@ export type RpcCommand =
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
+	| { id?: string; type: "continue" }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "new_session"; parentSession?: string }
 
@@ -63,6 +69,7 @@ export type RpcCommand =
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
 	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
+	| { id?: string; type: "copy_fork"; entryId: string; compact?: boolean }
 	| {
 			id?: string;
 			type: "navigate_tree";
@@ -83,7 +90,7 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
-	| { id?: string; type: "get_full_messages"; afterEntryId?: string; limit?: number }
+	| { id?: string; type: "get_full_messages"; afterEntryId?: string; beforeEntryId?: string; limit?: number }
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_tree_with_leaf" }
 	| {
@@ -225,6 +232,71 @@ export interface RpcContextUsage {
 	tokens: number | null;
 	contextWindow: number;
 	percent: number | null;
+	breakdown?: Array<{
+		id:
+			| "system_base"
+			| "tools"
+			| "mcp_tools"
+			| "context_files"
+			| "skills"
+			| "agents"
+			| "tool_inputs"
+			| "tool_outputs"
+			| "conversation"
+			| "thinking"
+			| "memory"
+			| "rules"
+			| "lsp"
+			| "provider_system"
+			| "provider_messages"
+			| "provider_tools"
+			| "provider_options"
+			| "unclassified";
+		label: string;
+		tokens: number;
+		source: "core" | "extension";
+		estimated: boolean;
+		details?: Array<{ label: string; tokens: number }>;
+		compaction?: {
+			count: number;
+			tokensBefore: number;
+			summaryTokens: number;
+			estimatedSavedTokens: number;
+		};
+	}>;
+	providerRequest?: {
+		version: 1;
+		provider: string;
+		modelId: string;
+		api?: string;
+		timestamp: string;
+		payloadChars: number;
+		payloadTokens: number;
+		topLevelKeys: string[];
+		sections: Array<{
+			id: "system" | "messages" | "tools" | "options";
+			label: string;
+			chars: number;
+			tokens: number;
+			count?: number;
+		}>;
+		toolDefinitions?: Array<{
+			name: string;
+			chars: number;
+			tokens: number;
+		}>;
+		toolInteractions?: Array<{
+			name: string;
+			inputCount: number;
+			inputChars: number;
+			inputTokens: number;
+			avgInputTokens: number;
+			outputCount: number;
+			outputChars: number;
+			outputTokens: number;
+			avgOutputTokens: number;
+		}>;
+	};
 }
 
 export interface RpcExtensionFlag {
@@ -244,6 +316,8 @@ export interface RpcAgentSummary {
 	permissionMode?: string;
 	source: string;
 	filePath: string;
+	color?: AgentConfig["color"];
+	avatar?: AgentConfig["avatar"];
 }
 
 export interface RpcAllTool {
@@ -292,6 +366,7 @@ export interface RpcSessionState {
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
+	permissionMode: string;
 	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
@@ -299,6 +374,7 @@ export interface RpcSessionState {
 	messageCount: number;
 	pendingMessageCount: number;
 	streamingMessage?: AgentMessage;
+	pendingUIRequests?: RpcExtensionUIRequest[];
 }
 
 // ============================================================================
@@ -311,6 +387,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "prompt"; success: true }
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
+	| { id?: string; type: "response"; command: "continue"; success: true }
 	| { id?: string; type: "response"; command: "abort"; success: true }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
 
@@ -597,20 +674,23 @@ export type RpcExtensionUIRequest =
 	| {
 			type: "extension_ui_request";
 			id: string;
+			method: "askUserQuestion";
+			title: string;
+			message?: string;
+			questions: AskUserQuestion[];
+			timeout?: number;
+			toolCallId?: string;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
 			method: "select";
 			title: string;
 			options: string[];
 			multiple?: boolean;
 			timeout?: number;
 			toolCallId?: string;
-			permissionMeta?: {
-				type: "path_boundary";
-				path: string;
-				cwd: string;
-				toolName: string;
-				scope: "read" | "write";
-				relativeTo: string;
-			};
+			permissionMeta?: ExtensionUIPermissionMeta;
 	  }
 	| {
 			type: "extension_ui_request";
@@ -620,14 +700,19 @@ export type RpcExtensionUIRequest =
 			message: string;
 			timeout?: number;
 			toolCallId?: string;
+			confirmText?: string;
+			cancelText?: string;
 			hookMeta?: {
 				toolName?: string;
 				matcher?: string;
+				description?: string;
 				command?: string;
 				hookCommand?: string;
 				eventName?: string;
 				source?: string;
 				reason?: string;
+				confirmText?: string;
+				cancelText?: string;
 			};
 	  }
 	| {
@@ -679,6 +764,7 @@ export type RpcExtensionUIResolved = {
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| ({ type: "extension_ui_response"; id: string } & AskUserQuestionResponse)
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 // ============================================================================

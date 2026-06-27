@@ -9,6 +9,7 @@ interface GitApi {
   getStats: () => { totalObjects: number; totalBytes: number; treeObjects: number; fileObjects: number };
   enforceLimit: (limit: number, hashes: Set<string>) => Promise<GCResult>;
   readTree: (hash: string) => Map<string, string>;
+  listTreeFiles: (hash: string) => Map<string, string> | null;
 }
 
 interface FileSnapshotManagerInternal {
@@ -216,14 +217,14 @@ export default function fileSnapshot(pi: ExtensionAPI) {
     ctx = context;
     const mgr = ctx.fileSnapshotManager;
     if (!mgr) return;
-    await mgr.initialize(ctx.cwd);
+    mgr.initialize(ctx.cwd);
   });
 
   pi.on("turn_end", async (event: TurnEndEvent, _ctx: ExtensionContext) => {
     const mgr = _ctx.fileSnapshotManager;
     if (!mgr) return;
     mgr.onTurnEnd(_ctx.cwd, event.turnIndex, (type, data) => {
-      return pi.appendEntry(type, data, { display: false }) ?? undefined;
+      return pi.appendEntry(type, data, { display: false }) ?? "";
     });
   });
 
@@ -255,11 +256,11 @@ export default function fileSnapshot(pi: ExtensionAPI) {
       const compareTo = lastCommittedHash ?? sessionStartHash;
 
       if (sessionStartHash === null && compareTo !== null) {
-        const { readdirSync, rmSync } = await import("node:fs");
+        const { rmSync } = await import("node:fs");
         const { join: joinPath } = await import("node:path");
         const git = getGitApi(internal);
-        if (git && typeof git.readTree === "function") {
-          const currentFiles = git.readTree(compareTo);
+        if (git && typeof git.listTreeFiles === "function") {
+          const currentFiles = git.listTreeFiles(compareTo);
           if (currentFiles) {
             for (const filePath of currentFiles.keys()) {
               try {

@@ -137,6 +137,11 @@ function runCommandHandler(handler: HookHandler, stdinData: HookStdinData, ctx: 
 			env,
 		});
 
+		proc.stdin.on("error", (err: NodeJS.ErrnoException) => {
+			if (err.code === "EPIPE") return;
+			stderr += stderr ? `\n${err.message}` : err.message;
+		});
+
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
@@ -144,8 +149,15 @@ function runCommandHandler(handler: HookHandler, stdinData: HookStdinData, ctx: 
 			resolve({ exitCode: 1, stdout: "", stderr: "Hook timed out" });
 		}, timeout);
 
-		proc.stdin.write(JSON.stringify(stdinData));
-		proc.stdin.end();
+		try {
+			proc.stdin.write(JSON.stringify(stdinData));
+			proc.stdin.end();
+		} catch (err) {
+			const error = err as NodeJS.ErrnoException;
+			if (error.code !== "EPIPE") {
+				stderr += stderr ? `\n${error.message}` : error.message;
+			}
+		}
 
 		proc.stdout.on("data", (d: Buffer) => {
 			stdout += d.toString();
@@ -351,7 +363,21 @@ export function interpretHookOutput(output: HookOutput): {
 	retry?: boolean;
 } {
 	if (output.exitCode === 2) {
-		return { shouldBlock: true, reason: extractHookMessage(output, "Blocked by hook") };
+		// Claude Code compat: exit 2 uses stderr as block reason, stdout is ignored
+		// (source: hooks.ts:2648-2668). But parsed JSON from stdout is still checked
+		// for structured reason fields (permissionDecisionReason, reason, etc.)
+		const parsed = output.parsed ?? parseOutputJson(output.stdout);
+		const parsedMessage = parsed
+			? firstString(
+					parsed.hookSpecificOutput?.permissionDecisionReason,
+					parsed.message,
+					parsed.reason,
+					parsed.question,
+					parsed.stopReason,
+				)
+			: "";
+		const reason = firstString(parsedMessage, output.stderr, "Blocked by hook") || "Blocked by hook";
+		return { shouldBlock: true, reason };
 	}
 
 	// Exit code 3 = ask user confirmation (treated as block in headless/RPC mode)
@@ -398,6 +424,7 @@ function extractHookMessage(output: HookOutput, fallback: string): string {
 	const parsedMessage = parsed
 		? firstString(
 				parsed.hookSpecificOutput?.permissionDecisionReason,
+				parsed.message,
 				parsed.reason,
 				parsed.question,
 				parsed.stopReason,
