@@ -242,7 +242,7 @@ describe("learning memory XML injection harness", () => {
 		rmSync(memoryDir, { recursive: true, force: true });
 	});
 
-	it("orders prefetch result before memory injection when context races prefetch completion", async () => {
+	it("skips racing context and orders prefetch result before later memory injection", async () => {
 		const { pi, emit, appendedEntries } = createMockPi();
 		learningExtension(pi);
 
@@ -252,7 +252,8 @@ describe("learning memory XML injection harness", () => {
 		mkdirSync(memoryDir, { recursive: true });
 		writeFileSync(join(memoryDir, "test.md"), "---\nname: T\ntype: project\n---\nContent.");
 
-		(pi.callLLM as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify({ selected: ["test.md"] }));
+		const deferred = Promise.withResolvers<string>();
+		(pi.callLLM as ReturnType<typeof vi.fn>).mockReturnValue(deferred.promise);
 
 		await emit("before_agent_start", {
 			type: "before_agent_start",
@@ -260,11 +261,20 @@ describe("learning memory XML injection harness", () => {
 			prompt: "test query",
 		});
 
+		const racingResult = await emit("context", {
+			type: "context",
+			messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }] as AgentMessage[],
+		});
+		expect(racingResult).toBeUndefined();
+		expect(appendedEntries.map((entry) => entry.customType)).toEqual(["memory_prefetch"]);
+
+		deferred.resolve(JSON.stringify({ selected: ["test.md"] }));
+		await new Promise((r) => setTimeout(r, 20));
+
 		const result = await emit("context", {
 			type: "context",
 			messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }] as AgentMessage[],
 		});
-
 		expect(result?.messages).toHaveLength(2);
 		expect(appendedEntries.map((entry) => entry.customType)).toEqual([
 			"memory_prefetch",
@@ -351,6 +361,7 @@ describe("learning memory XML injection harness", () => {
 			systemPrompt: "base",
 			prompt: "first query",
 		});
+		await new Promise((r) => setTimeout(r, 20));
 		const first = await firstRuntime.emit("context", {
 			type: "context",
 			messages: [
@@ -375,6 +386,7 @@ describe("learning memory XML injection harness", () => {
 			systemPrompt: "base",
 			prompt: "second query after restart",
 		});
+		await new Promise((r) => setTimeout(r, 20));
 		const second = await secondRuntime.emit("context", {
 			type: "context",
 			messages: [
@@ -416,6 +428,7 @@ describe("learning memory XML injection harness", () => {
 			systemPrompt: "base",
 			prompt: "first query",
 		});
+		await new Promise((r) => setTimeout(r, 20));
 		const first = await emit("context", {
 			type: "context",
 			messages: [
@@ -430,6 +443,7 @@ describe("learning memory XML injection harness", () => {
 			systemPrompt: "base",
 			prompt: "second query",
 		});
+		await new Promise((r) => setTimeout(r, 20));
 		const second = await emit("context", {
 			type: "context",
 			messages: [
