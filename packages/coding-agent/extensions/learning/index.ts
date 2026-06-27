@@ -593,13 +593,15 @@ export default function learningExtension(pi: ExtensionAPI) {
     ctx = context as ExtensionContext;
     clearActiveInjectedMemoryFingerprints({ persist: false });
     restoreActiveInjectedMemoryFingerprints();
-    store = new LearningStore(ctx.projectRoot ?? ctx.cwd);
-    memoryDir = store.paths.memoryDir;
-    await mkdir(memoryDir, { recursive: true });
     if (!learningAvailable) {
+      store = null;
+      memoryDir = "";
       ctx.ui.setStatus("learning", "learning unavailable for quick SSH sandbox");
       return;
     }
+    store = new LearningStore(ctx.projectRoot ?? ctx.cwd);
+    memoryDir = store.paths.memoryDir;
+    await mkdir(memoryDir, { recursive: true });
     scheduler?.stop();
     scheduler = new LearningCuratorScheduler({
       getStore,
@@ -765,10 +767,7 @@ export default function learningExtension(pi: ExtensionAPI) {
 
   pi.on("context", async (event) => {
     if (!learningAvailable || !memoryDir) return;
-    const operationId = prefetch.operationId;
-    const memoryText = operationId
-      ? await prefetch.waitForOperation(operationId)
-      : prefetch.collect();
+    const memoryText = prefetch.collect();
     if (!memoryText) return;
 
     const selectedFiles = prefetch.selectedFiles;

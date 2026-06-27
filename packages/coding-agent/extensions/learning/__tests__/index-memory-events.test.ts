@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import learningExtension from "../index.ts";
 import { LearningStore } from "../store.ts";
+import { MAX_RELEVANT_MEMORIES } from "../utils.ts";
 
 let tempDir: string;
 let agentDir: string;
@@ -31,7 +32,7 @@ afterEach(() => {
   if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 });
 
-function createMockPi() {
+function createMockPi(options: { callLLM?: ExtensionAPI["callLLM"] } = {}) {
   const handlers: Record<string, ((event: unknown, context: ExtensionContext) => unknown | Promise<unknown>)[]> = {};
   const appendedEntries: Array<{ customType: string; data?: unknown }> = [];
   const registeredTools: unknown[] = [];
@@ -53,7 +54,7 @@ function createMockPi() {
       handlers[event] ??= [];
       handlers[event]!.push(handler);
     }),
-    callLLM: vi.fn(async () => JSON.stringify({ selected: [] })),
+    callLLM: vi.fn(options.callLLM ?? (async () => JSON.stringify({ selected: [] }))),
     registerTool: vi.fn((tool: unknown) => {
       registeredTools.push(tool);
     }),
@@ -170,5 +171,46 @@ describe("learning extension memory event compatibility", () => {
       injectedBytes: 0,
       source: "learning",
     });
+  });
+
+  it("does not block context while LLM prefetch is still running", async () => {
+    const store = new LearningStore(projectDir);
+    mkdirSync(store.paths.memoryDir, { recursive: true });
+    for (let index = 0; index < MAX_RELEVANT_MEMORIES + 1; index++) {
+      writeFileSync(
+        join(store.paths.memoryDir, `memory-${index}.md`),
+        `---\nname: Memory ${index}\ndescription: slow llm memory ${index}\ntype: feedback\n---\nMemory ${index}\n`,
+        "utf-8",
+      );
+    }
+    const deferred = Promise.withResolvers<string>();
+    const slowLLM = vi.fn(() => deferred.promise) as unknown as ExtensionAPI["callLLM"];
+    const runtime = createMockPi({ callLLM: slowLLM });
+
+    await runtime.emit("session_start");
+    await runtime.emit("before_agent_start", {
+      type: "before_agent_start",
+      systemPrompt: "base",
+      prompt: "slow memory selection",
+    });
+    for (let index = 0; index < 20 && vi.mocked(slowLLM).mock.calls.length === 0; index++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(slowLLM).toHaveBeenCalledTimes(1);
+
+    const contextPromise = runtime.emit("context", {
+      type: "context",
+      messages: [userMessage("slow memory selection")],
+    });
+    await expect(
+      Promise.race([
+        contextPromise,
+        new Promise((resolve) => setTimeout(() => resolve("context-timeout"), 20)),
+      ]),
+    ).resolves.toBeUndefined();
+    expect(runtime.appendedEntries.map((entry) => entry.customType)).toEqual(["memory_prefetch"]);
+
+    deferred.resolve(JSON.stringify({ selected: [] }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   });
 });
