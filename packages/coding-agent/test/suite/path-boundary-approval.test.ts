@@ -97,28 +97,38 @@ describe("path boundary approval", () => {
 	});
 
 	it("blocks reading sensitive files outside cwd in normal mode (no UI)", async () => {
-		let executed = false;
-		const readTool: AgentTool = {
-			name: "read",
-			label: "Read",
-			description: "Read file",
-			parameters: Type.Object({ file_path: Type.String() }),
-			execute: async () => {
-				executed = true;
-				return { content: [{ type: "text", text: "ok" }], details: {} };
-			},
-		};
+		const sensitivePaths = [
+			"/etc/passwd",
+			join(homedir(), ".pi", "agent", "auth.json"),
+			join(homedir(), ".pi", "agent", "oauth.json"),
+			join(homedir(), ".pi", "agent", "models.json"),
+			join(homedir(), ".env"),
+		];
 
-		const harness = await createHarness({ tools: [readTool] });
-		harnesses.push(harness);
+		for (const sensitivePath of sensitivePaths) {
+			let executed = false;
+			const readTool: AgentTool = {
+				name: "read",
+				label: "Read",
+				description: "Read file",
+				parameters: Type.Object({ file_path: Type.String() }),
+				execute: async () => {
+					executed = true;
+					return { content: [{ type: "text", text: "ok" }], details: {} };
+				},
+			};
 
-		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("read", { file_path: "/etc/passwd" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-		]);
+			const harness = await createHarness({ tools: [readTool] });
+			harnesses.push(harness);
 
-		await harness.session.prompt("read password file");
-		expect(executed).toBe(false);
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("read", { file_path: sensitivePath }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			]);
+
+			await harness.session.prompt(`read sensitive file ${sensitivePath}`);
+			expect(executed, `${sensitivePath} should require path approval`).toBe(false);
+		}
 	});
 
 	it("blocks writing files outside cwd in normal mode (no UI)", async () => {

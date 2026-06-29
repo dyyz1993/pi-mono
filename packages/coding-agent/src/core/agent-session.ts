@@ -1441,6 +1441,9 @@ export class AgentSession {
 		"/.docker/",
 		"/.gnupg/",
 		"/.kube/",
+		"/.pi/agent/auth.json",
+		"/.pi/agent/models.json",
+		"/.pi/agent/oauth.json",
 		"/.netrc",
 		"/.npmrc",
 		"/.ssh/",
@@ -1448,6 +1451,16 @@ export class AgentSession {
 		"/id_rsa",
 		"/id_ed25519",
 	];
+	private static readonly _SENSITIVE_FILE_NAMES = new Set([
+		".netrc",
+		".npmrc",
+		"auth.json",
+		"credentials.json",
+		"models.json",
+		"oauth.json",
+		"secret.json",
+		"secrets.json",
+	]);
 
 	private static _isProtectedPath(filePath: string): boolean {
 		if (filePath === "/") return true;
@@ -1458,7 +1471,10 @@ export class AgentSession {
 
 	private static _isSensitivePath(filePath: string): boolean {
 		const lower = filePath.toLowerCase();
-		return AgentSession._SENSITIVE_PATH_PARTS.some((part) => lower.includes(part.toLowerCase()));
+		if (AgentSession._SENSITIVE_PATH_PARTS.some((part) => lower.includes(part.toLowerCase()))) return true;
+		const fileName = lower.split("/").pop() ?? "";
+		if (AgentSession._SENSITIVE_FILE_NAMES.has(fileName)) return true;
+		return fileName === ".env" || fileName.startsWith(".env.");
 	}
 
 	private async _checkPathBoundary(
