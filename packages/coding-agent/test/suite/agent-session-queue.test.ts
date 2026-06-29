@@ -258,6 +258,39 @@ describe("AgentSession queue characterization", () => {
 		expect(getAssistantTexts(harness)).toEqual(["", "original turn complete", "batched follow-up response"]);
 	});
 
+	it("removes one queued message without clearing the rest", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		harness.session.setFollowUpMode("all");
+		let batchedUserMessages: string[] = [];
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("original turn complete"),
+			(context) => {
+				batchedUserMessages = context.messages
+					.filter((message) => message.role === "user")
+					.map((message) => getMessageText(message));
+				return fauxAssistantMessage("remaining follow-up response");
+			},
+		]);
+
+		await waitForToolStart;
+		await harness.session.followUp("follow-up 1");
+		await harness.session.followUp("follow-up 2");
+
+		const removed = harness.session.clearQueue({ type: "followUp", index: 0, text: "follow-up 1" });
+		expect(removed).toEqual({ steering: [], followUp: ["follow-up 1"] });
+		expect(harness.session.getFollowUpMessages()).toEqual(["follow-up 2"]);
+
+		releaseToolExecution();
+		await promptPromise;
+
+		expect(batchedUserMessages).toEqual(["start", "follow-up 2"]);
+		expect(getUserTexts(harness)).toEqual(["start", "follow-up 2"]);
+	});
+
 	it("queues custom messages with deliverAs steer while streaming", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;

@@ -137,7 +137,7 @@ export type RpcCommand =
 
 	// Queue
 	| { id?: string; type: "get_queue" }
-	| { id?: string; type: "clear_queue" }
+	| { id?: string; type: "clear_queue"; item?: { type: "steering" | "followUp"; index: number; text: string } }
 
 	// Flags
 	| { id?: string; type: "get_flags" }
