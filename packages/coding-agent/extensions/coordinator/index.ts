@@ -43,6 +43,8 @@ function parseCompletionSignal(message: string): { result?: string } | null {
 const DelegateParams = Type.Object({
   task: Type.String({ description: "Task description to delegate to the background session" }),
   title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
+  agent: Type.Optional(Type.String({ description: "Agent role/name to switch the delegated session to before sending the task" })),
+  model: Type.Optional(Type.String({ description: "Model to switch the delegated session to before sending the task, in provider/modelId format" })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
   replyMode: Type.Optional(Type.Union([
     Type.Literal("interrupt"),
@@ -72,6 +74,8 @@ const DelegateForkParams = Type.Object({
   sessionId: Type.String({ description: "Source session ID to fork from" }),
   task: Type.String({ description: "Task description for the forked session" }),
   title: Type.Optional(Type.String({ description: "Short title for the forked task" })),
+  agent: Type.Optional(Type.String({ description: "Agent role/name to switch the forked session to before sending the task" })),
+  model: Type.Optional(Type.String({ description: "Model to switch the forked session to before sending the task, in provider/modelId format" })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the forked session in. Defaults to the current working directory." })),
 });
 
@@ -128,7 +132,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       try {
         const sid = currentSessionId || ctx.sessionManager.getSessionId();
         const projectPath = params.projectPath || ctx.cwd;
-        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode);
+        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, params.agent, params.model);
 
         if (!result.sessionId) {
           console.debug("[coordinator] delegate failed: no sessionId returned");
@@ -144,13 +148,15 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
           status: result.status,
           task: params.task,
           title: params.title,
+          agent: params.agent,
+          model: params.model,
           projectPath,
           replyMode: params.replyMode ?? "interrupt",
           dispatchedBy: sid,
         });
         return {
-          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, replyMode: ${params.replyMode ?? "interrupt"}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
-          details: { ...result, dispatchedBy: sid, projectPath, replyMode: params.replyMode ?? "interrupt" },
+          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${params.agent ?? "default"}, model: ${params.model ?? "default"}, replyMode: ${params.replyMode ?? "interrupt"}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
+          details: { ...result, dispatchedBy: sid, projectPath, agent: params.agent, model: params.model, replyMode: params.replyMode ?? "interrupt" },
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -231,19 +237,21 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       try {
         const sid = currentSessionId || ctx.sessionManager.getSessionId();
         const projectPath = params.projectPath || ctx.cwd;
-        const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title, projectPath);
+        const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title, projectPath, params.agent, params.model);
         pi.appendEntry("coordinator_fork", {
           sessionId: result.sessionId,
           forkedFrom: params.sessionId,
           status: result.status,
           task: params.task,
           title: params.title,
+          agent: params.agent,
+          model: params.model,
           projectPath,
           dispatchedBy: sid,
         });
         return {
-          content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}). Task: ${params.task}` }],
-          details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid, projectPath },
+          content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${params.agent ?? "default"}, model: ${params.model ?? "default"}). Task: ${params.task}` }],
+          details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid, projectPath, agent: params.agent, model: params.model },
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);

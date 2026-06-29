@@ -4,12 +4,12 @@ import type { ServerChannel } from "@dyyz1993/pi-coding-agent";
 import type { CoordinatorChannelContract, DelegatedTask, DelegateCreateResult, DelegateReplyMode, SessionStatus } from "./types.ts";
 
 export interface ProcessManagerApi {
-  delegate(task: string, projectPath: string, replyMode?: DelegateReplyMode): Promise<{ sessionId: string; status: "started" | "already_running" }>;
+  delegate(task: string, projectPath: string, replyMode?: DelegateReplyMode, agent?: string, model?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
   delegate_send(fromSessionId: string, toSessionId: string, message: string, mode?: "followUp" | "steer"): Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }>;
   delegate_status(sessionId: string): Promise<{ status: SessionStatus }>;
   delegate_list(): Promise<Array<{ sessionId: string; status: SessionStatus; projectPath: string }>>;
   delegate_stop(sessionId: string): Promise<boolean>;
-  delegate_fork(sessionId: string, task: string, title?: string, projectPath?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
+  delegate_fork(sessionId: string, task: string, title?: string, projectPath?: string, agent?: string, model?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
   delegate_compact_status(sessionId: string): Promise<{ isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } }>;
   delegate_remove(sessionId: string): Promise<boolean>;
   delegate_clear_stopped(): Promise<number>;
@@ -162,12 +162,12 @@ export function createCoordinatorHandler(
   getStore: () => TaskStore,
 ): void {
   channel.handle("session_delegate", async (params) => {
-      const { task, title, projectPath: rawProjectPath, replyMode } = params;
+      const { task, title, agent, model, projectPath: rawProjectPath, replyMode } = params;
       const projectPath = rawProjectPath || process.cwd();
 
     let result: DelegateCreateResult;
     try {
-      result = await pm.delegate(task, projectPath, replyMode);
+      result = await pm.delegate(task, projectPath, replyMode, agent, model);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: msg };
@@ -297,12 +297,12 @@ export function createCoordinatorHandler(
   });
 
   channel.handle("session_delegate_fork", async (params) => {
-    const { sessionId, task, title, projectPath: rawProjectPath } = params;
+    const { sessionId, task, title, agent, model, projectPath: rawProjectPath } = params;
     const projectPath = rawProjectPath || process.cwd();
 
     let result: DelegateCreateResult;
     try {
-      result = await pm.delegate_fork(sessionId, task, title, projectPath);
+      result = await pm.delegate_fork(sessionId, task, title, projectPath, agent, model);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { sessionId: `error-${Date.now()}`, status: "error" as const, error: msg };

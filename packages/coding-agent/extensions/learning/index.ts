@@ -743,7 +743,9 @@ export default function learningExtension(pi: ExtensionAPI) {
     const memoryPrompt = MEMORY_SYSTEM_PROMPT(memoryDir, truncated.content);
 
     const lastUserText = event.prompt ?? "";
-    if (lastUserText && learningAvailable) {
+    const shouldPrefetch =
+      event.source === undefined || event.source === "interactive" || event.source === "rpc";
+    if (lastUserText && learningAvailable && shouldPrefetch) {
       const operationId = `learning-prefetch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       pi.appendEntry("memory_prefetch", {
         operationId,

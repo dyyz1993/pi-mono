@@ -129,6 +129,22 @@ describe("learning extension memory event compatibility", () => {
     expect(inject.source).toBe("learning");
   });
 
+  it("skips memory prefetch for extension-origin delegate replies", async () => {
+    await seedMemoryFile();
+    const runtime = createMockPi();
+
+    await runtime.emit("session_start");
+    await runtime.emit("before_agent_start", {
+      type: "before_agent_start",
+      systemPrompt: "base",
+      prompt: "delegate reply summary",
+      source: "extension",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(runtime.appendedEntries.map((entry) => entry.customType)).toEqual([]);
+  });
+
   it("recognizes existing array-content memory context and skips duplicate injection", async () => {
     await seedMemoryFile();
     const firstRuntime = createMockPi();

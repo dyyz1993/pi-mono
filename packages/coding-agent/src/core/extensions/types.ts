@@ -914,6 +914,8 @@ export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
 	/** The raw user prompt text (after expansion). */
 	prompt: string;
+	/** Where the prompt originated. Extension-origin prompts should not be treated as direct user input. */
+	source: InputSource;
 	/** Images attached to the user prompt, if any. */
 	images?: ImageContent[];
 	/** The fully assembled system prompt string. */
