@@ -1229,7 +1229,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "clear_queue": {
-				return success(id, "clear_queue", session.clearQueue());
+				return success(id, "clear_queue", session.clearQueue(command.item));
 			}
 
 			case "get_flags": {
