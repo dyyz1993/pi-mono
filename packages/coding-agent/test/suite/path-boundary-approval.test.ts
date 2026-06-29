@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
@@ -60,7 +61,42 @@ describe("path boundary approval", () => {
 		expect(executed).toBe(true);
 	});
 
-	it("blocks reading files outside cwd in normal mode (no UI)", async () => {
+	it("allows read-only tools to access ordinary paths outside cwd in normal mode", async () => {
+		const toolCases: Array<{ name: string; args: Record<string, unknown> }> = [
+			{ name: "read", args: { file_path: join(homedir(), "Desktop", "notes.txt") } },
+			{ name: "grep", args: { path: join(homedir(), "Desktop"), pattern: "hello" } },
+			{ name: "glob", args: { path: join(homedir(), "Desktop"), pattern: "*.txt" } },
+			{ name: "find", args: { path: join(homedir(), "Desktop"), pattern: "*.txt" } },
+			{ name: "ls", args: { path: join(homedir(), "Desktop") } },
+		];
+
+		for (const toolCase of toolCases) {
+			let executed = false;
+			const tool: AgentTool = {
+				name: toolCase.name,
+				label: toolCase.name,
+				description: `${toolCase.name} file`,
+				parameters: Type.Object({}),
+				execute: async () => {
+					executed = true;
+					return { content: [{ type: "text", text: "ok" }], details: {} };
+				},
+			};
+
+			const harness = await createHarness({ tools: [tool] });
+			harnesses.push(harness);
+
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall(toolCase.name, toolCase.args), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			]);
+
+			await harness.session.prompt(`run ${toolCase.name} outside cwd`);
+			expect(executed, `${toolCase.name} should execute without path approval`).toBe(true);
+		}
+	});
+
+	it("blocks reading sensitive files outside cwd in normal mode (no UI)", async () => {
 		let executed = false;
 		const readTool: AgentTool = {
 			name: "read",

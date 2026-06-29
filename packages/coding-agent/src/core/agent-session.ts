@@ -1420,14 +1420,55 @@ export class AgentSession {
 	}
 
 	private static readonly _SYSTEM_PATH_ALLOWLIST = ["/tmp/**", "/private/tmp/**", "/var/folders/**", "/dev/null"];
+	private static readonly _READ_ONLY_FILE_TOOLS = new Set(["read", "grep", "glob", "find", "ls"]);
+	private static readonly _WRITE_FILE_TOOLS = new Set(["edit", "write", "multiedit", "patch"]);
+	private static readonly _PROTECTED_PATH_PREFIXES = [
+		"/bin",
+		"/dev",
+		"/etc",
+		"/Library",
+		"/opt",
+		"/private/etc",
+		"/private/var",
+		"/sbin",
+		"/System",
+		"/usr",
+		"/var",
+	];
+	private static readonly _SENSITIVE_PATH_PARTS = [
+		"/.aws/",
+		"/.config/opencode/",
+		"/.docker/",
+		"/.gnupg/",
+		"/.kube/",
+		"/.netrc",
+		"/.npmrc",
+		"/.ssh/",
+		"/credentials",
+		"/id_rsa",
+		"/id_ed25519",
+	];
+
+	private static _isProtectedPath(filePath: string): boolean {
+		if (filePath === "/") return true;
+		return AgentSession._PROTECTED_PATH_PREFIXES.some(
+			(prefix) => filePath === prefix || filePath.startsWith(`${prefix}/`),
+		);
+	}
+
+	private static _isSensitivePath(filePath: string): boolean {
+		const lower = filePath.toLowerCase();
+		return AgentSession._SENSITIVE_PATH_PARTS.some((part) => lower.includes(part.toLowerCase()));
+	}
 
 	private async _checkPathBoundary(
 		toolName: string,
 		toolCallId: string | undefined,
 		args: unknown,
 	): Promise<{ block: true; reason: string } | undefined> {
-		const FILE_TOOLS = new Set(["read", "edit", "write", "multiedit", "patch"]);
-		if (!FILE_TOOLS.has(toolName)) return undefined;
+		const isReadOnlyTool = AgentSession._READ_ONLY_FILE_TOOLS.has(toolName);
+		const isWriteTool = AgentSession._WRITE_FILE_TOOLS.has(toolName);
+		if (!isReadOnlyTool && !isWriteTool) return undefined;
 
 		const rawPath = getPathArg(args);
 		if (!rawPath) return undefined;
@@ -1447,7 +1488,15 @@ export class AgentSession {
 
 		if (this._getPermissionProfile().skipPathBoundaryApproval) return undefined;
 
-		const scope = ["edit", "write", "multiedit", "patch"].includes(toolName) ? "write" : "read";
+		if (
+			isReadOnlyTool &&
+			!AgentSession._isProtectedPath(normalizedPath) &&
+			!AgentSession._isSensitivePath(normalizedPath)
+		) {
+			return undefined;
+		}
+
+		const scope = isWriteTool ? "write" : "read";
 		const subject = scope === "write" ? "file.write" : "file.read";
 		const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
 		const input = asRecord(args);
