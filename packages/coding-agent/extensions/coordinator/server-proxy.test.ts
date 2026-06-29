@@ -51,9 +51,14 @@ describe("serverProxy delegate_status — non-existent sessionId", () => {
 
   it("returns 'not_found' when handler returns { task: null, status: 'not_found' } (BUG-1)", async () => {
     // After handler fix: handler forwards status from process-manager
-    client.mockCall("session_delegate_status", () => ({ task: null, status: "not_found" }));
+    client.mockCall("session_delegate_status", () => ({
+      task: null,
+      status: "not_found",
+    }));
 
-    const result = await proxy.delegate_status("sess_ghost_never_existed_99999");
+    const result = await proxy.delegate_status(
+      "sess_ghost_never_existed_99999"
+    );
     expect(result.status).toBe("not_found");
   });
 
@@ -71,6 +76,34 @@ describe("serverProxy delegate_status — non-existent sessionId", () => {
 
     const result = await proxy.delegate_status("sess_real");
     expect(result.status).toBe("streaming");
+  });
+
+  it("preserves rich status detail returned by the handler", async () => {
+    client.mockCall("session_delegate_status", () => ({
+      task: {
+        sessionId: "sess_detail",
+        title: "Detail",
+        task: "task",
+        projectPath: "/tmp",
+        dispatchedAt: 100,
+        status: "streaming",
+      },
+      detail: {
+        phase: "执行中",
+        waitingType: "streaming",
+        waitingSince: 123,
+        lastMessages: ["助手: 正在执行 bash"],
+      },
+    }));
+
+    const result = await proxy.delegate_status("sess_detail");
+
+    expect(result.status).toBe("streaming");
+    expect(result.detail).toMatchObject({
+      phase: "执行中",
+      waitingType: "streaming",
+      lastMessages: ["助手: 正在执行 bash"],
+    });
   });
 
   it("returns 'stopped' when handler returns { task: null } with status 'stopped' (real stopped session)", async () => {
@@ -110,7 +143,12 @@ describe("serverProxy delegate_fork — non-existent target sessionId", () => {
     }));
 
     await expect(
-      proxy.delegate_fork("sess_ghost_fork_99999", "do something", "title", "/fake"),
+      proxy.delegate_fork(
+        "sess_ghost_fork_99999",
+        "do something",
+        "title",
+        "/fake"
+      )
     ).rejects.toThrow(/not found/i);
   });
 
@@ -120,7 +158,12 @@ describe("serverProxy delegate_fork — non-existent target sessionId", () => {
       status: "started",
     }));
 
-    const result = await proxy.delegate_fork("sess_real", "do something", "title", "/fake");
+    const result = await proxy.delegate_fork(
+      "sess_real",
+      "do something",
+      "title",
+      "/fake"
+    );
     expect(result.sessionId).toBe("sess_fork_123");
     expect(result.status).toBe("started");
   });
@@ -154,10 +197,11 @@ describe("serverProxy delegate", () => {
 
     await proxy.delegate("run tests", "/tmp/project");
 
-    expect(client.call).toHaveBeenCalledWith(
-      "session_delegate",
-      { task: "run tests", projectPath: "/tmp/project", replyMode: undefined },
-    );
+    expect(client.call).toHaveBeenCalledWith("session_delegate", {
+      task: "run tests",
+      projectPath: "/tmp/project",
+      replyMode: undefined,
+    });
   });
 
   it("passes replyMode to client.call", async () => {
@@ -168,10 +212,11 @@ describe("serverProxy delegate", () => {
 
     await proxy.delegate("run tests", "/tmp/project", "interrupt");
 
-    expect(client.call).toHaveBeenCalledWith(
-      "session_delegate",
-      { task: "run tests", projectPath: "/tmp/project", replyMode: "interrupt" },
-    );
+    expect(client.call).toHaveBeenCalledWith("session_delegate", {
+      task: "run tests",
+      projectPath: "/tmp/project",
+      replyMode: "interrupt",
+    });
   });
 });
 
@@ -218,7 +263,9 @@ describe("serverProxy delegate_send", () => {
       throw new Error("channel error");
     });
 
-    await expect(proxy.delegate_send("from-1", "to-2", "hello")).rejects.toThrow("channel error");
+    await expect(
+      proxy.delegate_send("from-1", "to-2", "hello")
+    ).rejects.toThrow("channel error");
   });
 });
 
@@ -396,7 +443,12 @@ describe("serverProxy delegate_sync", () => {
       finalText: "All done",
     }));
 
-    const result = await proxy.delegate_sync("build project", undefined, 60000, "/project");
+    const result = await proxy.delegate_sync(
+      "build project",
+      undefined,
+      60000,
+      "/project"
+    );
     expect(result.sessionId).toBe("sess-sync-1");
     expect(result.status).toBe("completed");
     expect(result.exitCode).toBe(0);
@@ -411,7 +463,13 @@ describe("serverProxy delegate_sync", () => {
       finalText: "ok",
     }));
 
-    await proxy.delegate_sync("run tests", "build-agent", 120000, "/workspace", "claude-sonnet-4");
+    await proxy.delegate_sync(
+      "run tests",
+      "build-agent",
+      120000,
+      "/workspace",
+      "claude-sonnet-4"
+    );
 
     expect(client.call).toHaveBeenCalledWith(
       "session_delegate_sync",
@@ -423,7 +481,7 @@ describe("serverProxy delegate_sync", () => {
         timeoutMs: 120000,
         projectPath: "/workspace",
       },
-      150000, // timeoutMs + 30_000
+      150000 // timeoutMs + 30_000
     );
   });
 
@@ -432,7 +490,12 @@ describe("serverProxy delegate_sync", () => {
       throw new Error("sync timed out");
     });
 
-    const result = await proxy.delegate_sync("do work", undefined, 30000, "/project");
+    const result = await proxy.delegate_sync(
+      "do work",
+      undefined,
+      30000,
+      "/project"
+    );
     expect(result.status).toBe("error");
     expect(result.exitCode).toBe(1);
     expect(result.error).toBe("sync timed out");

@@ -1,19 +1,77 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ServerChannel } from "@dyyz1993/pi-coding-agent";
-import type { CoordinatorChannelContract, DelegatedTask, DelegateCreateResult, DelegateReplyMode, SessionStatus } from "./types.ts";
+import type {
+  CoordinatorChannelContract,
+  DelegatedTask,
+  DelegateCreateResult,
+  DelegateReplyMode,
+  DelegateStatusDetail,
+  SessionStatus,
+} from "./types.ts";
 
 export interface ProcessManagerApi {
-  delegate(task: string, projectPath: string, replyMode?: DelegateReplyMode, agent?: string, model?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
-  delegate_send(fromSessionId: string, toSessionId: string, message: string, mode?: "followUp" | "steer"): Promise<{ delivered: boolean; targetStatus: "active" | "started" | "not_found" }>;
-  delegate_status(sessionId: string): Promise<{ status: SessionStatus }>;
-  delegate_list(): Promise<Array<{ sessionId: string; status: SessionStatus; projectPath: string }>>;
+  delegate(
+    task: string,
+    projectPath: string,
+    replyMode?: DelegateReplyMode,
+    agent?: string,
+    model?: string
+  ): Promise<{ sessionId: string; status: "started" | "already_running" }>;
+  delegate_send(
+    fromSessionId: string,
+    toSessionId: string,
+    message: string,
+    mode?: "followUp" | "steer"
+  ): Promise<{
+    delivered: boolean;
+    targetStatus: "active" | "started" | "not_found";
+  }>;
+  delegate_status(
+    sessionId: string
+  ): Promise<{
+    status: SessionStatus | "not_found";
+    detail?: DelegateStatusDetail;
+  }>;
+  delegate_list(): Promise<
+    Array<{ sessionId: string; status: SessionStatus; projectPath: string }>
+  >;
   delegate_stop(sessionId: string): Promise<boolean>;
-  delegate_fork(sessionId: string, task: string, title?: string, projectPath?: string, agent?: string, model?: string): Promise<{ sessionId: string; status: "started" | "already_running" }>;
-  delegate_compact_status(sessionId: string): Promise<{ isCompacting: boolean; contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } }>;
+  delegate_fork(
+    sessionId: string,
+    task: string,
+    title?: string,
+    projectPath?: string,
+    agent?: string,
+    model?: string
+  ): Promise<{ sessionId: string; status: "started" | "already_running" }>;
+  delegate_compact_status(
+    sessionId: string
+  ): Promise<{
+    isCompacting: boolean;
+    contextUsage: {
+      tokens: number | null;
+      contextWindow: number;
+      percent: number | null;
+    };
+  }>;
   delegate_remove(sessionId: string): Promise<boolean>;
   delegate_clear_stopped(): Promise<number>;
-  delegate_sync(task: string, agent: string | undefined, timeoutMs: number, projectPath: string, model?: string, depth?: number, variables?: Record<string, string>): Promise<{ sessionId: string; status: "completed" | "timeout" | "error" | "aborted"; exitCode: number; finalText: string; error?: string }>;
+  delegate_sync(
+    task: string,
+    agent: string | undefined,
+    timeoutMs: number,
+    projectPath: string,
+    model?: string,
+    depth?: number,
+    variables?: Record<string, string>
+  ): Promise<{
+    sessionId: string;
+    status: "completed" | "timeout" | "error" | "aborted";
+    exitCode: number;
+    finalText: string;
+    error?: string;
+  }>;
 }
 
 export class TaskStore {
@@ -34,9 +92,11 @@ export class TaskStore {
           this.tasks.set(task.sessionId, task);
         }
       }
-    }
-    catch (err) {
-      console.debug("[coordinator] task file load failed:", err instanceof Error ? err.message : err);
+    } catch (err) {
+      console.debug(
+        "[coordinator] task file load failed:",
+        err instanceof Error ? err.message : err
+      );
     }
   }
 
@@ -105,17 +165,28 @@ export class TaskStore {
       "",
     ];
     for (const t of tasks) {
-      const status = t.status === "completed" ? "DONE" : t.status === "stopped" ? "STOPPED" : t.status.toUpperCase();
+      const status =
+        t.status === "completed"
+          ? "DONE"
+          : t.status === "stopped"
+          ? "STOPPED"
+          : t.status.toUpperCase();
       const compactTag = t.isCompacting ? " COMPACTING" : "";
       const ctxUsage = t.contextUsage;
-      const ctxTag = ctxUsage?.percent != null ? ` ctx:${Math.round(ctxUsage.percent)}%` : "";
+      const ctxTag =
+        ctxUsage?.percent != null
+          ? ` ctx:${Math.round(ctxUsage.percent)}%`
+          : "";
       const replyMode = t.replyMode ?? "interrupt";
       const elapsed = t.completedAt
         ? `${((t.completedAt - t.dispatchedAt) / 1000).toFixed(1)}s`
         : `${((Date.now() - t.dispatchedAt) / 1000).toFixed(0)}s elapsed`;
-      lines.push(`- **${t.title}** (id: \`${t.sessionId}\`) — ${status}${compactTag}${ctxTag} — replyMode:${replyMode} — ${elapsed}`);
+      lines.push(
+        `- **${t.title}** (id: \`${t.sessionId}\`) — ${status}${compactTag}${ctxTag} — replyMode:${replyMode} — ${elapsed}`
+      );
       if (t.result) {
-        const preview = t.result.length > 200 ? `${t.result.slice(0, 200)}...` : t.result;
+        const preview =
+          t.result.length > 200 ? `${t.result.slice(0, 200)}...` : t.result;
         lines.push(`  > ${preview}`);
       }
     }
@@ -125,7 +196,7 @@ export class TaskStore {
 
 function resolveTaskStatus(
   current: DelegatedTask,
-  remoteStatus: SessionStatus,
+  remoteStatus: SessionStatus
 ): Pick<DelegatedTask, "status" | "completedAt"> {
   if (remoteStatus === "stopped" || remoteStatus === "completed") {
     return {
@@ -159,22 +230,37 @@ export function createCoordinatorHandler(
   channel: ServerChannel<CoordinatorChannelContract>,
   pm: ProcessManagerApi,
   getSessionId: () => string,
-  getStore: () => TaskStore,
+  getStore: () => TaskStore
 ): void {
   channel.handle("session_delegate", async (params) => {
-      const { task, title, agent, model, projectPath: rawProjectPath, replyMode } = params;
-      const projectPath = rawProjectPath || process.cwd();
+    const {
+      task,
+      title,
+      agent,
+      model,
+      projectPath: rawProjectPath,
+      replyMode,
+    } = params;
+    const projectPath = rawProjectPath || process.cwd();
 
     let result: DelegateCreateResult;
     try {
       result = await pm.delegate(task, projectPath, replyMode, agent, model);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: msg };
+      return {
+        sessionId: `error-${Date.now()}`,
+        status: "already_running" as const,
+        error: msg,
+      };
     }
 
     if (!result.sessionId) {
-      return { sessionId: `error-${Date.now()}`, status: "already_running" as const, error: "[coordinator] delegate failed: no sessionId returned" };
+      return {
+        sessionId: `error-${Date.now()}`,
+        status: "already_running" as const,
+        error: "[coordinator] delegate failed: no sessionId returned",
+      };
     }
 
     getStore().add({
@@ -198,7 +284,12 @@ export function createCoordinatorHandler(
 
   channel.handle("session_delegate_send", async (params) => {
     const { targetSessionId, message, mode } = params;
-    const result = await pm.delegate_send(getSessionId(), targetSessionId, message, mode);
+    const result = await pm.delegate_send(
+      getSessionId(),
+      targetSessionId,
+      message,
+      mode
+    );
 
     if (result.targetStatus === "not_found") {
       // Ghost session — remove from store
@@ -207,7 +298,10 @@ export function createCoordinatorHandler(
       const store = getStore();
       const task = store.get(targetSessionId);
       if (task && task.status === "stopped") {
-        store.update(targetSessionId, { status: "idle", completedAt: undefined });
+        store.update(targetSessionId, {
+          status: "idle",
+          completedAt: undefined,
+        });
       }
     }
 
@@ -221,16 +315,24 @@ export function createCoordinatorHandler(
     if (!task) {
       try {
         const remote = await pm.delegate_status(sessionId);
-        return { task: null, status: remote.status };
+        return { task: null, status: remote.status, detail: remote.detail };
       } catch {
         return { task: null };
       }
     }
     try {
       const remote = await pm.delegate_status(sessionId);
-      store.update(sessionId, resolveTaskStatus(task, remote.status));
+      const taskStatus =
+        remote.status === "not_found" ? "stopped" : remote.status;
+      store.update(sessionId, resolveTaskStatus(task, taskStatus));
       const compactInfo = await pm.delegate_compact_status(sessionId);
-      return { task: store.get(sessionId) ?? null, isCompacting: compactInfo.isCompacting, contextUsage: compactInfo.contextUsage };
+      return {
+        task: store.get(sessionId) ?? null,
+        status: remote.status,
+        detail: remote.detail,
+        isCompacting: compactInfo.isCompacting,
+        contextUsage: compactInfo.contextUsage,
+      };
     } catch {
       // Ghost session — keep a stopped record so the parent can still see that
       // the delegated task disappeared and remove it manually if needed.
@@ -245,7 +347,9 @@ export function createCoordinatorHandler(
     for (const t of tasks) {
       try {
         const remote = await pm.delegate_status(t.sessionId);
-        store.update(t.sessionId, resolveTaskStatus(t, remote.status));
+        const taskStatus =
+          remote.status === "not_found" ? "stopped" : remote.status;
+        store.update(t.sessionId, resolveTaskStatus(t, taskStatus));
       } catch {
         // Ghost session — do not erase the task during list refresh. Mark it as
         // stopped and let explicit remove/clear handle cleanup.
@@ -285,7 +389,7 @@ export function createCoordinatorHandler(
     if (!task) {
       return { ok: false };
     }
-    await pm.delegate_stop(sessionId).catch(() => { });
+    await pm.delegate_stop(sessionId).catch(() => {});
     store.remove(sessionId);
     return { ok: true };
   });
@@ -297,19 +401,41 @@ export function createCoordinatorHandler(
   });
 
   channel.handle("session_delegate_fork", async (params) => {
-    const { sessionId, task, title, agent, model, projectPath: rawProjectPath } = params;
+    const {
+      sessionId,
+      task,
+      title,
+      agent,
+      model,
+      projectPath: rawProjectPath,
+    } = params;
     const projectPath = rawProjectPath || process.cwd();
 
     let result: DelegateCreateResult;
     try {
-      result = await pm.delegate_fork(sessionId, task, title, projectPath, agent, model);
+      result = await pm.delegate_fork(
+        sessionId,
+        task,
+        title,
+        projectPath,
+        agent,
+        model
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { sessionId: `error-${Date.now()}`, status: "error" as const, error: msg };
+      return {
+        sessionId: `error-${Date.now()}`,
+        status: "error" as const,
+        error: msg,
+      };
     }
 
     if (!result.sessionId) {
-      return { sessionId: `error-${Date.now()}`, status: "error" as const, error: "[coordinator] fork failed: no sessionId returned" };
+      return {
+        sessionId: `error-${Date.now()}`,
+        status: "error" as const,
+        error: "[coordinator] fork failed: no sessionId returned",
+      };
     }
 
     getStore().add({
@@ -331,11 +457,28 @@ export function createCoordinatorHandler(
   });
 
   channel.handle("session_delegate_sync", async (params) => {
-    const { task, title, agent, model, timeoutMs, projectPath: rawProjectPath, depth, variables } = params;
+    const {
+      task,
+      title,
+      agent,
+      model,
+      timeoutMs,
+      projectPath: rawProjectPath,
+      depth,
+      variables,
+    } = params;
     const projectPath = rawProjectPath || process.cwd();
 
     try {
-      const result = await pm.delegate_sync(task, agent, timeoutMs ?? 180_000, projectPath, model, depth, variables);
+      const result = await pm.delegate_sync(
+        task,
+        agent,
+        timeoutMs ?? 180_000,
+        projectPath,
+        model,
+        depth,
+        variables
+      );
 
       if (title) {
         getStore().add({
