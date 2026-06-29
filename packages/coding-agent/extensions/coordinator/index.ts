@@ -207,18 +207,32 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     description: "Diagnostic-only status check for a delegated task session. Do not use this in a polling loop after session_delegate; asynchronous delegates are expected to call session_delegate_send back when they have progress or final results.",
     parameters: DelegateStatusParams,
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+      const remote = await serverProxy.delegate_status(params.sessionId);
       const task = store?.get(params.sessionId);
       if (task) {
-        const status = task.status === "completed" ? "DONE" : task.status.toUpperCase();
+        const status = remote.status === "completed" ? "DONE" : remote.status.toUpperCase();
+        const detailLines = remote.detail
+          ? [
+              `Phase: ${remote.detail.phase}`,
+              `Type: ${remote.detail.waitingType}`,
+              ...(remote.detail.lastMessages?.length
+                ? ["Recent:", ...remote.detail.lastMessages.map((line) => `- ${line}`)]
+                : []),
+            ]
+          : [];
         return {
-          content: [{ type: "text" as const, text: `Task "${task.title}" (${params.sessionId}): ${status}` }],
-          details: { task },
+          content: [
+            {
+              type: "text" as const,
+              text: [`Task "${task.title}" (${params.sessionId}): ${status}`, ...detailLines].join("\n"),
+            },
+          ],
+          details: { task: { ...task, status: remote.status }, status: remote.status, detail: remote.detail },
         };
       }
-      const remote = await serverProxy.delegate_status(params.sessionId);
       return {
-        content: [{ type: "text" as const, text: `Session ${params.sessionId} status: ${remote.status}` }],
-        details: { task: null },
+        content: [{ type: "text" as const, text: `Session ${params.sessionId} status: ${remote.status}${remote.detail?.phase ? `\nPhase: ${remote.detail.phase}` : ""}` }],
+        details: { task: null, status: remote.status, detail: remote.detail },
       };
     },
   });

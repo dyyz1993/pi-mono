@@ -348,6 +348,39 @@ describe("session_delegate_status handler", () => {
 		expect(ctx.store.get("sess-y")!.status).toBe("streaming");
 	});
 
+	it("returns status detail from the process manager", async () => {
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({
+				status: "streaming" as const,
+				detail: {
+					phase: "执行中",
+					waitingType: "streaming",
+					waitingSince: 123,
+					lastMessages: ["助手: 正在执行 ls"],
+				},
+			}),
+		});
+		ctx.store.add({
+			sessionId: "sess-detail",
+			title: "Detailed task",
+			task: "task",
+			projectPath: "/tmp",
+			dispatchedAt: 100,
+			status: "idle",
+		});
+
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-detail",
+		});
+
+		expect(result.detail).toMatchObject({
+			phase: "执行中",
+			waitingType: "streaming",
+			waitingSince: 123,
+			lastMessages: ["助手: 正在执行 ls"],
+		});
+	});
+
 	it("returns isCompacting and contextUsage", async () => {
 		const ctx = useCtx({
 			delegate_status: vi.fn().mockResolvedValue({ status: "idle" as const }),
