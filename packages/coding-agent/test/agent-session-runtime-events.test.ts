@@ -12,6 +12,7 @@ import {
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type {
+	BeforeAgentStartEvent,
 	ExtensionFactory,
 	SessionBeforeForkEvent,
 	SessionBeforeSwitchEvent,
@@ -131,6 +132,27 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			{ type: "session_shutdown", reason: "resume", targetSessionFile: originalSessionFile },
 			{ type: "session_start", reason: "resume", previousSessionFile: secondSessionFile },
 		]);
+	});
+
+	it("passes prompt source through to before_agent_start handlers", async () => {
+		const events: BeforeAgentStartEvent[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("before_agent_start", (event) => {
+				events.push(event);
+			});
+		});
+
+		await runtimeHost.session.prompt("extension-origin message", {
+			source: "extension",
+			expandPromptTemplates: false,
+		});
+
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({
+			type: "before_agent_start",
+			prompt: "extension-origin message",
+			source: "extension",
+		});
 	});
 
 	it("honors session_before_switch cancellation", async () => {

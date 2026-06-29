@@ -4,8 +4,8 @@ import type { ProcessManagerApi } from "./handler.ts";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createServerProxy(client: { call: (method: string, params: Record<string, unknown>, timeoutMs?: number) => Promise<any> }): ProcessManagerApi {
   return {
-    async delegate(task, projectPath, replyMode?: DelegateReplyMode) {
-      return client.call("session_delegate", { task, projectPath, replyMode });
+    async delegate(task, projectPath, replyMode?: DelegateReplyMode, agent?: string, model?: string) {
+      return client.call("session_delegate", { task, projectPath, replyMode, agent, model });
     },
 
     async delegate_send(fromSessionId, toSessionId, message, mode?: "followUp" | "steer") {
@@ -51,8 +51,8 @@ export function createServerProxy(client: { call: (method: string, params: Recor
       }
     },
 
-    async delegate_fork(sessionId, task, title, projectPath) {
-      const result = await client.call("session_delegate_fork", { sessionId, task, title, projectPath }) as Record<string, unknown>;
+    async delegate_fork(sessionId, task, title, projectPath, agent, model) {
+      const result = await client.call("session_delegate_fork", { sessionId, task, title, projectPath, agent, model }) as Record<string, unknown>;
       const errMsg = result.error as string | undefined;
       if (errMsg) {
         throw new Error(errMsg);

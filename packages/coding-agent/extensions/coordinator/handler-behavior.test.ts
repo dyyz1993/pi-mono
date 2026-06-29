@@ -113,7 +113,7 @@ describe("session_delegate handler", () => {
 
 		expect(result.sessionId).toBe("sess-1");
 		expect(result.status).toBe("started");
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, undefined);
 
 		const stored = ctx.store.get("sess-1");
 		expect(stored).toBeDefined();
@@ -131,8 +131,30 @@ describe("session_delegate handler", () => {
 			replyMode: "followUp",
 		});
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", "followUp");
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", "followUp", undefined, undefined);
 		expect(ctx.store.get("sess-1")!.replyMode).toBe("followUp");
+	});
+
+	it("passes agent from params to pm.delegate", async () => {
+		const ctx = useCtx();
+		await ctx.client.call("session_delegate", {
+			task: "Do something",
+			projectPath: "/tmp/proj",
+			agent: "frontend-dev",
+		});
+
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined);
+	});
+
+	it("passes model from params to pm.delegate", async () => {
+		const ctx = useCtx();
+		await ctx.client.call("session_delegate", {
+			task: "Do something",
+			projectPath: "/tmp/proj",
+			model: "openai/gpt-4.1",
+		});
+
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, "openai/gpt-4.1");
 	});
 
 	it("returns error result when pm.delegate throws", async () => {
@@ -643,13 +665,41 @@ describe("session_delegate_fork handler", () => {
 		});
 
 		expect(result.sessionId).toBe("sess-fork-1");
-		expect(ctx.pm.delegate_fork).toHaveBeenCalledWith("orig-sess", "Forked task", "Fork Title", "/tmp/fork");
+		expect(ctx.pm.delegate_fork).toHaveBeenCalledWith("orig-sess", "Forked task", "Fork Title", "/tmp/fork", undefined, undefined);
 
 		const stored = ctx.store.get("sess-fork-1");
 		expect(stored).toBeDefined();
 		expect(stored!.task).toBe("Forked task");
 		expect(stored!.title).toBe("Fork Title");
 		expect(stored!.status).toBe("idle");
+	});
+
+	it("passes agent from params to pm.delegate_fork", async () => {
+		const ctx = useCtx();
+
+		await ctx.client.call("session_delegate_fork", {
+			sessionId: "orig-sess",
+			task: "Forked task",
+			title: "Fork Title",
+			projectPath: "/tmp/fork",
+			agent: "backend-dev",
+		});
+
+		expect(ctx.pm.delegate_fork).toHaveBeenCalledWith("orig-sess", "Forked task", "Fork Title", "/tmp/fork", "backend-dev", undefined);
+	});
+
+	it("passes model from params to pm.delegate_fork", async () => {
+		const ctx = useCtx();
+
+		await ctx.client.call("session_delegate_fork", {
+			sessionId: "orig-sess",
+			task: "Forked task",
+			title: "Fork Title",
+			projectPath: "/tmp/fork",
+			model: "openai/gpt-4.1",
+		});
+
+		expect(ctx.pm.delegate_fork).toHaveBeenCalledWith("orig-sess", "Forked task", "Fork Title", "/tmp/fork", undefined, "openai/gpt-4.1");
 	});
 
 	it("emits task_started event", async () => {

@@ -43,7 +43,14 @@ export interface DelegateStatusExt {
 export interface CoordinatorChannelContract extends ChannelContract {
   methods: {
     session_delegate: {
-      params: { task: string; title?: string; projectPath?: string; replyMode?: DelegateReplyMode };
+      params: {
+        task: string;
+        title?: string;
+        agent?: string;
+        model?: string;
+        projectPath?: string;
+        replyMode?: DelegateReplyMode;
+      };
       return: DelegateCreateResult;
     };
     session_delegate_send: {
@@ -71,7 +78,14 @@ export interface CoordinatorChannelContract extends ChannelContract {
       return: { removed: number };
     };
     session_delegate_fork: {
-      params: { sessionId: string; task: string; title?: string; projectPath?: string };
+      params: {
+        sessionId: string;
+        task: string;
+        title?: string;
+        agent?: string;
+        model?: string;
+        projectPath?: string;
+      };
       return: DelegateCreateResult;
     };
     session_delegate_sync: {
