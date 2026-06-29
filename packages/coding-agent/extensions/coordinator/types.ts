@@ -71,6 +71,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         task: string;
         title?: string;
         agent?: string;
+        agentName?: string;
         model?: string;
         projectPath?: string;
         replyMode?: DelegateReplyMode;
@@ -111,6 +112,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         task: string;
         title?: string;
         agent?: string;
+        agentName?: string;
         model?: string;
         projectPath?: string;
       };
@@ -121,6 +123,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         task: string;
         title?: string;
         agent?: string;
+        agentName?: string;
         model?: string;
         timeoutMs?: number;
         projectPath?: string;

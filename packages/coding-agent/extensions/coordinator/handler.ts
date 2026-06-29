@@ -194,6 +194,10 @@ export class TaskStore {
   }
 }
 
+function resolveAgentParam(params: { agent?: string; agentName?: string }): string | undefined {
+  return params.agent ?? params.agentName;
+}
+
 function resolveTaskStatus(
   current: DelegatedTask,
   remoteStatus: SessionStatus
@@ -236,11 +240,11 @@ export function createCoordinatorHandler(
     const {
       task,
       title,
-      agent,
       model,
       projectPath: rawProjectPath,
       replyMode,
     } = params;
+    const agent = resolveAgentParam(params);
     const projectPath = rawProjectPath || process.cwd();
 
     let result: DelegateCreateResult;
@@ -405,10 +409,10 @@ export function createCoordinatorHandler(
       sessionId,
       task,
       title,
-      agent,
       model,
       projectPath: rawProjectPath,
     } = params;
+    const agent = resolveAgentParam(params);
     const projectPath = rawProjectPath || process.cwd();
 
     let result: DelegateCreateResult;
@@ -460,13 +464,13 @@ export function createCoordinatorHandler(
     const {
       task,
       title,
-      agent,
       model,
       timeoutMs,
       projectPath: rawProjectPath,
       depth,
       variables,
     } = params;
+    const agent = resolveAgentParam(params);
     const projectPath = rawProjectPath || process.cwd();
 
     try {
