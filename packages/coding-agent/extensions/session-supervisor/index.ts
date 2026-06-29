@@ -1400,14 +1400,17 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         const now = Date.now();
 
         if (goal.status === "complete") {
-            const completedChecklist = checklist.map((item) => ({
-                ...item,
-                status: "done" as const,
-                updatedAt: now,
-            }));
+            const completedChecklist = checklist.map((item) => {
+                if (item.status === "done" || !item.evidence) return item;
+                return {
+                    ...item,
+                    status: "done" as const,
+                    updatedAt: now,
+                };
+            });
             return {
                 ...goal,
-                currentMilestone: undefined,
+                currentMilestone: completedChecklist.find((item) => item.status !== "done")?.text,
                 checklist: completedChecklist,
             };
         }

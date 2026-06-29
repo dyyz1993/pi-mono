@@ -757,6 +757,87 @@ describe("Built-in Extensions", () => {
 			expect(secondTriggerCount).toBe(firstTriggerCount);
 			expect(sentMessages.length).toBe(firstSentCount);
 		});
+
+		it("does not mark every checklist item done when a goal completes", async () => {
+			const originalCallLLM = extensionActions.callLLM;
+			extensionActions.callLLM = async () =>
+				JSON.stringify({
+					completed: true,
+					confidence: 0.93,
+					incompleteTasks: [],
+					reasoning: "The latest turn claims the goal is complete.",
+				});
+
+			const now = Date.now();
+			fs.writeFileSync(
+				path.join(tempDir, "supervisor-goal-runtime.json"),
+				JSON.stringify({
+					enabled: true,
+					activeGoal: {
+						id: "goal_checklist_complete_test",
+						objective: "Implement, test, and report the checklist behavior",
+						status: "running",
+						startedAt: now,
+						updatedAt: now,
+						currentMilestone: "Run regression tests",
+						continuationCount: 0,
+						blockers: [],
+						checklist: [
+							{
+								id: "check_00",
+								text: "Implement the guard-aware checklist update",
+								kind: "implementation",
+								status: "done",
+								evidence: "Implementation diff was reviewed.",
+								updatedAt: now,
+							},
+							{
+								id: "check_01",
+								text: "Run regression tests",
+								kind: "verification",
+								status: "in_progress",
+								updatedAt: now,
+							},
+							{
+								id: "check_02",
+								text: "Document manual acceptance",
+								kind: "report",
+								status: "pending",
+								updatedAt: now,
+							},
+						],
+					},
+				}),
+				"utf-8",
+			);
+
+			try {
+				const { runner, manager, outputs } = await loadExtension("session-supervisor");
+
+				await runner.emit({
+					type: "agent_end",
+					messages: [
+						{
+							role: "assistant",
+							content: [
+								{
+									type: "text",
+									text: "The goal is complete.",
+								},
+							],
+						},
+					],
+				} as never);
+
+				const status = await invokeChannelMethod(manager, outputs, "supervisor", "getStatus");
+				const goal = status.goal as Record<string, unknown>;
+				const checklist = goal.checklist as Array<Record<string, unknown>>;
+				expect(goal.status).toBe("complete");
+				expect(checklist.map((item) => item.status)).toEqual(["done", "in_progress", "pending"]);
+			} finally {
+				extensionActions.callLLM = originalCallLLM;
+			}
+		});
 	});
 
 	// ─── 11. todo-ext ───────────────────────────────────────────────────
