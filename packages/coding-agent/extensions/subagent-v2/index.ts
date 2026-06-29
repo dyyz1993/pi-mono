@@ -152,12 +152,16 @@ export default function(pi: ExtensionAPI) {
     label: "Subagent",
     description: !canLoadConfiguredAgents
       ? [
-        "Delegate a task to a builtin subagent with isolated context.",
+        "Run an ordinary subtask/child task in a builtin subagent with isolated context and wait for its result.",
+        "Prefer this tool when the user says 'subtask', 'subagent', 'child task', or Chinese '子任务/子代理'.",
+        "Do not use session_delegate for those ordinary subtask requests unless the user explicitly asks for async dispatch/delegation/background execution.",
         "SSH tool-proxy mode (quick SSH sandbox) does not expose local user or project agent files.",
         "The task is dispatched through the coordinator channel to Process Manager.",
       ].join(" ")
       : [
-        "Delegate a task to a specialized subagent with isolated context.",
+        "Run an ordinary subtask/child task in a specialized subagent with isolated context and wait for its result.",
+        "Prefer this tool when the user says 'subtask', 'subagent', 'child task', or Chinese '子任务/子代理'.",
+        "Do not use session_delegate for those ordinary subtask requests unless the user explicitly asks for async dispatch/delegation/background execution.",
         "Agents are discovered from ~/.pi/agent/agents/ (user) and .pi/agents/ (project).",
         'Use agentScope to control discovery: "user" (default), "project", or "both".',
         "The task is dispatched through the coordinator channel to Process Manager.",

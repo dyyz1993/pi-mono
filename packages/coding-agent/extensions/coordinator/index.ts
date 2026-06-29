@@ -125,7 +125,9 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     name: "session_delegate",
     label: "Session Delegate",
     description: [
-      "Delegate a task to a background pi session asynchronously.",
+      "Asynchronously dispatch/delegate a task to a background pi session.",
+      "Use this only when the user explicitly asks for an async delegation/dispatch/background task, or says not to wait for completion.",
+      "Do NOT use this for ordinary 'subtask', 'subagent', 'child task', or Chinese '子任务/子代理' requests; use the public subagent tool for those so the parent waits for and records the result.",
       "Optionally specify a projectPath to run the session in a specific project directory.",
       "Choose replyMode at creation time: interrupt (default, delegate replies are inserted into this parent immediately), followUp (queue replies until this parent finishes), or auto (idle sends immediately, busy queues).",
       "Returns immediately with a sessionId; do not poll session_delegate_status just to wait for completion.",

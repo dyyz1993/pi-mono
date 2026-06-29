@@ -521,7 +521,9 @@ export function formatAgentsForPrompt(agents: AgentConfig[]): string {
 
 	const lines = [
 		"\n\n<available_agents>",
-		"The following agents are available for delegation via subagent or session_delegate tools.",
+		"The following agents are available for task routing.",
+		"When the user asks for an ordinary subtask/subagent/child task (including Chinese 子任务/子代理), prefer the `subagent` tool.",
+		"Use `session_delegate` only for explicit asynchronous delegation/dispatch/background work where the parent should not wait.",
 		"Choose the agent that best matches the task nature:",
 		"",
 	];
