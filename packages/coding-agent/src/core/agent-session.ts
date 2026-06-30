@@ -94,6 +94,7 @@ import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import {
+	createAutoApproverProvider,
 	createDangerousCommandProvider,
 	createPathAccessProvider,
 	createPiHooksProvider,
@@ -828,6 +829,8 @@ export class AgentSession {
 					priority,
 					store: new PermissionStore(this.settingsManager),
 				});
+			case "auto-approver":
+				return createAutoApproverProvider({ priority });
 			case "pi-hooks": {
 				const runner = this._extensionRunner;
 				if (!runner.hasHandlers("tool_call")) return undefined;

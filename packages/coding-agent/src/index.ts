@@ -243,6 +243,8 @@ export type {
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
 export {
+	type AutoApproverProviderOptions,
+	createAutoApproverProvider,
 	createDangerousCommandProvider,
 	createPathAccessProvider,
 	createPiHooksProvider,

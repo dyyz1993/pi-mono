@@ -21,6 +21,8 @@ export {
 } from "./profiles.ts";
 export type { PermissionProvider, PermissionProviderFailure } from "./provider.ts";
 export {
+	type AutoApproverProviderOptions,
+	createAutoApproverProvider,
 	createDangerousCommandProvider,
 	createPathAccessProvider,
 	createPiHooksProvider,

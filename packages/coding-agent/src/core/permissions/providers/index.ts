@@ -1,3 +1,4 @@
+export { type AutoApproverProviderOptions, createAutoApproverProvider } from "./auto-approver.ts";
 export {
 	createDangerousCommandProvider,
 	type DangerousCommandAction,

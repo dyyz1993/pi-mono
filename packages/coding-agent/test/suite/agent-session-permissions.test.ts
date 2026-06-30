@@ -526,7 +526,7 @@ describe("core permission enforcement in beforeToolCall", () => {
 		expect(records[0]?.input).toEqual({ command: "echo hello" });
 	});
 
-	it("keeps dangerous bash commands gated under autopilot profile", async () => {
+	it("auto-approves bounded dangerous bash commands under autopilot profile", async () => {
 		const bashTool = makeRecorderTool("bash", records, Type.Object({ command: Type.String() }));
 
 		const harness = await createHarness({ tools: [bashTool] });
@@ -539,6 +539,26 @@ describe("core permission enforcement in beforeToolCall", () => {
 		]);
 
 		await harness.session.prompt("cleanup");
+
+		expect(records).toHaveLength(1);
+		expect(records[0]?.input).toEqual({ command: "rm -rf /tmp/data" });
+	});
+
+	it("blocks unbounded dangerous bash commands under autopilot profile", async () => {
+		const bashTool = makeRecorderTool("bash", records, Type.Object({ command: Type.String() }));
+
+		const harness = await createHarness({ tools: [bashTool] });
+		harnesses.push(harness);
+
+		harness.session.applyAgentConfig(testConfig({ permissionMode: "autopilot" }));
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: "rm -rf /Users/me/project" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("cleanup outside temp");
 
 		expect(records).toHaveLength(0);
 	});
