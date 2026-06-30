@@ -4177,10 +4177,13 @@ export class AgentSession {
 	 * Get session statistics.
 	 */
 	getSessionStats(): SessionStats {
-		const state = this.state;
-		const userMessages = state.messages.filter((m) => m.role === "user").length;
-		const assistantMessages = state.messages.filter((m) => m.role === "assistant").length;
-		const toolResults = state.messages.filter((m) => m.role === "toolResult").length;
+		const entries = this.sessionManager.getEntries();
+		const messages = entries
+			.filter((entry) => entry.type === "message")
+			.map((entry) => entry.message);
+		const userMessages = messages.filter((m) => m.role === "user").length;
+		const assistantMessages = messages.filter((m) => m.role === "assistant").length;
+		const toolResults = messages.filter((m) => m.role === "toolResult").length;
 
 		let toolCalls = 0;
 		let totalInput = 0;
@@ -4189,7 +4192,7 @@ export class AgentSession {
 		let totalCacheWrite = 0;
 		let totalCost = 0;
 
-		for (const message of state.messages) {
+		for (const message of messages) {
 			if (message.role === "assistant") {
 				const assistantMsg = message as AssistantMessage;
 				toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
@@ -4208,7 +4211,7 @@ export class AgentSession {
 			assistantMessages,
 			toolCalls,
 			toolResults,
-			totalMessages: state.messages.length,
+			totalMessages: messages.length,
 			tokens: {
 				input: totalInput,
 				output: totalOutput,
