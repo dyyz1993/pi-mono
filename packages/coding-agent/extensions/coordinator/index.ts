@@ -4,7 +4,7 @@ import {
 } from "@dyyz1993/pi-coding-agent";
 import { Type } from "typebox";
 import { COORDINATOR_CHANNEL_NAME, type CoordinatorChannelContract, type SessionStatus } from "./types.ts";
-import { createCoordinatorHandler, TaskStore, type ProcessManagerApi } from "./handler.ts";
+import { createCoordinatorHandler, DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS, TaskStore, type ProcessManagerApi } from "./handler.ts";
 import { createServerProxy } from "./server-proxy.ts";
 
 /**
@@ -51,6 +51,7 @@ const DelegateParams = Type.Object({
     Type.Literal("followUp"),
     Type.Literal("auto"),
   ], { description: "How delegate replies should be delivered to the parent session. interrupt = insert/steer into the parent immediately (default); followUp = queue until the parent finishes; auto = immediate when idle, follow-up when busy." })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Hard timeout in milliseconds for this async delegated session. Defaults to 600000 (10 minutes)." })),
 });
 
 const DelegateSendParams = Type.Object({
@@ -123,6 +124,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       "Optionally specify a projectPath to run the session in a specific project directory.",
       "Choose replyMode at creation time: interrupt (default, delegate replies are inserted into this parent immediately), followUp (queue replies until this parent finishes), or auto (idle sends immediately, busy queues).",
       "Returns immediately with a sessionId; do not poll session_delegate_status just to wait for completion.",
+      "A delegated session has a hard timeout (default 10 minutes, override with timeoutMs) and is stopped if it remains active past that deadline.",
       "After delegating, stop and wait for the delegated session to report back by calling session_delegate_send to this parent session.",
       "Use session_delegate_status only for explicit user-requested diagnostics, recovery, or troubleshooting.",
       "The delegate session is automatically restarted if inactive when receiving messages.",
@@ -132,7 +134,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       try {
         const sid = currentSessionId || ctx.sessionManager.getSessionId();
         const projectPath = params.projectPath || ctx.cwd;
-        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, params.agent, params.model);
+        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, params.agent, params.model, params.timeoutMs);
 
         if (!result.sessionId) {
           console.debug("[coordinator] delegate failed: no sessionId returned");
@@ -152,11 +154,12 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
           model: params.model,
           projectPath,
           replyMode: params.replyMode ?? "interrupt",
+          timeoutMs: params.timeoutMs,
           dispatchedBy: sid,
         });
         return {
-          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${params.agent ?? "default"}, model: ${params.model ?? "default"}, replyMode: ${params.replyMode ?? "interrupt"}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
-          details: { ...result, dispatchedBy: sid, projectPath, agent: params.agent, model: params.model, replyMode: params.replyMode ?? "interrupt" },
+          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${params.agent ?? "default"}, model: ${params.model ?? "default"}, replyMode: ${params.replyMode ?? "interrupt"}, timeoutMs: ${params.timeoutMs ?? DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
+          details: { ...result, dispatchedBy: sid, projectPath, agent: params.agent, model: params.model, replyMode: params.replyMode ?? "interrupt", timeoutMs: params.timeoutMs ?? DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS },
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);

@@ -93,6 +93,7 @@ const testContexts: TestContext[] = [];
 afterEach(() => {
 	for (const ctx of testContexts) ctx.cleanup();
 	testContexts.length = 0;
+	vi.useRealTimers();
 });
 
 function useCtx(pmOverrides: Partial<ProcessManagerApi> = {}): TestContext {
@@ -113,7 +114,7 @@ describe("session_delegate handler", () => {
 
 		expect(result.sessionId).toBe("sess-1");
 		expect(result.status).toBe("started");
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, undefined, 600000);
 
 		const stored = ctx.store.get("sess-1");
 		expect(stored).toBeDefined();
@@ -121,6 +122,8 @@ describe("session_delegate handler", () => {
 		expect(stored!.projectPath).toBe("/tmp/proj");
 		expect(stored!.status).toBe("idle");
 		expect(stored!.replyMode).toBe("interrupt");
+		expect(stored!.timeoutMs).toBe(600000);
+		expect(stored!.timeoutAt).toBeGreaterThan(stored!.dispatchedAt);
 	});
 
 	it("passes replyMode from params to pm.delegate and store", async () => {
@@ -131,7 +134,7 @@ describe("session_delegate handler", () => {
 			replyMode: "followUp",
 		});
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", "followUp", undefined, undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", "followUp", undefined, undefined, 600000);
 		expect(ctx.store.get("sess-1")!.replyMode).toBe("followUp");
 	});
 
@@ -143,7 +146,7 @@ describe("session_delegate handler", () => {
 			agent: "frontend-dev",
 		});
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined, 600000);
 	});
 
 	it("passes model from params to pm.delegate", async () => {
@@ -154,7 +157,7 @@ describe("session_delegate handler", () => {
 			model: "openai/gpt-4.1",
 		});
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, "openai/gpt-4.1");
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, "openai/gpt-4.1", 600000);
 	});
 
 	it("returns error result when pm.delegate throws", async () => {
@@ -221,6 +224,81 @@ describe("session_delegate handler", () => {
 			task: longTask,
 		});
 		expect(ctx2.store.get("sess-1")!.title).toBe(longTask.slice(0, 60));
+	});
+
+	it("stops and marks an async delegate when its explicit timeout elapses", async () => {
+		vi.useFakeTimers();
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "streaming" as const }),
+		});
+
+		await ctx.client.call("session_delegate", {
+			task: "Never finish",
+			projectPath: "/tmp/proj",
+			timeoutMs: 50,
+		});
+
+		expect(ctx.store.get("sess-1")!.status).toBe("idle");
+
+		await vi.advanceTimersByTimeAsync(51);
+
+		expect(ctx.pm.delegate_stop).toHaveBeenCalledWith("sess-1");
+		const stored = ctx.store.get("sess-1");
+		expect(stored!.status).toBe("stopped");
+		expect(stored!.completedAt).toBeDefined();
+		expect(stored!.result).toContain("Timed out after 50ms");
+		expect(ctx.emittedEvents.get("task_stopped")).toContainEqual({ sessionId: "sess-1" });
+	});
+
+	it("marks an overdue delegate as stopped during status refresh", async () => {
+		const now = Date.now();
+		vi.setSystemTime(now);
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "streaming" as const }),
+		});
+		ctx.store.add({
+			sessionId: "sess-overdue",
+			title: "Overdue",
+			task: "task",
+			projectPath: "/tmp",
+			dispatchedAt: now - 1000,
+			status: "streaming",
+			timeoutMs: 100,
+			timeoutAt: now - 1,
+		});
+
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-overdue",
+		});
+
+		expect(ctx.pm.delegate_stop).toHaveBeenCalledWith("sess-overdue");
+		expect(result.task?.status).toBe("stopped");
+		expect(result.task?.result).toContain("Timed out after 100ms");
+	});
+
+	it("does not stop an overdue delegate that already completed remotely", async () => {
+		const now = Date.now();
+		vi.setSystemTime(now);
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "completed" as const }),
+		});
+		ctx.store.add({
+			sessionId: "sess-completed",
+			title: "Completed",
+			task: "task",
+			projectPath: "/tmp",
+			dispatchedAt: now - 1000,
+			status: "streaming",
+			timeoutMs: 100,
+			timeoutAt: now - 1,
+		});
+
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-completed",
+		});
+
+		expect(ctx.pm.delegate_stop).not.toHaveBeenCalled();
+		expect(result.task?.status).toBe("completed");
 	});
 });
 

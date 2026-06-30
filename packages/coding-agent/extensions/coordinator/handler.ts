@@ -10,13 +10,16 @@ import type {
   SessionStatus,
 } from "./types.ts";
 
+export const DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS = 10 * 60 * 1000;
+
 export interface ProcessManagerApi {
   delegate(
     task: string,
     projectPath: string,
     replyMode?: DelegateReplyMode,
     agent?: string,
-    model?: string
+    model?: string,
+    timeoutMs?: number
   ): Promise<{ sessionId: string; status: "started" | "already_running" }>;
   delegate_send(
     fromSessionId: string,
@@ -194,6 +197,18 @@ export class TaskStore {
   }
 }
 
+function normalizeDelegateTimeoutMs(timeoutMs: unknown): number {
+  if (typeof timeoutMs !== "number") return DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS;
+  }
+  return timeoutMs;
+}
+
+function formatTimeoutResult(timeoutMs: number): string {
+  return `Timed out after ${timeoutMs}ms`;
+}
+
 function resolveTaskStatus(
   current: DelegatedTask,
   remoteStatus: SessionStatus
@@ -232,6 +247,85 @@ export function createCoordinatorHandler(
   getSessionId: () => string,
   getStore: () => TaskStore
 ): void {
+  const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const cancelDelegateTimeout = (sessionId: string): void => {
+    const handle = timeoutHandles.get(sessionId);
+    if (handle) clearTimeout(handle);
+    timeoutHandles.delete(sessionId);
+  };
+
+  const stopTaskForTimeout = async (sessionId: string): Promise<boolean> => {
+    const store = getStore();
+    const task = store.get(sessionId);
+    if (!task || task.status === "stopped" || task.status === "completed") {
+      cancelDelegateTimeout(sessionId);
+      return false;
+    }
+
+    let remoteStatus: SessionStatus | "not_found" = task.status;
+    try {
+      remoteStatus = (await pm.delegate_status(sessionId)).status;
+    } catch {
+      remoteStatus = "not_found";
+    }
+    if (remoteStatus === "not_found") {
+      cancelDelegateTimeout(sessionId);
+      store.update(sessionId, {
+        status: "stopped",
+        completedAt: task.completedAt ?? Date.now(),
+      });
+      return false;
+    }
+    if (remoteStatus !== "streaming") {
+      cancelDelegateTimeout(sessionId);
+      store.update(sessionId, resolveTaskStatus(task, remoteStatus));
+      return false;
+    }
+
+    cancelDelegateTimeout(sessionId);
+    try {
+      await pm.delegate_stop(sessionId);
+    } catch {
+      // The task may already be gone. Preserve the timeout in the coordinator
+      // store so the parent can observe a terminal state instead of streaming.
+    }
+
+    const completedAt = Date.now();
+    const timeoutMs = task.timeoutMs ?? DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS;
+    store.update(sessionId, {
+      status: "stopped",
+      completedAt,
+      result: formatTimeoutResult(timeoutMs),
+    });
+    channel.emit("task_stopped", { sessionId });
+    channel.emit("task_error", {
+      sessionId,
+      error: formatTimeoutResult(timeoutMs),
+    });
+    return true;
+  };
+
+  const stopOverdueTask = async (task: DelegatedTask): Promise<boolean> => {
+    if (!task.timeoutAt) return false;
+    if (task.status === "stopped" || task.status === "completed") {
+      cancelDelegateTimeout(task.sessionId);
+      return false;
+    }
+    if (Date.now() < task.timeoutAt) return false;
+    return stopTaskForTimeout(task.sessionId);
+  };
+
+  const scheduleDelegateTimeout = (task: DelegatedTask): void => {
+    if (!task.timeoutAt) return;
+    cancelDelegateTimeout(task.sessionId);
+    const delay = Math.max(0, task.timeoutAt - Date.now());
+    const handle = setTimeout(() => {
+      void stopTaskForTimeout(task.sessionId);
+    }, delay);
+    timeoutHandles.set(task.sessionId, handle);
+  };
+
   channel.handle("session_delegate", async (params) => {
     const {
       task,
@@ -240,12 +334,23 @@ export function createCoordinatorHandler(
       model,
       projectPath: rawProjectPath,
       replyMode,
+      timeoutMs: rawTimeoutMs,
     } = params;
     const projectPath = rawProjectPath || process.cwd();
+    const timeoutMs = normalizeDelegateTimeoutMs(rawTimeoutMs);
+    const dispatchedAt = Date.now();
+    const timeoutAt = dispatchedAt + timeoutMs;
 
     let result: DelegateCreateResult;
     try {
-      result = await pm.delegate(task, projectPath, replyMode, agent, model);
+      result = await pm.delegate(
+        task,
+        projectPath,
+        replyMode,
+        agent,
+        model,
+        timeoutMs
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
@@ -268,10 +373,14 @@ export function createCoordinatorHandler(
       title: title || task.slice(0, 60),
       task,
       projectPath,
-      dispatchedAt: Date.now(),
+      dispatchedAt,
       status: "idle",
       replyMode: replyMode ?? "interrupt",
+      timeoutMs,
+      timeoutAt,
     });
+    const storedTask = getStore().get(result.sessionId);
+    if (storedTask) scheduleDelegateTimeout(storedTask);
 
     channel.emit("task_started", {
       sessionId: result.sessionId,
@@ -320,11 +429,17 @@ export function createCoordinatorHandler(
         return { task: null };
       }
     }
+    if (await stopOverdueTask(task)) {
+      return { task: store.get(sessionId) ?? null, status: "stopped" };
+    }
     try {
       const remote = await pm.delegate_status(sessionId);
       const taskStatus =
         remote.status === "not_found" ? "stopped" : remote.status;
       store.update(sessionId, resolveTaskStatus(task, taskStatus));
+      if (taskStatus === "stopped" || taskStatus === "completed") {
+        cancelDelegateTimeout(sessionId);
+      }
       const compactInfo = await pm.delegate_compact_status(sessionId);
       return {
         task: store.get(sessionId) ?? null,
@@ -345,11 +460,15 @@ export function createCoordinatorHandler(
     const store = getStore();
     const tasks = store.list();
     for (const t of tasks) {
+      if (await stopOverdueTask(t)) continue;
       try {
         const remote = await pm.delegate_status(t.sessionId);
         const taskStatus =
           remote.status === "not_found" ? "stopped" : remote.status;
         store.update(t.sessionId, resolveTaskStatus(t, taskStatus));
+        if (taskStatus === "stopped" || taskStatus === "completed") {
+          cancelDelegateTimeout(t.sessionId);
+        }
       } catch {
         // Ghost session — do not erase the task during list refresh. Mark it as
         // stopped and let explicit remove/clear handle cleanup.
@@ -379,6 +498,7 @@ export function createCoordinatorHandler(
         store.update(sessionId, { status: "stopped", completedAt: Date.now() });
       }
     }
+    cancelDelegateTimeout(sessionId);
     return { ok };
   });
 
@@ -390,6 +510,7 @@ export function createCoordinatorHandler(
       return { ok: false };
     }
     await pm.delegate_stop(sessionId).catch(() => {});
+    cancelDelegateTimeout(sessionId);
     store.remove(sessionId);
     return { ok: true };
   });
