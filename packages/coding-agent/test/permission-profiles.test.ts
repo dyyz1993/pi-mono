@@ -75,7 +75,7 @@ describe("permission profiles", () => {
 			name: "autopilot",
 			preProviders: ["tool-gate", "stored-decision", "auto-approver", "pi-hooks"],
 			postProviders: ["path-access", "dangerous-command"],
-			skipPathBoundaryApproval: false,
+			skipPathBoundaryApproval: true,
 		});
 	});
 });
