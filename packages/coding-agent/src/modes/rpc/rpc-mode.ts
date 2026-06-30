@@ -1232,6 +1232,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "clear_queue", session.clearQueue(command.item));
 			}
 
+			case "promote_follow_up": {
+				return success(id, "promote_follow_up", session.promoteQueuedFollowUp(command.item));
+			}
+
 			case "get_flags": {
 				const flags: RpcExtensionFlag[] = Array.from(session.extensionRunner.getFlags().entries()).map(
 					([name, flag]) => ({

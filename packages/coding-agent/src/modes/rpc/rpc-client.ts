@@ -800,6 +800,14 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	async promoteQueuedFollowUp(item: { type: "followUp"; index: number; text: string }): Promise<{
+		steering: string[];
+		followUp: string[];
+	}> {
+		const response = await this.send({ type: "promote_follow_up", item });
+		return this.getData(response);
+	}
+
 	async getFlags(): Promise<RpcExtensionFlag[]> {
 		const response = await this.send({ type: "get_flags" });
 		return this.getData<{ flags: RpcExtensionFlag[] }>(response).flags;

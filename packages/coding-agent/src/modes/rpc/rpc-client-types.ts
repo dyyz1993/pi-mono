@@ -69,6 +69,12 @@ export interface QueueItemRef {
 	text: string;
 }
 
+export interface FollowUpQueueItemRef {
+	type: "followUp";
+	index: number;
+	text: string;
+}
+
 export interface SessionOperationResult {
 	cancelled: boolean;
 }
@@ -182,6 +188,7 @@ export interface RpcClientSurface {
 	setActiveTools(toolNames: string[]): Promise<void>;
 	getQueue(): Promise<QueueState>;
 	clearQueue(item?: QueueItemRef): Promise<QueueState>;
+	promoteQueuedFollowUp(item: FollowUpQueueItemRef): Promise<QueueState>;
 	getFlags(): Promise<RpcExtensionFlag[]>;
 	getFlagValues(): Promise<Record<string, boolean | string>>;
 	setFlag(name: string, value: boolean | string): Promise<void>;

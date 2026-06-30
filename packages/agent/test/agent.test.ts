@@ -472,12 +472,19 @@ describe("Agent", () => {
 		expect(responseCount).toBe(2);
 	});
 
-	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {
+	it("continue() should aggregate queued steering messages into one assistant turn", async () => {
 		let responseCount = 0;
+		let userMessagesInTurn: string[] = [];
 		const agent = new Agent({
-			streamFn: () => {
+			streamFn: (_model, context) => {
 				const stream = new MockAssistantStream();
 				responseCount++;
+				userMessagesInTurn = context.messages
+					.filter((message) => message.role === "user")
+					.map((message) => {
+						const first = message.content?.[0];
+						return first?.type === "text" ? first.text : "";
+					});
 				queueMicrotask(() => {
 					stream.push({
 						type: "done",
@@ -512,8 +519,9 @@ describe("Agent", () => {
 		await expect(agent.continue()).resolves.toBeUndefined();
 
 		const recentMessages = agent.state.messages.slice(-4);
-		expect(recentMessages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
-		expect(responseCount).toBe(2);
+		expect(recentMessages.map((m) => m.role)).toEqual(["assistant", "user", "user", "assistant"]);
+		expect(userMessagesInTurn).toEqual(["Initial", "Steering 1", "Steering 2"]);
+		expect(responseCount).toBe(1);
 	});
 
 	it("forwards sessionId to streamFn options", async () => {

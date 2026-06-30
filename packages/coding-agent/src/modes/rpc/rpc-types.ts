@@ -138,6 +138,7 @@ export type RpcCommand =
 	// Queue
 	| { id?: string; type: "get_queue" }
 	| { id?: string; type: "clear_queue"; item?: { type: "steering" | "followUp"; index: number; text: string } }
+	| { id?: string; type: "promote_follow_up"; item: { type: "followUp"; index: number; text: string } }
 
 	// Flags
 	| { id?: string; type: "get_flags" }
@@ -600,6 +601,13 @@ export type RpcResponse =
 			id?: string;
 			type: "response";
 			command: "clear_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "promote_follow_up";
 			success: true;
 			data: { steering: string[]; followUp: string[] };
 	  }
