@@ -82,6 +82,13 @@ Context: ${context}
 
 Please address these items before completing.`;
 
+export const CHECKLIST_GUARD_PROMPT = (remainingItems: string[]) =>
+    `[Supervisor/ChecklistGuard] The goal checklist still has items without completion evidence:
+
+${remainingItems.map((t, i) => `${i + 1}. ${t}`).join("\n")}
+
+Please continue working through these checklist items one by one. When an item is complete, explicitly mention the evidence or verification result. Do not declare the goal complete until every checklist item has evidence.`;
+
 export const CUSTOM_GUARD_PROMPT = (template: string, context: Record<string, string>) => {
     let result = template;
     for (const [key, value] of Object.entries(context)) {
@@ -218,3 +225,41 @@ For each spec item, determine if it has been implemented. Respond with JSON:
 IMPORTANT: An item is only "completed" if there is clear evidence in the conversation that it was implemented. If the agent merely mentions it will do something but hasn't done it yet, mark it as remaining.
 
 You MUST respond with valid JSON only.`;
+
+export const CHECKLIST_CHECK_PROMPT = (
+    objective: string,
+    checklistJson: string,
+    lastAssistantText: string,
+) =>
+    `You are checking whether a coding agent's goal checklist items have clear completion evidence.
+
+Goal:
+${objective}
+
+Checklist items:
+${checklistJson}
+
+Latest assistant message:
+${lastAssistantText.slice(0, 3000)}
+
+For each checklist item that is not already done, determine whether the latest assistant message provides clear evidence that the item was completed or verified.
+
+Respond with JSON:
+{
+  "completed": boolean,
+  "confidence": number (0-1),
+  "completedItems": [
+    { "id": "check_01", "evidence": "short evidence summary" }
+  ],
+  "remainingItems": [
+    { "id": "check_02", "reason": "what is still missing" }
+  ],
+  "reasoning": "brief explanation"
+}
+
+IMPORTANT:
+- Use checklist item ids exactly as provided.
+- Only mark an item completed when there is explicit evidence, test output, file change confirmation, or final acceptance detail.
+- If the agent merely says it plans to do an item, keep it remaining.
+- If the response format is uncertain, keep the item remaining.
+- You MUST respond with valid JSON only.`;

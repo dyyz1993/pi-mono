@@ -26,9 +26,11 @@ import {
     SPECS_GUARD_BLOCK_MESSAGE,
     CI_GUARD_PROMPT,
     KEYWORD_GUARD_PROMPT,
+    CHECKLIST_GUARD_PROMPT,
     CUSTOM_GUARD_PROMPT,
     TODO_CHECK_PROMPT,
     SPECS_CHECK_PROMPT,
+    CHECKLIST_CHECK_PROMPT,
     REFINE_GOAL_SYSTEM_PROMPT,
     REFINE_GOAL_USER_PROMPT,
     GOAL_CHECKLIST_SYSTEM_PROMPT,
@@ -47,6 +49,7 @@ function log(msg: string) {
 }
 
 const DEFAULT_GUARDS: GuardConfig[] = [
+    { name: "goal-checklist", type: "checklist", enable: true },
     { name: "incomplete-keywords", type: "keyword", enable: true, keywords: ["TODO", "FIXME", "WIP", "HACK"] },
 ];
 
@@ -358,7 +361,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
             }
 
             for (const guard of activeGuards) {
-                const result = await runGuardCheck(guard, summary);
+                const result = await runGuardCheck(guard, summary, _signal);
 
                 if (!result.completed && result.remainingItems.length > 0) {
                     const blockMsg = generateBlockMessage(guard, result);
@@ -559,7 +562,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
             for (const guard of activeGuards) {
                 const guardStart = Date.now();
-                const result = await runGuardCheck(guard, lastAssistantText);
+                const result = await runGuardCheck(guard, lastAssistantText, ctx.sessionSignal);
                 const guardDuration = Date.now() - guardStart;
                 guardResults.push(result);
                 guardTimings.push({ guardName: guard.name, guardType: guard.type, durationMs: guardDuration });
@@ -922,6 +925,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
     async function runGuardCheck(
         guard: GuardConfig,
         context: string,
+        signal?: AbortSignal,
     ): Promise<GuardCheckResult> {
         const startedAt = Date.now();
         appendForensic({
@@ -952,6 +956,9 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                     break;
                 case "keyword":
                     result = checkKeywordGuard(guard, context);
+                    break;
+                case "checklist":
+                    result = await checkChecklistGuard(guard, context, signal);
                     break;
                 case "custom":
                     result = await checkCustomGuard(guard, context);
@@ -1147,6 +1154,143 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         };
     }
 
+    async function checkChecklistGuard(
+        guard: Extract<GuardConfig, { type: "checklist" }>,
+        context: string,
+        signal?: AbortSignal,
+    ): Promise<GuardCheckResult> {
+        if (!activeGoal?.checklist || activeGoal.checklist.length === 0) {
+            return {
+                guardName: guard.name,
+                completed: true,
+                confidence: 1,
+                remainingItems: [],
+                detail: "No active goal checklist",
+            };
+        }
+
+        const candidates = activeGoal.checklist.filter((item) => item.status !== "done");
+        if (candidates.length === 0) {
+            return {
+                guardName: guard.name,
+                completed: true,
+                confidence: 1,
+                remainingItems: [],
+                detail: "All checklist items done",
+            };
+        }
+
+        const checklistJson = JSON.stringify(
+            candidates.map((item) => ({
+                id: item.id,
+                text: item.text,
+                status: item.status,
+                kind: item.kind,
+                evidence: item.evidence,
+            })),
+            null,
+            2,
+        );
+
+        const response = await pi.callLLM({
+            systemPrompt: CHECKLIST_CHECK_PROMPT(activeGoal.objective, checklistJson, context),
+            messages: [{ role: "user", content: "Check checklist completion evidence." }],
+            model: config.smallModel,
+            maxTokens: 1024,
+            signal,
+        });
+
+        try {
+            const jsonStr = response
+                .replace(/^```(?:json)?\s*\n?/m, "")
+                .replace(/\n?```\s*$/m, "")
+                .trim();
+            const parsed = JSON.parse(jsonStr) as {
+                completed?: boolean;
+                confidence?: number;
+                completedItems?: Array<{ id?: unknown; evidence?: unknown }>;
+                remainingItems?: Array<{ id?: unknown; reason?: unknown } | string>;
+                reasoning?: string;
+            };
+
+            if (!Array.isArray(parsed.completedItems) && !Array.isArray(parsed.remainingItems)) {
+                return {
+                    guardName: guard.name,
+                    completed: true,
+                    confidence: 0.3,
+                    remainingItems: [],
+                    detail: "Checklist response had no per-item data, skipping",
+                };
+            }
+
+            const completedById = new Map<string, string>();
+            for (const item of parsed.completedItems ?? []) {
+                if (!item || typeof item.id !== "string") continue;
+                const evidence = typeof item.evidence === "string" && item.evidence.trim()
+                    ? item.evidence.trim()
+                    : "Checklist guard found completion evidence.";
+                completedById.set(item.id, evidence);
+            }
+
+            const explicitRemaining = new Map<string, string>();
+            for (const item of parsed.remainingItems ?? []) {
+                if (typeof item === "string") {
+                    explicitRemaining.set(item, item);
+                    continue;
+                }
+                if (!item || typeof item.id !== "string") continue;
+                const reason = typeof item.reason === "string" && item.reason.trim()
+                    ? item.reason.trim()
+                    : "No completion evidence yet.";
+                explicitRemaining.set(item.id, reason);
+            }
+
+            const now = Date.now();
+            const nextChecklist = activeGoal.checklist.map((item) => {
+                const evidence = completedById.get(item.id);
+                if (!evidence || item.status === "done") return item;
+                return {
+                    ...item,
+                    status: "done" as const,
+                    evidence,
+                    updatedAt: now,
+                };
+            });
+
+            const remaining = nextChecklist
+                .filter((item) => item.status !== "done")
+                .map((item) => {
+                    const reason = explicitRemaining.get(item.id);
+                    return reason ? `${item.text} - ${reason}` : item.text;
+                });
+
+            activeGoal = applyChecklistProgress({
+                ...activeGoal,
+                checklist: nextChecklist,
+                currentMilestone: nextChecklist.find((item) => item.status !== "done")?.text,
+                updatedAt: now,
+            });
+            persistGoalRuntimeState();
+            channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+
+            return {
+                guardName: guard.name,
+                completed: remaining.length === 0,
+                confidence: typeof parsed.confidence === "number" ? parsed.confidence : remaining.length === 0 ? 0.9 : 0.8,
+                remainingItems: remaining,
+                detail: parsed.reasoning ?? `${nextChecklist.length - remaining.length}/${nextChecklist.length} checklist items done`,
+            };
+        } catch {
+            return {
+                guardName: guard.name,
+                completed: true,
+                confidence: 0.3,
+                remainingItems: [],
+                detail: "Failed to parse checklist guard response, skipping",
+            };
+        }
+    }
+
     async function checkCustomGuard(
         guard: Extract<GuardConfig, { type: "custom" }>,
         context: string,
@@ -1218,6 +1362,8 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                     return CI_GUARD_PROMPT(result.detail ?? "unknown", (guard as Extract<GuardConfig, { type: "ci" }>).checkCommand);
                 case "keyword":
                     return KEYWORD_GUARD_PROMPT(result.remainingItems, result.detail ?? "");
+                case "checklist":
+                    return CHECKLIST_GUARD_PROMPT(result.remainingItems);
                 case "custom": {
                     const customGuard = guard as Extract<GuardConfig, { type: "custom" }>;
                     if (customGuard.continuePromptTemplate) {

@@ -48,6 +48,13 @@ export const KeywordGuardConfigSchema = Type.Intersect([
     }),
 ]);
 
+export const ChecklistGuardConfigSchema = Type.Intersect([
+    BaseGuardConfigSchema,
+    Type.Object({
+        type: Type.Literal("checklist"),
+    }),
+]);
+
 export const CustomGuardConfigSchema = Type.Intersect([
     BaseGuardConfigSchema,
     Type.Object({
@@ -64,6 +71,7 @@ export const GuardConfigSchema = Type.Union([
     SpecsGuardConfigSchema,
     CiGuardConfigSchema,
     KeywordGuardConfigSchema,
+    ChecklistGuardConfigSchema,
     CustomGuardConfigSchema,
 ]);
 

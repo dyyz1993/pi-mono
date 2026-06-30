@@ -838,6 +838,118 @@ describe("Built-in Extensions", () => {
 				extensionActions.callLLM = originalCallLLM;
 			}
 		});
+
+		it("uses checklist guard evidence to update individual checklist items", async () => {
+			const originalCallLLM = extensionActions.callLLM;
+			extensionActions.callLLM = async (options) => {
+				const systemPrompt = String((options as { systemPrompt?: unknown }).systemPrompt ?? "");
+				if (systemPrompt.includes("goal checklist items have clear completion evidence")) {
+					return JSON.stringify({
+						completed: false,
+						confidence: 0.88,
+						completedItems: [
+							{
+								id: "check_00",
+								evidence: "Implementation diff was completed and summarized.",
+							},
+						],
+						remainingItems: [
+							{
+								id: "check_01",
+								reason: "Regression test output was not provided.",
+							},
+						],
+						reasoning: "Implementation is done, but verification evidence is missing.",
+					});
+				}
+				return JSON.stringify({
+					completed: true,
+					confidence: 0.93,
+					incompleteTasks: [],
+					reasoning: "The latest turn claims the goal is complete.",
+				});
+			};
+
+			const now = Date.now();
+			fs.writeFileSync(
+				path.join(tempDir, "supervisor-goal-runtime.json"),
+				JSON.stringify({
+					enabled: true,
+					activeGoal: {
+						id: "goal_checklist_guard_test",
+						objective: "Implement the fix and run regression tests",
+						status: "running",
+						startedAt: now,
+						updatedAt: now,
+						currentMilestone: "Implement the fix",
+						continuationCount: 0,
+						blockers: [],
+						checklist: [
+							{
+								id: "check_00",
+								text: "Implement the fix",
+								kind: "implementation",
+								status: "in_progress",
+								updatedAt: now,
+							},
+							{
+								id: "check_01",
+								text: "Run regression tests",
+								kind: "verification",
+								status: "pending",
+								updatedAt: now,
+							},
+						],
+					},
+				}),
+				"utf-8",
+			);
+
+			try {
+				const { runner, manager, outputs } = await loadExtension("session-supervisor");
+
+				await runner.emit({
+					type: "agent_end",
+					messages: [
+						{
+							role: "assistant",
+							content: [
+								{
+									type: "text",
+									text: "The implementation diff is complete. I still need to run regression tests.",
+								},
+							],
+						},
+					],
+				} as never);
+
+				const status = await invokeChannelMethod(manager, outputs, "supervisor", "getStatus");
+				const goal = status.goal as Record<string, unknown>;
+				const checklist = goal.checklist as Array<Record<string, unknown>>;
+				expect(checklist[0]).toMatchObject({
+					id: "check_00",
+					status: "done",
+					evidence: "Implementation diff was completed and summarized.",
+				});
+				expect(checklist[1]).toMatchObject({
+					id: "check_01",
+					status: "in_progress",
+				});
+				expect(status.lastCheckResult).toMatchObject({ completed: false });
+				const guardResults = (status.lastCheckResult as Record<string, unknown>).guardResults as Array<Record<string, unknown>>;
+				expect(guardResults.find((result) => result.guardName === "goal-checklist")).toMatchObject({
+					guardName: "goal-checklist",
+					completed: false,
+					remainingItems: [
+						"Run regression tests - Regression test output was not provided.",
+					],
+				});
+
+				await invokeChannelMethod(manager, outputs, "supervisor", "disable");
+			} finally {
+				extensionActions.callLLM = originalCallLLM;
+			}
+		});
 	});
 
 	// ─── 11. todo-ext ───────────────────────────────────────────────────

@@ -16,6 +16,7 @@ export const DEFAULT_CONFIG: SupervisorConfig = {
     defaultDelayMs: 30_000,
     pauseThresholdMs: 300_000,
     guards: [
+        { name: "goal-checklist", type: "checklist", enable: true },
         { name: "incomplete-keywords", type: "keyword", enable: true, keywords: ["TODO", "FIXME", "WIP", "HACK"] },
     ],
 };
