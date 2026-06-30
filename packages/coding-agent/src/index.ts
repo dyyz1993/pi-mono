@@ -439,6 +439,7 @@ export {
 	type BatchDiffResult,
 	type FileDiffResult,
 	type FileHistoryResult,
+	type FollowUpQueueItemRef,
 	type ForkMessage,
 	type ForkResult,
 	InteractiveMode,

@@ -351,6 +351,7 @@ export type PermissionMode = PermissionProfileName;
 export type LegacyPermissionMode = LegacyPermissionProfileName;
 
 export type QueueItemRef = { type: "steering" | "followUp"; index: number; text: string };
+export type FollowUpQueueItemRef = { type: "followUp"; index: number; text: string };
 
 type QueuedUserMessage = {
 	text: string;
@@ -2244,6 +2245,27 @@ export class AgentSession {
 		return { steering, followUp };
 	}
 
+	promoteQueuedFollowUp(item: FollowUpQueueItemRef): { steering: string[]; followUp: string[] } {
+		if (this._followUpMessages[item.index] !== item.text) {
+			this._emitQueueUpdate();
+			return {
+				steering: [...this._steeringMessages],
+				followUp: [...this._followUpMessages],
+			};
+		}
+
+		const [text] = this._followUpMessages.splice(item.index, 1);
+		const [entry] = this._followUpQueueEntries.splice(item.index, 1);
+		this._steeringMessages.push(text);
+		this._steeringQueueEntries.push(entry);
+		this._rebuildAgentQueues();
+		this._emitQueueUpdate();
+		return {
+			steering: [...this._steeringMessages],
+			followUp: [...this._followUpMessages],
+		};
+	}
+
 	/** Number of pending messages (includes both steering and follow-up) */
 	get pendingMessageCount(): number {
 		return this._steeringMessages.length + this._followUpMessages.length;
@@ -2464,7 +2486,9 @@ export class AgentSession {
 	// =========================================================================
 
 	private syncQueueModesFromSettings(): void {
-		this.agent.steeringMode = this.settingsManager.getSteeringMode();
+		// Steering messages are interventions for the next LLM turn and should be
+		// delivered together even when older settings still say one-at-a-time.
+		this.agent.steeringMode = "all";
 		this.agent.followUpMode = this.settingsManager.getFollowUpMode();
 	}
 
@@ -2473,7 +2497,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
-		this.agent.steeringMode = mode;
+		this.agent.steeringMode = "all";
 		this.settingsManager.setSteeringMode(mode);
 	}
 
