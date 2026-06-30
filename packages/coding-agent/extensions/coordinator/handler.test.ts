@@ -428,7 +428,7 @@ describe("Bug: delegate_list should not eagerly erase stopped or ghost tasks", (
     const listHandlerBlock = handlerSource.slice(listHandlerStart, listHandlerEnd);
 
     expect(listHandlerBlock).not.toContain("store.remove(");
-    expect(listHandlerBlock).toContain("store.markStopped(");
+    expect(listHandlerBlock).toContain("markTaskStopped(");
   });
 });
 

@@ -255,6 +255,32 @@ export function createCoordinatorHandler(
     timeoutHandles.delete(sessionId);
   };
 
+  const markTaskStopped = (
+    sessionId: string,
+    options: { error?: string; result?: string } = {}
+  ): boolean => {
+    const store = getStore();
+    const task = store.get(sessionId);
+    if (!task) return false;
+    const wasTerminal = task.status === "stopped" || task.status === "completed";
+    store.update(sessionId, {
+      status: "stopped",
+      completedAt: task.completedAt ?? Date.now(),
+      result: options.result ?? task.result,
+    });
+    cancelDelegateTimeout(sessionId);
+    if (!wasTerminal) {
+      channel.emit("task_stopped", { sessionId });
+      if (options.error) {
+        channel.emit("task_error", {
+          sessionId,
+          error: options.error,
+        });
+      }
+    }
+    return !wasTerminal;
+  };
+
   const stopTaskForTimeout = async (sessionId: string): Promise<boolean> => {
     const store = getStore();
     const task = store.get(sessionId);
@@ -270,11 +296,7 @@ export function createCoordinatorHandler(
       remoteStatus = "not_found";
     }
     if (remoteStatus === "not_found") {
-      cancelDelegateTimeout(sessionId);
-      store.update(sessionId, {
-        status: "stopped",
-        completedAt: task.completedAt ?? Date.now(),
-      });
+      markTaskStopped(sessionId, { error: "Delegate session not found" });
       return false;
     }
     if (remoteStatus !== "streaming") {
@@ -291,16 +313,9 @@ export function createCoordinatorHandler(
       // store so the parent can observe a terminal state instead of streaming.
     }
 
-    const completedAt = Date.now();
     const timeoutMs = task.timeoutMs ?? DEFAULT_ASYNC_DELEGATE_TIMEOUT_MS;
-    store.update(sessionId, {
-      status: "stopped",
-      completedAt,
+    markTaskStopped(sessionId, {
       result: formatTimeoutResult(timeoutMs),
-    });
-    channel.emit("task_stopped", { sessionId });
-    channel.emit("task_error", {
-      sessionId,
       error: formatTimeoutResult(timeoutMs),
     });
     return true;
@@ -436,9 +451,15 @@ export function createCoordinatorHandler(
       const remote = await pm.delegate_status(sessionId);
       const taskStatus =
         remote.status === "not_found" ? "stopped" : remote.status;
-      store.update(sessionId, resolveTaskStatus(task, taskStatus));
-      if (taskStatus === "stopped" || taskStatus === "completed") {
-        cancelDelegateTimeout(sessionId);
+      if (remote.status === "not_found") {
+        markTaskStopped(sessionId, { error: "Delegate session not found" });
+      } else if (taskStatus === "stopped") {
+        markTaskStopped(sessionId);
+      } else {
+        store.update(sessionId, resolveTaskStatus(task, taskStatus));
+        if (taskStatus === "completed") {
+          cancelDelegateTimeout(sessionId);
+        }
       }
       const compactInfo = await pm.delegate_compact_status(sessionId);
       return {
@@ -448,10 +469,11 @@ export function createCoordinatorHandler(
         isCompacting: compactInfo.isCompacting,
         contextUsage: compactInfo.contextUsage,
       };
-    } catch {
+    } catch (err) {
       // Ghost session — keep a stopped record so the parent can still see that
       // the delegated task disappeared and remove it manually if needed.
-      store.markStopped(sessionId);
+      const msg = err instanceof Error ? err.message : String(err);
+      markTaskStopped(sessionId, { error: msg });
       return { task: store.get(sessionId) ?? null };
     }
   });
@@ -465,14 +487,21 @@ export function createCoordinatorHandler(
         const remote = await pm.delegate_status(t.sessionId);
         const taskStatus =
           remote.status === "not_found" ? "stopped" : remote.status;
-        store.update(t.sessionId, resolveTaskStatus(t, taskStatus));
-        if (taskStatus === "stopped" || taskStatus === "completed") {
-          cancelDelegateTimeout(t.sessionId);
+        if (remote.status === "not_found") {
+          markTaskStopped(t.sessionId, { error: "Delegate session not found" });
+        } else if (taskStatus === "stopped") {
+          markTaskStopped(t.sessionId);
+        } else {
+          store.update(t.sessionId, resolveTaskStatus(t, taskStatus));
+          if (taskStatus === "completed") {
+            cancelDelegateTimeout(t.sessionId);
+          }
         }
-      } catch {
+      } catch (err) {
         // Ghost session — do not erase the task during list refresh. Mark it as
         // stopped and let explicit remove/clear handle cleanup.
-        store.markStopped(t.sessionId);
+        const msg = err instanceof Error ? err.message : String(err);
+        markTaskStopped(t.sessionId, { error: msg });
       }
     }
     return { tasks: store.list() };

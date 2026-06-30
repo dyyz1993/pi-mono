@@ -74,6 +74,11 @@ function setupTest(pmOverrides: Partial<ProcessManagerApi> = {}): TestContext {
 		arr.push(data);
 		emittedEvents.set("task_stopped", arr);
 	});
+	client.on("task_error", (data) => {
+		const arr = emittedEvents.get("task_error") ?? [];
+		arr.push(data);
+		emittedEvents.set("task_error", arr);
+	});
 
 	return {
 		tempDir,
@@ -505,6 +510,36 @@ describe("session_delegate_status handler", () => {
 		expect(result.task!.status).toBe("stopped");
 		expect(result.task!.completedAt).toBeDefined();
 		expect(ctx.store.get("ghost-sess")!.status).toBe("stopped");
+		expect(ctx.emittedEvents.get("task_stopped")).toContainEqual({ sessionId: "ghost-sess" });
+		expect(ctx.emittedEvents.get("task_error")).toContainEqual({
+			sessionId: "ghost-sess",
+			error: "gone",
+		});
+	});
+
+	it("emits terminal events when a known task is reported as not_found", async () => {
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "not_found" as const }),
+		});
+		ctx.store.add({
+			sessionId: "not-found-sess",
+			title: "Missing",
+			task: "task",
+			projectPath: "/tmp",
+			dispatchedAt: Date.now(),
+			status: "streaming",
+		});
+
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "not-found-sess",
+		});
+
+		expect(result.task!.status).toBe("stopped");
+		expect(ctx.emittedEvents.get("task_stopped")).toContainEqual({ sessionId: "not-found-sess" });
+		expect(ctx.emittedEvents.get("task_error")).toContainEqual({
+			sessionId: "not-found-sess",
+			error: "Delegate session not found",
+		});
 	});
 });
 
@@ -569,6 +604,11 @@ describe("session_delegate_list handler", () => {
 		expect(result.tasks).toHaveLength(1);
 		expect(result.tasks[0].status).toBe("stopped");
 		expect(result.tasks[0].completedAt).toBeDefined();
+		expect(ctx.emittedEvents.get("task_stopped")).toContainEqual({ sessionId: "ghost-1" });
+		expect(ctx.emittedEvents.get("task_error")).toContainEqual({
+			sessionId: "ghost-1",
+			error: "not found",
+		});
 	});
 });
 
