@@ -85,6 +85,35 @@ describe("path boundary approval", () => {
 		expect(executed).toBe(false);
 	});
 
+	it("allows benign read-only access outside cwd in normal mode", async () => {
+		let executed = false;
+		const readTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Read file",
+			parameters: Type.Object({ file_path: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+
+		const cwd = join(process.cwd(), ".tmp", `path-boundary-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(cwd, { recursive: true });
+		const harness = await createHarness({ cwd, tools: [readTool] });
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("read", { file_path: join(process.cwd(), "README.md") }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("read a harmless file outside cwd");
+		expect(executed).toBe(true);
+	});
+
 	it("blocks writing files outside cwd in normal mode (no UI)", async () => {
 		let executed = false;
 		const writeTool: AgentTool = {
