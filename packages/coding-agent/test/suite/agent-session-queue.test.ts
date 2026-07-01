@@ -282,10 +282,12 @@ describe("AgentSession queue characterization", () => {
 			{ customType: "queue-test", content: "steer custom", display: true, details: { value: 1 } },
 			{ deliverAs: "steer" },
 		);
+		expect(harness.session.getSteeringMessages()).toEqual(["steer custom"]);
 		releaseToolExecution();
 		await promptPromise;
 
 		expect(sawCustomMessage).toBe(true);
+		expect(harness.session.getSteeringMessages()).toEqual([]);
 		expect(
 			harness.session.messages.some((message) => message.role === "custom" && message.customType === "queue-test"),
 		).toBe(true);
@@ -316,10 +318,12 @@ describe("AgentSession queue characterization", () => {
 			{ customType: "queue-test", content: "follow-up custom", display: true, details: { value: 1 } },
 			{ deliverAs: "followUp" },
 		);
+		expect(harness.session.getFollowUpMessages()).toEqual(["follow-up custom"]);
 		releaseToolExecution();
 		await promptPromise;
 
 		expect(sawCustomMessage).toBe(true);
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
 		expect(
 			harness.session.messages.some((message) => message.role === "custom" && message.customType === "queue-test"),
 		).toBe(true);

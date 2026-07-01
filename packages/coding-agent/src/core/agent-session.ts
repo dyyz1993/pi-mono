@@ -995,12 +995,17 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
+		// When a queued user/custom message starts, remove it BEFORE emitting.
 		// This ensures the UI sees the updated queue state
-		if (event.type === "message_start" && event.message.role === "user") {
-			this._overflowRecoveryAttempts = 0;
-			resetLoopDetection(this._loopState);
-			const messageText = this._getUserMessageText(event.message);
+		if (
+			event.type === "message_start" &&
+			(event.message.role === "user" || event.message.role === "custom")
+		) {
+			if (event.message.role === "user") {
+				this._overflowRecoveryAttempts = 0;
+				resetLoopDetection(this._loopState);
+			}
+			const messageText = getMessageText(event.message);
 			if (messageText) {
 				// Check steering queue first
 				const steeringIndex = this._steeringMessages.indexOf(messageText);
@@ -1089,15 +1094,6 @@ export class AgentSession {
 			}
 		}
 		return false;
-	}
-
-	/** Extract text content from a message */
-	private _getUserMessageText(message: Message): string {
-		if (message.role !== "user") return "";
-		const content = message.content;
-		if (typeof content === "string") return content;
-		const textBlocks = content.filter((c) => c.type === "text");
-		return textBlocks.map((c) => (c as TextContent).text).join("");
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
@@ -2134,9 +2130,14 @@ export class AgentSession {
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming) {
+			const queueText = getMessageText(appMessage);
 			if (options?.deliverAs === "followUp") {
+				this._followUpMessages.push(queueText);
+				this._emitQueueUpdate();
 				this.agent.followUp(appMessage);
 			} else {
+				this._steeringMessages.push(queueText);
+				this._emitQueueUpdate();
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
