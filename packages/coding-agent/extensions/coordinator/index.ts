@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import { COORDINATOR_CHANNEL_NAME, type CoordinatorChannelContract, type SessionStatus } from "./types.ts";
 import { createCoordinatorHandler, TaskStore, type ProcessManagerApi } from "./handler.ts";
 import { createServerProxy } from "./server-proxy.ts";
+import { createIsolatedWorktree } from "./worktree-isolation.ts";
 
 /**
  * Parse a structured completion signal from a delegated session message.
@@ -52,6 +53,10 @@ const DelegateParams = Type.Object({
     Type.Literal("followUp"),
     Type.Literal("auto"),
   ], { description: "How delegate replies should be delivered to the parent session. interrupt = insert/steer into the parent immediately (default); followUp = queue until the parent finishes; auto = immediate when idle, follow-up when busy." })),
+  worktree: Type.Optional(Type.Object({
+    branch: Type.String({ description: "Branch name to create a git worktree for isolation" }),
+    sourceBranch: Type.Optional(Type.String({ description: "Optional source branch to branch from" })),
+  }, { description: "If set, creates an isolated git worktree for this delegated session before starting it." })),
 });
 
 const DelegateSendParams = Type.Object({
@@ -139,8 +144,15 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const sid = currentSessionId || ctx.sessionManager.getSessionId();
-        const projectPath = params.projectPath || ctx.cwd;
+        let projectPath = params.projectPath || ctx.cwd;
         const requestedAgent = getRequestedAgent(params);
+
+        // If worktree isolation is requested, create the worktree first and use it as projectPath
+        if (params.worktree) {
+          projectPath = createIsolatedWorktree(projectPath, params.worktree.branch, params.worktree.sourceBranch);
+          pi.appendEntry("coordinator_worktree_created", { branch: params.worktree.branch, worktreePath: projectPath });
+        }
+
         const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, requestedAgent, params.model);
 
         if (!result.sessionId) {

@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { getExtensionRuntimeResourcePolicy } from "../runtime-policy.ts";
 
 import { type SubagentChannelContract } from "./subagent-shared/index.ts";
+import { createIsolatedWorktree } from "../coordinator/worktree-isolation.ts";
 import type { CoordinatorChannelContract } from "../coordinator/types.ts";
 
 interface SubagentDetails {
@@ -84,6 +85,10 @@ const SubagentParams = Type.Object({
   ),
   maxDepth: Type.Optional(Type.Number({ description: "Max recursion depth for subagent chain. Default: 5.", default: 5 })),
   variables: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Variables to pass to the subagent. Use $variable_name in task to reference them." })),
+  worktree: Type.Optional(Type.Object({
+    branch: Type.String({ description: "Branch name to create a git worktree for isolation" }),
+    sourceBranch: Type.Optional(Type.String({ description: "Optional source branch to branch from" })),
+  }, { description: "If set, creates an isolated git worktree for this subagent before starting it." })),
 });
 
 const SubagentResumeParams = Type.Object({
@@ -272,6 +277,11 @@ export default function(pi: ExtensionAPI) {
         });
       });
 
+      let resolvedProjectPath = params.cwd ?? ctx.cwd;
+      if (params.worktree) {
+        resolvedProjectPath = createIsolatedWorktree(resolvedProjectPath, params.worktree.branch, params.worktree.sourceBranch);
+      }
+
       try {
         const result = await coordinatorClient.call(
           "session_delegate_sync",
@@ -281,7 +291,7 @@ export default function(pi: ExtensionAPI) {
             agent: resolvedAgentName,
             model: params.model,
             timeoutMs,
-            projectPath: params.cwd ?? ctx.cwd,
+            projectPath: resolvedProjectPath,
             depth: currentDepth + 1,
             variables: params.variables,
             toolCallId,
