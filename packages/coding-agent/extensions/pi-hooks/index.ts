@@ -411,7 +411,7 @@ export default function (pi: ExtensionAPI) {
 								buildHookApprovalRequest({
 									sessionId: currentSessionId ?? "unknown",
 									toolCallId: event.toolCallId,
-									title: `${toolLabel} 确认`,
+									title: `${toolLabel} confirmation`,
 									message: question,
 									toolName: event.toolName,
 									matcher: group.matcher ?? "*",
@@ -449,9 +449,9 @@ export default function (pi: ExtensionAPI) {
 									}),
 								};
 							}
-							return { block: true, reason: `需要确认但权限请求未完成: ${blockReason}` };
+							return { block: true, reason: `Confirmation was required but not completed: ${blockReason}` };
 						}
-						return { block: true, reason: `需要确认但当前没有可用 UI: ${blockReason}` };
+						return { block: true, reason: `Confirmation was required but no UI is available: ${blockReason}` };
 					}
 					return { block: true, reason: blockReason };
 				}
@@ -725,14 +725,14 @@ function extractDescription(input: Record<string, unknown>): string | undefined 
 
 function formatToolLabel(toolName: string): string {
 	const labels: Record<string, string> = {
-		bash: "Bash 命令",
-		read: "文件读取",
-		write: "文件写入",
-		edit: "文件编辑",
-		grep: "内容搜索",
-		find: "文件搜索",
-		ls: "目录列表",
-		mcp: "MCP 工具",
+		bash: "Bash command",
+		read: "File read",
+		write: "File write",
+		edit: "File edit",
+		grep: "Content search",
+		find: "File search",
+		ls: "Directory list",
+		mcp: "MCP tool",
 	};
 	if (labels[toolName]) return labels[toolName];
 	return toolName.charAt(0).toUpperCase() + toolName.slice(1);
