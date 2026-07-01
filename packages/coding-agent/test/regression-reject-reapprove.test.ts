@@ -16,9 +16,9 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../extensions/file-review/index.ts";
-import { createLocalFileSystemCapability } from "../src/core/filesystem-capability.ts";
 import { FileSnapshotManager } from "../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../src/core/file-store/internal-git.ts";
+import { createLocalFileSystemCapability } from "../src/core/filesystem-capability.ts";
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -148,7 +148,7 @@ describe("regression: reject then recreate then approve then modify", () => {
 		});
 
 		// Verify pending shows file as added
-		let pending = await channel._invokeAsync("review.pending", {}) as Array<{
+		let pending = (await channel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent?: string | null;
@@ -178,7 +178,7 @@ describe("regression: reject then recreate then approve then modify", () => {
 		});
 
 		// Approve
-		const approveResult = await channel._invokeAsync("review.approve", { path: "file.txt" }) as { ok: boolean };
+		const approveResult = (await channel._invokeAsync("review.approve", { path: "file.txt" })) as { ok: boolean };
 		expect(approveResult.ok).toBe(true);
 
 		// Turn 2: modify file.txt = "V2"
@@ -193,7 +193,7 @@ describe("regression: reject then recreate then approve then modify", () => {
 		});
 
 		// Query pending — THE KEY CHECK
-		pending = await channel._invokeAsync("review.pending", {}) as Array<{
+		pending = (await channel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent?: string | null;

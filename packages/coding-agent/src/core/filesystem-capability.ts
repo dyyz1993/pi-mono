@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
+import { stat as fsStat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export interface FileSystemDirent {

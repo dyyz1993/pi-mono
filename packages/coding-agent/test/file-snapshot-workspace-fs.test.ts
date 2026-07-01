@@ -2,17 +2,18 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FileSnapshotManager } from "../src/core/file-store/file-snapshot-manager.ts";
+import { InternalGit } from "../src/core/file-store/internal-git.ts";
 import {
 	createLocalFileSystemCapability,
 	type FileSystemCapability,
 	type FileSystemWalkResult,
 } from "../src/core/filesystem-capability.ts";
-import { FileSnapshotManager } from "../src/core/file-store/file-snapshot-manager.ts";
-import { InternalGit } from "../src/core/file-store/internal-git.ts";
 
 function routedFs(localRoot: string, remoteRoot: string): FileSystemCapability {
 	const local = createLocalFileSystemCapability();
-	const toRemote = (path: string) => (path === localRoot ? remoteRoot : path.replace(`${localRoot}/`, `${remoteRoot}/`));
+	const toRemote = (path: string) =>
+		path === localRoot ? remoteRoot : path.replace(`${localRoot}/`, `${remoteRoot}/`);
 	return {
 		readFile: (path) => local.readFile(toRemote(path)),
 		readFileText: (path) => local.readFileText(toRemote(path)),

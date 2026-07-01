@@ -14,9 +14,9 @@ import { join } from "node:path";
 import type { TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../../extensions/file-review/index.ts";
-import { createLocalFileSystemCapability } from "../../src/core/filesystem-capability.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
+import { createLocalFileSystemCapability } from "../../src/core/filesystem-capability.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../src/index.ts";
 
 const tempDirs: string[] = [];
@@ -185,7 +185,7 @@ describe("file-review approve-then-modify re-approval", () => {
 		await mgr.onTurnEndAsync(cwd, 0, (type, data) => api.appendEntry(type, data) ?? "");
 
 		// Check pending — should have test.txt
-		const pending0 = await reviewChannel._invokeAsync("review.pending", {}) as Array<{
+		const pending0 = (await reviewChannel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			status: string;
 			fileStatus: string;
@@ -199,7 +199,7 @@ describe("file-review approve-then-modify re-approval", () => {
 		await reviewChannel._invokeAsync("review.approve", { path: "test.txt" });
 
 		// Check pending — should be empty (approved)
-		const pending1 = await reviewChannel._invokeAsync("review.pending", {}) as unknown[];
+		const pending1 = (await reviewChannel._invokeAsync("review.pending", {})) as unknown[];
 		expect(pending1).toHaveLength(0);
 
 		// ── Turn 1: Modify file ──
@@ -211,7 +211,7 @@ describe("file-review approve-then-modify re-approval", () => {
 		await mgr.onTurnEndAsync(cwd, 1, (type, data) => api.appendEntry(type, data) ?? "");
 
 		// ── Check pending — should re-appear as "modified" ──
-		const pending2 = await reviewChannel._invokeAsync("review.pending", {}) as Array<{
+		const pending2 = (await reviewChannel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			status: string;
 			fileStatus: string;
@@ -262,7 +262,7 @@ describe("file-review approve-then-modify re-approval", () => {
 		await handlers.get("turn_end")!({ turnIndex: 1 } as TurnEndEvent, ctx);
 		await mgr.onTurnEndAsync(cwd, 1, (type, data) => api.appendEntry(type, data) ?? "");
 
-		const pending = await reviewChannel._invokeAsync("review.pending", {}) as Array<{
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			oldContent: string | null;
 			newContent: string | null;

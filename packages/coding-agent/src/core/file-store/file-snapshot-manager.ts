@@ -1,10 +1,7 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as Diff from "diff";
-import {
-	createLocalFileSystemCapability,
-	type FileSystemCapability,
-} from "../filesystem-capability.ts";
+import { createLocalFileSystemCapability, type FileSystemCapability } from "../filesystem-capability.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import type { InternalGit, TreeEntry } from "./internal-git.ts";
 
@@ -156,7 +153,10 @@ export class FileSnapshotManager {
 	private treeCache = new Map<string, { tree: Map<string, string>; at: number }>();
 	private readonly MAX_CACHED_TREES = 10;
 
-	constructor(git: InternalGit, options?: { workspaceFs?: FileSystemCapability | (() => FileSystemCapability | undefined) }) {
+	constructor(
+		git: InternalGit,
+		options?: { workspaceFs?: FileSystemCapability | (() => FileSystemCapability | undefined) },
+	) {
 		this.git = git;
 		const workspaceFs = options?.workspaceFs;
 		this.workspaceFsProvider =
@@ -282,7 +282,11 @@ export class FileSnapshotManager {
 		this.turnIndex = turnIndex + 1;
 	}
 
-	async onTurnEndAsync(cwd: string, turnIndex: number, appendEntry: (type: string, data: unknown) => string): Promise<void> {
+	async onTurnEndAsync(
+		cwd: string,
+		turnIndex: number,
+		appendEntry: (type: string, data: unknown) => string,
+	): Promise<void> {
 		await this.ensureInitializedAsync(cwd);
 		const files = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs());
 		const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
@@ -860,26 +864,11 @@ export class FileSnapshotManager {
 		return { restored: restore.sort(), deleted: deleted.sort(), skipped: [], dirty, forceRestored: dirty };
 	}
 
-	private findDirtyFiles(cwd: string, currentFiles: Map<string, string>, restore: string[]): string[] {
-		const dirty: string[] = [];
-		for (const path of restore) {
-			const absolutePath = join(cwd, path);
-			if (!existsSync(absolutePath)) continue;
-			const expected = currentFiles.get(path);
-			if (expected === undefined) continue;
-			try {
-				const stat = lstatSync(absolutePath);
-				if (stat.size > FILE_SIZE_LIMIT) continue;
-				const actual = readFileSync(absolutePath, "utf-8");
-				if (this.git.hashContent(actual) !== this.git.hashContent(expected)) {
-					dirty.push(path);
-				}
-			} catch {}
-		}
-		return dirty.sort();
-	}
-
-	private async findDirtyFilesAsync(cwd: string, currentFiles: Map<string, string>, restore: string[]): Promise<string[]> {
+	private async findDirtyFilesAsync(
+		cwd: string,
+		currentFiles: Map<string, string>,
+		restore: string[],
+	): Promise<string[]> {
 		const dirty: string[] = [];
 		const fs = this.getWorkspaceFs();
 		for (const path of restore) {

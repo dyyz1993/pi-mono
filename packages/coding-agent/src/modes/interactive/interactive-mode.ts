@@ -73,6 +73,7 @@ import type {
 	ExtensionWidgetOptions,
 	ProjectTrustContext,
 } from "../../core/extensions/index.ts";
+import { createLocalFileSystemCapability } from "../../core/filesystem-capability.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
@@ -86,7 +87,6 @@ import { type SessionContext, SessionManager } from "../../core/session-manager.
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
-import { createLocalFileSystemCapability } from "../../core/filesystem-capability.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasProjectConfigDir, hasProjectTrustInputs, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
