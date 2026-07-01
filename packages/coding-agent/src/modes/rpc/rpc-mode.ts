@@ -1291,6 +1291,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "set_flag": {
 				session.extensionRunner.setFlagValue(command.name, command.value);
+				session.sessionManager.appendSystemEvent(
+					"extension_toggled",
+					`Extension flag ${command.name} changed to ${String(command.value)}`,
+					{ name: command.name, value: command.value },
+				);
 				return success(id, "set_flag");
 			}
 

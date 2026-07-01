@@ -325,6 +325,35 @@ describe("RPC prompt response semantics", () => {
 		}
 	});
 
+	it("records extension flag changes as hidden system events", async () => {
+		const { lineHandler, runtimeHost, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "flag-1", type: "set_flag", name: "disable-supervisor", value: true }));
+
+			await vi.waitFor(() => {
+				const responses = getResponses(rpcIo.outputLines, "flag-1", "set_flag");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					success: true,
+				});
+			});
+
+			const systemEvents = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "system_event");
+			expect(systemEvents).toHaveLength(1);
+			expect(systemEvents[0]).toMatchObject({
+				eventType: "extension_toggled",
+				eventLabel: "Extension flag disable-supervisor changed to true",
+				display: false,
+				data: { name: "disable-supervisor", value: true },
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("records successful cwd changes as hidden system events", async () => {
 		const { lineHandler, runtimeHost, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
