@@ -94,6 +94,16 @@ export {
 	shouldCompact,
 } from "./core/compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
+export {
+	createLocalFileSystemCapability,
+	type FileSystemCapability,
+	type FileSystemDirent,
+	type FileSystemReadBatchResult,
+	type FileSystemStat,
+	type FileSystemWalkEntry,
+	type FileSystemWalkOptions,
+	type FileSystemWalkResult,
+} from "./core/filesystem-capability.ts";
 // Extension system
 export type {
 	AgentEndEvent,

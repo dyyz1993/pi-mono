@@ -20,6 +20,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../../extensions/file-review/index.ts";
+import { createLocalFileSystemCapability } from "../../src/core/filesystem-capability.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
 
@@ -108,6 +109,35 @@ function createMockChannel(name: string) {
 			const { invokeId: _, result: arrResult, ...rest } = result as Record<string, unknown>;
 			return arrResult !== undefined ? arrResult : rest;
 		},
+		async _invokeAsync(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+			const invokeId = ++invokeCounter;
+			const callMsg = { __call: method, invokeId, ...params };
+
+			return await new Promise<unknown>((resolve, reject) => {
+				const origSend = channel.send;
+				const timer = setTimeout(() => {
+					channel.send = origSend;
+					reject(new Error(`Method ${method} timeout`));
+				}, 5000);
+				channel.send = (data: unknown) => {
+					const record = data as Record<string, unknown>;
+					if (record.invokeId === invokeId) {
+						clearTimeout(timer);
+						channel.send = origSend;
+						const { invokeId: _, result: arrResult, ...rest } = record;
+						resolve(arrResult !== undefined ? arrResult : rest);
+					}
+				};
+
+				if (receiveHandler) {
+					receiveHandler(callMsg);
+				} else {
+					clearTimeout(timer);
+					channel.send = origSend;
+					resolve(undefined);
+				}
+			});
+		},
 	};
 	return channel;
 }
@@ -143,6 +173,7 @@ function createMockContext(
 ): ExtensionContext {
 	return {
 		cwd,
+		fs: createLocalFileSystemCapability(),
 		fileSnapshotManager: mgr,
 		sessionManager: {
 			getEntries: () =>
@@ -216,7 +247,7 @@ describe("review.pending", () => {
 		const fix = setupReviewFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as unknown[];
 		expect(pending).toHaveLength(0);
 	});
 
@@ -228,7 +259,7 @@ describe("review.pending", () => {
 			writeFileSync(join(fix.cwd, "new.txt"), "new content");
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			status: string;
 			fileStatus: string;
@@ -252,7 +283,7 @@ describe("review.pending", () => {
 			writeFileSync(join(fix.cwd, "existing.txt"), "modified");
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;
@@ -273,7 +304,7 @@ describe("review.pending", () => {
 			unlinkSync(join(fix.cwd, "delete-me.txt"));
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;
@@ -294,9 +325,9 @@ describe("review.pending", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "v1");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as unknown[];
 		expect(pending).toHaveLength(0);
 	});
 
@@ -308,9 +339,9 @@ describe("review.pending", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "modified");
 		});
 
-		fix.channel._invokeDirect("review.reject", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "file.txt" });
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as unknown[];
 		expect(pending).toHaveLength(0);
 	});
 
@@ -328,7 +359,7 @@ describe("review.pending", () => {
 			unlinkSync(join(fix.cwd, "ephemeral.txt"));
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as unknown[];
 		expect(pending).toHaveLength(0);
 	});
 
@@ -340,14 +371,14 @@ describe("review.pending", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "created");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		// Turn 1: delete the approved file
 		await runTurn(fix, 1, () => {
 			unlinkSync(join(fix.cwd, "file.txt"));
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 		}>;
@@ -368,7 +399,7 @@ describe("review.pending", () => {
 			writeFileSync(join(fix.cwd, "multiline.txt"), "line 1\nline 2\nline 3\n");
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			addedLines: number;
@@ -397,13 +428,13 @@ describe("review.pending", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "v1");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		await runTurn(fix, 1, () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "v2");
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;
@@ -430,7 +461,7 @@ describe("review.approve", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "content");
 		});
 
-		const result = fix.channel._invokeDirect("review.approve", { path: "file.txt" }) as { ok: boolean };
+		const result = await fix.channel._invokeAsync("review.approve", { path: "file.txt" }) as { ok: boolean };
 		expect(result.ok).toBe(true);
 	});
 
@@ -442,9 +473,9 @@ describe("review.approve", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "content");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
-		const approvals = fix.channel._invokeDirect("review.approvals", {}) as Array<{
+		const approvals = await fix.channel._invokeAsync("review.approvals", {}) as Array<{
 			path: string;
 			status: string;
 		}>;
@@ -461,7 +492,7 @@ describe("review.approve", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "content");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		const approvalEntries = fix.entries.filter((e) => e.type === "file-approval");
 		expect(approvalEntries.length).toBeGreaterThanOrEqual(1);
@@ -478,8 +509,8 @@ describe("review.approve", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "content");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
-		const result2 = fix.channel._invokeDirect("review.approve", { path: "file.txt" }) as { ok: boolean };
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
+		const result2 = await fix.channel._invokeAsync("review.approve", { path: "file.txt" }) as { ok: boolean };
 		expect(result2.ok).toBe(true);
 	});
 });
@@ -499,7 +530,7 @@ describe("review.reject", () => {
 
 		expect(existsSync(join(fix.cwd, "new.txt"))).toBe(true);
 
-		const result = fix.channel._invokeDirect("review.reject", { path: "new.txt" }) as {
+		const result = await fix.channel._invokeAsync("review.reject", { path: "new.txt" }) as {
 			ok: boolean;
 			rolledBack: boolean;
 		};
@@ -517,7 +548,7 @@ describe("review.reject", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "modified");
 		});
 
-		const result = fix.channel._invokeDirect("review.reject", { path: "file.txt" }) as {
+		const result = await fix.channel._invokeAsync("review.reject", { path: "file.txt" }) as {
 			ok: boolean;
 			rolledBack: boolean;
 		};
@@ -537,7 +568,7 @@ describe("review.reject", () => {
 
 		expect(existsSync(join(fix.cwd, "file.txt"))).toBe(false);
 
-		const result = fix.channel._invokeDirect("review.reject", { path: "file.txt" }) as {
+		const result = await fix.channel._invokeAsync("review.reject", { path: "file.txt" }) as {
 			ok: boolean;
 			rolledBack: boolean;
 		};
@@ -555,9 +586,9 @@ describe("review.reject", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "modified");
 		});
 
-		fix.channel._invokeDirect("review.reject", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "file.txt" });
 
-		const approvals = fix.channel._invokeDirect("review.approvals", {}) as Array<{
+		const approvals = await fix.channel._invokeAsync("review.approvals", {}) as Array<{
 			path: string;
 			status: string;
 		}>;
@@ -574,7 +605,7 @@ describe("review.reject", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "modified");
 		});
 
-		fix.channel._invokeDirect("review.reject", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "file.txt" });
 
 		const approvalEntries = fix.entries.filter((e) => e.type === "file-approval");
 		expect(approvalEntries.length).toBeGreaterThanOrEqual(1);
@@ -587,7 +618,7 @@ describe("review.reject", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		// No turn changes
-		const result = fix.channel._invokeDirect("review.reject", { path: "file.txt" }) as {
+		const result = await fix.channel._invokeAsync("review.reject", { path: "file.txt" }) as {
 			ok: boolean;
 		};
 
@@ -611,7 +642,7 @@ describe("review.approveAll", () => {
 			writeFileSync(join(fix.cwd, "base.txt"), "modified");
 		});
 
-		const result = fix.channel._invokeDirect("review.approveAll", {}) as { count: number };
+		const result = await fix.channel._invokeAsync("review.approveAll", {}) as { count: number };
 
 		expect(result.count).toBe(3);
 	});
@@ -626,9 +657,9 @@ describe("review.approveAll", () => {
 		});
 
 		// Approve one individually
-		fix.channel._invokeDirect("review.approve", { path: "file1.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file1.txt" });
 
-		const result = fix.channel._invokeDirect("review.approveAll", {}) as { count: number };
+		const result = await fix.channel._invokeAsync("review.approveAll", {}) as { count: number };
 		expect(result.count).toBe(1);
 	});
 
@@ -636,7 +667,7 @@ describe("review.approveAll", () => {
 		const fix = setupReviewFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.approveAll", {}) as { count: number };
+		const result = await fix.channel._invokeAsync("review.approveAll", {}) as { count: number };
 		expect(result.count).toBe(0);
 	});
 
@@ -649,9 +680,9 @@ describe("review.approveAll", () => {
 			writeFileSync(join(fix.cwd, "b.txt"), "b");
 		});
 
-		fix.channel._invokeDirect("review.approveAll", {});
+		await fix.channel._invokeAsync("review.approveAll", {});
 
-		const approvals = fix.channel._invokeDirect("review.approvals", { status: "approved" }) as Array<{
+		const approvals = await fix.channel._invokeAsync("review.approvals", { status: "approved" }) as Array<{
 			path: string;
 			status: string;
 		}>;
@@ -674,7 +705,7 @@ describe("review.rejectAll", () => {
 			writeFileSync(join(fix.cwd, "b.txt"), "b");
 		});
 
-		const result = fix.channel._invokeDirect("review.rejectAll", {}) as {
+		const result = await fix.channel._invokeAsync("review.rejectAll", {}) as {
 			count: number;
 			rolledBack: number;
 		};
@@ -694,9 +725,9 @@ describe("review.rejectAll", () => {
 			writeFileSync(join(fix.cwd, "pending.txt"), "b");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "approved.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "approved.txt" });
 
-		const result = fix.channel._invokeDirect("review.rejectAll", {}) as { count: number };
+		const result = await fix.channel._invokeAsync("review.rejectAll", {}) as { count: number };
 		expect(result.count).toBe(1);
 		// approved.txt should still exist
 		expect(existsSync(join(fix.cwd, "approved.txt"))).toBe(true);
@@ -706,7 +737,7 @@ describe("review.rejectAll", () => {
 		const fix = setupReviewFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.rejectAll", {}) as { count: number };
+		const result = await fix.channel._invokeAsync("review.rejectAll", {}) as { count: number };
 		expect(result.count).toBe(0);
 	});
 
@@ -718,7 +749,7 @@ describe("review.rejectAll", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "modified");
 		});
 
-		fix.channel._invokeDirect("review.rejectAll", {});
+		await fix.channel._invokeAsync("review.rejectAll", {});
 
 		expect(readFileSync(join(fix.cwd, "file.txt"), "utf-8")).toBe("original");
 	});
@@ -731,7 +762,7 @@ describe("review.rejectAll", () => {
 			unlinkSync(join(fix.cwd, "file.txt"));
 		});
 
-		fix.channel._invokeDirect("review.rejectAll", {});
+		await fix.channel._invokeAsync("review.rejectAll", {});
 
 		expect(readFileSync(join(fix.cwd, "file.txt"), "utf-8")).toBe("will be restored");
 	});
@@ -746,7 +777,7 @@ describe("review.approvals", () => {
 		const fix = setupReviewFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.approvals", {}) as unknown[];
+		const result = await fix.channel._invokeAsync("review.approvals", {}) as unknown[];
 		expect(result).toHaveLength(0);
 	});
 
@@ -759,10 +790,10 @@ describe("review.approvals", () => {
 			writeFileSync(join(fix.cwd, "b.txt"), "b");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "a.txt" });
-		fix.channel._invokeDirect("review.reject", { path: "b.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "a.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "b.txt" });
 
-		const result = fix.channel._invokeDirect("review.approvals", {}) as Array<{
+		const result = await fix.channel._invokeAsync("review.approvals", {}) as Array<{
 			path: string;
 			status: string;
 		}>;
@@ -779,10 +810,10 @@ describe("review.approvals", () => {
 			writeFileSync(join(fix.cwd, "b.txt"), "b");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "a.txt" });
-		fix.channel._invokeDirect("review.reject", { path: "b.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "a.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "b.txt" });
 
-		const result = fix.channel._invokeDirect("review.approvals", { status: "approved" }) as Array<{
+		const result = await fix.channel._invokeAsync("review.approvals", { status: "approved" }) as Array<{
 			status: string;
 		}>;
 
@@ -799,10 +830,10 @@ describe("review.approvals", () => {
 			writeFileSync(join(fix.cwd, "b.txt"), "modified");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "a.txt" });
-		fix.channel._invokeDirect("review.reject", { path: "b.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "a.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "b.txt" });
 
-		const result = fix.channel._invokeDirect("review.approvals", { status: "rejected" }) as Array<{
+		const result = await fix.channel._invokeAsync("review.approvals", { status: "rejected" }) as Array<{
 			status: string;
 		}>;
 
@@ -819,12 +850,12 @@ describe("review.approvals", () => {
 			writeFileSync(join(fix.cwd, "b.txt"), "b");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "a.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "a.txt" });
 
 		// Calling review.pending first creates the pending approval entry for b.txt
-		fix.channel._invokeDirect("review.pending", {});
+		await fix.channel._invokeAsync("review.pending", {});
 
-		const result = fix.channel._invokeDirect("review.approvals", { status: "pending" }) as Array<{
+		const result = await fix.channel._invokeAsync("review.approvals", { status: "pending" }) as Array<{
 			status: string;
 		}>;
 
@@ -845,7 +876,7 @@ describe("review.live", () => {
 		await fix.handlers.get("turn_start")!({}, fix.ctx);
 		await fix.handlers.get("tool_result")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.live", {}) as {
+		const result = await fix.channel._invokeAsync("review.live", {}) as {
 			turnIndex: number;
 			changes: unknown[];
 		};
@@ -861,7 +892,7 @@ describe("review.live", () => {
 		writeFileSync(join(fix.cwd, "live.txt"), "live change");
 		await fix.handlers.get("tool_result")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.live", {}) as {
+		const result = await fix.channel._invokeAsync("review.live", {}) as {
 			turnIndex: number;
 			changes: Array<{ path: string; status: string }>;
 		};
@@ -885,7 +916,7 @@ describe("review.history", () => {
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "a.txt"), "a"));
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "b.txt"), "b"));
 
-		const result = fix.channel._invokeDirect("review.history", {}) as Array<{
+		const result = await fix.channel._invokeAsync("review.history", {}) as Array<{
 			turnIndex: number;
 			changes: Array<{ path: string }>;
 		}>;
@@ -903,7 +934,7 @@ describe("review.history", () => {
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "b.txt"), "b"));
 		await runTurn(fix, 2, () => writeFileSync(join(fix.cwd, "c.txt"), "c"));
 
-		const result = fix.channel._invokeDirect("review.history", { fromTurn: 1 }) as Array<{
+		const result = await fix.channel._invokeAsync("review.history", { fromTurn: 1 }) as Array<{
 			turnIndex: number;
 		}>;
 
@@ -920,7 +951,7 @@ describe("review.history", () => {
 			writeFileSync(join(fix.cwd, "b.txt"), "b");
 		});
 
-		const result = fix.channel._invokeDirect("review.history", { pathFilter: "a.txt" }) as Array<{
+		const result = await fix.channel._invokeAsync("review.history", { pathFilter: "a.txt" }) as Array<{
 			changes: Array<{ path: string }>;
 		}>;
 
@@ -932,7 +963,7 @@ describe("review.history", () => {
 		const fix = setupReviewFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.history", {}) as unknown[];
+		const result = await fix.channel._invokeAsync("review.history", {}) as unknown[];
 		expect(result).toHaveLength(0);
 	});
 });
@@ -951,7 +982,7 @@ describe("review.summary", () => {
 			writeFileSync(join(fix.cwd, "modify.txt"), "modified");
 		});
 
-		const result = fix.channel._invokeDirect("review.summary", {}) as Array<{
+		const result = await fix.channel._invokeAsync("review.summary", {}) as Array<{
 			turnIndex: number;
 			added: number;
 			modified: number;
@@ -974,7 +1005,7 @@ describe("review.summary", () => {
 			unlinkSync(join(fix.cwd, "del.txt"));
 		});
 
-		const result = fix.channel._invokeDirect("review.summary", {}) as Array<{
+		const result = await fix.channel._invokeAsync("review.summary", {}) as Array<{
 			deleted: number;
 		}>;
 
@@ -985,7 +1016,7 @@ describe("review.summary", () => {
 		const fix = setupReviewFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.summary", {}) as unknown[];
+		const result = await fix.channel._invokeAsync("review.summary", {}) as unknown[];
 		expect(result).toHaveLength(0);
 	});
 
@@ -997,7 +1028,7 @@ describe("review.summary", () => {
 			writeFileSync(join(fix.cwd, "new.txt"), "new");
 		});
 
-		const result = fix.channel._invokeDirect("review.summary", {}) as Array<{
+		const result = await fix.channel._invokeAsync("review.summary", {}) as Array<{
 			files: string[];
 		}>;
 
@@ -1017,7 +1048,7 @@ describe("review.fileHistory", () => {
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "v1"));
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "file.txt"), "v2"));
 
-		const result = fix.channel._invokeDirect("review.fileHistory", { path: "file.txt" }) as Array<{
+		const result = await fix.channel._invokeAsync("review.fileHistory", { path: "file.txt" }) as Array<{
 			turnIndex: number;
 			status: string;
 		}>;
@@ -1035,7 +1066,7 @@ describe("review.fileHistory", () => {
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "a.txt"), "a"));
 
-		const result = fix.channel._invokeDirect("review.fileHistory", { path: "nonexistent.txt" }) as unknown[];
+		const result = await fix.channel._invokeAsync("review.fileHistory", { path: "nonexistent.txt" }) as unknown[];
 		expect(result).toHaveLength(0);
 	});
 
@@ -1046,7 +1077,7 @@ describe("review.fileHistory", () => {
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "modified"));
 		await runTurn(fix, 1, () => unlinkSync(join(fix.cwd, "file.txt")));
 
-		const result = fix.channel._invokeDirect("review.fileHistory", { path: "file.txt" }) as Array<{
+		const result = await fix.channel._invokeAsync("review.fileHistory", { path: "file.txt" }) as Array<{
 			status: string;
 		}>;
 
@@ -1068,14 +1099,14 @@ describe("review.clear", () => {
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "a.txt"), "a"));
 
 		// Verify history has data
-		const before = fix.channel._invokeDirect("review.history", {}) as unknown[];
+		const before = await fix.channel._invokeAsync("review.history", {}) as unknown[];
 		expect(before).toHaveLength(1);
 
-		const result = fix.channel._invokeDirect("review.clear", {}) as { ok: boolean };
+		const result = await fix.channel._invokeAsync("review.clear", {}) as { ok: boolean };
 		expect(result.ok).toBe(true);
 
 		// History should be empty
-		const after = fix.channel._invokeDirect("review.history", {}) as unknown[];
+		const after = await fix.channel._invokeAsync("review.history", {}) as unknown[];
 		expect(after).toHaveLength(0);
 	});
 
@@ -1085,9 +1116,9 @@ describe("review.clear", () => {
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "a.txt"), "a"));
 
-		fix.channel._invokeDirect("review.clear", {});
+		await fix.channel._invokeAsync("review.clear", {});
 
-		const summary = fix.channel._invokeDirect("review.summary", {}) as unknown[];
+		const summary = await fix.channel._invokeAsync("review.summary", {}) as unknown[];
 		expect(summary).toHaveLength(0);
 	});
 
@@ -1095,7 +1126,7 @@ describe("review.clear", () => {
 		const fix = setupReviewFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const result = fix.channel._invokeDirect("review.clear", {}) as { ok: boolean };
+		const result = await fix.channel._invokeAsync("review.clear", {}) as { ok: boolean };
 		expect(result.ok).toBe(true);
 	});
 });
@@ -1155,7 +1186,7 @@ describe("session_start restores state from entries", () => {
 
 		const channel = mockChannels.get("file-review")!;
 
-		const approvals = channel._invokeDirect("review.approvals", {}) as Array<{
+		const approvals = await channel._invokeAsync("review.approvals", {}) as Array<{
 			path: string;
 			status: string;
 		}>;
@@ -1197,7 +1228,7 @@ describe("session_start restores state from entries", () => {
 
 		const channel = mockChannels.get("file-review")!;
 
-		const history = channel._invokeDirect("review.history", {}) as Array<{
+		const history = await channel._invokeAsync("review.history", {}) as Array<{
 			turnIndex: number;
 			changes: Array<{ path: string; status: string }>;
 		}>;
@@ -1251,7 +1282,7 @@ describe("session_start restores state from entries", () => {
 
 		// Even though file.txt is approved and then deleted, it should NOT be net-zero filtered
 		// because it was previously approved.
-		const pending = channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = await channel._invokeAsync("review.pending", {}) as unknown[];
 		// The file was approved then deleted — should appear in pending (not net-zero filtered)
 		// Note: may or may not appear depending on phantom check, but net-zero filter should NOT remove it
 		// The key assertion is that everApproved prevents net-zero filtering
@@ -1274,7 +1305,7 @@ describe("session_start restores state from entries", () => {
 		await runTurn({ cwd, mgr, channel: mockChannels.get("file-review")!, handlers, entries: [], ctx: ctx1 }, 0, () =>
 			writeFileSync(join(cwd, "a.txt"), "a"),
 		);
-		mockChannels.get("file-review")!._invokeDirect("review.approve", { path: "a.txt" });
+		await mockChannels.get("file-review")!._invokeAsync("review.approve", { path: "a.txt" });
 
 		// Second session: fresh entries (simulates new session, no prior data)
 		const freshEntries: Array<{ type: string; data: unknown; customType?: string; id?: string }> = [];
@@ -1283,10 +1314,10 @@ describe("session_start restores state from entries", () => {
 
 		const channel = mockChannels.get("file-review")!;
 
-		const history = channel._invokeDirect("review.history", {}) as unknown[];
+		const history = await channel._invokeAsync("review.history", {}) as unknown[];
 		expect(history).toHaveLength(0);
 
-		const approvals = channel._invokeDirect("review.approvals", {}) as unknown[];
+		const approvals = await channel._invokeAsync("review.approvals", {}) as unknown[];
 		expect(approvals).toHaveLength(0);
 	});
 });
@@ -1305,15 +1336,15 @@ describe("mixed approval workflows", () => {
 			writeFileSync(join(fix.cwd, "discard.txt"), "discard");
 		});
 
-		fix.channel._invokeDirect("review.approve", { path: "keep.txt" });
-		fix.channel._invokeDirect("review.reject", { path: "discard.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "keep.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "discard.txt" });
 
 		// keep.txt should still exist, discard.txt should be deleted
 		expect(existsSync(join(fix.cwd, "keep.txt"))).toBe(true);
 		expect(existsSync(join(fix.cwd, "discard.txt"))).toBe(false);
 
 		// No pending files
-		const pending = fix.channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as unknown[];
 		expect(pending).toHaveLength(0);
 	});
 
@@ -1323,13 +1354,13 @@ describe("mixed approval workflows", () => {
 
 		// Turn 0: create file
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "v1"));
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		// Turn 1: modify
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "file.txt"), "v2"));
 
 		// Reject should roll back to approved version (v1)
-		fix.channel._invokeDirect("review.reject", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "file.txt" });
 
 		expect(readFileSync(join(fix.cwd, "file.txt"), "utf-8")).toBe("v1");
 	});
@@ -1340,15 +1371,15 @@ describe("mixed approval workflows", () => {
 
 		// Turn 0: create
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "v1\n"));
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		// Turn 1: modify
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "file.txt"), "v1\nv2\n"));
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		// Turn 2: delete
 		await runTurn(fix, 2, () => unlinkSync(join(fix.cwd, "file.txt")));
-		const rejectResult = fix.channel._invokeDirect("review.reject", { path: "file.txt" }) as {
+		const rejectResult = await fix.channel._invokeAsync("review.reject", { path: "file.txt" }) as {
 			ok: boolean;
 			rolledBack: boolean;
 		};
@@ -1363,7 +1394,7 @@ describe("mixed approval workflows", () => {
 
 		// Check file history — reject removes entries from turnLog,
 		// so only entries from turns before the rejected one remain
-		const history = fix.channel._invokeDirect("review.fileHistory", { path: "file.txt" }) as Array<{
+		const history = await fix.channel._invokeAsync("review.fileHistory", { path: "file.txt" }) as Array<{
 			status: string;
 		}>;
 		// History may be empty if reject cleaned all entries, or have entries from earlier turns
@@ -1381,15 +1412,15 @@ describe("mixed approval workflows", () => {
 		});
 
 		// Manually approve a and b
-		fix.channel._invokeDirect("review.approve", { path: "a.txt" });
-		fix.channel._invokeDirect("review.approve", { path: "b.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "a.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "b.txt" });
 
 		// approveAll should only count c
-		const result = fix.channel._invokeDirect("review.approveAll", {}) as { count: number };
+		const result = await fix.channel._invokeAsync("review.approveAll", {}) as { count: number };
 		expect(result.count).toBe(1);
 
 		// No pending
-		const pending = fix.channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as unknown[];
 		expect(pending).toHaveLength(0);
 	});
 
@@ -1403,10 +1434,10 @@ describe("mixed approval workflows", () => {
 		});
 
 		// Manually reject a
-		fix.channel._invokeDirect("review.reject", { path: "a.txt" });
+		await fix.channel._invokeAsync("review.reject", { path: "a.txt" });
 
 		// rejectAll should only count b
-		const result = fix.channel._invokeDirect("review.rejectAll", {}) as { count: number };
+		const result = await fix.channel._invokeAsync("review.rejectAll", {}) as { count: number };
 		expect(result.count).toBe(1);
 	});
 
@@ -1416,13 +1447,13 @@ describe("mixed approval workflows", () => {
 
 		// Turn 0: create + approve
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "v1"));
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		// Turn 1: modify same file
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "file.txt"), "v2"));
 
 		// File should be back to pending
-		const approvals = fix.channel._invokeDirect("review.approvals", { status: "pending" }) as Array<{
+		const approvals = await fix.channel._invokeAsync("review.approvals", { status: "pending" }) as Array<{
 			path: string;
 			status: string;
 		}>;
@@ -1440,8 +1471,8 @@ describe("mixed approval workflows", () => {
 
 describe("multi-turn diff scenarios", () => {
 	// Helper: get pending change for a specific path
-	function getPendingForPath(fix: ReviewFixture, path: string) {
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+	async function getPendingForPath(fix: ReviewFixture, path: string) {
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;
@@ -1464,7 +1495,7 @@ describe("multi-turn diff scenarios", () => {
 
 		// Turn 0: create V1
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "V1\n"));
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		// Turn 1: delete V1, create V2 (same turn)
 		await runTurn(fix, 1, () => {
@@ -1472,7 +1503,7 @@ describe("multi-turn diff scenarios", () => {
 			writeFileSync(join(fix.cwd, "file.txt"), "V2\n");
 		});
 
-		const pending = getPendingForPath(fix, "file.txt");
+		const pending = await getPendingForPath(fix, "file.txt");
 		expect(pending).toBeDefined();
 		// File exists on disk with V2
 		expect(pending!.newContent).toBe("V2\n");
@@ -1494,11 +1525,11 @@ describe("multi-turn diff scenarios", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "line A\nline B\n"));
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "file.txt"), "line A\nline C\n"));
 
-		const pending = getPendingForPath(fix, "file.txt");
+		const pending = await getPendingForPath(fix, "file.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.oldContent).toBe("line A\nline B\n");
 		expect(pending!.newContent).toBe("line A\nline C\n");
@@ -1521,7 +1552,7 @@ describe("multi-turn diff scenarios", () => {
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "file.txt"), "v2\n"));
 		await runTurn(fix, 2, () => unlinkSync(join(fix.cwd, "file.txt")));
 
-		const pending = getPendingForPath(fix, "file.txt");
+		const pending = await getPendingForPath(fix, "file.txt");
 		// Net-zero: file was added then deleted, never approved → filtered
 		expect(pending).toBeUndefined();
 	});
@@ -1534,11 +1565,11 @@ describe("multi-turn diff scenarios", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "file.txt"), "line 1\nline 2\n"));
-		fix.channel._invokeDirect("review.approve", { path: "file.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "file.txt" });
 
 		await runTurn(fix, 1, () => unlinkSync(join(fix.cwd, "file.txt")));
 
-		const pending = getPendingForPath(fix, "file.txt");
+		const pending = await getPendingForPath(fix, "file.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.fileStatus).toBe("deleted");
 		expect(pending!.oldContent).toBe("line 1\nline 2\n");
@@ -1566,7 +1597,7 @@ describe("multi-turn diff scenarios", () => {
 		});
 
 		// Approve B
-		fix.channel._invokeDirect("review.approve", { path: "b.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "b.txt" });
 
 		// Turn 1: modify B, delete C
 		await runTurn(fix, 1, () => {
@@ -1574,7 +1605,7 @@ describe("multi-turn diff scenarios", () => {
 			unlinkSync(join(fix.cwd, "c.txt"));
 		});
 
-		const pending = fix.channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await fix.channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;
@@ -1615,11 +1646,11 @@ describe("multi-turn diff scenarios", () => {
 		const modified = "line 1\nLINE TWO\nline 3\nline 4\nLINE FIVE\n";
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "multi.txt"), original));
-		fix.channel._invokeDirect("review.approve", { path: "multi.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "multi.txt" });
 
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "multi.txt"), modified));
 
-		const pending = getPendingForPath(fix, "multi.txt");
+		const pending = await getPendingForPath(fix, "multi.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.addedLines).toBe(2);
 		expect(pending!.deletedLines).toBe(2);
@@ -1641,11 +1672,11 @@ describe("multi-turn diff scenarios", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "grow.txt"), "base line\n"));
-		fix.channel._invokeDirect("review.approve", { path: "grow.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "grow.txt" });
 
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "grow.txt"), "base line\nnew line 1\nnew line 2\n"));
 
-		const pending = getPendingForPath(fix, "grow.txt");
+		const pending = await getPendingForPath(fix, "grow.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.addedLines).toBe(2);
 		expect(pending!.deletedLines).toBe(0);
@@ -1663,11 +1694,11 @@ describe("multi-turn diff scenarios", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "shrink.txt"), "keep 1\nkeep 2\nkeep 3\n"));
-		fix.channel._invokeDirect("review.approve", { path: "shrink.txt" });
+		await fix.channel._invokeAsync("review.approve", { path: "shrink.txt" });
 
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "shrink.txt"), ""));
 
-		const pending = getPendingForPath(fix, "shrink.txt");
+		const pending = await getPendingForPath(fix, "shrink.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.deletedLines).toBe(3);
 		expect(pending!.addedLines).toBe(0);
@@ -1688,7 +1719,7 @@ describe("multi-turn diff scenarios", () => {
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "evolve.txt"), "v1\nv2\n"));
 		await runTurn(fix, 2, () => writeFileSync(join(fix.cwd, "evolve.txt"), "v1\nv2\nv3\n"));
 
-		const pending = getPendingForPath(fix, "evolve.txt");
+		const pending = await getPendingForPath(fix, "evolve.txt");
 		expect(pending).toBeDefined();
 		// Never approved → baseline = session start (null)
 		expect(pending!.oldContent).toBeNull();
@@ -1709,7 +1740,7 @@ describe("multi-turn diff scenarios", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "step.txt"), "v1\n"));
-		const firstApproval = fix.channel._invokeDirect("review.approve", { path: "step.txt" }) as {
+		const firstApproval = await fix.channel._invokeAsync("review.approve", { path: "step.txt" }) as {
 			ok: boolean;
 			snapshotEntryId?: string;
 		};
@@ -1717,7 +1748,7 @@ describe("multi-turn diff scenarios", () => {
 		expect(firstApproval.snapshotEntryId).toBe("step-snapshot-0");
 
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "step.txt"), "v1\nv2\n"));
-		const secondApproval = fix.channel._invokeDirect("review.approve", { path: "step.txt" }) as {
+		const secondApproval = await fix.channel._invokeAsync("review.approve", { path: "step.txt" }) as {
 			ok: boolean;
 			snapshotEntryId?: string;
 		};
@@ -1730,7 +1761,7 @@ describe("multi-turn diff scenarios", () => {
 
 		await runTurn(fix, 2, () => writeFileSync(join(fix.cwd, "step.txt"), "v1\nv2\nv3\n"));
 
-		const pending = getPendingForPath(fix, "step.txt");
+		const pending = await getPendingForPath(fix, "step.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.oldContent).toBe("v1\nv2\n");
 		expect(pending!.newContent).toBe("v1\nv2\nv3\n");
@@ -1746,7 +1777,7 @@ describe("multi-turn diff scenarios", () => {
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
 		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "balanced.txt"), "keep A\nremove me\nkeep B\n"));
-		const approval = fix.channel._invokeDirect("review.approve", { path: "balanced.txt" }) as {
+		const approval = await fix.channel._invokeAsync("review.approve", { path: "balanced.txt" }) as {
 			ok: boolean;
 			snapshotEntryId?: string;
 		};
@@ -1756,7 +1787,7 @@ describe("multi-turn diff scenarios", () => {
 		// Simulate RPC/extension restart. The approval list and baseline snapshot
 		// must be restored from persisted file-approval entries.
 		await fix.handlers.get("session_start")!({}, fix.ctx);
-		const approvals = fix.channel._invokeDirect("review.approvals", { status: "approved" }) as Array<{
+		const approvals = await fix.channel._invokeAsync("review.approvals", { status: "approved" }) as Array<{
 			path: string;
 			status: string;
 			snapshotEntryId?: string;
@@ -1773,7 +1804,7 @@ describe("multi-turn diff scenarios", () => {
 			writeFileSync(join(fix.cwd, "balanced.txt"), "keep A\nnew 1\nnew 2\nnew 3\nkeep B\n"),
 		);
 
-		const pending = getPendingForPath(fix, "balanced.txt");
+		const pending = await getPendingForPath(fix, "balanced.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.oldContent).toBe("keep A\nremove me\nkeep B\n");
 		expect(pending!.newContent).toBe("keep A\nnew 1\nnew 2\nnew 3\nkeep B\n");
@@ -1808,7 +1839,7 @@ describe("multi-turn diff scenarios", () => {
 			},
 		});
 
-		const approval = fix.channel._invokeDirect("review.approve", { path: "legacy.txt" }) as {
+		const approval = await fix.channel._invokeAsync("review.approve", { path: "legacy.txt" }) as {
 			ok: boolean;
 			snapshotEntryId?: string;
 		};
@@ -1826,7 +1857,7 @@ describe("multi-turn diff scenarios", () => {
 
 		await runTurn(fix, 1, () => writeFileSync(join(fix.cwd, "legacy.txt"), "line 1\nnew A\nnew B\nline 3\n"));
 
-		const pending = getPendingForPath(fix, "legacy.txt");
+		const pending = await getPendingForPath(fix, "legacy.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.oldContent).toBe("line 1\nremove me\nline 3\n");
 		expect(pending!.newContent).toBe("line 1\nnew A\nnew B\nline 3\n");
@@ -1860,7 +1891,7 @@ describe("multi-turn diff scenarios", () => {
 			},
 		});
 
-		const approval = fix.channel._invokeDirect("review.approve", { path: "restart.txt" }) as {
+		const approval = await fix.channel._invokeAsync("review.approve", { path: "restart.txt" }) as {
 			ok: boolean;
 			snapshotEntryId?: string;
 		};
@@ -1883,7 +1914,7 @@ describe("multi-turn diff scenarios", () => {
 
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		const approvals = fix.channel._invokeDirect("review.approvals", {}) as Array<{
+		const approvals = await fix.channel._invokeAsync("review.approvals", {}) as Array<{
 			path: string;
 			status: string;
 			snapshotEntryId?: string;
@@ -1896,7 +1927,7 @@ describe("multi-turn diff scenarios", () => {
 			}),
 		);
 
-		const pending = getPendingForPath(fix, "restart.txt");
+		const pending = await getPendingForPath(fix, "restart.txt");
 		expect(pending).toBeDefined();
 		expect(pending!.oldContent).toBe("keep\nremove\n");
 		expect(pending!.newContent).toBe("keep\nadded\n");

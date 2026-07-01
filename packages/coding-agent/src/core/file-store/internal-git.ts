@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import ignore from "ignore";
+import type { FileSystemCapability, FileSystemDirent } from "../filesystem-capability.ts";
 
 export interface TreeEntry {
 	path: string;
@@ -214,6 +215,22 @@ export class InternalGit {
 		return result;
 	}
 
+	async scanWorkingDirAsync(cwd: string, fs: FileSystemCapability): Promise<Map<string, string>> {
+		const ig = ignore().add(DEFAULT_IGNORE_PATTERNS);
+		const gitignorePath = join(cwd, ".gitignore");
+		if (await fs.exists(gitignorePath)) {
+			try {
+				ig.add(await fs.readFileText(gitignorePath));
+			} catch {}
+		}
+
+		const result = new Map<string, string>();
+		const maxDepth = (await fs.exists(join(cwd, ".git"))) ? Infinity : SCAN_MAX_DEPTH_NO_GIT;
+		const ctx: ScanContext = { totalSize: 0, fileCount: 0, limitReached: false };
+		await this.scanDirAsync(cwd, cwd, ig, result, 0, maxDepth, ctx, fs);
+		return result;
+	}
+
 	private scanDir(
 		dir: string,
 		root: string,
@@ -256,6 +273,55 @@ export class InternalGit {
 					return;
 				}
 				result.set(relPath, readFileSync(fullPath, "utf-8"));
+				ctx.totalSize += stat.size;
+				ctx.fileCount++;
+			} catch {}
+		}
+	}
+
+	private async scanDirAsync(
+		dir: string,
+		root: string,
+		ig: ReturnType<typeof ignore>,
+		result: Map<string, string>,
+		depth: number,
+		maxDepth: number,
+		ctx: ScanContext,
+		fs: FileSystemCapability,
+	): Promise<void> {
+		if (ctx.limitReached || depth > maxDepth) return;
+
+		let entries: FileSystemDirent[];
+		try {
+			entries = await fs.readdirWithTypes(dir);
+		} catch {
+			return;
+		}
+
+		for (const entry of entries) {
+			if (ctx.limitReached) return;
+
+			const fullPath = join(dir, entry.name.toString());
+			const relPath = relative(root, fullPath);
+			if (entry.isDirectory()) {
+				if (ig.ignores(`${relPath}/`)) continue;
+				await this.scanDirAsync(fullPath, root, ig, result, depth + 1, maxDepth, ctx, fs);
+				continue;
+			}
+
+			if (!entry.isFile() || ig.ignores(relPath) || ctx.fileCount >= SCAN_MAX_FILE_COUNT) {
+				if (ctx.fileCount >= SCAN_MAX_FILE_COUNT) ctx.limitReached = true;
+				continue;
+			}
+
+			try {
+				const stat = await fs.stat(fullPath);
+				if (stat.size > MAX_FILE_SIZE) continue;
+				if (ctx.totalSize + stat.size > SCAN_MAX_TOTAL_SIZE) {
+					ctx.limitReached = true;
+					return;
+				}
+				result.set(relPath, await fs.readFileText(fullPath));
 				ctx.totalSize += stat.size;
 				ctx.fileCount++;
 			} catch {}

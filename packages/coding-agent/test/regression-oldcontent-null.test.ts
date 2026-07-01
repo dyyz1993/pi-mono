@@ -20,6 +20,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../extensions/file-review/index.ts";
+import { createLocalFileSystemCapability } from "../src/core/filesystem-capability.ts";
 import { FileSnapshotManager } from "../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../src/core/file-store/internal-git.ts";
 
@@ -54,27 +55,6 @@ function createMockChannel() {
 		},
 		invoke: async (_d: unknown) => undefined,
 		call: async (_m: string, _p: unknown) => undefined,
-		_invokeDirect(method: string, params: Record<string, unknown> = {}): unknown {
-			const invokeId = ++invokeCounter;
-			const callMsg = { __call: method, invokeId, ...params };
-			let result: unknown;
-			let resolved = false;
-			const origSend = channel.send;
-			channel.send = (data: unknown) => {
-				const r = data as Record<string, unknown>;
-				if (r.invokeId === invokeId) {
-					result = r;
-					resolved = true;
-				}
-			};
-			if (receiveHandler) receiveHandler(callMsg);
-			channel.send = origSend;
-			if (!resolved) throw new Error(`Method ${method} did not respond`);
-			const { invokeId: _, result: arrResult, ...rest } = result as Record<string, unknown>;
-			const value = arrResult !== undefined ? arrResult : rest;
-			if (arrResult === undefined && Object.keys(rest).length === 0) return null;
-			return value;
-		},
 		async _invokeAsync(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 			const invokeId = ++invokeCounter;
 			const callMsg = { __call: method, invokeId, ...params };
@@ -131,6 +111,7 @@ function createMockContext(
 ): ExtensionContext {
 	return {
 		cwd,
+		fs: createLocalFileSystemCapability(),
 		fileSnapshotManager: mgr,
 		sessionManager: {
 			getEntries: () =>
@@ -145,7 +126,7 @@ function createMockContext(
 	} as unknown as ExtensionContext;
 }
 
-function runTurn(
+async function runTurn(
 	cwd: string,
 	mgr: FileSnapshotManager,
 	turnIndex: number,
@@ -156,8 +137,8 @@ function runTurn(
 ) {
 	actions();
 	// Simulate turn_end + onTurnEnd
-	handlers.get("turn_end")!({ turnIndex } as TurnEndEvent, ctx);
-	mgr.onTurnEnd(cwd, turnIndex, (type, data) => {
+	await handlers.get("turn_end")!({ turnIndex } as TurnEndEvent, ctx);
+	await mgr.onTurnEndAsync(cwd, turnIndex, (type, data) => {
 		const id = `${type}-${turnIndex}`;
 		entries.push({ type, data, id });
 		return id;
@@ -179,7 +160,7 @@ describe("regression: modified file oldContent null bug", () => {
 		const channel = mockChannels.get("file-review")!;
 
 		// Turn 0: create file.txt = "V1"
-		runTurn(
+		await runTurn(
 			cwd,
 			mgr,
 			0,
@@ -192,7 +173,7 @@ describe("regression: modified file oldContent null bug", () => {
 		);
 
 		// Turn 1: modify file.txt = "V2"
-		runTurn(
+		await runTurn(
 			cwd,
 			mgr,
 			1,
@@ -205,7 +186,7 @@ describe("regression: modified file oldContent null bug", () => {
 		);
 
 		// Query pending
-		const pending = channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;
@@ -239,7 +220,7 @@ describe("regression: modified file oldContent null bug", () => {
 		const channel = mockChannels.get("file-review")!;
 
 		// Turn 0: create file only
-		runTurn(
+		await runTurn(
 			cwd,
 			mgr,
 			0,
@@ -251,7 +232,7 @@ describe("regression: modified file oldContent null bug", () => {
 			entries,
 		);
 
-		const pending = channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;
@@ -279,7 +260,7 @@ describe("regression: modified file oldContent null bug", () => {
 		const channel = mockChannels.get("file-review")!;
 
 		// Turn 0: create
-		runTurn(
+		await runTurn(
 			cwd,
 			mgr,
 			0,
@@ -292,7 +273,7 @@ describe("regression: modified file oldContent null bug", () => {
 		);
 
 		// Turn 1: modify to V2
-		runTurn(
+		await runTurn(
 			cwd,
 			mgr,
 			1,
@@ -305,7 +286,7 @@ describe("regression: modified file oldContent null bug", () => {
 		);
 
 		// Turn 2: modify to V3
-		runTurn(
+		await runTurn(
 			cwd,
 			mgr,
 			2,
@@ -317,7 +298,7 @@ describe("regression: modified file oldContent null bug", () => {
 			entries,
 		);
 
-		const pending = channel._invokeDirect("review.pending", {}) as Array<{
+		const pending = await channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent: string | null;

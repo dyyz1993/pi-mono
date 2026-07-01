@@ -27,6 +27,10 @@ export interface WriteOperations {
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
 	/** Create directory recursively */
 	mkdir: (dir: string) => Promise<void>;
+	/** Delete a file or directory. Remote/sandbox providers should implement this for rollback flows. */
+	delete?: (absolutePath: string) => Promise<void>;
+	/** Rename or move a file. */
+	rename?: (oldPath: string, newPath: string) => Promise<void>;
 }
 
 const defaultWriteOperations: WriteOperations = {

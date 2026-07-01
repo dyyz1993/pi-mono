@@ -25,6 +25,21 @@ export interface LsToolDetails {
 	entryLimitReached?: number;
 }
 
+export interface LsDirent {
+	name: string;
+	isFile(): boolean;
+	isDirectory(): boolean;
+	isSymbolicLink(): boolean;
+}
+
+export interface LsStat {
+	size?: number;
+	isFile?: () => boolean;
+	isDirectory: () => boolean;
+	isSymbolicLink?: () => boolean;
+	mtimeMs?: number;
+}
+
 /**
  * Pluggable operations for the ls tool.
  * Override these to delegate directory listing to remote systems (for example SSH).
@@ -33,9 +48,11 @@ export interface LsOperations {
 	/** Check if path exists */
 	exists: (absolutePath: string) => Promise<boolean> | boolean;
 	/** Get file or directory stats. Throws if not found. */
-	stat: (absolutePath: string) => Promise<{ isDirectory: () => boolean }> | { isDirectory: () => boolean };
+	stat: (absolutePath: string) => Promise<LsStat> | LsStat;
 	/** Read directory entries */
 	readdir: (absolutePath: string) => Promise<string[]> | string[];
+	/** Read directory entries with type metadata for snapshot-capable providers. */
+	readdirWithTypes?: (absolutePath: string) => Promise<LsDirent[]> | LsDirent[];
 }
 
 const defaultLsOperations: LsOperations = {

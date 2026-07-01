@@ -16,6 +16,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../extensions/file-review/index.ts";
+import { createLocalFileSystemCapability } from "../src/core/filesystem-capability.ts";
 import { FileSnapshotManager } from "../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../src/core/file-store/internal-git.ts";
 
@@ -50,27 +51,6 @@ function createMockChannel() {
 		},
 		invoke: async (_d: unknown) => undefined,
 		call: async (_m: string, _p: unknown) => undefined,
-		_invokeDirect(method: string, params: Record<string, unknown> = {}): unknown {
-			const invokeId = ++invokeCounter;
-			const callMsg = { __call: method, invokeId, ...params };
-			let result: unknown;
-			let resolved = false;
-			const origSend = channel.send;
-			channel.send = (data: unknown) => {
-				const r = data as Record<string, unknown>;
-				if (r.invokeId === invokeId) {
-					result = r;
-					resolved = true;
-				}
-			};
-			if (receiveHandler) receiveHandler(callMsg);
-			channel.send = origSend;
-			if (!resolved) throw new Error(`Method ${method} did not respond`);
-			const { invokeId: _, result: arrResult, ...rest } = result as Record<string, unknown>;
-			const value = arrResult !== undefined ? arrResult : rest;
-			if (arrResult === undefined && Object.keys(rest).length === 0) return null;
-			return value;
-		},
 		async _invokeAsync(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 			const invokeId = ++invokeCounter;
 			const callMsg = { __call: method, invokeId, ...params };
@@ -127,6 +107,7 @@ function createMockContext(
 ): ExtensionContext {
 	return {
 		cwd,
+		fs: createLocalFileSystemCapability(),
 		fileSnapshotManager: mgr,
 		sessionManager: {
 			getEntries: () =>
@@ -167,7 +148,7 @@ describe("regression: reject then recreate then approve then modify", () => {
 		});
 
 		// Verify pending shows file as added
-		let pending = channel._invokeDirect("review.pending", {}) as Array<{
+		let pending = await channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent?: string | null;
@@ -197,7 +178,7 @@ describe("regression: reject then recreate then approve then modify", () => {
 		});
 
 		// Approve
-		const approveResult = channel._invokeDirect("review.approve", { path: "file.txt" }) as { ok: boolean };
+		const approveResult = await channel._invokeAsync("review.approve", { path: "file.txt" }) as { ok: boolean };
 		expect(approveResult.ok).toBe(true);
 
 		// Turn 2: modify file.txt = "V2"
@@ -212,7 +193,7 @@ describe("regression: reject then recreate then approve then modify", () => {
 		});
 
 		// Query pending — THE KEY CHECK
-		pending = channel._invokeDirect("review.pending", {}) as Array<{
+		pending = await channel._invokeAsync("review.pending", {}) as Array<{
 			path: string;
 			fileStatus: string;
 			oldContent?: string | null;

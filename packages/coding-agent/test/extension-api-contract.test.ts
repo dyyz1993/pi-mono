@@ -20,6 +20,7 @@ import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type { ExtensionActions, ExtensionAPI, ExtensionContextActions } from "../src/core/extensions/types.ts";
+import { createLocalFileSystemCapability } from "../src/core/filesystem-capability.ts";
 import type { LiveChange } from "../src/core/file-store/file-snapshot-manager.ts";
 import { FileSnapshotManager } from "../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../src/core/file-store/internal-git.ts";
@@ -175,6 +176,41 @@ describe("ExtensionContext API contract", () => {
 		const ctx = runner.createContext();
 		expect(ctx).toHaveProperty("fileSnapshotManager");
 		expect(ctx.fileSnapshotManager).toBeNull();
+	});
+
+	it("exposes ctx.fs as the workspace filesystem capability", async () => {
+		const ctx = runner.createContext();
+		const filePath = path.join(tempDir, "nested", "ctx-fs.txt");
+
+		expect(ctx).toHaveProperty("fs");
+		expect(typeof ctx.fs.readFileText).toBe("function");
+		expect(typeof ctx.fs.writeFile).toBe("function");
+		expect(typeof ctx.fs.delete).toBe("function");
+		expect(typeof ctx.fs.stat).toBe("function");
+
+		await ctx.fs.writeFile(filePath, "ctx fs ok");
+		expect(await ctx.fs.readFileText(filePath)).toBe("ctx fs ok");
+		const stat = await ctx.fs.stat(filePath);
+		expect(stat.size).toBe("ctx fs ok".length);
+		expect(stat.isFile()).toBe(true);
+		expect(stat.isDirectory()).toBe(false);
+
+		await ctx.fs.delete(filePath);
+		expect(await ctx.fs.exists(filePath)).toBe(false);
+	});
+
+	it("routes ctx.fs through the active ToolOperationsProvider when present", () => {
+		const providerFs = createLocalFileSystemCapability();
+		runner.bindCore(
+			{
+				...stubActions,
+				getToolOperationsProvider: () => ({ fs: providerFs }),
+			},
+			stubContextActions,
+		);
+
+		const ctx = runner.createContext();
+		expect(ctx.fs).toBe(providerFs);
 	});
 
 	it("fileSnapshotManager returns instance when setFileSnapshotManagerFn is called", () => {

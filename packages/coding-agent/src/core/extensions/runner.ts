@@ -10,6 +10,7 @@ import type { KeyId } from "@dyyz1993/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { FileSnapshotManager } from "../file-store/file-snapshot-manager.ts";
+import { createLocalFileSystemCapability } from "../filesystem-capability.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { PermissionProvider } from "../permissions/provider.ts";
@@ -94,6 +95,8 @@ const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
 	"tui.input.copy",
 	"tui.editor.deleteToLineEnd",
 ] as const;
+
+const defaultWorkspaceFs = createLocalFileSystemCapability();
 
 type BuiltInKeyBindings = Partial<Record<KeyId, { keybinding: string; restrictOverride: boolean }>>;
 
@@ -1072,6 +1075,10 @@ export class ExtensionRunner {
 			get fileSnapshotManager() {
 				runner.assertActive();
 				return runner.getFileSnapshotManagerFn();
+			},
+			get fs() {
+				runner.assertActive();
+				return runner.runtime.getToolOperationsProvider()?.fs ?? defaultWorkspaceFs;
 			},
 			respondUI: (id, result) => {
 				runner.assertActive();

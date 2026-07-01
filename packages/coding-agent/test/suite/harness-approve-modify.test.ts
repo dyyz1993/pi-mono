@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../../extensions/file-review/index.ts";
+import { createLocalFileSystemCapability } from "../../src/core/filesystem-capability.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
 
@@ -97,6 +98,7 @@ function createMockContext(
 ): ExtensionContext {
 	return {
 		cwd,
+		fs: createLocalFileSystemCapability(),
 		fileSnapshotManager: mgr,
 		sessionManager: {
 			getEntries: () =>
