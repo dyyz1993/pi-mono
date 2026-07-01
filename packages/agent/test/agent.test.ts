@@ -483,7 +483,7 @@ describe("Agent", () => {
 					.filter((message) => message.role === "user")
 					.map((message) => {
 						const first = message.content?.[0];
-						return first?.type === "text" ? first.text : "";
+						return typeof first === "object" && first.type === "text" ? first.text : "";
 					});
 				queueMicrotask(() => {
 					stream.push({
