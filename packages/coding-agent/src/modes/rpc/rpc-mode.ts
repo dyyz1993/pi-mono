@@ -1301,9 +1301,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "set_cwd": {
+				const previousCwd = runtimeHost.cwd;
 				const result = await runtimeHost.setCwd(command.cwd);
 				if (!result.cancelled) {
 					await rebindSession();
+					const cwd = runtimeHost.cwd;
+					if (cwd !== previousCwd) {
+						session.sessionManager.appendSystemEvent("cwd_changed", `Working directory changed to ${cwd}`, {
+							cwd,
+							previousCwd,
+						});
+					}
 				}
 				return success(id, "set_cwd", result);
 			}
@@ -1395,6 +1403,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					);
 				}
 				session.setPermissionMode(command.mode);
+				session.sessionManager.appendSystemEvent(
+					"approval_mode_changed",
+					`Approval mode changed to ${command.mode}`,
+					{ mode: command.mode },
+				);
 				return success(id, "set_permission_mode", { mode: command.mode });
 			}
 
