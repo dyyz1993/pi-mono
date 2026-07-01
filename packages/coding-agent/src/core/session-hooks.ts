@@ -329,11 +329,11 @@ function withCommonFields(raw: Record<string, unknown>, base: SessionHookHandler
 		model: typeof raw.model === "string" ? raw.model : undefined,
 		timeout: typeof raw.timeout === "number" ? raw.timeout : undefined,
 		if: typeof raw.if === "string" ? raw.if : undefined,
-		async: raw.async === true,
-		asyncRewake: raw.asyncRewake === true,
+		async: typeof raw.async === "boolean" ? raw.async : undefined,
+		asyncRewake: typeof raw.asyncRewake === "boolean" ? raw.asyncRewake : undefined,
 		shell: raw.shell === "bash" || raw.shell === "powershell" ? raw.shell : undefined,
 		statusMessage: typeof raw.statusMessage === "string" ? raw.statusMessage : undefined,
-		once: raw.once === true,
+		once: typeof raw.once === "boolean" ? raw.once : undefined,
 		"x-pi-variables": isStringRecord(raw["x-pi-variables"]) ? raw["x-pi-variables"] : undefined,
 	};
 }

@@ -118,8 +118,80 @@ describe("pi-hooks harness integration", () => {
 
 		// The tool should NOT have executed
 		expect(executed).toBe(false);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(getPendingNextTurnMessages(harness)).toHaveLength(0);
 		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
 		expect(toolResults.map(getMessageText).join("\n")).toContain("Hook blocked by project");
+	});
+
+	it("delivers async rewake hook blocks on the next user turn and consumes them once", async () => {
+		let executed = false;
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Run bash",
+			parameters: Type.Object({ command: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "ran" }], details: {} };
+			},
+		};
+
+		const harness = await createHarness({
+			tools: [bashTool],
+			extensionFactories: [piHooksFactory],
+		});
+		harnesses.push(harness);
+
+		mkdirSync(join(harness.tempDir, ".claude"));
+		writeFileSync(
+			join(harness.tempDir, ".claude", "settings.json"),
+			JSON.stringify({
+				hooks: {
+					PreToolUse: [
+						{
+							matcher: "bash",
+							hooks: [
+								{
+									type: "command",
+									command: "printf async-block >&2; exit 2",
+									asyncRewake: true,
+								},
+							],
+						},
+					],
+				},
+			}),
+		);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("bash", { command: "echo hi" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("first done"),
+		]);
+
+		await harness.session.prompt("run async hook");
+
+		expect(executed).toBe(true);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		await waitFor(() => getPendingNextTurnMessages(harness).length === 1);
+		expect(
+			harness.session.messages
+				.filter((m) => m.role === "custom")
+				.map(getMessageText)
+				.join("\n"),
+		).not.toContain("async-block");
+
+		harness.setResponses([fauxAssistantMessage("second done")]);
+
+		await harness.session.prompt("consume async hook message");
+
+		expect(getPendingNextTurnMessages(harness)).toHaveLength(0);
+		const customMessages = harness.session.messages
+			.filter((m) => m.role === "custom")
+			.map(getMessageText)
+			.join("\n");
+		expect(customMessages).toContain("Hook blocked by project");
+		expect(customMessages).toContain("async-block");
 	});
 
 	it("loads hooks from .pi/settings.json and allows on exit 0", async () => {
@@ -328,4 +400,18 @@ describe("pi-hooks harness integration", () => {
 
 function harnessTempName(): string {
 	return join(tmpdir(), `pi-hooks-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+}
+
+function getPendingNextTurnMessages(harness: Harness): unknown[] {
+	return (harness.session as unknown as { _pendingNextTurnMessages?: unknown[] })._pendingNextTurnMessages ?? [];
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+	const start = Date.now();
+	while (!predicate()) {
+		if (Date.now() - start > timeoutMs) {
+			throw new Error("Timed out waiting for condition");
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
 }
