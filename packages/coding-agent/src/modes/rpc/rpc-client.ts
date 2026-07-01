@@ -13,6 +13,7 @@ import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.ts";
+import type { SystemEventType } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
 import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -647,6 +648,22 @@ export class RpcClient {
 	 */
 	async setSessionName(name: string): Promise<void> {
 		await this.send({ type: "set_session_name", name });
+	}
+
+	async appendSystemEvent(options: {
+		eventType: SystemEventType;
+		eventLabel: string;
+		data?: Record<string, unknown>;
+		display?: boolean;
+	}): Promise<{ entryId: string }> {
+		const response = await this.send({
+			type: "append_system_event",
+			eventType: options.eventType,
+			eventLabel: options.eventLabel,
+			data: options.data,
+			display: options.display,
+		});
+		return this.getData(response);
 	}
 
 	/**

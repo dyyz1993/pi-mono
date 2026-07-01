@@ -8,6 +8,7 @@ import type { PermissionMode, SessionStats } from "../../core/agent-session.ts";
 import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { SystemEventType } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
 import type {
 	BatchDiffResult,
@@ -135,6 +136,12 @@ export interface RpcClientSurface {
 	getForkMessages(): Promise<ForkMessage[]>;
 	getLastAssistantText(): Promise<string | null>;
 	setSessionName(name: string): Promise<void>;
+	appendSystemEvent(options: {
+		eventType: SystemEventType;
+		eventLabel: string;
+		data?: Record<string, unknown>;
+		display?: boolean;
+	}): Promise<{ entryId: string }>;
 	getMessages(): Promise<AgentMessage[]>;
 	getFullMessages(options?: { afterEntryId?: string; beforeEntryId?: string; limit?: number }): Promise<{
 		messages: RpcAgentMessage[];

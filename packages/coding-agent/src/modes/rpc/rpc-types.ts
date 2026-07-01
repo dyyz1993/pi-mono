@@ -17,7 +17,7 @@ import type {
 	ExtensionUIPermissionMeta,
 } from "../../core/extensions/types.ts";
 import type { BatchDiffResult, FileDiffInfo, FileHistoryEntry, ModifiedFileInfo } from "../../core/file-store/index.ts";
-import type { AgentChangeEntry } from "../../core/session-manager.ts";
+import type { AgentChangeEntry, SystemEventType } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
@@ -87,6 +87,14 @@ export type RpcCommand =
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
+	| {
+			id?: string;
+			type: "append_system_event";
+			eventType: SystemEventType;
+			eventLabel: string;
+			data?: Record<string, unknown>;
+			display?: boolean;
+	  }
 
 	// Messages
 	| { id?: string; type: "get_messages" }
@@ -488,6 +496,7 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
+	| { id?: string; type: "response"; command: "append_system_event"; success: true; data: { entryId: string } }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

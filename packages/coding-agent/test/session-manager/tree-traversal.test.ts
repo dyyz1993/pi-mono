@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
-import { type CustomEntry, SessionManager } from "../../src/core/session-manager.ts";
+import { type CustomEntry, SessionManager, type SystemEventEntry } from "../../src/core/session-manager.ts";
 import { assistantMsg, userMsg } from "../utilities.ts";
 
 describe("SessionManager append and tree traversal", () => {
@@ -55,6 +55,7 @@ describe("SessionManager append and tree traversal", () => {
 
 			const entries = session.getEntries();
 			const modelEntry = entries.find((e) => e.type === "model_change");
+			const systemEntry = entries.find((e) => e.type === "system_event") as SystemEventEntry | undefined;
 			expect(modelEntry).toBeDefined();
 			expect(modelEntry?.id).toBe(modelId);
 			expect(modelEntry?.parentId).toBe(msgId);
@@ -62,8 +63,33 @@ describe("SessionManager append and tree traversal", () => {
 				expect(modelEntry.provider).toBe("openai");
 				expect(modelEntry.modelId).toBe("gpt-4");
 			}
+			expect(systemEntry).toMatchObject({
+				eventType: "model_changed",
+				eventLabel: "Model changed to openai/gpt-4",
+				display: false,
+				data: { provider: "openai", modelId: "gpt-4" },
+			});
+			expect(systemEntry?.parentId).toBe(modelId);
 
-			expect(entries[2].parentId).toBe(modelId);
+			expect(entries.at(-1)?.parentId).toBe(systemEntry?.id);
+		});
+
+		it("appendSystemEvent integrates into tree", () => {
+			const session = SessionManager.inMemory();
+
+			const msgId = session.appendMessage(userMsg("hello"));
+			const eventId = session.appendSystemEvent("approval_mode_changed", "Approval mode changed to yolo", {
+				permissionMode: "yolo",
+			});
+			const _msg2Id = session.appendMessage(assistantMsg("response"));
+
+			const entries = session.getEntries();
+			const systemEntry = entries.find((e) => e.type === "system_event") as SystemEventEntry | undefined;
+			expect(systemEntry).toBeDefined();
+			expect(systemEntry?.id).toBe(eventId);
+			expect(systemEntry?.parentId).toBe(msgId);
+			expect(systemEntry?.data).toEqual({ permissionMode: "yolo" });
+			expect(entries.at(-1)?.parentId).toBe(eventId);
 		});
 
 		it("appendCompaction integrates into tree", () => {
