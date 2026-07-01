@@ -479,6 +479,10 @@ function getMessageText(message: AgentMessage): string {
 	}
 }
 
+function isDisplayableSessionMessage(message: AgentMessage): boolean {
+	return message.role !== "custom" || message.customType !== "system_event" || message.display !== false;
+}
+
 function classifyContextMessage(message: AgentMessage): "conversation" | "memory" | "rules" | "lsp" {
 	const text = getMessageText(message);
 	if (message.role === "custom") {
@@ -1552,9 +1556,9 @@ export class AgentSession {
 		);
 	}
 
-	/** All messages including custom types like BashExecutionMessage */
+	/** Messages intended for external/runtime display. Hidden system events remain in agent state for LLM context. */
 	get messages(): AgentMessage[] {
-		return this.agent.state.messages;
+		return this.agent.state.messages.filter(isDisplayableSessionMessage);
 	}
 
 	/** Current steering mode */
