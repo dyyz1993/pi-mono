@@ -155,6 +155,24 @@ export {
 	type StoredDecisionProviderOptions,
 	type ToolGateProviderOptions,
 } from "./permissions/index.ts";
+export {
+	clearSessionHooks,
+	clearSessionHooksBySource,
+	getAllSessionHookGroups,
+	getSessionHookGroups,
+	normalizeSessionHooks,
+	type ParseSessionHooksResult,
+	parseSessionHookHandler,
+	parseSessionHooks,
+	parseSessionHooksWithDiagnostics,
+	registerSessionHooks,
+	type SessionHookEntry,
+	type SessionHookGroup,
+	type SessionHookHandler,
+	type SessionHookHandlerType,
+	type SessionHookParseDiagnostic,
+	type SessionHooks,
+} from "./session-hooks.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
 	ExtensionStorage,

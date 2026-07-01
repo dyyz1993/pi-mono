@@ -4,7 +4,9 @@ import { basename, dirname, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import type { AgentHooks } from "./agent-types.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
+import { parseSessionHooks } from "./session-hooks.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 /** Max name length per spec */
@@ -68,6 +70,7 @@ export interface SkillFrontmatter {
 	name?: string;
 	description?: string;
 	"disable-model-invocation"?: boolean;
+	hooks?: AgentHooks;
 	[key: string]: unknown;
 }
 
@@ -82,6 +85,7 @@ export interface Skill {
 	disableModelInvocation: boolean;
 	/** Execution context: "inline" (default) injects into main session, "fork" runs in isolated subtask. */
 	context?: SkillContext;
+	hooks?: AgentHooks;
 }
 
 export interface LoadSkillsResult {
@@ -319,6 +323,7 @@ function loadSkillFromFile(
 				sourceInfo: createSkillSourceInfo(filePath, skillDir, source),
 				disableModelInvocation: frontmatter["disable-model-invocation"] === true,
 				context: frontmatter.context === "fork" ? "fork" : undefined,
+				hooks: parseSessionHooks(frontmatter.hooks),
 			},
 			diagnostics,
 		};

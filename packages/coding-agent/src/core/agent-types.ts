@@ -8,6 +8,13 @@ import { getAgentDir, getRuntimeResourcePolicy } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { asRecord, type UnknownRecord } from "../utils/type-helpers.ts";
 import type { PermissionProfileInput } from "./permissions/index.ts";
+import {
+	parseSessionHooks,
+	type SessionHookEntry,
+	type SessionHookGroup,
+	type SessionHookHandler,
+	type SessionHooks,
+} from "./session-hooks.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -26,42 +33,14 @@ export type IsolationMode = "worktree" | "remote";
  */
 export type AgentAvatar = { type: "emoji"; value: string } | { type: "image"; src: string };
 
-export interface AgentHookCommand {
-	type: "command";
-	command: string;
-	if?: string;
-	async?: boolean;
-	once?: boolean;
-	timeout?: number;
-}
-
-export interface AgentHookPrompt {
-	type: "prompt";
-	prompt: string;
-	if?: string;
-	once?: boolean;
-}
-
-export interface AgentHookHttp {
-	type: "http";
-	url: string;
-	headers?: Record<string, string>;
-	allowedEnvVars?: string[];
-	if?: string;
-	once?: boolean;
-	timeout?: number;
-}
-
-export type AgentHook = AgentHookCommand | AgentHookPrompt | AgentHookHttp;
-
-export interface AgentHookGroup {
-	matcher?: string;
-	hooks: AgentHook[];
-}
-
-export type AgentHookEntry = AgentHook | AgentHookGroup;
-
-export type AgentHooks = Partial<Record<string, AgentHookEntry[]>>;
+export type AgentHookCommand = SessionHookHandler & { type: "command"; command: string };
+export type AgentHookPrompt = SessionHookHandler & { type: "prompt"; prompt: string };
+export type AgentHookHttp = SessionHookHandler & { type: "http"; url: string };
+export type AgentHookAgent = SessionHookHandler & { type: "agent"; prompt: string };
+export type AgentHook = SessionHookHandler;
+export type AgentHookGroup = SessionHookGroup;
+export type AgentHookEntry = SessionHookEntry;
+export type AgentHooks = SessionHooks;
 
 export interface PathConfig {
 	write?: string[];
@@ -159,72 +138,9 @@ function coerceField(key: string, raw: unknown): unknown {
 	return raw;
 }
 
-function parseHookEntry(raw: Record<string, unknown>): AgentHookEntry | undefined {
-	if (raw.type === "command" && typeof raw.command === "string") {
-		return {
-			type: "command",
-			command: raw.command,
-			if: typeof raw.if === "string" ? raw.if : undefined,
-			async: raw.async === true,
-			once: raw.once === true,
-			timeout: typeof raw.timeout === "number" ? raw.timeout : undefined,
-		};
-	}
-	if (raw.type === "prompt" && typeof raw.prompt === "string") {
-		return {
-			type: "prompt",
-			prompt: raw.prompt,
-			if: typeof raw.if === "string" ? raw.if : undefined,
-			once: raw.once === true,
-		};
-	}
-	if (raw.type === "http" && typeof raw.url === "string") {
-		return {
-			type: "http",
-			url: raw.url,
-			headers: isStringRecord(raw.headers) ? raw.headers : undefined,
-			allowedEnvVars: Array.isArray(raw.allowedEnvVars) ? raw.allowedEnvVars.map(String) : undefined,
-			if: typeof raw.if === "string" ? raw.if : undefined,
-			once: raw.once === true,
-			timeout: typeof raw.timeout === "number" ? raw.timeout : undefined,
-		};
-	}
-	return undefined;
-}
-
 function isStringRecord(raw: unknown): raw is Record<string, string> {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
 	return Object.values(raw).every((value) => typeof value === "string");
-}
-
-function parseHooks(raw: unknown): AgentHooks | undefined {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-	const hooks: AgentHooks = {};
-	for (const [event, handlers] of Object.entries(asRecord(raw))) {
-		if (!Array.isArray(handlers)) continue;
-		const parsed: AgentHookEntry[] = [];
-		for (const handler of handlers) {
-			if (!handler || typeof handler !== "object" || Array.isArray(handler)) continue;
-			const obj = asRecord(handler);
-			if (Array.isArray(obj.hooks)) {
-				const groupHooks = obj.hooks
-					.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-					.map(parseHookEntry)
-					.filter((entry): entry is AgentHook => entry !== undefined && "type" in entry);
-				if (groupHooks.length > 0) {
-					parsed.push({
-						matcher: typeof obj.matcher === "string" ? obj.matcher : undefined,
-						hooks: groupHooks,
-					});
-				}
-				continue;
-			}
-			const entry = parseHookEntry(obj);
-			if (entry) parsed.push(entry);
-		}
-		if (parsed.length > 0) hooks[event] = parsed;
-	}
-	return Object.keys(hooks).length > 0 ? hooks : undefined;
 }
 
 function sanitizePatternArray(raw: unknown): string[] | undefined {
@@ -372,7 +288,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			isolation: coerceField("isolation", frontmatter.isolation) as IsolationMode | undefined,
 			initialPrompt: coerceField("initialPrompt", frontmatter.initialPrompt) as string | undefined,
 			skills: skills && skills.length > 0 ? skills : undefined,
-			hooks: parseHooks(frontmatter.hooks),
+			hooks: parseSessionHooks(frontmatter.hooks),
 			variables,
 			tier: coerceField("tier", frontmatter.tier) as AgentTier | undefined,
 			thinkingLevel: coerceField("thinkingLevel", frontmatter.thinkingLevel) as string | undefined,

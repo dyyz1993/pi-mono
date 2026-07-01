@@ -117,9 +117,11 @@ import {
 } from "./permissions/index.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
+import { clearSessionHooks, clearSessionHooksBySource, registerSessionHooks } from "./session-hooks.ts";
 import type { BranchSummaryEntry, CompactionEntry, CustomEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
+import type { Skill } from "./skills.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import {
@@ -645,6 +647,7 @@ export class AgentSession {
 	private _currentAgentPaths: PathConfig | undefined;
 	private _currentAgentTools: string[] | undefined;
 	private _currentAgentDisallowedTools: string[] | undefined;
+	private _activeAgentHookSource: string | undefined;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -1312,6 +1315,7 @@ export class AgentSession {
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
+		clearSessionHooks(this.sessionId);
 		cleanupSessionResources(this.sessionId);
 	}
 
@@ -1496,6 +1500,15 @@ export class AgentSession {
 
 	applyAgentConfig(agent: AgentConfig): void {
 		this._currentAgentName = agent.name;
+		if (this._activeAgentHookSource) {
+			clearSessionHooksBySource(this.sessionId, this._activeAgentHookSource);
+			this._activeAgentHookSource = undefined;
+		}
+		if (agent.hooks) {
+			const source = `agent:${agent.name}`;
+			registerSessionHooks(this.sessionId, source, agent.hooks, { mapAgentStop: true });
+			this._activeAgentHookSource = source;
+		}
 		this._currentAgentPaths = agent.paths;
 		this._currentAgentTools = agent.tools && agent.tools.length > 0 ? agent.tools : undefined;
 		this._currentAgentDisallowedTools =
@@ -1541,6 +1554,11 @@ export class AgentSession {
 			effort: agent.effort,
 			skills: agent.skills,
 		});
+	}
+
+	private _registerSkillHooks(skill: Skill): void {
+		if (!skill.hooks) return;
+		registerSessionHooks(this.sessionId, `skill:${skill.name}`, skill.hooks);
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1974,6 +1992,8 @@ export class AgentSession {
 
 		const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
 		if (!skill) return text; // Unknown skill, pass through
+
+		this._registerSkillHooks(skill);
 
 		try {
 			const content = readFileSync(skill.filePath, "utf-8");
@@ -3574,6 +3594,7 @@ export class AgentSession {
 			};
 			baseDefs.skill = createSkillToolDefinition({
 				getSkills: () => this._resourceLoader.getSkills().skills,
+				registerSkillHooks: (skill) => this._registerSkillHooks(skill),
 				subtaskContext,
 				onSubtaskEvent: (subtaskId, label, inner) => {
 					const id = this.sessionManager.appendCustomEntry("subtask_progress", {

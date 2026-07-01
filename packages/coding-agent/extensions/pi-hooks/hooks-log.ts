@@ -29,8 +29,8 @@ export interface HookLogEntry {
 	reason: string;
 	/** Subprocess exit code */
 	exitCode: number;
-	/** Config source scope */
-	source: "policy" | "global" | "project" | "local" | "pi-global" | "pi-project" | "unknown";
+	/** Config or session hook source, e.g. "project", "agent:reviewer", "skill:test-skill" */
+	source: string;
 	/** Snippet of tool input (e.g. bash command, first 120 chars) */
 	snippet: string;
 }

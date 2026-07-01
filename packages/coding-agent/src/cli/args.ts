@@ -247,7 +247,8 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} update [source|self|pi]   Update pi and installed extensions
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config                    Open TUI to enable/disable package resources
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
+  ${APP_NAME} hooks validate <path>     Validate hooks in settings JSON or frontmatter
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/hooks
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
@@ -356,6 +357,10 @@ ${chalk.bold("Examples:")}
   # Export a session file to HTML
   ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/agent/sessions/--path--/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
+
+  # Validate hooks
+  ${APP_NAME} hooks validate .pi/settings.json
+  ${APP_NAME} hooks validate .pi/skills/review/SKILL.md
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_API_KEY                - Anthropic Claude API key
