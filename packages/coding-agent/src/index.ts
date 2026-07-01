@@ -315,6 +315,24 @@ export {
 	type PromptTemplate,
 } from "./core/sdk.ts";
 export {
+	clearSessionHooks,
+	clearSessionHooksBySource,
+	getAllSessionHookGroups,
+	getSessionHookGroups,
+	normalizeSessionHooks,
+	type ParseSessionHooksResult,
+	parseSessionHookHandler,
+	parseSessionHooks,
+	parseSessionHooksWithDiagnostics,
+	registerSessionHooks,
+	type SessionHookEntry,
+	type SessionHookGroup,
+	type SessionHookHandler,
+	type SessionHookHandlerType,
+	type SessionHookParseDiagnostic,
+	type SessionHooks,
+} from "./core/session-hooks.ts";
+export {
 	type BranchSummaryEntry,
 	buildSessionContext,
 	type CompactionEntry,

@@ -37,6 +37,8 @@ export interface SkillToolOptions {
 		label: string,
 		result: { success: boolean; text: string; error?: string; startedAt: number; completedAt: number },
 	) => void;
+	/** Register hooks declared in skill frontmatter at invocation time. */
+	registerSkillHooks?: (skill: Skill) => void;
 }
 
 function formatSkillCall(args: { name?: string; args?: string } | undefined, theme: any): string {
@@ -66,7 +68,7 @@ function formatSkillResult(
 }
 
 export function createSkillToolDefinition(options: SkillToolOptions): ToolDefinition<typeof skillSchema, undefined> {
-	const { getSkills, subtaskContext, onSubtaskEvent, onSubtaskComplete } = options;
+	const { getSkills, subtaskContext, onSubtaskEvent, onSubtaskComplete, registerSkillHooks } = options;
 
 	return {
 		name: "skill",
@@ -94,6 +96,8 @@ export function createSkillToolDefinition(options: SkillToolOptions): ToolDefini
 					details: undefined,
 				};
 			}
+
+			registerSkillHooks?.(skill);
 
 			try {
 				// Fork mode: run in isolated subtask

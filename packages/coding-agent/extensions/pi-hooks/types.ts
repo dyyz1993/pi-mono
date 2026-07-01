@@ -1,5 +1,5 @@
 export interface ClaudeHookConfig {
-	hooks?: Record<string, MatcherGroup[]>;
+	hooks?: unknown;
 	disableAllHooks?: boolean;
 }
 

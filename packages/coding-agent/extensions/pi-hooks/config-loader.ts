@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { normalizeSessionHooks, parseSessionHooks } from "@dyyz1993/pi-coding-agent";
 import type { ClaudeHookConfig, MatcherGroup } from "./types.ts";
 
 export interface ConfigSource {
@@ -44,10 +45,6 @@ function loadSingleConfig(path: string): ClaudeHookConfig | null {
 	}
 }
 
-function annotateGroups(groups: MatcherGroup[], scope: string): MatcherGroup[] {
-	return groups.map(g => Object.assign(g, { __source__: scope }));
-}
-
 export function getConfigSignature(projectDir: string): string {
 	return getConfigFiles(projectDir).map((source) => {
 		if (!existsSync(source.path)) return `${source.scope}:${source.path}:missing`;
@@ -69,18 +66,19 @@ export function loadConfigs(projectDir: string): Map<string, MatcherGroup[]> {
 			if (source.scope === "policy") return merged;
 			continue;
 		}
-		if (!config.hooks) continue;
+		const hooks = normalizeSessionHooks(parseSessionHooks(config.hooks), source.scope);
+		if (hooks.size === 0) continue;
 
 		if (source.scope === "policy") {
-			for (const [eventName, groups] of Object.entries(config.hooks)) {
-				merged.set(eventName, annotateGroups(groups, "policy"));
+			for (const [eventName, groups] of hooks.entries()) {
+				merged.set(eventName, groups);
 			}
 			continue;
 		}
 
-		for (const [eventName, groups] of Object.entries(config.hooks)) {
+		for (const [eventName, groups] of hooks.entries()) {
 			const existing = merged.get(eventName) ?? [];
-			merged.set(eventName, [...existing, ...annotateGroups(groups, source.scope)]);
+			merged.set(eventName, [...existing, ...groups]);
 		}
 	}
 

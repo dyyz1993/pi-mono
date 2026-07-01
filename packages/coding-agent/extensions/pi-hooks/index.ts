@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
+	clearSessionHooks,
 	createTypedChannel,
+	getAllSessionHookGroups,
+	getSessionHookGroups,
 	type BeforeAgentStartEvent,
 	type ExtensionAPI,
 	type PermissionDecision,
@@ -35,7 +38,7 @@ function matchesPiVariables(
 
 export default function (pi: ExtensionAPI) {
 	let configs: Map<string, MatcherGroup[]> = new Map();
-	const onceHandlers = new Set<number>();
+	const onceHandlers = new Set<string>();
 
 	const RING_BUFFER_CAPACITY = 200;
 	const logBuffer = new RingBuffer<HookLogEntry>(RING_BUFFER_CAPACITY);
@@ -162,8 +165,11 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async (event, ctx) => {
 		await processHookEvent("SessionEnd", { toolName: "", input: {} }, ctx);
+		if (event.reason !== "reload" && currentSessionId) {
+			clearSessionHooks(currentSessionId);
+		}
 	});
 
 	pi.on("session_compact", async (_event, ctx) => {
@@ -240,7 +246,10 @@ export default function (pi: ExtensionAPI) {
 			if (fromSm) currentSessionId = fromSm;
 		}
 
-		const groups = configs.get(hookEventName) ?? [];
+		const groups = [
+			...(configs.get(hookEventName) ?? []),
+			...getSessionHookGroups(currentSessionId, hookEventName),
+		];
 		if (groups.length === 0) return undefined;
 
 		const ctxVars = ((ctx as unknown) as Record<string, unknown>).variables as Record<string, unknown> | undefined;
@@ -263,23 +272,25 @@ export default function (pi: ExtensionAPI) {
 			sessionId: currentSessionId,
 		});
 
-		for (const group of groups) {
+		for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+			const group = groups[groupIndex]!;
 			if (!matchesMatcher(group.matcher, event.toolName)) continue;
+			const source = getHookSource(group);
+			const matcher = group.matcher ?? "*";
 
 			// Skip this rule if it's in the per-rule skip list
-			const ruleKey = `${hookEventName}::${group.matcher ?? "*"}`;
+			const ruleKey = `${hookEventName}::${matcher}`;
 			if (skippedRules.has(ruleKey)) continue;
-
-
 
 			for (let i = 0; i < group.hooks.length; i++) {
 				const handler = group.hooks[i];
+				const onceKey = handlerKey(hookEventName, group, groupIndex, handler, i);
 
-				if (handler.once && onceHandlers.has(handlerIndex(hookEventName, i))) continue;
+				if (handler.once && onceHandlers.has(onceKey)) continue;
 				if (!matchesIfClause(handler.if, event.toolName, event.input)) continue;
 				if (!matchesPiVariables(handler, ctxVars)) continue;
 
-				if (handler.once) onceHandlers.add(handlerIndex(hookEventName, i));
+				if (handler.once) onceHandlers.add(onceKey);
 
 				const isAsync = handler.async ?? handler.asyncRewake ?? false;
 				if (isAsync && hookEventName === "PreToolUse") {
@@ -304,7 +315,7 @@ export default function (pi: ExtensionAPI) {
 								decision,
 								reason: result.reason ?? "",
 								exitCode: output.exitCode,
-								source: (group.__source__ ?? "unknown") as HookLogEntry["source"],
+								source,
 								snippet: extractSnippet(event.input),
 							};
 							logBuffer.push(entry);
@@ -315,7 +326,13 @@ export default function (pi: ExtensionAPI) {
 								pi.sendMessage(
 									{
 										customType: "hook_ask_no_ui",
-										content: `Hook requires confirmation but is running in async mode: ${result.reason}`,
+										content: `Hook requires confirmation but is running in async mode: ${formatHookBlockReason({
+											source,
+											eventName: hookEventName,
+											matcher,
+											hookType: handler.type ?? "command",
+											reason: result.reason,
+										})}`,
 										display: true,
 									},
 									{ deliverAs: "nextTurn" },
@@ -324,7 +341,13 @@ export default function (pi: ExtensionAPI) {
 								pi.sendMessage(
 									{
 										customType: "hook_async_block",
-										content: result.reason,
+										content: formatHookBlockReason({
+											source,
+											eventName: hookEventName,
+											matcher,
+											hookType: handler.type ?? "command",
+											reason: result.reason,
+										}),
 										display: true,
 									},
 									{ deliverAs: "nextTurn" },
@@ -335,8 +358,8 @@ export default function (pi: ExtensionAPI) {
 							if (handler.type === "prompt" && handler.prompt && !result.shouldBlock) {
 								pi.sendUserMessage(handler.prompt, { deliverAs: "followUp" });
 							}
-					} catch {
-						// async handler failed (stale session is expected)
+						} catch {
+							// async handler failed (stale session is expected)
 						}
 					});
 					continue;
@@ -361,7 +384,7 @@ export default function (pi: ExtensionAPI) {
 					decision,
 					reason: result.reason ?? "",
 					exitCode: output.exitCode,
-					source: (group.__source__ ?? "unknown") as HookLogEntry["source"],
+					source,
 					snippet: extractSnippet(event.input),
 				};
 				logBuffer.push(entry);
@@ -369,19 +392,26 @@ export default function (pi: ExtensionAPI) {
 				if (decision === "block") channel.emit("hook_blocked", entry);
 
 				if (result.shouldBlock) {
+					const blockReason = formatHookBlockReason({
+						source,
+						eventName: hookEventName,
+						matcher,
+						hookType: handler.type ?? "command",
+						reason: result.reason,
+					});
 					if (output.exitCode === 3) {
 						const question = result.reason || "Confirm this operation?";
 						if (hookEventName === "PreToolUse" && ctx.permissions?.ask) {
-								const toolLabel = formatToolLabel(event.toolName);
-								const command = extractCommand(event.input);
-								const description = event.toolName === "bash" ? extractDescription(event.input) : undefined;
-								const hookCommand = truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200);
-								const labels = extractConfirmLabels(output);
+							const toolLabel = formatToolLabel(event.toolName);
+							const command = extractCommand(event.input);
+							const description = event.toolName === "bash" ? extractDescription(event.input) : undefined;
+							const hookCommand = truncateMiddle(handler.command ?? handler.url ?? handler.prompt ?? "", 200);
+							const labels = extractConfirmLabels(output);
 							const permissionDecision = await ctx.permissions.ask(
 								buildHookApprovalRequest({
 									sessionId: currentSessionId ?? "unknown",
 									toolCallId: event.toolCallId,
-									title: `${toolLabel} 确认`,
+									title: `${toolLabel} confirmation`,
 									message: question,
 									toolName: event.toolName,
 									matcher: group.matcher ?? "*",
@@ -389,7 +419,7 @@ export default function (pi: ExtensionAPI) {
 									command,
 									hookCommand,
 									eventName: hookEventName,
-									source: group.__source__ ?? "unknown",
+									source,
 									confirmText: labels.confirmText,
 									cancelText: labels.cancelText,
 								}),
@@ -408,13 +438,22 @@ export default function (pi: ExtensionAPI) {
 								return undefined;
 							}
 							if (permissionDecision.type === "deny") {
-								return { block: true, reason: permissionDecision.reason };
+								return {
+									block: true,
+									reason: formatHookBlockReason({
+										source,
+										eventName: hookEventName,
+										matcher,
+										hookType: handler.type ?? "command",
+										reason: permissionDecision.reason,
+									}),
+								};
 							}
-							return { block: true, reason: `需要确认但权限请求未完成: ${question}` };
+							return { block: true, reason: `Confirmation was required but not completed: ${blockReason}` };
 						}
-						return { block: true, reason: `需要确认但当前没有可用 UI: ${question}` };
+						return { block: true, reason: `Confirmation was required but no UI is available: ${blockReason}` };
 					}
-					return { block: true, reason: result.reason };
+					return { block: true, reason: blockReason };
 				}
 
 				if (result.updatedInput) {
@@ -468,7 +507,14 @@ export default function (pi: ExtensionAPI) {
 
 	function buildConfigSnapshot(): HookConfigSnapshot {
 		const events: HookConfigSnapshot["events"] = [];
+		const eventsByName = new Map<string, MatcherGroup[]>();
 		for (const [eventName, groups] of configs.entries()) {
+			eventsByName.set(eventName, [...(eventsByName.get(eventName) ?? []), ...groups]);
+		}
+		for (const [eventName, groups] of getAllSessionHookGroups(currentSessionId).entries()) {
+			eventsByName.set(eventName, [...(eventsByName.get(eventName) ?? []), ...groups]);
+		}
+		for (const [eventName, groups] of eventsByName.entries()) {
 			events.push({
 				name: eventName,
 				groups: groups.map(g => ({
@@ -501,16 +547,42 @@ export default function (pi: ExtensionAPI) {
 	}
 }
 
-function handlerIndex(event: string, idx: number): number {
-	return (hashString(event) * 31 + idx) | 0;
+function handlerKey(
+	event: string,
+	group: MatcherGroup,
+	groupIndex: number,
+	handler: HookHandler,
+	handlerIndex: number,
+): string {
+	return JSON.stringify({
+		event,
+		source: group.__source__ ?? "unknown",
+		matcher: group.matcher ?? "*",
+		groupIndex,
+		handlerIndex,
+		type: handler.type,
+		command: handler.command,
+		prompt: handler.prompt,
+		url: handler.url,
+		server: handler.server,
+		tool: handler.tool,
+		if: handler.if,
+	});
 }
 
-function hashString(s: string): number {
-	let h = 0;
-	for (let i = 0; i < s.length; i++) {
-		h = (h * 31 + s.charCodeAt(i)) | 0;
-	}
-	return h;
+function getHookSource(group: MatcherGroup): string {
+	return group.__source__ ?? "unknown";
+}
+
+function formatHookBlockReason(input: {
+	source: string;
+	eventName: string;
+	matcher: string;
+	hookType: string;
+	reason?: string;
+}): string {
+	const reason = input.reason?.trim() || "Hook blocked";
+	return `Hook blocked by ${input.source} (${input.eventName}, matcher ${input.matcher}, ${input.hookType}): ${reason}`;
 }
 
 function getCallLLM(pi: ExtensionAPI) {
@@ -653,14 +725,14 @@ function extractDescription(input: Record<string, unknown>): string | undefined 
 
 function formatToolLabel(toolName: string): string {
 	const labels: Record<string, string> = {
-		bash: "Bash 命令",
-		read: "文件读取",
-		write: "文件写入",
-		edit: "文件编辑",
-		grep: "内容搜索",
-		find: "文件搜索",
-		ls: "目录列表",
-		mcp: "MCP 工具",
+		bash: "Bash command",
+		read: "File read",
+		write: "File write",
+		edit: "File edit",
+		grep: "Content search",
+		find: "File search",
+		ls: "Directory list",
+		mcp: "MCP tool",
 	};
 	if (labels[toolName]) return labels[toolName];
 	return toolName.charAt(0).toUpperCase() + toolName.slice(1);
