@@ -721,9 +721,11 @@ describe("Built-in Extensions", () => {
 		it("does not re-run gold checks after a goal is already complete", async () => {
 			const { runner, manager, outputs } = await loadExtension("session-supervisor");
 
-			await invokeChannelMethod(manager, outputs, "supervisor", "setGoal", {
+			const setGoalResult = await invokeChannelMethod(manager, outputs, "supervisor", "setGoal", {
 				objective: "create the acceptance marker",
 			});
+			const checklistLength =
+				((setGoalResult.goal as Record<string, unknown>).checklist as unknown[] | undefined)?.length ?? 0;
 
 			const agentEndEvent = {
 				type: "agent_end",
@@ -740,7 +742,9 @@ describe("Built-in Extensions", () => {
 				],
 			} as never;
 
-			await runner.emit(agentEndEvent);
+			for (let i = 0; i < checklistLength; i++) {
+				await runner.emit(agentEndEvent);
+			}
 			const firstStatus = await invokeChannelMethod(manager, outputs, "supervisor", "getStatus");
 			expect((firstStatus.goal as Record<string, unknown>).status).toBe("complete");
 
