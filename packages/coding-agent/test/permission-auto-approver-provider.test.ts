@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
-import autoApproverExtension from "../extensions/auto-approver/index.ts";
+import { createAutoApproverProvider } from "../src/core/permissions/providers/auto-approver.ts";
 import type { PermissionContext } from "../src/core/permissions/types.ts";
-import type { ExtensionAPI, PermissionProvider } from "../src/index.ts";
+import type { PermissionProvider } from "../src/index.ts";
 
 function makeContext(overrides: Partial<PermissionContext> = {}): PermissionContext {
 	return {
@@ -16,22 +16,11 @@ function makeContext(overrides: Partial<PermissionContext> = {}): PermissionCont
 }
 
 function loadProvider(): PermissionProvider {
-	let registered: PermissionProvider | undefined;
-	autoApproverExtension({
-		setName: () => {},
-		permissions: {
-			registerProvider: (provider: PermissionProvider) => {
-				registered = provider;
-			},
-			unregisterProvider: () => {},
-		},
-	} as unknown as ExtensionAPI);
-	if (!registered) throw new Error("auto-approver extension did not register a permission provider");
-	return registered;
+	return createAutoApproverProvider();
 }
 
-describe("auto-approver permission extension", () => {
-	it("registers a permission provider through the extension API", () => {
+describe("auto-approver permission provider", () => {
+	it("creates a permission provider", () => {
 		expect(loadProvider().name).toBe("auto-approver");
 	});
 
@@ -47,6 +36,29 @@ describe("auto-approver permission extension", () => {
 		const provider = loadProvider();
 		expect(provider.check(makeContext({ toolName: "read", agent: { paths: { read: ["docs/**"] } } }))).toEqual({
 			type: "pass",
+		});
+	});
+
+	it("blocks sensitive and protected read paths instead of falling through to path-boundary prompts", () => {
+		const provider = loadProvider();
+		expect(provider.check(makeContext({ toolName: "read", input: { file_path: "/etc/passwd" } }))).toEqual({
+			type: "deny",
+			reason: "Autopilot blocked protected or sensitive path.",
+		});
+
+		const sshConfig = `${homedir()}/.ssh/config`;
+		expect(provider.check(makeContext({ toolName: "read", input: { file_path: sshConfig } }))).toEqual({
+			type: "deny",
+			reason: "Autopilot blocked protected or sensitive path.",
+		});
+	});
+
+	it("auto-approves user-writable read paths outside the workspace", () => {
+		const provider = loadProvider();
+		const filePath = `${homedir()}/Desktop/autopilot-readme.txt`;
+		expect(provider.check(makeContext({ toolName: "read", input: { file_path: filePath } }))).toEqual({
+			type: "allow",
+			reason: `Auto-approved user-writable path "${filePath}".`,
 		});
 	});
 
@@ -72,6 +84,16 @@ describe("auto-approver permission extension", () => {
 		expect(provider.check(makeContext({ toolName: "write", input: { file_path: "/var/autopilot.txt" } }))).toEqual({
 			type: "deny",
 			reason: "Autopilot blocked protected or sensitive path.",
+		});
+	});
+
+	it("blocks unclassified absolute writes outside the workspace", () => {
+		const provider = loadProvider();
+		expect(
+			provider.check(makeContext({ toolName: "write", input: { file_path: "/mnt/shared/autopilot.txt" } })),
+		).toEqual({
+			type: "deny",
+			reason: "Autopilot blocked path outside workspace or known user-writable locations.",
 		});
 	});
 
