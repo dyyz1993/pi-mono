@@ -370,6 +370,36 @@ async function streamAssistantResponse(
 /**
  * Execute tool calls from an assistant message.
  */
+/**
+ * Combine the main abort signal and the optional interrupt signal into one
+ * for tool execution. Fires when EITHER signal fires.
+ */
+function createToolSignal(
+	mainSignal: AbortSignal | undefined,
+	getInterruptSignal: (() => AbortSignal | undefined) | undefined,
+): AbortSignal {
+	const interruptSignal = getInterruptSignal?.();
+	if (!interruptSignal) return mainSignal ?? new AbortController().signal;
+	if (!mainSignal) return interruptSignal;
+	if (mainSignal.aborted || interruptSignal.aborted) {
+		const ctrl = new AbortController();
+		ctrl.abort();
+		return ctrl.signal;
+	}
+	const ctrl = new AbortController();
+	const onAbort = () => {
+		cleanup();
+		ctrl.abort();
+	};
+	const cleanup = () => {
+		mainSignal.removeEventListener("abort", onAbort);
+		interruptSignal.removeEventListener("abort", onAbort);
+	};
+	mainSignal.addEventListener("abort", onAbort);
+	interruptSignal.addEventListener("abort", onAbort);
+	return ctrl.signal;
+}
+
 async function executeToolCalls(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
@@ -381,10 +411,11 @@ async function executeToolCalls(
 	const hasSequentialToolCall = toolCalls.some(
 		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
 	);
+	const toolSignal = createToolSignal(signal, config.getInterruptSignal);
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
-		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
+		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, toolSignal, emit);
 	}
-	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
+	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, toolSignal, emit);
 }
 
 type ExecutedToolCallBatch = {

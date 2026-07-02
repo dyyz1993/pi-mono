@@ -115,6 +115,16 @@ export interface AgentOptions {
 	toolExecution?: ToolExecutionMode;
 }
 
+/** Options for {@link Agent.steer}. */
+export interface SteerOptions {
+	/** New message to steer the agent with. Takes priority if both message and promote are set. */
+	message?: AgentMessage;
+	/** Index in the followUp queue to promote to steer. Ignored if message is also set. */
+	promote?: number;
+	/** If true, interrupt the current tool execution so steer takes effect immediately. */
+	immediate?: boolean;
+}
+
 class PendingMessageQueue {
 	private messages: AgentMessage[] = [];
 	public mode: QueueMode;
@@ -148,6 +158,21 @@ class PendingMessageQueue {
 		return [first];
 	}
 
+	/** Remove and return the message at the given index. */
+	takeAt(index: number): AgentMessage | undefined {
+		if (index < 0 || index >= this.messages.length) return undefined;
+		const msg = this.messages[index];
+		this.messages = this.messages.filter((_, i) => i !== index);
+		return msg;
+	}
+
+	/** Drain all messages regardless of mode. */
+	drainAll(): AgentMessage[] {
+		const drained = this.messages.slice();
+		this.messages = [];
+		return drained;
+	}
+
 	clear(): void {
 		this.messages = [];
 	}
@@ -170,6 +195,7 @@ export class Agent {
 	private readonly listeners = new Set<(event: AgentEvent, signal: AbortSignal) => Promise<void> | void>();
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
+	private interruptController = new AbortController();
 
 	public convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	public transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
@@ -265,8 +291,36 @@ export class Agent {
 	}
 
 	/** Queue a message to be injected after the current assistant turn finishes. */
-	steer(message: AgentMessage): void {
-		this.steeringQueue.enqueue(message);
+	steer(message: AgentMessage): void;
+	/** Queue steering options (promote from followUp, interrupt, etc.). */
+	steer(opts: SteerOptions): void;
+	steer(a: AgentMessage | SteerOptions): void {
+		const { msg, immediate, overwrite } = this._resolveSteer(a);
+		// New API (SteerOptions) overwrites previous steer direction.
+		// Old API (AgentMessage) retains append semantics for backward compat.
+		if (overwrite) this.steeringQueue.clear();
+		if (msg) this.steeringQueue.enqueue(msg);
+		if (immediate) this.interrupt();
+	}
+
+	private _resolveSteer(a: AgentMessage | SteerOptions): {
+		msg: AgentMessage | undefined;
+		immediate: boolean;
+		overwrite: boolean;
+	} {
+		if ("role" in a || "content" in a) {
+			return { msg: a as AgentMessage, immediate: false, overwrite: false };
+		}
+		const opts = a as SteerOptions;
+		if (opts.message) {
+			return { msg: opts.message, immediate: opts.immediate ?? false, overwrite: true };
+		}
+		if (opts.promote !== undefined) {
+			const msg = this.followUpQueue.takeAt(opts.promote);
+			return { msg, immediate: opts.immediate ?? false, overwrite: true };
+		}
+		// Only immediate flag, no new message — promotes nothing, leaves current steer
+		return { msg: undefined, immediate: opts.immediate ?? false, overwrite: true };
 	}
 
 	/** Queue a message to run only after the agent would otherwise stop. */
@@ -295,6 +349,11 @@ export class Agent {
 		return this.steeringQueue.hasItems() || this.followUpQueue.hasItems();
 	}
 
+	/** Drain and return all queued steering messages. */
+	drainSteeringMessages(): AgentMessage[] {
+		return this.steeringQueue.drainAll();
+	}
+
 	/** Active abort signal for the current run, if any. */
 	get signal(): AbortSignal | undefined {
 		return this.activeRun?.abortController.signal;
@@ -303,6 +362,31 @@ export class Agent {
 	/** Abort the current run, if one is active. */
 	abort(): void {
 		this.activeRun?.abortController.abort();
+	}
+
+	/** Current interrupt signal for soft interruption. Fresh after each call to interrupt(). */
+	getInterruptSignal(): AbortSignal | undefined {
+		return this.interruptController.signal;
+	}
+
+	/**
+	 * Soft interruption: stop tool execution mid-flight without terminating the run.
+	 *
+	 * The current tool batch is aborted and returns error results. The loop continues
+	 * and picks up any steering-queued message on the next turn via the normal
+	 * steering-drain path. Use alongside steer() with { immediate: true } so a new
+	 * direction takes effect right after the interrupted tools.
+	 *
+	 * Unlike abort(), this does NOT stop the agent — it forces a turn boundary
+	 * so a steer direction can take effect immediately.
+	 */
+	interrupt(): void {
+		if (!this.interruptController.signal.aborted) {
+			this.interruptController.abort();
+		}
+		// Replace with a new controller so the next turn's getInterruptSignal() call
+		// returns a fresh signal unaffected by this interrupt.
+		this.interruptController = new AbortController();
 	}
 
 	/**
@@ -449,6 +533,7 @@ export class Agent {
 				return this.steeringQueue.drain();
 			},
 			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			getInterruptSignal: () => this.getInterruptSignal(),
 		};
 	}
 

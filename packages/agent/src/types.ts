@@ -208,6 +208,17 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
 
 	/**
+	 * Returns the current interrupt signal for tool execution.
+	 * Called each turn by the loop. The returned signal, when fired, causes
+	 * the current tool batch to abort without terminating the run.
+	 *
+	 * After a call to interrupt(), the returned signal changes to a fresh one,
+	 * so subsequent turns are not affected by a past interrupt. Unlike the main
+	 * abort signal, this is re-armable across turns.
+	 */
+	getInterruptSignal?: () => AbortSignal | undefined;
+
+	/**
 	 * Called after `turn_end` and before the loop decides whether another provider request should start.
 	 * Return replacement context/model/thinking state to affect the next turn in this run.
 	 * Return undefined to keep using the current context/config.
