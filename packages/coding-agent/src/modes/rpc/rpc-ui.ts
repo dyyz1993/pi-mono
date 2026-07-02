@@ -137,7 +137,11 @@ export function createRpcExtensionUIContext(options: {
 					hookMeta: opts?.hookMeta,
 				},
 				(response) =>
-					"cancelled" in response && response.cancelled ? false : "confirmed" in response ? response.confirmed : false,
+					"cancelled" in response && response.cancelled
+						? false
+						: "confirmed" in response
+							? response.confirmed
+							: false,
 			),
 
 		input: (title, placeholder, opts) =>

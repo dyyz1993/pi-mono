@@ -1021,10 +1021,7 @@ export class AgentSession {
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
 		// When a queued user/custom message starts, remove it BEFORE emitting.
 		// This ensures the UI sees the updated queue state
-		if (
-			event.type === "message_start" &&
-			(event.message.role === "user" || event.message.role === "custom")
-		) {
+		if (event.type === "message_start" && (event.message.role === "user" || event.message.role === "custom")) {
 			if (event.message.role === "user") {
 				this._overflowRecoveryAttempts = 0;
 				resetLoopDetection(this._loopState);
@@ -4373,9 +4370,7 @@ export class AgentSession {
 	 */
 	getSessionStats(): SessionStats {
 		const entries = this.sessionManager.getEntries();
-		const messages = entries
-			.filter((entry) => entry.type === "message")
-			.map((entry) => entry.message);
+		const messages = entries.filter((entry) => entry.type === "message").map((entry) => entry.message);
 		const userMessages = messages.filter((m) => m.role === "user").length;
 		const assistantMessages = messages.filter((m) => m.role === "assistant").length;
 		const toolResults = messages.filter((m) => m.role === "toolResult").length;

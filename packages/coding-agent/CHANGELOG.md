@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.78.5] - 2026-07-02
+
 ### Added
 
 - Optional `avatar` frontmatter field for agent definitions (`AgentConfig.avatar`). Parsed into a discriminated `AgentAvatar` (`{ type: "emoji", value }` or `{ type: "image", src }`); the loader auto-classifies the value as an emoji, http(s)/`data:`/`file:` URL, or an absolute/relative path so consumers can render the right format without re-parsing.

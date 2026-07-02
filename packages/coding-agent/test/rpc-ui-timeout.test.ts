@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createRpcExtensionUIContext, DEFAULT_EXTENSION_UI_TIMEOUT_MS } from "../src/modes/rpc/rpc-ui.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../src/modes/rpc/rpc-types.ts";
+import { createRpcExtensionUIContext, DEFAULT_EXTENSION_UI_TIMEOUT_MS } from "../src/modes/rpc/rpc-ui.ts";
 
 describe("RPC extension UI timeout", () => {
 	afterEach(() => {
@@ -12,7 +12,11 @@ describe("RPC extension UI timeout", () => {
 		const output: unknown[] = [];
 		const pending = new Map<
 			string,
-			{ request: RpcExtensionUIRequest; resolve: (value: RpcExtensionUIResponse) => void; reject: (error: Error) => void }
+			{
+				request: RpcExtensionUIRequest;
+				resolve: (value: RpcExtensionUIResponse) => void;
+				reject: (error: Error) => void;
+			}
 		>();
 		const ui = createRpcExtensionUIContext({
 			output: (event) => output.push(event),
@@ -22,10 +26,7 @@ describe("RPC extension UI timeout", () => {
 		const result = ui.confirm("Approve?", "Continue?");
 		const request = output.find(
 			(event): event is RpcExtensionUIRequest =>
-				typeof event === "object" &&
-				event !== null &&
-				"type" in event &&
-				event.type === "extension_ui_request",
+				typeof event === "object" && event !== null && "type" in event && event.type === "extension_ui_request",
 		);
 		expect(request).toMatchObject({
 			method: "confirm",
@@ -49,7 +50,11 @@ describe("RPC extension UI timeout", () => {
 		const output: unknown[] = [];
 		const pending = new Map<
 			string,
-			{ request: RpcExtensionUIRequest; resolve: (value: RpcExtensionUIResponse) => void; reject: (error: Error) => void }
+			{
+				request: RpcExtensionUIRequest;
+				resolve: (value: RpcExtensionUIResponse) => void;
+				reject: (error: Error) => void;
+			}
 		>();
 		const ui = createRpcExtensionUIContext({
 			output: (event) => output.push(event),
@@ -59,10 +64,7 @@ describe("RPC extension UI timeout", () => {
 		const result = ui.editor("Edit this", "prefill");
 		const request = output.find(
 			(event): event is RpcExtensionUIRequest =>
-				typeof event === "object" &&
-				event !== null &&
-				"type" in event &&
-				event.type === "extension_ui_request",
+				typeof event === "object" && event !== null && "type" in event && event.type === "extension_ui_request",
 		);
 		expect(request).toMatchObject({
 			method: "editor",
