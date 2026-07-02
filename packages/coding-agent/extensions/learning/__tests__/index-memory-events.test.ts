@@ -86,6 +86,23 @@ function userMessage(text: string): AgentMessage {
   };
 }
 
+function assistantMessage(text: string): AgentMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    timestamp: Date.now(),
+  } as AgentMessage;
+}
+
+function failedToolResultMessage(text: string): AgentMessage {
+  return {
+    role: "toolResult",
+    content: [{ type: "text", text }],
+    isError: true,
+    timestamp: Date.now(),
+  } as AgentMessage;
+}
+
 async function seedMemoryFile(): Promise<void> {
   const store = new LearningStore(projectDir);
   mkdirSync(store.paths.memoryDir, { recursive: true });
@@ -228,5 +245,21 @@ describe("learning extension memory event compatibility", () => {
 
     deferred.resolve(JSON.stringify({ selected: [] }));
     await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+
+  it("skips memory and skill learning for turns with failed tool results", async () => {
+    const runtime = createMockPi();
+    await runtime.emit("session_start");
+
+    await runtime.emit("agent_end", {
+      messages: [
+        userMessage("Remember that failed tool output should never become a project learning candidate."),
+        assistantMessage("I will inspect the project and save a reusable workflow."),
+        failedToolResultMessage("bash failed: permission denied while trying to inspect secrets"),
+      ],
+    });
+
+    const snapshot = await new LearningStore(projectDir).getSnapshot();
+    expect(snapshot.candidates).toHaveLength(0);
   });
 });
