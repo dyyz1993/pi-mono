@@ -84,6 +84,8 @@ export const SupervisorConfigSchema = Type.Object({
     defaultDelayMs: Type.Integer({ default: 30_000 }),
     /** Delay threshold for pausing (vs immediate continue) */
     pauseThresholdMs: Type.Integer({ default: 300_000 }),
+    /** Minimum confidence required before supervisor auto-continues incomplete work */
+    minContinueConfidence: Type.Number({ default: 0.6, minimum: 0, maximum: 1 }),
     /** Guard plugins */
     guards: Type.Array(GuardConfigSchema, { default: [] }),
 });

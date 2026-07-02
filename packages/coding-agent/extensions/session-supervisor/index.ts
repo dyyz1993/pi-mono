@@ -20,6 +20,14 @@ import { loadConfig, DEFAULT_CONFIG } from "./config.ts";
 import { checkWithSmallModel } from "./checker.ts";
 import { Scheduler } from "./scheduler.ts";
 import {
+    buildIncompleteSignature,
+    checkKeywordGuardAgainstCode,
+    getDecisionConfidence,
+    isIncompleteSignatureSimilar,
+    shouldAutoContinueFromGuards,
+    shouldAutoContinueFromModelCheck,
+} from "./decision.ts";
+import {
     CONTINUE_PROMPT,
     TODO_GUARD_PROMPT,
     SPECS_GUARD_PROMPT,
@@ -578,8 +586,14 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             lastTaskReports = reports;
             channel.emit("supervisor.taskReport", { type: "taskReport" as const, tasks: reports });
 
-            // Phase 2: If any guard says incomplete → continue immediately
-            const hasIncompleteGuards = guardResults.some((r) => !r.completed && r.remainingItems.length > 0);
+            // Phase 2: Only confident incomplete guards can trigger auto-continue.
+            // Low-confidence signals are kept in reports/forensics but fall through
+            // to the model check instead of starting a loop by themselves.
+            const guardDecision = shouldAutoContinueFromGuards(
+                guardResults,
+                config.minContinueConfidence,
+            );
+            const hasIncompleteGuards = guardDecision.shouldContinue;
 
             if (hasIncompleteGuards) {
                 log(`Guards detected incomplete tasks`);
@@ -588,12 +602,9 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 // Stagnation detection: compare this round's incomplete signature
                 // with the previous round. If identical, the guard results have
                 // not changed and the agent is stuck.
-                const currentSignature = guardResults
-                    .filter((r) => !r.completed)
-                    .map((r) => `${r.guardName}:${r.remainingItems.sort().join(",")}`)
-                    .join("|");
+                const currentSignature = buildIncompleteSignature(guardDecision.incompleteResults);
 
-                if (currentSignature === lastIncompleteSignature) {
+                if (isIncompleteSignatureSimilar(currentSignature, lastIncompleteSignature)) {
                     stagnationCount++;
                     log(`Stagnation detected (count=${stagnationCount}), signature=${currentSignature}`);
                     appendForensic({
@@ -655,16 +666,17 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
                 const continueMessage = generateContinueMessage(
                     activeGuards,
-                    guardResults,
+                    guardDecision.incompleteResults,
                     null,
                 );
 
                 const checkDurationMs = Date.now() - checkStartedAt;
+                const decisionConfidence = getDecisionConfidence(guardDecision.incompleteResults);
 
-                lastCheckResult = { completed: false, confidence: 0.9, incompleteTasks: [], guardResults };
+                lastCheckResult = { completed: false, confidence: decisionConfidence, incompleteTasks: [], guardResults };
                 recordGoldResult({
                     verdict: "incomplete",
-                    confidence: 0.9,
+                    confidence: decisionConfidence,
                     reason: "Active guards found remaining work.",
                     evidence: guardResults.map((r) => ({
                         kind: "guard",
@@ -675,7 +687,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                     durationMs: checkDurationMs,
                 });
 
-                const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "incomplete", 0.9, guardResults, guardTimings, undefined, "continue", "Active guards found remaining work");
+                const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "incomplete", decisionConfidence, guardResults, guardTimings, undefined, "continue", "Active guards found remaining work");
                 appendTriggerRecord(record);
 
                 scheduleContinue(continueMessage);
@@ -760,6 +772,52 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             }
 
             // Phase 4: Model detected incompleteness → continue with model's assessment
+            if (!shouldAutoContinueFromModelCheck(modelCheck, config.minContinueConfidence)) {
+                log(`Model incomplete below confidence threshold (${modelCheck.confidence} < ${config.minContinueConfidence}); skipping auto-continue`);
+                const checkDurationMs = Date.now() - checkStartedAt;
+                currentState = "idle";
+                lastCheckResult = { ...modelCheck, guardResults };
+                recordGoldResult({
+                    verdict: "incomplete",
+                    confidence: modelCheck.confidence,
+                    reason: modelCheck.modelResponse ?? "Low-confidence incomplete model result; auto-continue skipped.",
+                    evidence: [
+                        ...guardResults.map((r) => ({
+                            kind: "guard" as const,
+                            summary: `${r.guardName}: ${r.detail ?? (r.completed ? "completed" : r.remainingItems.join(", "))}`,
+                            passed: r.completed,
+                        })),
+                        ...modelCheck.incompleteTasks.map((t) => ({
+                            kind: "model" as const,
+                            summary: `[${t.severity}] ${t.description}`,
+                            passed: false,
+                        })),
+                    ],
+                    durationMs: checkDurationMs,
+                });
+
+                const record = buildTriggerRecord(
+                    checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
+                    guardResults, guardTimings,
+                    {
+                        passed: false,
+                        confidence: modelCheck.confidence,
+                        response: modelCheck.modelResponse,
+                        durationMs: modelCheckDurationMs,
+                        model: config.smallModel,
+                    },
+                    "idle", "Low-confidence incomplete result; auto-continue skipped",
+                );
+                appendTriggerRecord(record);
+                appendForensic({
+                    ts: forensicTs(),
+                    type: "continue_skipped",
+                    reason: `low confidence incomplete (${modelCheck.confidence} < ${config.minContinueConfidence})`,
+                });
+                emitStatusChanged();
+                return;
+            }
+
             log(`Model detected incomplete tasks`);
             const checkDurationMs = Date.now() - checkStartedAt;
             const continueMessage = generateContinueMessage(
@@ -1130,21 +1188,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         guard: Extract<GuardConfig, { type: "keyword" }>,
         context: string,
     ): GuardCheckResult {
-        const found = guard.keywords.filter((kw) =>
-            context.toLowerCase().includes(kw.toLowerCase()),
-        );
-
-        return {
-            guardName: guard.name,
-            completed: found.length === 0,
-            confidence: found.length === 0 ? 1 : 0.7,
-            remainingItems: found.length > 0
-                ? [`Keywords found indicating incomplete work: ${found.join(", ")}`]
-                : [],
-            detail: found.length > 0
-                ? `Found: ${found.join(", ")}`
-                : "No incomplete keywords",
-        };
+        return checkKeywordGuardAgainstCode(guard, context);
     }
 
     async function checkCustomGuard(
