@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.78.10] - 2026-07-02
+
+### Fixed
+
+- Published the coordinator async delegate hard timeout so background delegated sessions are stopped and surfaced to parents instead of waiting indefinitely.
+
 ## [0.78.9] - 2026-07-02
 
 ### Fixed
