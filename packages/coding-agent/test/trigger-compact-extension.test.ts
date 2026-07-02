@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import triggerCompactExtension from "../examples/extensions/trigger-compact.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../src/core/extensions/index.ts";
+import { createLocalFileSystemCapability } from "../src/core/filesystem-capability.ts";
 
 function createContext(tokens: number | null, compact = vi.fn()): ExtensionContext {
 	return {
@@ -12,6 +13,7 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
 		modelRegistry: {} as ExtensionContext["modelRegistry"],
 		model: undefined,
 		permissions: {} as ExtensionContext["permissions"],
+		fs: createLocalFileSystemCapability(),
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		signal: undefined,

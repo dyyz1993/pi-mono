@@ -22,6 +22,7 @@ import { createMultiCompaction } from "../../extensions/_multi-compaction/index.
 import { foldDuplicateLines } from "../../extensions/_multi-compaction/line-fold.ts";
 import { shouldForceCompact, shouldWarn } from "../../extensions/_multi-compaction/reactive.ts";
 import { buildMemorySummary, readMemoryFiles } from "../../extensions/_multi-compaction/session-memory.ts";
+import { budgetToolResults } from "../../extensions/_multi-compaction/tool-result-budget.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 // ============================================================================
@@ -143,9 +144,6 @@ describe("toolResultBudget disk persistence", () => {
 		// but that test only checks the replacement content — it doesn't
 		// verify the file on disk.
 		//
-		// We use the exported budgetToolResults function directly.
-		const { budgetToolResults } = require("../../extensions/_multi-compaction/tool-result-budget.ts");
-
 		const largeText = "x".repeat(300_000);
 		const messages = [
 			{

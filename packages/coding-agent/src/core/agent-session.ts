@@ -701,6 +701,9 @@ export class AgentSession {
 
 	set toolOperationsProvider(provider: ToolOperationsProvider | undefined) {
 		this._toolOperationsProvider = provider;
+		if (provider?.fs) {
+			void this._fileSnapshotManager?.reinitializeWorkspaceAsync(this._cwd);
+		}
 		this._baseToolDefinitions = new Map(
 			Object.entries(this._createBaseToolDefinitions()).map(([name, tool]) => [name, tool as ToolDefinition]),
 		);
@@ -929,7 +932,7 @@ export class AgentSession {
 	private _initFileSnapshotManager(): void {
 		try {
 			const git = InternalGit.createForProject(join(getAgentDir(), "file-store"), this._cwd);
-			const manager = new FileSnapshotManager(git);
+			const manager = new FileSnapshotManager(git, { workspaceFs: () => this.toolOperationsProvider?.fs });
 			manager.rebuildIndex(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 			manager.initialize(this._cwd);
 			void git.enforceLimit(100 * 1024 * 1024, manager.getActiveTreeHashes()).catch((err: unknown) => {
@@ -1153,7 +1156,7 @@ export class AgentSession {
 				toolResults: event.toolResults,
 			};
 			await this._extensionRunner.emit(extensionEvent);
-			this._fileSnapshotManager?.onTurnEnd(this._cwd, this._turnIndex, (type, data) =>
+			await this._fileSnapshotManager?.onTurnEndAsync(this._cwd, this._turnIndex, (type, data) =>
 				this.sessionManager.appendCustomEntry(type, data),
 			);
 			this._turnIndex++;

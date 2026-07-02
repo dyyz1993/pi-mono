@@ -229,6 +229,16 @@ export {
 } from "./core/file-resolvers.ts";
 // File store
 export type { GCResult } from "./core/file-store/index.ts";
+export {
+	createLocalFileSystemCapability,
+	type FileSystemCapability,
+	type FileSystemDirent,
+	type FileSystemReadBatchResult,
+	type FileSystemStat,
+	type FileSystemWalkEntry,
+	type FileSystemWalkOptions,
+	type FileSystemWalkResult,
+} from "./core/filesystem-capability.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";

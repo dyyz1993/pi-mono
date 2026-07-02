@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@dyyz1993/pi-coding-agent";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 import * as Diff from "diff";
-import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { LiveChange } from "../../src/core/file-store/file-snapshot-manager.ts";
 import {
@@ -93,12 +92,29 @@ export default function fileReview(pi: ExtensionAPI) {
 		return undefined;
 	}
 
-	function ensureCurrentSnapshotEntryId(): string | undefined {
+	async function ensureCurrentSnapshotEntryId(): Promise<string | undefined> {
 		const mgr = ctx?.fileSnapshotManager;
-		if (mgr && ctx && mgr.getLiveChanges(ctx.cwd).length > 0) {
-			mgr.onTurnEnd(ctx.cwd, currentTurnIndex, (type, data) => pi.appendEntry(type, data) ?? "");
+		if (mgr && ctx && (await mgr.getLiveChangesAsync(ctx.cwd)).length > 0) {
+			await mgr.onTurnEndAsync(ctx.cwd, currentTurnIndex, (type, data) => pi.appendEntry(type, data) ?? "");
 		}
 		return getLatestStepSnapshotEntryId();
+	}
+
+	async function rollbackFile(path: string, diffInfo: { oldContent: string | null; newContent: string | null }): Promise<boolean> {
+		if (!ctx) return false;
+		const fullPath = join(ctx.cwd, path);
+		try {
+			if (diffInfo.oldContent === null && diffInfo.newContent !== null) {
+				await ctx.fs.delete(fullPath);
+				return true;
+			}
+			if (diffInfo.oldContent !== null) {
+				await ctx.fs.mkdir(dirname(fullPath));
+				await ctx.fs.writeFile(fullPath, diffInfo.oldContent);
+				return true;
+			}
+		} catch {}
+		return false;
 	}
 
 	function getSnapshotTreeHash(snapshotEntryId: string | undefined): string | undefined {
@@ -163,11 +179,11 @@ export default function fileReview(pi: ExtensionAPI) {
 		// registerChannel only available in RPC mode
 	}
 
-	channel?.handle("review.live", () => {
+	channel?.handle("review.live", async () => {
 		const mgr = ctx?.fileSnapshotManager;
 		if (!mgr || !ctx) return { turnIndex: currentTurnIndex, changes: [] };
 
-		const changes = mgr.getLiveChanges(ctx.cwd);
+		const changes = await mgr.getLiveChangesAsync(ctx.cwd);
 		return { turnIndex: currentTurnIndex, changes };
 	});
 
@@ -213,7 +229,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		return { ok: true };
 	});
 
-	channel?.handle("review.pending", () => {
+	channel?.handle("review.pending", async () => {
 		// Aggregate by path: track FIRST and LATEST status for each file.
 		// Net-zero rule: if first=added AND latest=deleted (never approved), skip it.
 		type PathMeta = { firstStatus: LiveChange["status"]; firstTurnIndex: number; latestTurnIndex: number; latestFileStatus: LiveChange["status"]; latestTimestamp: number };
@@ -286,7 +302,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		const diffMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
 		if (mgr && ctx && pathMeta.size > 0) {
 			// Get live (disk) content for all pending files
-			const liveChanges = mgr.getLiveChanges(ctx.cwd);
+			const liveChanges = await mgr.getLiveChangesAsync(ctx.cwd);
 			const liveMap = new Map<string, { oldContent: string | null; newContent: string | null }>();
 			for (const change of liveChanges) {
 				if (change.diff) {
@@ -320,7 +336,7 @@ export default function fileReview(pi: ExtensionAPI) {
 						fromHash: baselineHash as string | undefined,
 					};
 				});
-				const batchResult = mgr.getBatchFileContents(fileRequests, ctx.cwd);
+				const batchResult = await mgr.getBatchFileContentsAsync(fileRequests, ctx.cwd);
 				for (const [path, content] of batchResult) {
 					diffMap.set(path, content);
 				}
@@ -461,14 +477,14 @@ export default function fileReview(pi: ExtensionAPI) {
 		return result;
 	});
 
-	channel?.handle("review.approve", (params) => {
-		const snapshotEntryId = ensureCurrentSnapshotEntryId();
+	channel?.handle("review.approve", async (params) => {
+		const snapshotEntryId = await ensureCurrentSnapshotEntryId();
 		if (!snapshotEntryId) return { ok: false, error: "No snapshot available for approval" };
 		setApproval(params.path, "approved", snapshotEntryId, getSnapshotTreeHash(snapshotEntryId));
 		return { ok: true, snapshotEntryId };
 	});
 
-	channel?.handle("review.reject", (params) => {
+	channel?.handle("review.reject", async (params) => {
 		// Roll back the file to its pre-modification state
 		if (!ctx) return { ok: false, error: "No session context" };
 		const mgr = ctx.fileSnapshotManager;
@@ -482,43 +498,19 @@ export default function fileReview(pi: ExtensionAPI) {
 			const fromEntryId = approvedSnapshotEntry.get(params.path);
 
 			if (fromEntryId) {
-				const content = mgr.getBatchFileContents(
+				const content = (await mgr.getBatchFileContentsAsync(
 					[{ filePath: params.path, fromEntryId, fromHash: getSnapshotTreeHash(fromEntryId) }],
 					ctx.cwd,
-				).get(params.path);
+				)).get(params.path);
 				if (content) diffInfo = content;
 			} else {
-				const diff = mgr.getFileDiff({ filePath: params.path });
-				if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+				const content = (await mgr.getBatchFileContentsAsync([{ filePath: params.path }], ctx.cwd)).get(params.path);
+				if (content) diffInfo = content;
 			}
 		} catch {}
 		if (!diffInfo) return { ok: false, error: "No diff data for file" };
 
-		// Perform rollback based on file status
-		const fullPath = join(ctx.cwd, params.path);
-
-		let rolledBack = false;
-		// Determine file status by checking if oldContent exists
-		if (diffInfo.oldContent === null && diffInfo.newContent !== null) {
-			// File was ADDED — delete it
-			try {
-				unlinkSync(fullPath);
-				rolledBack = true;
-			} catch {}
-		} else if (diffInfo.oldContent !== null && diffInfo.newContent === null) {
-			// File was DELETED — restore it
-			try {
-				mkdirSync(dirname(fullPath), { recursive: true });
-				writeFileSync(fullPath, diffInfo.oldContent, "utf-8");
-				rolledBack = true;
-			} catch {}
-		} else if (diffInfo.oldContent !== null && diffInfo.newContent !== null) {
-			// File was MODIFIED — restore old content
-			try {
-				writeFileSync(fullPath, diffInfo.oldContent, "utf-8");
-				rolledBack = true;
-			} catch {}
-		}
+		const rolledBack = await rollbackFile(params.path, diffInfo);
 
 		if (rolledBack) {
 			// Also remove this file from turnLog since it's been rolled back
@@ -528,7 +520,7 @@ export default function fileReview(pi: ExtensionAPI) {
 			// Re-commit snapshot so lastCommittedTreeHash reflects the rolled-back disk state.
 			// Without this, subsequent getLiveChanges() would detect the rollback as a "new change".
 			try {
-				mgr.onTurnEnd(ctx.cwd, -1, (type, data) => { pi.appendEntry(type, data); return ""; });
+				await mgr.onTurnEndAsync(ctx.cwd, -1, (type, data) => { pi.appendEntry(type, data); return ""; });
 			} catch {}
 		}
 
@@ -536,9 +528,9 @@ export default function fileReview(pi: ExtensionAPI) {
 		return { ok: true, rolledBack };
 	});
 
-	channel?.handle("review.approveAll", () => {
+	channel?.handle("review.approveAll", async () => {
 		let count = 0;
-		const snapshotEntryId = ensureCurrentSnapshotEntryId();
+		const snapshotEntryId = await ensureCurrentSnapshotEntryId();
 		if (!snapshotEntryId) return { count };
 		const snapshotTreeHash = getSnapshotTreeHash(snapshotEntryId);
 		// Approve ALL files that are currently pending, not just those in turnLog.
@@ -566,7 +558,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		return { count };
 	});
 
-	channel?.handle("review.rejectAll", () => {
+	channel?.handle("review.rejectAll", async () => {
 		if (!ctx) return { count: 0, rolledBack: 0 };
 		const mgr = ctx.fileSnapshotManager;
 
@@ -589,27 +581,19 @@ export default function fileReview(pi: ExtensionAPI) {
 					try {
 						const approvedEntryId = approvedSnapshotEntry.get(path);
 						if (approvedEntryId) {
-							const content = mgr.getBatchFileContents(
+							const content = (await mgr.getBatchFileContentsAsync(
 								[{ filePath: path, fromEntryId: approvedEntryId, fromHash: getSnapshotTreeHash(approvedEntryId) }],
 								ctx.cwd,
-							).get(path);
+							)).get(path);
 							if (content) diffInfo = content;
 						} else {
-							const diff = mgr.getFileDiff({ filePath: path });
-							if (diff) diffInfo = { oldContent: diff.oldContent, newContent: diff.newContent };
+							const content = (await mgr.getBatchFileContentsAsync([{ filePath: path }], ctx.cwd)).get(path);
+							if (content) diffInfo = content;
 						}
 					} catch {}
 
 					if (diffInfo) {
-						const fullPath = join(ctx.cwd, path);
-						let didRollback = false;
-						if (diffInfo.oldContent === null && diffInfo.newContent !== null) {
-							try { unlinkSync(fullPath); didRollback = true; } catch {}
-						} else if (diffInfo.oldContent !== null && diffInfo.newContent === null) {
-							try { mkdirSync(dirname(fullPath), { recursive: true }); writeFileSync(fullPath, diffInfo.oldContent, "utf-8"); didRollback = true; } catch {}
-						} else if (diffInfo.oldContent !== null && diffInfo.newContent !== null) {
-							try { writeFileSync(fullPath, diffInfo.oldContent, "utf-8"); didRollback = true; } catch {}
-						}
+						const didRollback = await rollbackFile(path, diffInfo);
 						if (didRollback) {
 							rolledBack++;
 							for (const record of turnLog) {
@@ -712,7 +696,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		ctx = _ctx;
 		const mgr = _ctx.fileSnapshotManager;
 		if (!mgr) return;
-		currentTurnChanges = mgr.getLiveChanges(_ctx.cwd);
+		currentTurnChanges = await mgr.getLiveChangesAsync(_ctx.cwd);
 	});
 
 	pi.on("turn_end", async (event: TurnEndEvent, _ctx: ExtensionContext) => {
@@ -721,7 +705,7 @@ export default function fileReview(pi: ExtensionAPI) {
 		currentTurnIndex = event.turnIndex;
 		const changes = currentTurnChanges.length > 0
 			? currentTurnChanges
-			: (_ctx.fileSnapshotManager?.getLiveChanges(_ctx.cwd) ?? []);
+			: (await _ctx.fileSnapshotManager?.getLiveChangesAsync(_ctx.cwd) ?? []);
 		if (changes.length > 0) {
 			const timestamp = Date.now();
 			turnLog.push({

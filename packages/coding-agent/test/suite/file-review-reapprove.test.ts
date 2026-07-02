@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../../extensions/file-review/index.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
+import { createLocalFileSystemCapability } from "../../src/core/filesystem-capability.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../src/index.ts";
 
 const tempDirs: string[] = [];
@@ -85,32 +86,26 @@ function createMockChannel(name: string) {
 		 * Directly invoke a channel method synchronously.
 		 * Routes through onReceive → ServerChannel.handle → send (response is captured).
 		 */
-		_invokeDirect(method: string, params: Record<string, unknown> = {}): unknown {
+		async _invokeAsync(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 			const invokeId = ++invokeCounter;
 			const callMsg = { __call: method, invokeId, ...params };
-			let result: unknown;
-			let resolved = false;
-
-			// Temporarily override send to capture the synchronous result
-			const origSend = channel.send;
-			channel.send = (data: unknown) => {
-				const record = data as Record<string, unknown>;
-				if (record.invokeId === invokeId) {
-					result = record;
-					resolved = true;
-				}
-			};
-
-			if (receiveHandler) {
-				receiveHandler(callMsg);
-			}
-
-			channel.send = origSend;
-
-			if (!resolved) throw new Error(`Method ${method} did not respond`);
-			// Strip invokeId from result, unwrap array responses
-			const { invokeId: _, result: arrResult, ...rest } = result as Record<string, unknown>;
-			return arrResult !== undefined ? arrResult : rest;
+			return await new Promise<unknown>((resolve, reject) => {
+				const origSend = channel.send;
+				const timer = setTimeout(() => {
+					channel.send = origSend;
+					reject(new Error(`Method ${method} timeout`));
+				}, 5000);
+				channel.send = (data: unknown) => {
+					const record = data as Record<string, unknown>;
+					if (record.invokeId === invokeId) {
+						clearTimeout(timer);
+						channel.send = origSend;
+						const { invokeId: _, result: arrResult, ...rest } = record;
+						resolve(arrResult !== undefined ? arrResult : rest);
+					}
+				};
+				receiveHandler?.(callMsg);
+			});
 		},
 	};
 	return channel;
@@ -149,6 +144,7 @@ function createMockContext(
 ): ExtensionContext {
 	return {
 		cwd,
+		fs: createLocalFileSystemCapability(),
 		fileSnapshotManager: mgr,
 		sessionManager: {
 			getEntries: () =>
@@ -170,6 +166,7 @@ describe("file-review approve-then-modify re-approval", () => {
 		const storeDir = makeTempDir();
 		const git = new InternalGit(storeDir);
 		const mgr = new FileSnapshotManager(git);
+		mgr.initialize(cwd);
 
 		const { api, entries, handlers, mockChannels } = createChannelMockExtensionAPI();
 		fileReview(api);
@@ -185,10 +182,10 @@ describe("file-review approve-then-modify re-approval", () => {
 		await handlers.get("turn_start")!({}, ctx);
 		await handlers.get("tool_result")!({}, ctx);
 		await handlers.get("turn_end")!({ turnIndex: 0 } as TurnEndEvent, ctx);
-		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+		await mgr.onTurnEndAsync(cwd, 0, (type, data) => api.appendEntry(type, data) ?? "");
 
 		// Check pending — should have test.txt
-		const pending0 = reviewChannel._invokeDirect("review.pending", {}) as Array<{
+		const pending0 = (await reviewChannel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			status: string;
 			fileStatus: string;
@@ -199,10 +196,10 @@ describe("file-review approve-then-modify re-approval", () => {
 		expect(pending0[0]!.fileStatus).toBe("added");
 
 		// ── Approve the file ──
-		reviewChannel._invokeDirect("review.approve", { path: "test.txt" });
+		await reviewChannel._invokeAsync("review.approve", { path: "test.txt" });
 
 		// Check pending — should be empty (approved)
-		const pending1 = reviewChannel._invokeDirect("review.pending", {}) as unknown[];
+		const pending1 = (await reviewChannel._invokeAsync("review.pending", {})) as unknown[];
 		expect(pending1).toHaveLength(0);
 
 		// ── Turn 1: Modify file ──
@@ -211,10 +208,10 @@ describe("file-review approve-then-modify re-approval", () => {
 		await handlers.get("turn_start")!({}, ctx);
 		await handlers.get("tool_result")!({}, ctx);
 		await handlers.get("turn_end")!({ turnIndex: 1 } as TurnEndEvent, ctx);
-		mgr.onTurnEnd(cwd, 1, (type, _data) => `${type}-1`);
+		await mgr.onTurnEndAsync(cwd, 1, (type, data) => api.appendEntry(type, data) ?? "");
 
 		// ── Check pending — should re-appear as "modified" ──
-		const pending2 = reviewChannel._invokeDirect("review.pending", {}) as Array<{
+		const pending2 = (await reviewChannel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			status: string;
 			fileStatus: string;
@@ -238,6 +235,7 @@ describe("file-review approve-then-modify re-approval", () => {
 		const storeDir = makeTempDir();
 		const git = new InternalGit(storeDir);
 		const mgr = new FileSnapshotManager(git);
+		mgr.initialize(cwd);
 
 		const { api, entries, handlers, mockChannels } = createChannelMockExtensionAPI();
 		fileReview(api);
@@ -252,19 +250,19 @@ describe("file-review approve-then-modify re-approval", () => {
 		await handlers.get("turn_start")!({}, ctx);
 		await handlers.get("tool_result")!({}, ctx);
 		await handlers.get("turn_end")!({ turnIndex: 0 } as TurnEndEvent, ctx);
-		mgr.onTurnEnd(cwd, 0, (type, _data) => `${type}-0`);
+		await mgr.onTurnEndAsync(cwd, 0, (type, data) => api.appendEntry(type, data) ?? "");
 
 		// Approve
-		reviewChannel._invokeDirect("review.approve", { path: "code.ts" });
+		await reviewChannel._invokeAsync("review.approve", { path: "code.ts" });
 
 		// Turn 1: modify — replace line 2, add line 4
 		writeFileSync(join(cwd, "code.ts"), "line 1\nline 2 modified\nline 3\nline 4\n");
 		await handlers.get("turn_start")!({}, ctx);
 		await handlers.get("tool_result")!({}, ctx);
 		await handlers.get("turn_end")!({ turnIndex: 1 } as TurnEndEvent, ctx);
-		mgr.onTurnEnd(cwd, 1, (type, _data) => `${type}-1`);
+		await mgr.onTurnEndAsync(cwd, 1, (type, data) => api.appendEntry(type, data) ?? "");
 
-		const pending = reviewChannel._invokeDirect("review.pending", {}) as Array<{
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as Array<{
 			path: string;
 			oldContent: string | null;
 			newContent: string | null;

@@ -1,6 +1,7 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as Diff from "diff";
+import { createLocalFileSystemCapability, type FileSystemCapability } from "../filesystem-capability.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import type { InternalGit, TreeEntry } from "./internal-git.ts";
 
@@ -82,12 +83,38 @@ function readFilteredWorkingDir(git: InternalGit, cwd: string): Map<string, stri
 	return filtered;
 }
 
+async function readFilteredWorkingDirAsync(
+	git: InternalGit,
+	cwd: string,
+	fs: FileSystemCapability,
+): Promise<Map<string, string>> {
+	const all = await git.scanWorkingDirAsync(cwd, fs);
+	const filtered = new Map<string, string>();
+	for (const [path, content] of all) {
+		if (content.length <= FILE_SIZE_LIMIT) {
+			filtered.set(path, content);
+		}
+	}
+	return filtered;
+}
+
 function readDiskFile(cwd: string, filePath: string): string | null {
 	try {
 		const absolutePath = join(cwd, filePath);
 		const stat = lstatSync(absolutePath);
 		if (stat.size > FILE_SIZE_LIMIT) return null;
 		return readFileSync(absolutePath, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
+async function readDiskFileAsync(cwd: string, filePath: string, fs: FileSystemCapability): Promise<string | null> {
+	try {
+		const absolutePath = join(cwd, filePath);
+		const stat = await fs.stat(absolutePath);
+		if (stat.size > FILE_SIZE_LIMIT || !stat.isFile()) return null;
+		return await fs.readFileText(absolutePath);
 	} catch {
 		return null;
 	}
@@ -116,6 +143,7 @@ function isOnPathTo(byId: Map<string, SessionEntry>, startId: string, targetId: 
 
 export class FileSnapshotManager {
 	private readonly git: InternalGit;
+	private readonly workspaceFsProvider: () => FileSystemCapability;
 	private sessionStartTreeHash: string | null = null;
 	private lastCommittedTreeHash: string | null = null;
 	private turnIndex = 0;
@@ -125,8 +153,20 @@ export class FileSnapshotManager {
 	private treeCache = new Map<string, { tree: Map<string, string>; at: number }>();
 	private readonly MAX_CACHED_TREES = 10;
 
-	constructor(git: InternalGit) {
+	constructor(
+		git: InternalGit,
+		options?: { workspaceFs?: FileSystemCapability | (() => FileSystemCapability | undefined) },
+	) {
 		this.git = git;
+		const workspaceFs = options?.workspaceFs;
+		this.workspaceFsProvider =
+			typeof workspaceFs === "function"
+				? () => workspaceFs() ?? createLocalFileSystemCapability()
+				: () => workspaceFs ?? createLocalFileSystemCapability();
+	}
+
+	private getWorkspaceFs(): FileSystemCapability {
+		return this.workspaceFsProvider();
 	}
 
 	initialize(cwd: string): void {
@@ -136,6 +176,28 @@ export class FileSnapshotManager {
 		this.sessionStartTreeHash = files.size > 0 ? this.git.writeTree(files).treeHash : null;
 		this.lastCommittedTreeHash = null;
 		this.turnIndex = 0;
+	}
+
+	async initializeAsync(cwd: string): Promise<void> {
+		if (this.initialized || this.snapshotIndex.size > 0) return;
+		this.initialized = true;
+		const files = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs());
+		this.sessionStartTreeHash = files.size > 0 ? this.git.writeTree(files).treeHash : null;
+		this.lastCommittedTreeHash = null;
+		this.turnIndex = 0;
+	}
+
+	async reinitializeWorkspaceAsync(cwd: string): Promise<void> {
+		if (this.snapshotIndex.size > 0) return;
+		this.initialized = false;
+		this.sessionStartTreeHash = null;
+		this.lastCommittedTreeHash = null;
+		await this.initializeAsync(cwd);
+	}
+
+	private async ensureInitializedAsync(cwd: string): Promise<void> {
+		if (this.initialized || this.snapshotIndex.size > 0) return;
+		await this.initializeAsync(cwd);
 	}
 
 	getLiveChanges(cwd: string): LiveChange[] {
@@ -163,8 +225,70 @@ export class FileSnapshotManager {
 		return changes;
 	}
 
+	async getLiveChangesAsync(cwd: string): Promise<LiveChange[]> {
+		await this.ensureInitializedAsync(cwd);
+		const currentFiles = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs());
+		const baselineHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
+		const baselineFiles = this.readTree(baselineHash);
+
+		const changes: LiveChange[] = [];
+
+		for (const [path, content] of currentFiles) {
+			const oldContent = baselineFiles.get(path);
+			if (oldContent === undefined) {
+				changes.push({ path, status: "added", diff: { oldContent: null, newContent: content } });
+			} else if (oldContent !== content) {
+				changes.push({ path, status: "modified", diff: { oldContent, newContent: content } });
+			}
+		}
+
+		for (const [path, oldContent] of baselineFiles) {
+			if (!currentFiles.has(path)) {
+				changes.push({ path, status: "deleted", diff: { oldContent, newContent: null } });
+			}
+		}
+
+		return changes;
+	}
+
 	onTurnEnd(cwd: string, turnIndex: number, appendEntry: (type: string, data: unknown) => string): void {
 		const files = readFilteredWorkingDir(this.git, cwd);
+		const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
+		const compareTo = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
+		const oldEntries = compareTo ? this.parseTreeEntriesFromHash(compareTo) : new Map<string, TreeEntry>();
+		const diff = this.git.computeDiff(oldEntries, newEntries);
+		const hasChanges = diff.added.length > 0 || diff.modified.length > 0 || diff.deleted.length > 0;
+		if (!hasChanges) {
+			this.turnIndex = turnIndex + 1;
+			return;
+		}
+
+		const entryId = appendEntry("step-snapshot", {
+			baselineTreeHash: compareTo,
+			snapshotTreeHash,
+			diff,
+			turnIndex,
+		});
+		this.snapshotIndex.set(entryId, {
+			baselineTreeHash: compareTo,
+			snapshotTreeHash,
+			diff,
+			turnIndex,
+			entryId,
+			timestamp: new Date().toISOString(),
+		});
+		this.turnIndexMap.set(turnIndex, entryId);
+		this.lastCommittedTreeHash = snapshotTreeHash;
+		this.turnIndex = turnIndex + 1;
+	}
+
+	async onTurnEndAsync(
+		cwd: string,
+		turnIndex: number,
+		appendEntry: (type: string, data: unknown) => string,
+	): Promise<void> {
+		await this.ensureInitializedAsync(cwd);
+		const files = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs());
 		const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
 		const compareTo = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
 		const oldEntries = compareTo ? this.parseTreeEntriesFromHash(compareTo) : new Map<string, TreeEntry>();
@@ -476,6 +600,50 @@ export class FileSnapshotManager {
 		return result;
 	}
 
+	async getBatchFileContentsAsync(
+		filePaths: Array<{ filePath: string; fromEntryId?: string; fromHash?: string }>,
+		cwd: string,
+	): Promise<Map<string, { oldContent: string | null; newContent: string | null }>> {
+		const result = new Map<string, { oldContent: string | null; newContent: string | null }>();
+		if (filePaths.length === 0) return result;
+
+		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
+		const fs = this.getWorkspaceFs();
+
+		const fromHashGroups = new Map<string, string[]>();
+		for (const { filePath, fromEntryId, fromHash: directHash } of filePaths) {
+			let fromHash: string | null;
+			if (directHash) {
+				fromHash = directHash;
+			} else if (fromEntryId) {
+				const fromSnap = snapshots.find((s) => s.entryId === fromEntryId);
+				fromHash = fromSnap?.snapshotTreeHash ?? null;
+			} else {
+				fromHash = this.sessionStartTreeHash;
+			}
+			const key = fromHash ?? "";
+			const group = fromHashGroups.get(key);
+			if (group) group.push(filePath);
+			else fromHashGroups.set(key, [filePath]);
+		}
+
+		for (const [fromHashKey, paths] of fromHashGroups) {
+			const fromTree = fromHashKey
+				? (this.git.readTreeFiles(fromHashKey, new Set(paths)) ?? new Map<string, string>())
+				: new Map<string, string>();
+			const liveReads = await fs.readBatch(paths.map((path) => join(cwd, path)));
+			for (let index = 0; index < paths.length; index++) {
+				const filePath = paths[index]!;
+				result.set(filePath, {
+					oldContent: fromTree.get(filePath) ?? null,
+					newContent: liveReads[index]?.content?.toString("utf-8") ?? null,
+				});
+			}
+		}
+
+		return result;
+	}
+
 	getFileDiff(options: {
 		filePath: string;
 		fromEntryId?: string;
@@ -598,6 +766,7 @@ export class FileSnapshotManager {
 			appendEntry?: (type: string, data: unknown) => void;
 		},
 	): Promise<RestoreResult> {
+		await this.ensureInitializedAsync(cwd);
 		const empty: RestoreResult = { restored: [], deleted: [], skipped: [], dirty: [], forceRestored: [] };
 		let targetTreeHash: string | null;
 		let targetIsEmpty = false;
@@ -627,7 +796,8 @@ export class FileSnapshotManager {
 		if (targetTreeHash === currentTreeHash) return empty;
 		if (targetTreeHash === null && !targetIsEmpty) return empty;
 
-		const actualDiskFiles = readFilteredWorkingDir(this.git, cwd);
+		const workspaceFs = this.getWorkspaceFs();
+		const actualDiskFiles = await readFilteredWorkingDirAsync(this.git, cwd, workspaceFs);
 		let targetFiles: Map<string, string>;
 		let currentFiles: Map<string, string>;
 		if (options.files) {
@@ -644,12 +814,12 @@ export class FileSnapshotManager {
 		const deleted = [...currentFiles.keys()].filter((path) => !targetFiles.has(path));
 		if (restore.length === 0 && deleted.length === 0) return empty;
 
-		const dirty = this.findDirtyFiles(cwd, currentFiles, restore);
+		const dirty = await this.findDirtyFilesAsync(cwd, currentFiles, restore);
 		if (options.preview) {
 			return { restored: restore.sort(), deleted: deleted.sort(), skipped: [], dirty, forceRestored: [] };
 		}
 
-		const preRollbackFiles = readFilteredWorkingDir(this.git, cwd);
+		const preRollbackFiles = await readFilteredWorkingDirAsync(this.git, cwd, workspaceFs);
 		const preRollbackTreeHash = preRollbackFiles.size > 0 ? this.git.writeTree(preRollbackFiles).treeHash : null;
 		options.appendEntry?.("unrevert-point", {
 			preRollbackTreeHash,
@@ -662,11 +832,11 @@ export class FileSnapshotManager {
 			const content = targetFiles.get(path);
 			if (content === undefined) continue;
 			const absolutePath = join(cwd, path);
-			mkdirSync(dirname(absolutePath), { recursive: true });
-			writeFileSync(absolutePath, content, "utf-8");
+			await workspaceFs.mkdir(dirname(absolutePath));
+			await workspaceFs.writeFile(absolutePath, content);
 		}
 		for (const path of deleted) {
-			this.git.rm(join(cwd, path));
+			await workspaceFs.delete(join(cwd, path));
 		}
 
 		this.lastCommittedTreeHash = targetTreeHash;
@@ -694,17 +864,21 @@ export class FileSnapshotManager {
 		return { restored: restore.sort(), deleted: deleted.sort(), skipped: [], dirty, forceRestored: dirty };
 	}
 
-	private findDirtyFiles(cwd: string, currentFiles: Map<string, string>, restore: string[]): string[] {
+	private async findDirtyFilesAsync(
+		cwd: string,
+		currentFiles: Map<string, string>,
+		restore: string[],
+	): Promise<string[]> {
 		const dirty: string[] = [];
+		const fs = this.getWorkspaceFs();
 		for (const path of restore) {
 			const absolutePath = join(cwd, path);
-			if (!existsSync(absolutePath)) continue;
+			if (!(await fs.exists(absolutePath))) continue;
 			const expected = currentFiles.get(path);
 			if (expected === undefined) continue;
 			try {
-				const stat = lstatSync(absolutePath);
-				if (stat.size > FILE_SIZE_LIMIT) continue;
-				const actual = readFileSync(absolutePath, "utf-8");
+				const actual = await readDiskFileAsync(cwd, path, fs);
+				if (actual === null) continue;
 				if (this.git.hashContent(actual) !== this.git.hashContent(expected)) {
 					dirty.push(path);
 				}

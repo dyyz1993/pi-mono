@@ -23,6 +23,7 @@ import fileReview from "../../extensions/file-review/index.ts";
 import fileSnapshotFactory from "../../extensions/file-snapshot/index.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
+import { createLocalFileSystemCapability } from "../../src/core/filesystem-capability.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../src/index.ts";
 import { assistantMsg, userMsg } from "../utilities.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
@@ -61,27 +62,6 @@ function createMockChannel(name: string) {
 		},
 		invoke: async (_data: unknown) => undefined,
 		call: async (_method: string, _params: Record<string, unknown>) => undefined,
-		_invokeDirect(method: string, params: Record<string, unknown> = {}): unknown {
-			const invokeId = ++invokeCounter;
-			const callMsg = { __call: method, invokeId, ...params };
-			let result: unknown;
-			let resolved = false;
-			const origSend = channel.send;
-			channel.send = (data: unknown) => {
-				const record = data as Record<string, unknown>;
-				if (record.invokeId === invokeId) {
-					result = record;
-					resolved = true;
-				}
-			};
-			if (receiveHandler) receiveHandler(callMsg);
-			channel.send = origSend;
-			if (!resolved) throw new Error(`Method ${method} did not respond`);
-			const { invokeId: _, result: arrResult, ...rest } = result as Record<string, unknown>;
-			const value = arrResult !== undefined ? arrResult : rest;
-			if (arrResult === undefined && Object.keys(rest).length === 0) return null;
-			return value;
-		},
 		async _invokeAsync(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 			const invokeId = ++invokeCounter;
 			const callMsg = { __call: method, invokeId, ...params };
@@ -138,6 +118,7 @@ function createMockContext(
 ): ExtensionContext {
 	return {
 		cwd,
+		fs: createLocalFileSystemCapability(),
 		fileSnapshotManager: mgr,
 		sessionManager: {
 			getEntries: () =>
@@ -276,10 +257,10 @@ describe("review.clear then continue", () => {
 		});
 
 		// Verify history has data
-		expect((channel._invokeDirect("review.history", {}) as unknown[]).length).toBe(1);
+		expect(((await channel._invokeAsync("review.history", {})) as unknown[]).length).toBe(1);
 
 		// Clear
-		channel._invokeDirect("review.clear", {});
+		await channel._invokeAsync("review.clear", {});
 
 		// Turn 1: create another file
 		writeFileSync(join(cwd, "b.txt"), "b");
@@ -292,19 +273,19 @@ describe("review.clear then continue", () => {
 		});
 
 		// History should now have only turn 1 (turn 0 was cleared)
-		const history = channel._invokeDirect("review.history", {}) as Array<{ turnIndex: number }>;
+		const history = (await channel._invokeAsync("review.history", {})) as Array<{ turnIndex: number }>;
 		expect(history).toHaveLength(1);
 		expect(history[0]!.turnIndex).toBe(1);
 
 		// Summary should reflect only b.txt
-		const summary = channel._invokeDirect("review.summary", {}) as Array<{
+		const summary = (await channel._invokeAsync("review.summary", {})) as Array<{
 			added: number;
 			files: string[];
 		}>;
 		expect(summary[0]!.added).toBe(1);
 
 		// Pending should show both a.txt and b.txt (a.txt still pending from disk)
-		const pending = channel._invokeDirect("review.pending", {}) as Array<{ path: string }>;
+		const pending = (await channel._invokeAsync("review.pending", {})) as Array<{ path: string }>;
 		expect(pending.length).toBeGreaterThanOrEqual(1);
 	});
 });
@@ -385,7 +366,7 @@ describe("MAX_TURNS_RETAINED eviction", () => {
 		}
 
 		// History should be capped at 50 (MAX_TURNS_RETAINED)
-		const history = channel._invokeDirect("review.history", {}) as Array<{ turnIndex: number }>;
+		const history = (await channel._invokeAsync("review.history", {})) as Array<{ turnIndex: number }>;
 		expect(history.length).toBeLessThanOrEqual(50);
 
 		// The oldest turns (0-4) should be evicted
@@ -429,7 +410,7 @@ describe("100+ files in single turn", () => {
 		});
 
 		const start = Date.now();
-		const pending = channel._invokeDirect("review.pending", {}) as Array<{ path: string }>;
+		const pending = (await channel._invokeAsync("review.pending", {})) as Array<{ path: string }>;
 		const elapsed = Date.now() - start;
 
 		expect(pending.length).toBe(100);
@@ -464,11 +445,11 @@ describe("100+ files in single turn", () => {
 			return `${type}-0`;
 		});
 
-		const result = channel._invokeDirect("review.approveAll", {}) as { count: number };
+		const result = (await channel._invokeAsync("review.approveAll", {})) as { count: number };
 		expect(result.count).toBe(100);
 
 		// All should be approved
-		const pending = channel._invokeDirect("review.pending", {}) as unknown[];
+		const pending = (await channel._invokeAsync("review.pending", {})) as unknown[];
 		expect(pending).toHaveLength(0);
 	});
 });
@@ -497,13 +478,13 @@ describe("mid-session queries (runtime refresh scenario)", () => {
 		await handlers.get("tool_result")!({}, ctx);
 
 		// Query mid-turn: live should show the file
-		const live = channel._invokeDirect("review.live", {}) as {
+		const live = (await channel._invokeAsync("review.live", {})) as {
 			changes: Array<{ path: string; status: string }>;
 		};
 		expect(live.changes.some((c) => c.path === "mid.txt")).toBe(true);
 
 		// Pending should also include mid-turn live changes
-		const pending = channel._invokeDirect("review.pending", {}) as Array<{ path: string }>;
+		const pending = (await channel._invokeAsync("review.pending", {})) as Array<{ path: string }>;
 		expect(pending.some((p) => p.path === "mid.txt")).toBe(true);
 	});
 
@@ -532,10 +513,12 @@ describe("mid-session queries (runtime refresh scenario)", () => {
 		});
 
 		// Approve a.txt
-		channel._invokeDirect("review.approve", { path: "a.txt" });
+		await channel._invokeAsync("review.approve", { path: "a.txt" });
 
 		// Query: should see a.txt as approved
-		const approved = channel._invokeDirect("review.approvals", { status: "approved" }) as Array<{ path: string }>;
+		const approved = (await channel._invokeAsync("review.approvals", { status: "approved" })) as Array<{
+			path: string;
+		}>;
 		expect(approved.some((a) => a.path === "a.txt")).toBe(true);
 
 		// Create more files (turn 1)
@@ -549,7 +532,7 @@ describe("mid-session queries (runtime refresh scenario)", () => {
 		});
 
 		// Query again: a.txt still approved, c.txt pending
-		const pending = channel._invokeDirect("review.pending", {}) as Array<{ path: string }>;
+		const pending = (await channel._invokeAsync("review.pending", {})) as Array<{ path: string }>;
 		expect(pending.some((p) => p.path === "c.txt")).toBe(true);
 		expect(pending.some((p) => p.path === "a.txt")).toBe(false); // a.txt is approved
 	});
