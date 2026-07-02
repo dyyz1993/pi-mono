@@ -13,6 +13,7 @@ import type { AgentConfig } from "../../core/agent-types.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { Channel, ChannelDataMessage } from "../../core/extensions/channel-types.ts";
+import type { SystemEventType } from "../../core/session-manager.ts";
 import type { Settings } from "../../core/settings-manager.ts";
 import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -649,6 +650,22 @@ export class RpcClient {
 		await this.send({ type: "set_session_name", name });
 	}
 
+	async appendSystemEvent(options: {
+		eventType: SystemEventType;
+		eventLabel: string;
+		data?: Record<string, unknown>;
+		display?: boolean;
+	}): Promise<{ entryId: string }> {
+		const response = await this.send({
+			type: "append_system_event",
+			eventType: options.eventType,
+			eventLabel: options.eventLabel,
+			data: options.data,
+			display: options.display,
+		});
+		return this.getData(response);
+	}
+
 	/**
 	 * Get all messages in the session.
 	 */
@@ -792,8 +809,19 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
-	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
-		const response = await this.send({ type: "clear_queue" });
+	async clearQueue(item?: { type: "steering" | "followUp"; index: number; text: string }): Promise<{
+		steering: string[];
+		followUp: string[];
+	}> {
+		const response = await this.send({ type: "clear_queue", item });
+		return this.getData(response);
+	}
+
+	async promoteQueuedFollowUp(item: { type: "followUp"; index: number; text: string }): Promise<{
+		steering: string[];
+		followUp: string[];
+	}> {
+		const response = await this.send({ type: "promote_follow_up", item });
 		return this.getData(response);
 	}
 

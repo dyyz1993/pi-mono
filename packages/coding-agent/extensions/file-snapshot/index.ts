@@ -217,13 +217,13 @@ export default function fileSnapshot(pi: ExtensionAPI) {
     ctx = context;
     const mgr = ctx.fileSnapshotManager;
     if (!mgr) return;
-    mgr.initialize(ctx.cwd);
+    await mgr.initializeAsync(ctx.cwd);
   });
 
   pi.on("turn_end", async (event: TurnEndEvent, _ctx: ExtensionContext) => {
     const mgr = _ctx.fileSnapshotManager;
     if (!mgr) return;
-    mgr.onTurnEnd(_ctx.cwd, event.turnIndex, (type, data) => {
+    await mgr.onTurnEndAsync(_ctx.cwd, event.turnIndex, (type, data) => {
       return pi.appendEntry(type, data, { display: false }) ?? "";
     });
   });
@@ -256,7 +256,6 @@ export default function fileSnapshot(pi: ExtensionAPI) {
       const compareTo = lastCommittedHash ?? sessionStartHash;
 
       if (sessionStartHash === null && compareTo !== null) {
-        const { rmSync } = await import("node:fs");
         const { join: joinPath } = await import("node:path");
         const git = getGitApi(internal);
         if (git && typeof git.listTreeFiles === "function") {
@@ -264,7 +263,7 @@ export default function fileSnapshot(pi: ExtensionAPI) {
           if (currentFiles) {
             for (const filePath of currentFiles.keys()) {
               try {
-                rmSync(joinPath(_ctx.cwd, filePath));
+                await _ctx.fs.delete(joinPath(_ctx.cwd, filePath));
               } catch {
                 // File may already be deleted
               }

@@ -72,6 +72,24 @@ export interface TierModelsChangeEntry extends SessionEntryBase {
 	tierModels: Record<string, string>;
 }
 
+export type SystemEventType =
+	| "model_changed"
+	| "agent_changed"
+	| "cwd_changed"
+	| "worktree_entered"
+	| "worktree_exited"
+	| "approval_mode_changed"
+	| "extension_toggled"
+	| "skill_toggled";
+
+export interface SystemEventEntry<T = Record<string, unknown>> extends SessionEntryBase {
+	type: "system_event";
+	eventType: SystemEventType;
+	eventLabel: string;
+	data?: T;
+	display: boolean;
+}
+
 export interface AgentChangeEntry extends SessionEntryBase {
 	type: "agent_change";
 	agentName: string;
@@ -186,6 +204,7 @@ export type SessionEntry =
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
 	| TierModelsChangeEntry
+	| SystemEventEntry
 	| AgentChangeEntry
 	| CompactionEntry
 	| BranchSummaryEntry
@@ -230,6 +249,20 @@ export interface SessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+}
+
+function createSystemEventMessage(entry: SystemEventEntry): CustomMessage {
+	return createCustomMessage(
+		"system_event",
+		`System event: ${entry.eventLabel}`,
+		entry.display,
+		{
+			eventType: entry.eventType,
+			eventLabel: entry.eventLabel,
+			data: entry.data,
+		},
+		entry.timestamp,
+	);
 }
 
 export type ReadonlySessionManager = Pick<
@@ -519,6 +552,9 @@ export function buildSessionContext(
 			messages.push(
 				createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp),
 			);
+		} else if (entry.type === "system_event") {
+			if (deletedIds.has(entry.id)) return;
+			messages.push(createSystemEventMessage(entry));
 		} else if (entry.type === "branch_summary" && entry.summary) {
 			messages.push(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp));
 		}
@@ -1218,6 +1254,7 @@ export class SessionManager {
 			modelId,
 		};
 		this._appendEntry(entry);
+		this.appendSystemEvent("model_changed", `Model changed to ${provider}/${modelId}`, { provider, modelId });
 		return entry.id;
 	}
 
@@ -1231,6 +1268,10 @@ export class SessionManager {
 			tierModels,
 		};
 		this._appendEntry(entry);
+		this.appendSystemEvent("model_changed", "Tier model mapping changed", {
+			kind: "tier_models_changed",
+			tierModels,
+		});
 		return entry.id;
 	}
 
@@ -1243,6 +1284,28 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			agentName,
 			agentConfig,
+		};
+		this._appendEntry(entry);
+		this.appendSystemEvent("agent_changed", `Agent changed to ${agentName}`, { agentName, agentConfig });
+		return entry.id;
+	}
+
+	/** Append a system event that participates in LLM context but is hidden from UI by default. */
+	appendSystemEvent<T extends Record<string, unknown> = Record<string, unknown>>(
+		eventType: SystemEventType,
+		eventLabel: string,
+		data?: T,
+		display = false,
+	): string {
+		const entry: SystemEventEntry<T> = {
+			type: "system_event",
+			eventType,
+			eventLabel,
+			data,
+			display,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
 		};
 		this._appendEntry(entry);
 		return entry.id;

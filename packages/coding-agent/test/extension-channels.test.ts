@@ -69,6 +69,19 @@ function findResponse(
 	return msg ? (msg.data as Record<string, unknown>) : undefined;
 }
 
+async function waitForResponse(
+	outputs: ChannelDataMessage[],
+	channelName: string,
+	invokeId: string,
+): Promise<Record<string, unknown> | undefined> {
+	for (let i = 0; i < 20; i++) {
+		const response = findResponse(outputs, channelName, invokeId);
+		if (response) return response;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	return undefined;
+}
+
 // ─── Test setup ────────────────────────────────────────────────────────────
 
 describe("Extension Channel Integration", () => {
@@ -163,7 +176,7 @@ describe("Extension Channel Integration", () => {
 				data: { __call: "review.pending", invokeId: "test-pending-1" },
 			});
 
-			const data = findResponse(outputs, "file-review", "test-pending-1");
+			const data = await waitForResponse(outputs, "file-review", "test-pending-1");
 			expect(data).toBeDefined();
 			const pendingResult = data!.result ?? [];
 			expect(Array.isArray(pendingResult)).toBe(true);
@@ -247,7 +260,7 @@ describe("Extension Channel Integration", () => {
 				},
 			});
 
-			const data = findResponse(outputs, "file-review", "test-approve-1");
+			const data = await waitForResponse(outputs, "file-review", "test-approve-1");
 			expect(data).toBeDefined();
 			expect(data!.ok).toBe(false);
 			expect(data!.error).toBe("No snapshot available for approval");
@@ -267,7 +280,7 @@ describe("Extension Channel Integration", () => {
 				data: { __call: "review.live", invokeId: "test-live-1" },
 			});
 
-			const data = findResponse(outputs, "file-review", "test-live-1");
+			const data = await waitForResponse(outputs, "file-review", "test-live-1");
 			expect(data).toBeDefined();
 			expect(data!.turnIndex).toBe(-1);
 			expect(data!.changes).toEqual([]);
@@ -356,7 +369,7 @@ describe("Extension Channel Integration", () => {
 				data: { __call: "review.approveAll", invokeId: "test-aa-1" },
 			});
 
-			const data = findResponse(outputs, "file-review", "test-aa-1");
+			const data = await waitForResponse(outputs, "file-review", "test-aa-1");
 			expect(data).toBeDefined();
 			expect(data!.count).toBe(0);
 		});
@@ -806,7 +819,7 @@ describe("Extension Channel Integration", () => {
 				data: { __call: "review.pending", invokeId },
 			});
 
-			const data = findResponse(outputs, "file-review", invokeId);
+			const data = await waitForResponse(outputs, "file-review", invokeId);
 			expect(data).toBeDefined();
 			expect(data!.invokeId).toBe(invokeId);
 		});

@@ -2,10 +2,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { constants } from "node:fs";
 import { access as fsAccess, mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {
 	BashOperations,
 	EditOperations,
+	FileSystemCapability,
+	FileSystemDirent,
+	FileSystemStat,
+	FileSystemWalkEntry,
 	FindOperations,
 	GrepOperations,
 	LsOperations,
@@ -192,6 +196,13 @@ export function createRemoteSshOperations(config: RemoteSshConfig, runner = crea
 		const result = await runner.run(`cat > ${shellQuote(remotePath)}`, { stdin: content });
 		assertOk(result, `Failed to write remote file: ${path}`);
 	};
+	const writeWorkspaceFile = async (path: string, content: string | Buffer): Promise<void> => {
+		const remotePath = toRemotePath(path);
+		const result = await runner.run(`mkdir -p -- ${shellQuote(dirname(remotePath))} && cat > ${shellQuote(remotePath)}`, {
+			stdin: content,
+		});
+		assertOk(result, `Failed to write remote file: ${path}`);
+	};
 	const mkdir = async (path: string): Promise<void> => {
 		const result = await runner.run(`mkdir -p -- ${shellQuote(toRemotePath(path))}`);
 		assertOk(result, `Failed to create remote directory: ${path}`);
@@ -231,6 +242,99 @@ export function createRemoteSshOperations(config: RemoteSshConfig, runner = crea
 			const result = await runner.run(`find ${shellQuote(toRemotePath(path))} -maxdepth 1 -mindepth 1 -exec basename {} \\; | sort`);
 			assertOk(result, `Failed to list remote directory: ${path}`);
 			return result.stdout.toString("utf-8").split("\n").filter(Boolean);
+		},
+	};
+	const stat = async (path: string): Promise<FileSystemStat> => {
+		const command = [
+			`p=${shellQuote(toRemotePath(path))};`,
+			`if [ -L "$p" ]; then type=symlink; elif [ -d "$p" ]; then type=directory; elif [ -f "$p" ]; then type=file; else exit 1; fi;`,
+			`size=0; if [ -f "$p" ]; then size=$(wc -c < "$p" | tr -d ' '); fi;`,
+			`mtime=0; if command -v stat >/dev/null 2>&1; then mtime=$(stat -f %m "$p" 2>/dev/null || stat -c %Y "$p" 2>/dev/null || echo 0); fi;`,
+			`printf '%s\\t%s\\t%s000\\n' "$type" "$size" "$mtime"`,
+		].join(" ");
+		const result = await runner.run(command);
+		assertOk(result, `Failed to stat remote path: ${path}`);
+		const [type = "other", sizeText = "0", mtimeText = "0"] = result.stdout.toString("utf-8").trim().split("\t");
+		const size = Number(sizeText);
+		const mtimeMs = Number(mtimeText);
+		return statFromType(type, Number.isFinite(size) ? size : 0, Number.isFinite(mtimeMs) ? mtimeMs : 0);
+	};
+	const readdirWithTypes = async (path: string): Promise<FileSystemDirent[]> => {
+		const command =
+			`find ${shellQuote(toRemotePath(path))} -maxdepth 1 -mindepth 1 -exec sh -c ` +
+			shellQuote(
+				`for p do if [ -L "$p" ]; then type=symlink; elif [ -d "$p" ]; then type=directory; elif [ -f "$p" ]; then type=file; else type=other; fi; printf "%s\\t%s\\n" "$type" "$(basename "$p")"; done`,
+			) +
+			" sh {} + | sort -k2";
+		const result = await runner.run(command);
+		assertOk(result, `Failed to list remote directory with types: ${path}`);
+		return result.stdout
+			.toString("utf-8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => {
+				const [type = "other", name = ""] = line.split("\t");
+				return direntFromType(name, type);
+			});
+	};
+	const fs: FileSystemCapability = {
+		readFile,
+		async readFileText(path) {
+			return (await readFile(path)).toString("utf-8");
+		},
+		writeFile: writeWorkspaceFile,
+		mkdir,
+		async delete(path) {
+			const result = await runner.run(`rm -rf -- ${shellQuote(toRemotePath(path))}`);
+			assertOk(result, `Failed to delete remote path: ${path}`);
+		},
+		exists: async (path) => Boolean(await ls.exists(path)),
+		stat,
+		readdir: async (path) => [...(await ls.readdir(path))],
+		readdirWithTypes,
+		async walk(path, options) {
+			const maxDepth = Math.max(1, options?.maxDepth ?? 16);
+			const command =
+				`find ${shellQuote(toRemotePath(path))} -mindepth 1 -maxdepth ${maxDepth} -exec sh -c ` +
+				shellQuote(
+					`for p do if [ -L "$p" ]; then type=symlink; elif [ -d "$p" ]; then type=directory; elif [ -f "$p" ]; then type=file; else continue; fi; size=0; if [ -f "$p" ]; then size=$(wc -c < "$p" | tr -d ' '); fi; printf "%s\\t%s\\t%s\\n" "$type" "$size" "$p"; done`,
+				) +
+				" sh {} + | sort -k3";
+			const result = await runner.run(command);
+			assertOk(result, `Failed to walk remote path: ${path}`);
+			const ignored = options?.ignore ?? [];
+			const maxFiles = options?.maxFiles ?? Infinity;
+			const maxSize = options?.maxSize ?? Infinity;
+			const entries: FileSystemWalkEntry[] = [];
+			let fileCount = 0;
+			let totalSize = 0;
+			let limitReached = false;
+			for (const line of result.stdout.toString("utf-8").split("\n").filter(Boolean)) {
+				const [type, sizeText, remotePath] = line.split("\t");
+				if (!remotePath || ignored.some((pattern) => remotePath.includes(pattern))) continue;
+				const size = Number(sizeText);
+				const entryType = type === "directory" || type === "symlink" ? type : "file";
+				const entrySize = Number.isFinite(size) ? size : 0;
+				if (entryType === "file") {
+					fileCount += 1;
+					totalSize += entrySize;
+					if (fileCount > maxFiles || totalSize > maxSize) {
+						limitReached = true;
+						break;
+					}
+				}
+				entries.push({ path: toLocalPath(remotePath), size: entrySize, type: entryType });
+			}
+			return { entries, limitReached };
+		},
+		async readBatch(paths) {
+			return Promise.all(
+				paths.map(async (path) => {
+					const result = await runner.run(`cat -- ${shellQuote(toRemotePath(path))}`);
+					if (result.exitCode === 0) return { path, content: result.stdout };
+					return { path, content: null, error: formatRemoteError(result) };
+				}),
+			);
 		},
 	};
 	const find: FindOperations = {
@@ -276,7 +380,26 @@ export function createRemoteSshOperations(config: RemoteSshConfig, runner = crea
 		},
 	};
 
-	return { bash, read, write, edit, ls, find, grep };
+	return { bash, fs, read, write, edit, ls, find, grep };
+}
+
+function direntFromType(name: string, type: string): FileSystemDirent {
+	return {
+		name,
+		isFile: () => type === "file",
+		isDirectory: () => type === "directory",
+		isSymbolicLink: () => type === "symlink",
+	};
+}
+
+function statFromType(type: string, size: number, mtimeMs: number): FileSystemStat {
+	return {
+		size,
+		mtimeMs,
+		isFile: () => type === "file",
+		isDirectory: () => type === "directory",
+		isSymbolicLink: () => type === "symlink",
+	};
 }
 
 function grepLineToRgJson(line: string, toLocalPath: (path: string) => string): string | undefined {
@@ -370,9 +493,14 @@ function spawnSsh(config: RemoteSshConfig, command: string): ChildProcessWithout
 
 function assertOk(result: SshRunResult, message: string): void {
 	if (result.exitCode === 0) return;
+	const details = formatRemoteError(result);
+	throw new Error([message, details].filter(Boolean).join("\n"));
+}
+
+function formatRemoteError(result: SshRunResult): string {
 	const stderr = result.stderr.toString("utf-8").trim();
 	const stdout = result.stdout.toString("utf-8").trim();
-	throw new Error([message, stderr || stdout].filter(Boolean).join("\n"));
+	return stderr || stdout;
 }
 
 export async function assertLocalCwdExists(cwd: string): Promise<void> {

@@ -11,7 +11,6 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
-import * as crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { PermissionMode } from "../../core/agent-session.ts";
@@ -20,13 +19,6 @@ import { discoverAgents } from "../../core/agent-types.ts";
 import { generateSegmentSummary } from "../../core/compaction/branch-summarization.ts";
 import { ChannelManager } from "../../core/extensions/channel-manager.ts";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.ts";
-import type {
-	AskUserQuestionResponse,
-	ExtensionUIContext,
-	ExtensionUIDialogOptions,
-	ExtensionWidgetOptions,
-	WorkingIndicatorOptions,
-} from "../../core/extensions/index.ts";
 import { createBranchSummaryMessage } from "../../core/messages.ts";
 import { resolveModelAlias } from "../../core/model-resolver.ts";
 import {
@@ -36,11 +28,18 @@ import {
 	writeRawStdout,
 } from "../../core/output-guard.ts";
 import { isPermissionProfileInput, listPermissionProfiles } from "../../core/permissions/index.ts";
-import type { CompactionEntry, CustomEntry, SessionEntry, SessionMessageEntry } from "../../core/session-manager.ts";
+import type {
+	CompactionEntry,
+	CustomEntry,
+	SessionEntry,
+	SessionMessageEntry,
+	SystemEventType,
+} from "../../core/session-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import type { UnknownRecord } from "../../utils/type-helpers.ts";
-import { type Theme, theme } from "../interactive/theme/theme.ts";
+import { theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-ui.ts";
 import type {
 	RpcAgentSummary,
 	RpcAllTool,
@@ -76,6 +75,19 @@ function formatPermissionModes(): string {
 	const builtin = listPermissionProfiles().map((profile) => profile.name);
 	const legacy = ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"];
 	return [...builtin, ...legacy].join(", ");
+}
+
+function isSystemEventType(value: string): value is SystemEventType {
+	return (
+		value === "model_changed" ||
+		value === "agent_changed" ||
+		value === "cwd_changed" ||
+		value === "worktree_entered" ||
+		value === "worktree_exited" ||
+		value === "approval_mode_changed" ||
+		value === "extension_toggled" ||
+		value === "skill_toggled"
+	);
 }
 
 function getTreeEntryLabel(entry: SessionEntry): string | undefined {
@@ -143,10 +155,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	};
 
 	// Pending extension UI requests waiting for response
-	const pendingExtensionRequests = new Map<
-		string,
-		{ request: RpcExtensionUIRequest; resolve: (value: any) => void; reject: (error: Error) => void }
-	>();
+	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
 
 	// Pending remote tool results waiting for response
 	const pendingRemoteToolResults = new Map<
@@ -159,287 +168,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	let shuttingDown = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
-	/** Helper for dialog methods with signal/timeout support */
-	function createDialogPromise<T>(
-		opts: ExtensionUIDialogOptions | undefined,
-		defaultValue: T,
-		request: Record<string, unknown>,
-		parseResponse: (response: RpcExtensionUIResponse) => T,
-	): Promise<T> {
-		if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
-
-		const id = crypto.randomUUID();
-		return new Promise((resolve, reject) => {
-			let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-			const cleanup = (reason: "responded" | "timeout" | "aborted" = "responded") => {
-				if (timeoutId) clearTimeout(timeoutId);
-				opts?.signal?.removeEventListener("abort", onAbort);
-				pendingExtensionRequests.delete(id);
-				output({ type: "extension_ui_resolved", id, reason });
-			};
-
-			const onAbort = () => {
-				cleanup("aborted");
-				resolve(defaultValue);
-			};
-			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			if (opts?.timeout) {
-				timeoutId = setTimeout(() => {
-					cleanup("timeout");
-					resolve(defaultValue);
-				}, opts.timeout);
-			}
-
-			const uiRequest = { type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest;
-			pendingExtensionRequests.set(id, {
-				request: uiRequest,
-				resolve: (response: RpcExtensionUIResponse) => {
-					cleanup("responded");
-					resolve(parseResponse(response));
-				},
-				reject,
-			});
-			output(uiRequest);
+	const createExtensionUIContext = () =>
+		createRpcExtensionUIContext({
+			output,
+			pendingExtensionRequests,
+			theme,
 		});
-	}
-
-	/**
-	 * Create an extension UI context that uses the RPC protocol.
-	 */
-	const createExtensionUIContext = (): ExtensionUIContext => ({
-		askUserQuestion: (questions, opts) =>
-			createDialogPromise<AskUserQuestionResponse | undefined>(
-				opts,
-				undefined,
-				{
-					method: "askUserQuestion",
-					title: opts?.title ?? "Question",
-					questions,
-					timeout: opts?.timeout,
-					toolCallId: opts?.toolCallId,
-				},
-				(response) =>
-					"action" in response && response.action === "responded" && "answers" in response
-						? {
-								action: "responded",
-								answers: response.answers,
-								annotations: response.annotations,
-							}
-						: undefined,
-			),
-		select: (title, options, opts) =>
-			createDialogPromise(
-				opts,
-				undefined,
-				{
-					method: "select",
-					title,
-					options,
-					multiple: opts?.multiple,
-					timeout: opts?.timeout,
-					toolCallId: opts?.toolCallId,
-					permissionMeta: opts?.permissionMeta,
-				},
-				(r) => ("cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
-			),
-
-		confirm: (title, message, opts) =>
-			createDialogPromise(
-				opts,
-				false,
-				{
-					method: "confirm",
-					title,
-					message,
-					timeout: opts?.timeout,
-					toolCallId: opts?.toolCallId,
-					confirmText: opts?.confirmText,
-					cancelText: opts?.cancelText,
-					hookMeta: opts?.hookMeta,
-				},
-				(r) => ("cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
-			),
-
-		input: (title, placeholder, opts) =>
-			createDialogPromise(opts, undefined, { method: "input", title, placeholder, timeout: opts?.timeout }, (r) =>
-				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
-			),
-
-		notify(message: string, type?: "info" | "warning" | "error"): void {
-			// Fire and forget - no response needed
-			output({
-				type: "extension_ui_request",
-				id: crypto.randomUUID(),
-				method: "notify",
-				message,
-				notifyType: type,
-			} as RpcExtensionUIRequest);
-		},
-
-		onTerminalInput(): () => void {
-			// Raw terminal input not supported in RPC mode
-			return () => {};
-		},
-
-		setStatus(key: string, text: string | undefined): void {
-			// Fire and forget - no response needed
-			output({
-				type: "extension_ui_request",
-				id: crypto.randomUUID(),
-				method: "setStatus",
-				statusKey: key,
-				statusText: text,
-			} as RpcExtensionUIRequest);
-		},
-
-		setWorkingMessage(_message?: string): void {
-			// Working message not supported in RPC mode - requires TUI loader access
-		},
-
-		setWorkingVisible(_visible: boolean): void {
-			// Working visibility not supported in RPC mode - requires TUI loader access
-		},
-
-		setWorkingIndicator(_options?: WorkingIndicatorOptions): void {
-			// Working indicator customization not supported in RPC mode - requires TUI loader access
-		},
-
-		setHiddenThinkingLabel(_label?: string): void {
-			// Hidden thinking label not supported in RPC mode - requires TUI message rendering access
-		},
-
-		setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-			// Only support string arrays in RPC mode - factory functions are ignored
-			if (content === undefined || Array.isArray(content)) {
-				output({
-					type: "extension_ui_request",
-					id: crypto.randomUUID(),
-					method: "setWidget",
-					widgetKey: key,
-					widgetLines: content as string[] | undefined,
-					widgetPlacement: options?.placement,
-				} as RpcExtensionUIRequest);
-			}
-			// Component factories are not supported in RPC mode - would need TUI access
-		},
-
-		setFooter(_factory: unknown): void {
-			// Custom footer not supported in RPC mode - requires TUI access
-		},
-
-		setHeader(_factory: unknown): void {
-			// Custom header not supported in RPC mode - requires TUI access
-		},
-
-		setTitle(title: string): void {
-			// Fire and forget - host can implement terminal title control
-			output({
-				type: "extension_ui_request",
-				id: crypto.randomUUID(),
-				method: "setTitle",
-				title,
-			} as RpcExtensionUIRequest);
-		},
-
-		async custom() {
-			// Custom UI not supported in RPC mode
-			return undefined as never;
-		},
-
-		pasteToEditor(text: string): void {
-			// Paste handling not supported in RPC mode - falls back to setEditorText
-			this.setEditorText(text);
-		},
-
-		setEditorText(text: string): void {
-			// Fire and forget - host can implement editor control
-			output({
-				type: "extension_ui_request",
-				id: crypto.randomUUID(),
-				method: "set_editor_text",
-				text,
-			} as RpcExtensionUIRequest);
-		},
-
-		getEditorText(): string {
-			// Synchronous method can't wait for RPC response
-			// Host should track editor state locally if needed
-			return "";
-		},
-
-		async editor(title: string, prefill?: string): Promise<string | undefined> {
-			const id = crypto.randomUUID();
-			return new Promise((resolve, reject) => {
-				const cleanup = (reason: "responded" | "timeout" | "aborted" = "responded") => {
-					pendingExtensionRequests.delete(id);
-					output({ type: "extension_ui_resolved", id, reason });
-				};
-				const uiRequest = {
-					type: "extension_ui_request",
-					id,
-					method: "editor",
-					title,
-					prefill,
-				} as RpcExtensionUIRequest;
-				pendingExtensionRequests.set(id, {
-					request: uiRequest,
-					resolve: (response: RpcExtensionUIResponse) => {
-						cleanup("responded");
-						if ("cancelled" in response && response.cancelled) {
-							resolve(undefined);
-						} else if ("value" in response) {
-							resolve(response.value);
-						} else {
-							resolve(undefined);
-						}
-					},
-					reject,
-				});
-				output(uiRequest);
-			});
-		},
-
-		addAutocompleteProvider(): void {
-			// Autocomplete provider composition is not supported in RPC mode
-		},
-
-		setEditorComponent(): void {
-			// Custom editor components not supported in RPC mode
-		},
-
-		getEditorComponent() {
-			// Custom editor components not supported in RPC mode
-			return undefined;
-		},
-
-		get theme() {
-			return theme;
-		},
-
-		getAllThemes() {
-			return [];
-		},
-
-		getTheme(_name: string) {
-			return undefined;
-		},
-
-		setTheme(_theme: string | Theme) {
-			// Theme switching not supported in RPC mode
-			return { success: false, error: "Theme switching not supported in RPC mode" };
-		},
-
-		getToolsExpanded() {
-			// Tool expansion not supported in RPC mode - no TUI
-			return false;
-		},
-
-		setToolsExpanded(_expanded: boolean) {
-			// Tool expansion not supported in RPC mode - no TUI
-		},
-	});
 
 	runtimeHost.setRebindSession(async () => {
 		await rebindSession();
@@ -869,6 +603,23 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "set_session_name");
 			}
 
+			case "append_system_event": {
+				if (!isSystemEventType(command.eventType)) {
+					return error(id, "append_system_event", `Invalid system event type: "${command.eventType}"`);
+				}
+				const label = command.eventLabel.trim();
+				if (!label) {
+					return error(id, "append_system_event", "System event label cannot be empty");
+				}
+				const entryId = session.sessionManager.appendSystemEvent(
+					command.eventType,
+					label,
+					command.data,
+					command.display ?? false,
+				);
+				return success(id, "append_system_event", { entryId });
+			}
+
 			// =================================================================
 			// Messages
 			// =================================================================
@@ -1229,7 +980,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "clear_queue": {
-				return success(id, "clear_queue", session.clearQueue());
+				return success(id, "clear_queue", session.clearQueue(command.item));
+			}
+
+			case "promote_follow_up": {
+				return success(id, "promote_follow_up", session.promoteQueuedFollowUp(command.item));
 			}
 
 			case "get_flags": {
@@ -1255,6 +1010,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "set_flag": {
 				session.extensionRunner.setFlagValue(command.name, command.value);
+				session.sessionManager.appendSystemEvent(
+					"extension_toggled",
+					`Extension flag ${command.name} changed to ${String(command.value)}`,
+					{ name: command.name, value: command.value },
+				);
 				return success(id, "set_flag");
 			}
 
@@ -1265,9 +1025,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "set_cwd": {
+				const previousCwd = runtimeHost.cwd;
 				const result = await runtimeHost.setCwd(command.cwd);
 				if (!result.cancelled) {
 					await rebindSession();
+					const cwd = runtimeHost.cwd;
+					if (cwd !== previousCwd) {
+						session.sessionManager.appendSystemEvent("cwd_changed", `Working directory changed to ${cwd}`, {
+							cwd,
+							previousCwd,
+						});
+					}
 				}
 				return success(id, "set_cwd", result);
 			}
@@ -1359,6 +1127,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					);
 				}
 				session.setPermissionMode(command.mode);
+				session.sessionManager.appendSystemEvent(
+					"approval_mode_changed",
+					`Approval mode changed to ${command.mode}`,
+					{ mode: command.mode },
+				);
 				return success(id, "set_permission_mode", { mode: command.mode });
 			}
 

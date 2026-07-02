@@ -45,6 +45,20 @@ function sourceMessageIds(messages: AgentMessage[]): string[] {
     .filter((id): id is string => id !== undefined);
 }
 
+function hasFailedToolResult(messages: AgentMessage[]): boolean {
+  return messages.some((message) => {
+    if (message.role !== "toolResult") return false;
+    const record = message as { isError?: unknown; content?: unknown };
+    if (record.isError === true) return true;
+    if (!Array.isArray(record.content)) return false;
+    return record.content.some((part) => {
+      if (typeof part !== "object" || part === null) return false;
+      const contentPart = part as { type?: unknown; isError?: unknown };
+      return contentPart.type === "toolResult" && contentPart.isError === true;
+    });
+  });
+}
+
 function disabledSnapshot(projectRoot: string): LearningSnapshot {
   return {
     version: 1,
@@ -808,18 +822,20 @@ ${memoryText}
     const messages = event.messages as AgentMessage[];
     const sessionId = ctx?.sessionManager?.getSessionId();
     try {
-      await maybeExtractMemory({
-        store: activeStore,
-        messages,
-        sourceSessionId: sessionId,
-        sourceMessageIds: sourceMessageIds(messages),
-      });
-      await maybeDistillSkill({
-        store: activeStore,
-        messages,
-        sourceSessionId: sessionId,
-        sourceMessageIds: sourceMessageIds(messages),
-      });
+      if (!hasFailedToolResult(messages)) {
+        await maybeExtractMemory({
+          store: activeStore,
+          messages,
+          sourceSessionId: sessionId,
+          sourceMessageIds: sourceMessageIds(messages),
+        });
+        await maybeDistillSkill({
+          store: activeStore,
+          messages,
+          sourceSessionId: sessionId,
+          sourceMessageIds: sourceMessageIds(messages),
+        });
+      }
 
       // Dream consolidation
       const dreamResult = await memoryCurator.maybeRun(memoryDir, callLLMWithRetry);

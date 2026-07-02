@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fileReview from "../../extensions/file-review/index.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
+import { createLocalFileSystemCapability } from "../../src/core/filesystem-capability.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../src/index.ts";
 
 const tempDirs: string[] = [];
@@ -61,24 +62,26 @@ function createMockChannel(name: string) {
 			receiveHandler?.(callMsg);
 			return Promise.resolve({});
 		},
-		_invokeDirect(method: string, params: Record<string, unknown> = {}): unknown {
+		async _invokeAsync(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 			const invokeId = ++invokeCounter;
 			const callMsg = { __call: method, invokeId, ...params };
-			let result: unknown;
-			let resolved = false;
-			const origSend = channel.send;
-			channel.send = (data: unknown) => {
-				const record = data as Record<string, unknown>;
-				if (record.invokeId === invokeId) {
-					result = record;
-					resolved = true;
-				}
-			};
-			receiveHandler?.(callMsg);
-			channel.send = origSend;
-			if (!resolved) throw new Error(`Method ${method} did not respond`);
-			const { invokeId: _, result: arrResult, ...rest } = result as Record<string, unknown>;
-			return arrResult !== undefined ? arrResult : rest;
+			return await new Promise<unknown>((resolve, reject) => {
+				const origSend = channel.send;
+				const timer = setTimeout(() => {
+					channel.send = origSend;
+					reject(new Error(`Method ${method} timeout`));
+				}, 5000);
+				channel.send = (data: unknown) => {
+					const record = data as Record<string, unknown>;
+					if (record.invokeId === invokeId) {
+						clearTimeout(timer);
+						channel.send = origSend;
+						const { invokeId: _, result: arrResult, ...rest } = record;
+						resolve(arrResult !== undefined ? arrResult : rest);
+					}
+				};
+				receiveHandler?.(callMsg);
+			});
 		},
 	};
 	return channel;
@@ -115,6 +118,7 @@ function createMockContext(
 ): ExtensionContext {
 	return {
 		cwd,
+		fs: createLocalFileSystemCapability(),
 		fileSnapshotManager: mgr,
 		sessionManager: {
 			getEntries: () =>
@@ -166,7 +170,7 @@ describe("file-review full workflow", () => {
 
 		// Check pending
 		const reviewChannel = mockChannels.get("file-review")!;
-		const pending = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 
 		expect(pending).toHaveLength(1);
 		expect(pending[0]!.path).toBe("new-file.txt");
@@ -200,7 +204,7 @@ describe("file-review full workflow", () => {
 		mgr.onTurnEnd(cwd, 0, (type, data) => api.appendEntry(type, data) ?? "");
 
 		const reviewChannel = mockChannels.get("file-review")!;
-		const pending = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 
 		expect(pending).toHaveLength(1);
 		expect(pending[0]!.path).toBe("file.txt");
@@ -231,7 +235,7 @@ describe("file-review full workflow", () => {
 		mgr.onTurnEnd(cwd, 0, (type, data) => api.appendEntry(type, data) ?? "");
 
 		const reviewChannel = mockChannels.get("file-review")!;
-		const pending = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 
 		expect(pending).toHaveLength(1);
 		expect(pending[0]!.path).toBe("doomed.txt");
@@ -266,15 +270,17 @@ describe("file-review full workflow", () => {
 		const reviewChannel = mockChannels.get("file-review")!;
 
 		// Verify it's in pending
-		const before = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const before = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 		expect(before).toHaveLength(1);
 
 		// Approve
-		const result = reviewChannel._invokeDirect("review.approve", { path: "to-approve.txt" }) as { ok: boolean };
+		const result = (await reviewChannel._invokeAsync("review.approve", { path: "to-approve.txt" })) as {
+			ok: boolean;
+		};
 		expect(result.ok).toBe(true);
 
 		// Verify it's gone
-		const after = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const after = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 		expect(after).toHaveLength(0);
 	});
 
@@ -303,7 +309,7 @@ describe("file-review full workflow", () => {
 		const reviewChannel = mockChannels.get("file-review")!;
 
 		// Reject
-		const result = reviewChannel._invokeDirect("review.reject", { path: "file.txt" }) as {
+		const result = (await reviewChannel._invokeAsync("review.reject", { path: "file.txt" })) as {
 			ok: boolean;
 			rolledBack?: boolean;
 		};
@@ -315,7 +321,7 @@ describe("file-review full workflow", () => {
 		expect(content).toBe("original content");
 
 		// Pending should be empty
-		const after = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const after = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 		expect(after).toHaveLength(0);
 	});
 
@@ -347,7 +353,7 @@ describe("file-review full workflow", () => {
 		expect(existsSync(join(cwd, "to-restore.txt"))).toBe(false);
 
 		// Reject (should restore)
-		const result = reviewChannel._invokeDirect("review.reject", { path: "to-restore.txt" }) as {
+		const result = (await reviewChannel._invokeAsync("review.reject", { path: "to-restore.txt" })) as {
 			ok: boolean;
 			rolledBack?: boolean;
 		};
@@ -359,7 +365,7 @@ describe("file-review full workflow", () => {
 		expect(content).toBe("important content\nline 2\n");
 
 		// Pending should be empty
-		const after = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const after = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 		expect(after).toHaveLength(0);
 	});
 
@@ -390,7 +396,7 @@ describe("file-review full workflow", () => {
 		expect(existsSync(join(cwd, "new-file.txt"))).toBe(true);
 
 		// Reject (should delete)
-		const result = reviewChannel._invokeDirect("review.reject", { path: "new-file.txt" }) as {
+		const result = (await reviewChannel._invokeAsync("review.reject", { path: "new-file.txt" })) as {
 			ok: boolean;
 			rolledBack?: boolean;
 		};
@@ -400,7 +406,7 @@ describe("file-review full workflow", () => {
 		expect(existsSync(join(cwd, "new-file.txt"))).toBe(false);
 
 		// Pending should be empty
-		const after = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const after = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 		expect(after).toHaveLength(0);
 	});
 
@@ -429,7 +435,7 @@ describe("file-review full workflow", () => {
 		const reviewChannel = mockChannels.get("file-review")!;
 
 		// Reject
-		const result = reviewChannel._invokeDirect("review.reject", { path: "file.txt" }) as {
+		const result = (await reviewChannel._invokeAsync("review.reject", { path: "file.txt" })) as {
 			ok: boolean;
 			rolledBack?: boolean;
 		};
@@ -446,7 +452,7 @@ describe("file-review full workflow", () => {
 		mgr.onTurnEnd(cwd, 1, (type, data) => api.appendEntry(type, data) ?? "");
 
 		// Pending should NOT contain file.txt
-		const pending = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 		const fileEntry = pending.find((p) => p.path === "file.txt");
 		expect(fileEntry).toBeUndefined();
 	});
@@ -481,7 +487,7 @@ describe("file-review full workflow", () => {
 
 		// Pending: file was added then deleted without approval → net-zero skip
 		const reviewChannel = mockChannels.get("file-review")!;
-		const pending = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 
 		const tempEntry = pending.find((p) => p.path === "temp.txt");
 		expect(tempEntry).toBeUndefined();
@@ -511,7 +517,9 @@ describe("file-review full workflow", () => {
 		const reviewChannel = mockChannels.get("file-review")!;
 
 		// Approve
-		const approveResult = reviewChannel._invokeDirect("review.approve", { path: "file.txt" }) as { ok: boolean };
+		const approveResult = (await reviewChannel._invokeAsync("review.approve", { path: "file.txt" })) as {
+			ok: boolean;
+		};
 		expect(approveResult.ok).toBe(true);
 
 		// Turn 1: modify file
@@ -522,7 +530,7 @@ describe("file-review full workflow", () => {
 		mgr.onTurnEnd(cwd, 1, (type, data) => api.appendEntry(type, data) ?? "");
 
 		// Should re-appear
-		const pending = reviewChannel._invokeDirect("review.pending", {}) as PendingItem[];
+		const pending = (await reviewChannel._invokeAsync("review.pending", {})) as PendingItem[];
 		expect(pending).toHaveLength(1);
 		expect(pending[0]!.path).toBe("file.txt");
 		// oldContent should be version 1 (approved baseline), newContent version 2

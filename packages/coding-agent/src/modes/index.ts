@@ -10,6 +10,7 @@ export type {
 	BatchDiffResult,
 	FileDiffResult,
 	FileHistoryResult,
+	FollowUpQueueItemRef,
 	ForkMessage,
 	ForkResult,
 	ModelCycleResult,

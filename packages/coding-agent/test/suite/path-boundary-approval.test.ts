@@ -1,9 +1,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionUIContext } from "../../src/core/extensions/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -85,6 +86,35 @@ describe("path boundary approval", () => {
 		expect(executed).toBe(false);
 	});
 
+	it("allows benign read-only access outside cwd in normal mode", async () => {
+		let executed = false;
+		const readTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Read file",
+			parameters: Type.Object({ file_path: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+
+		const cwd = join(process.cwd(), ".tmp", `path-boundary-cwd-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(cwd, { recursive: true });
+		const harness = await createHarness({ cwd, tools: [readTool] });
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("read", { file_path: join(process.cwd(), "README.md") }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("read a harmless file outside cwd");
+		expect(executed).toBe(true);
+	});
+
 	it("blocks writing files outside cwd in normal mode (no UI)", async () => {
 		let executed = false;
 		const writeTool: AgentTool = {
@@ -148,6 +178,93 @@ describe("path boundary approval", () => {
 				scope: "project",
 			}),
 		]);
+	});
+
+	it("does not prompt for user-writable outside-cwd reads in autopilot mode", async () => {
+		let executed = false;
+		const select = vi.fn<ExtensionUIContext["select"]>().mockResolvedValue(undefined);
+		const readTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Read file",
+			parameters: Type.Object({ file_path: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+
+		const harness = await createHarness({ tools: [readTool] });
+		harnesses.push(harness);
+		await harness.session.bindExtensions({
+			uiContext: {
+				...makePermissionUi(""),
+				select,
+			} as ExtensionUIContext,
+			mode: "rpc",
+		});
+		harness.session.applyAgentConfig({
+			name: "autopilot-test-agent",
+			description: "Autopilot path-boundary test",
+			systemPrompt: "You are a test agent.",
+			source: "user",
+			filePath: "/tmp/autopilot-test-agent.md",
+			permissionMode: "autopilot",
+		});
+
+		const outsideUserPath = join(homedir(), "Desktop", "autopilot-readable.txt");
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("read", { file_path: outsideUserPath }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("read user file outside project");
+
+		expect(executed).toBe(true);
+		expect(select).not.toHaveBeenCalled();
+	});
+
+	it("blocks sensitive outside-cwd reads in autopilot mode without prompting", async () => {
+		let executed = false;
+		const select = vi.fn<ExtensionUIContext["select"]>().mockResolvedValue(undefined);
+		const readTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Read file",
+			parameters: Type.Object({ file_path: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+
+		const harness = await createHarness({ tools: [readTool] });
+		harnesses.push(harness);
+		await harness.session.bindExtensions({
+			uiContext: {
+				...makePermissionUi(""),
+				select,
+			} as ExtensionUIContext,
+			mode: "rpc",
+		});
+		harness.session.applyAgentConfig({
+			name: "autopilot-test-agent",
+			description: "Autopilot path-boundary test",
+			systemPrompt: "You are a test agent.",
+			source: "user",
+			filePath: "/tmp/autopilot-test-agent.md",
+			permissionMode: "autopilot",
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("read", { file_path: "/etc/passwd" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("read sensitive file outside project");
+
+		expect(executed).toBe(false);
+		expect(select).not.toHaveBeenCalled();
 	});
 
 	it("allows tools without file paths (e.g. bash)", async () => {

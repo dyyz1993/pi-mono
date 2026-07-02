@@ -73,6 +73,7 @@ import type {
 	ExtensionWidgetOptions,
 	ProjectTrustContext,
 } from "../../core/extensions/index.ts";
+import { createLocalFileSystemCapability } from "../../core/filesystem-capability.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
@@ -1674,6 +1675,7 @@ export class InteractiveMode {
 			mode: "tui",
 			hasUI: true,
 			cwd: this.sessionManager.getCwd(),
+			fs: createLocalFileSystemCapability(),
 			sessionManager: this.sessionManager,
 			modelRegistry: this.session.modelRegistry,
 			model: this.session.model,

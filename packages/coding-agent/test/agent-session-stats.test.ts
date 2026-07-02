@@ -27,6 +27,34 @@ function createUsage(totalTokens: number): Usage {
 	};
 }
 
+function createDetailedUsage(patch: {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: number;
+}): Usage {
+	const input = patch.input ?? 0;
+	const output = patch.output ?? 0;
+	const cacheRead = patch.cacheRead ?? 0;
+	const cacheWrite = patch.cacheWrite ?? 0;
+	const totalTokens = input + output + cacheRead + cacheWrite;
+	return {
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		totalTokens,
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: patch.cost ?? 0,
+		},
+	};
+}
+
 function createAssistantMessage(
 	text: string,
 	totalTokens: number,
@@ -40,6 +68,22 @@ function createAssistantMessage(
 		provider: model.provider,
 		model: model.id,
 		usage: createUsage(totalTokens),
+		stopReason: "stop",
+		timestamp,
+	};
+}
+
+function createAssistantMessageWithUsage(text: string, usage: Usage, timestamp: number): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [
+			{ type: "toolCall", id: `tool-${timestamp}`, name: "read", arguments: { path: "test.ts" } },
+			{ type: "text", text },
+		],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage,
 		stopReason: "stop",
 		timestamp,
 	};
@@ -116,7 +160,7 @@ describe("AgentSession.getSessionStats", () => {
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
-			expect(stats.tokens.input).toBe(195_000);
+			expect(stats.tokens.input).toBe(375_000);
 			expect(stats.contextUsage).toBeDefined();
 			expect(typeof stats.contextUsage?.tokens).toBe("number");
 			expect(typeof stats.contextUsage?.percent).toBe("number");
@@ -139,12 +183,62 @@ describe("AgentSession.getSessionStats", () => {
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
-			expect(stats.tokens.input).toBe(220_000);
+			expect(stats.tokens.input).toBe(400_000);
 			expect(stats.contextUsage).toBeDefined();
 			const breakdownTotal = stats.contextUsage?.breakdown?.reduce((sum, item) => sum + item.tokens, 0);
 			expect(stats.contextUsage?.tokens).toBe(25_000);
 			expect(stats.contextUsage?.tokens).toBe(breakdownTotal);
 			expect(stats.contextUsage?.percent).toBe((stats.contextUsage!.tokens! / model.contextWindow) * 100);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("aggregates cumulative token stats from all persisted session entries after compaction", () => {
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(
+				createAssistantMessageWithUsage(
+					"response1",
+					createDetailedUsage({ input: 100, output: 20, cacheRead: 10, cacheWrite: 5, cost: 0.01 }),
+					2,
+				),
+			);
+			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage(
+				createAssistantMessageWithUsage(
+					"response2",
+					createDetailedUsage({ input: 200, output: 40, cacheRead: 30, cacheWrite: 15, cost: 0.02 }),
+					4,
+				),
+			);
+			sessionManager.appendCompaction("summary", keptUserId, 285);
+			sessionManager.appendMessage(createUserMessage("third", 5));
+			sessionManager.appendMessage(
+				createAssistantMessageWithUsage(
+					"response3",
+					createDetailedUsage({ input: 300, output: 60, cacheRead: 50, cacheWrite: 25, cost: 0.03 }),
+					6,
+				),
+			);
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+
+			expect(stats.tokens).toEqual({
+				input: 600,
+				output: 120,
+				cacheRead: 90,
+				cacheWrite: 45,
+				total: 855,
+			});
+			expect(stats.cost).toBeCloseTo(0.06);
+			expect(stats.userMessages).toBe(3);
+			expect(stats.assistantMessages).toBe(3);
+			expect(stats.toolCalls).toBe(3);
+			expect(stats.totalMessages).toBe(6);
 		} finally {
 			session.dispose();
 		}

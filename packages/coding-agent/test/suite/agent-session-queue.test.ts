@@ -155,15 +155,20 @@ describe("AgentSession queue characterization", () => {
 		expect(getAssistantTexts(harness)).toContain("follow-up response");
 	});
 
-	it("delivers multiple steering messages in order in one-at-a-time mode", async () => {
+	it("aggregates multiple steering messages in the next LLM call", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
 		harnesses.push(harness);
+		let batchedUserMessages: string[] = [];
 
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("handled steer 1"),
-			fauxAssistantMessage("handled steer 2"),
+			(context) => {
+				batchedUserMessages = context.messages
+					.filter((message) => message.role === "user")
+					.map((message) => getMessageText(message));
+				return fauxAssistantMessage("handled both steers");
+			},
 		]);
 
 		await waitForToolStart;
@@ -173,7 +178,8 @@ describe("AgentSession queue characterization", () => {
 		await promptPromise;
 
 		expect(getUserTexts(harness)).toEqual(["start", "steer 1", "steer 2"]);
-		expect(getAssistantTexts(harness)).toEqual(["", "handled steer 1", "handled steer 2"]);
+		expect(batchedUserMessages).toEqual(["start", "steer 1", "steer 2"]);
+		expect(getAssistantTexts(harness)).toEqual(["", "handled both steers"]);
 	});
 
 	it("delivers multiple follow-up messages in order in one-at-a-time mode", async () => {
@@ -258,6 +264,83 @@ describe("AgentSession queue characterization", () => {
 		expect(getAssistantTexts(harness)).toEqual(["", "original turn complete", "batched follow-up response"]);
 	});
 
+	it("removes one queued message without clearing the rest", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		harness.session.setFollowUpMode("all");
+		let batchedUserMessages: string[] = [];
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("original turn complete"),
+			(context) => {
+				batchedUserMessages = context.messages
+					.filter((message) => message.role === "user")
+					.map((message) => getMessageText(message));
+				return fauxAssistantMessage("remaining follow-up response");
+			},
+		]);
+
+		await waitForToolStart;
+		await harness.session.followUp("follow-up 1");
+		await harness.session.followUp("follow-up 2");
+
+		const removed = harness.session.clearQueue({ type: "followUp", index: 0, text: "follow-up 1" });
+		expect(removed).toEqual({ steering: [], followUp: ["follow-up 1"] });
+		expect(harness.session.getFollowUpMessages()).toEqual(["follow-up 2"]);
+
+		releaseToolExecution();
+		await promptPromise;
+
+		expect(batchedUserMessages).toEqual(["start", "follow-up 2"]);
+		expect(getUserTexts(harness)).toEqual(["start", "follow-up 2"]);
+	});
+
+	it("promotes one follow-up message into the steering queue", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		let steeringTurnMessages: string[] = [];
+		let followUpTurnMessages: string[] = [];
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			(context) => {
+				steeringTurnMessages = context.messages
+					.filter((message) => message.role === "user")
+					.map((message) => getMessageText(message));
+				return fauxAssistantMessage("promoted steer response");
+			},
+			(context) => {
+				followUpTurnMessages = context.messages
+					.filter((message) => message.role === "user")
+					.map((message) => getMessageText(message));
+				return fauxAssistantMessage("remaining follow-up response");
+			},
+		]);
+
+		await waitForToolStart;
+		await harness.session.followUp("follow-up 1");
+		await harness.session.followUp("follow-up 2");
+
+		const queue = harness.session.promoteQueuedFollowUp({
+			type: "followUp",
+			index: 0,
+			text: "follow-up 1",
+		});
+		expect(queue).toEqual({ steering: ["follow-up 1"], followUp: ["follow-up 2"] });
+		expect(harness.session.getSteeringMessages()).toEqual(["follow-up 1"]);
+		expect(harness.session.getFollowUpMessages()).toEqual(["follow-up 2"]);
+
+		releaseToolExecution();
+		await promptPromise;
+
+		expect(steeringTurnMessages).toEqual(["start", "follow-up 1"]);
+		expect(followUpTurnMessages).toEqual(["start", "follow-up 1", "follow-up 2"]);
+		expect(getAssistantTexts(harness)).toEqual(["", "promoted steer response", "remaining follow-up response"]);
+	});
+
 	it("queues custom messages with deliverAs steer while streaming", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
@@ -282,10 +365,12 @@ describe("AgentSession queue characterization", () => {
 			{ customType: "queue-test", content: "steer custom", display: true, details: { value: 1 } },
 			{ deliverAs: "steer" },
 		);
+		expect(harness.session.getSteeringMessages()).toEqual(["steer custom"]);
 		releaseToolExecution();
 		await promptPromise;
 
 		expect(sawCustomMessage).toBe(true);
+		expect(harness.session.getSteeringMessages()).toEqual([]);
 		expect(
 			harness.session.messages.some((message) => message.role === "custom" && message.customType === "queue-test"),
 		).toBe(true);
@@ -316,10 +401,12 @@ describe("AgentSession queue characterization", () => {
 			{ customType: "queue-test", content: "follow-up custom", display: true, details: { value: 1 } },
 			{ deliverAs: "followUp" },
 		);
+		expect(harness.session.getFollowUpMessages()).toEqual(["follow-up custom"]);
 		releaseToolExecution();
 		await promptPromise;
 
 		expect(sawCustomMessage).toBe(true);
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
 		expect(
 			harness.session.messages.some((message) => message.role === "custom" && message.customType === "queue-test"),
 		).toBe(true);

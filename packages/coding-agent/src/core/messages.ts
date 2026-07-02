@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
-import type { ImageContent, Message, TextContent } from "@dyyz1993/pi-ai";
+import type { ImageContent, Message, TextContent, ToolResultMessage } from "@dyyz1993/pi-ai";
 
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
@@ -22,6 +22,10 @@ export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch tha
 `;
 
 export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+
+const MAX_FAILED_TOOL_RESULT_TEXT_CHARS = 2000;
+const FAILED_TOOL_RESULT_HEAD_CHARS = 1200;
+const FAILED_TOOL_RESULT_TAIL_CHARS = 600;
 
 /**
  * Message type for bash executions via the ! command.
@@ -137,6 +141,28 @@ export function createCustomMessage(
 	};
 }
 
+function truncateFailedToolResultText(text: string): string {
+	if (text.length <= MAX_FAILED_TOOL_RESULT_TEXT_CHARS) return text;
+	const head = text.slice(0, FAILED_TOOL_RESULT_HEAD_CHARS).trimEnd();
+	const tail = text.slice(-FAILED_TOOL_RESULT_TAIL_CHARS).trimStart();
+	const omitted = text.length - head.length - tail.length;
+	return `${head}\n\n[tool error output truncated: ${omitted} characters omitted]\n\n${tail}`;
+}
+
+function truncateFailedToolResultForLlm(message: ToolResultMessage): ToolResultMessage {
+	if (!message.isError) return message;
+	let changed = false;
+	const content = message.content.map((part) => {
+		if (part.type !== "text") return part;
+		const text = truncateFailedToolResultText(part.text);
+		if (text === part.text) return part;
+		changed = true;
+		return { ...part, text };
+	});
+	if (!changed) return message;
+	return { ...message, content };
+}
+
 /**
  * Transform AgentMessages (including custom types) to LLM-compatible Messages.
  *
@@ -183,8 +209,9 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 					};
 				case "user":
 				case "assistant":
-				case "toolResult":
 					return m;
+				case "toolResult":
+					return truncateFailedToolResultForLlm(m);
 				default:
 					// biome-ignore lint/correctness/noSwitchDeclarations: fine
 					const _exhaustiveCheck: never = m;

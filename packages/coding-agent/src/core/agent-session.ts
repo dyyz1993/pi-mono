@@ -94,6 +94,7 @@ import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import {
+	createAutoApproverProvider,
 	createDangerousCommandProvider,
 	createPathAccessProvider,
 	createPiHooksProvider,
@@ -352,6 +353,14 @@ export type PermissionMode = PermissionProfileName;
 /** @deprecated Use "normal" or "yolo" */
 export type LegacyPermissionMode = LegacyPermissionProfileName;
 
+export type QueueItemRef = { type: "steering" | "followUp"; index: number; text: string };
+export type FollowUpQueueItemRef = { type: "followUp"; index: number; text: string };
+
+type QueuedUserMessage = {
+	text: string;
+	images?: ImageContent[];
+};
+
 function normalizePermissionMode(mode: string): PermissionMode {
 	return normalizePermissionProfile(mode);
 }
@@ -481,6 +490,10 @@ function getMessageText(message: AgentMessage): string {
 	}
 }
 
+function isDisplayableSessionMessage(message: AgentMessage): boolean {
+	return message.role !== "custom" || message.customType !== "system_event" || message.display !== false;
+}
+
 function classifyContextMessage(message: AgentMessage): "conversation" | "memory" | "rules" | "lsp" {
 	const text = getMessageText(message);
 	if (message.role === "custom") {
@@ -565,8 +578,10 @@ export class AgentSession {
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
+	private _steeringQueueEntries: QueuedUserMessage[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	private _followUpQueueEntries: QueuedUserMessage[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -701,6 +716,9 @@ export class AgentSession {
 
 	set toolOperationsProvider(provider: ToolOperationsProvider | undefined) {
 		this._toolOperationsProvider = provider;
+		if (provider?.fs) {
+			void this._fileSnapshotManager?.reinitializeWorkspaceAsync(this._cwd);
+		}
 		this._baseToolDefinitions = new Map(
 			Object.entries(this._createBaseToolDefinitions()).map(([name, tool]) => [name, tool as ToolDefinition]),
 		);
@@ -828,6 +846,8 @@ export class AgentSession {
 					priority,
 					store: new PermissionStore(this.settingsManager),
 				});
+			case "auto-approver":
+				return createAutoApproverProvider({ priority });
 			case "pi-hooks": {
 				const runner = this._extensionRunner;
 				if (!runner.hasHandlers("tool_call")) return undefined;
@@ -929,7 +949,7 @@ export class AgentSession {
 	private _initFileSnapshotManager(): void {
 		try {
 			const git = InternalGit.createForProject(join(getAgentDir(), "file-store"), this._cwd);
-			const manager = new FileSnapshotManager(git);
+			const manager = new FileSnapshotManager(git, { workspaceFs: () => this.toolOperationsProvider?.fs });
 			manager.rebuildIndex(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 			manager.initialize(this._cwd);
 			void git.enforceLimit(100 * 1024 * 1024, manager.getActiveTreeHashes()).catch((err: unknown) => {
@@ -998,23 +1018,30 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
+		// When a queued user/custom message starts, remove it BEFORE emitting.
 		// This ensures the UI sees the updated queue state
-		if (event.type === "message_start" && event.message.role === "user") {
-			this._overflowRecoveryAttempts = 0;
-			resetLoopDetection(this._loopState);
-			const messageText = this._getUserMessageText(event.message);
+		if (
+			event.type === "message_start" &&
+			(event.message.role === "user" || event.message.role === "custom")
+		) {
+			if (event.message.role === "user") {
+				this._overflowRecoveryAttempts = 0;
+				resetLoopDetection(this._loopState);
+			}
+			const messageText = getMessageText(event.message);
 			if (messageText) {
 				// Check steering queue first
 				const steeringIndex = this._steeringMessages.indexOf(messageText);
 				if (steeringIndex !== -1) {
 					this._steeringMessages.splice(steeringIndex, 1);
+					this._steeringQueueEntries.splice(steeringIndex, 1);
 					this._emitQueueUpdate();
 				} else {
 					// Check follow-up queue
 					const followUpIndex = this._followUpMessages.indexOf(messageText);
 					if (followUpIndex !== -1) {
 						this._followUpMessages.splice(followUpIndex, 1);
+						this._followUpQueueEntries.splice(followUpIndex, 1);
 						this._emitQueueUpdate();
 					}
 				}
@@ -1094,15 +1121,6 @@ export class AgentSession {
 		return false;
 	}
 
-	/** Extract text content from a message */
-	private _getUserMessageText(message: Message): string {
-		if (message.role !== "user") return "";
-		const content = message.content;
-		if (typeof content === "string") return content;
-		const textBlocks = content.filter((c) => c.type === "text");
-		return textBlocks.map((c) => (c as TextContent).text).join("");
-	}
-
 	/** Find the last assistant message in agent state (including aborted ones) */
 	private _findLastAssistantMessage(): AssistantMessage | undefined {
 		const messages = this.agent.state.messages;
@@ -1153,7 +1171,7 @@ export class AgentSession {
 				toolResults: event.toolResults,
 			};
 			await this._extensionRunner.emit(extensionEvent);
-			this._fileSnapshotManager?.onTurnEnd(this._cwd, this._turnIndex, (type, data) =>
+			await this._fileSnapshotManager?.onTurnEndAsync(this._cwd, this._turnIndex, (type, data) =>
 				this.sessionManager.appendCustomEntry(type, data),
 			);
 			this._turnIndex++;
@@ -1424,13 +1442,36 @@ export class AgentSession {
 	}
 
 	private static readonly _SYSTEM_PATH_ALLOWLIST = ["/tmp/**", "/private/tmp/**", "/var/folders/**", "/dev/null"];
+	private static readonly _READ_ONLY_PATH_TOOLS = new Set(["read", "grep", "glob", "find", "ls"]);
+	private static readonly _WRITE_PATH_TOOLS = new Set(["edit", "write", "multiedit", "patch"]);
+	private static readonly _SENSITIVE_READ_PATHS = [
+		"/etc/passwd",
+		"/etc/shadow",
+		"/etc/sudoers",
+		"/private/etc/passwd",
+		"/private/etc/shadow",
+		"/private/etc/sudoers",
+		"**/.aws/**",
+		"**/.config/opencode/**",
+		"**/.docker/**",
+		"**/.gnupg/**",
+		"**/.kube/**",
+		"**/.netrc",
+		"**/.npmrc",
+		"**/.ssh/**",
+		"**/*credentials*",
+		"**/id_ed25519",
+		"**/id_rsa",
+		"**/*.key",
+		"**/*.pem",
+	];
 
 	private async _checkPathBoundary(
 		toolName: string,
 		toolCallId: string | undefined,
 		args: unknown,
 	): Promise<{ block: true; reason: string } | undefined> {
-		const FILE_TOOLS = new Set(["read", "edit", "write", "multiedit", "patch"]);
+		const FILE_TOOLS = new Set([...AgentSession._READ_ONLY_PATH_TOOLS, ...AgentSession._WRITE_PATH_TOOLS]);
 		if (!FILE_TOOLS.has(toolName)) return undefined;
 
 		const rawPath = getPathArg(args);
@@ -1451,7 +1492,10 @@ export class AgentSession {
 
 		if (this._getPermissionProfile().skipPathBoundaryApproval) return undefined;
 
-		const scope = ["edit", "write", "multiedit", "patch"].includes(toolName) ? "write" : "read";
+		const scope = AgentSession._WRITE_PATH_TOOLS.has(toolName) ? "write" : "read";
+		if (scope === "read" && !AgentSession._isSensitiveReadPath(normalizedPath)) {
+			return undefined;
+		}
 		const subject = scope === "write" ? "file.write" : "file.read";
 		const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
 		const input = asRecord(args);
@@ -1496,6 +1540,10 @@ export class AgentSession {
 		};
 
 		return this._applyPermissionDecision(await this._askPermission(request, input), input);
+	}
+
+	private static _isSensitiveReadPath(normalizedPath: string): boolean {
+		return AgentSession._SENSITIVE_READ_PATHS.some((pattern) => matchPathGlob(normalizedPath, pattern));
 	}
 
 	applyAgentConfig(agent: AgentConfig): void {
@@ -1570,9 +1618,9 @@ export class AgentSession {
 		);
 	}
 
-	/** All messages including custom types like BashExecutionMessage */
+	/** Messages intended for external/runtime display. Hidden system events remain in agent state for LLM context. */
 	get messages(): AgentMessage[] {
-		return this.agent.state.messages;
+		return this.agent.state.messages.filter(isDisplayableSessionMessage);
 	}
 
 	/** Current steering mode */
@@ -2083,16 +2131,9 @@ export class AgentSession {
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
 		this._steeringMessages.push(text);
+		this._steeringQueueEntries.push({ text, images });
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
-		}
-		this.agent.steer({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		this.agent.steer(this._queuedUserMessageToAgentMessage({ text, images }));
 	}
 
 	/**
@@ -2100,16 +2141,31 @@ export class AgentSession {
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
 		this._followUpMessages.push(text);
+		this._followUpQueueEntries.push({ text, images });
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
+		this.agent.followUp(this._queuedUserMessageToAgentMessage({ text, images }));
+	}
+
+	private _queuedUserMessageToAgentMessage(entry: QueuedUserMessage): AgentMessage {
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: entry.text }];
+		if (entry.images) {
+			content.push(...entry.images);
 		}
-		this.agent.followUp({
+		return {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+	}
+
+	private _rebuildAgentQueues(): void {
+		this.agent.clearAllQueues();
+		for (const entry of this._steeringQueueEntries) {
+			this.agent.steer(this._queuedUserMessageToAgentMessage(entry));
+		}
+		for (const entry of this._followUpQueueEntries) {
+			this.agent.followUp(this._queuedUserMessageToAgentMessage(entry));
+		}
 	}
 
 	/**
@@ -2154,9 +2210,14 @@ export class AgentSession {
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming) {
+			const queueText = getMessageText(appMessage);
 			if (options?.deliverAs === "followUp") {
+				this._followUpMessages.push(queueText);
+				this._emitQueueUpdate();
 				this.agent.followUp(appMessage);
 			} else {
+				this._steeringMessages.push(queueText);
+				this._emitQueueUpdate();
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
@@ -2219,14 +2280,51 @@ export class AgentSession {
 	 * Useful for restoring to editor when user aborts.
 	 * @returns Object with steering and followUp arrays
 	 */
-	clearQueue(): { steering: string[]; followUp: string[] } {
+	clearQueue(item?: QueueItemRef): { steering: string[]; followUp: string[] } {
+		if (item) {
+			const messages = item.type === "steering" ? this._steeringMessages : this._followUpMessages;
+			const entries = item.type === "steering" ? this._steeringQueueEntries : this._followUpQueueEntries;
+			if (messages[item.index] !== item.text) {
+				this._emitQueueUpdate();
+				return { steering: [], followUp: [] };
+			}
+			const removed = messages.splice(item.index, 1);
+			entries.splice(item.index, 1);
+			this._rebuildAgentQueues();
+			this._emitQueueUpdate();
+			return item.type === "steering" ? { steering: removed, followUp: [] } : { steering: [], followUp: removed };
+		}
+
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
+		this._steeringQueueEntries = [];
 		this._followUpMessages = [];
+		this._followUpQueueEntries = [];
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };
+	}
+
+	promoteQueuedFollowUp(item: FollowUpQueueItemRef): { steering: string[]; followUp: string[] } {
+		if (this._followUpMessages[item.index] !== item.text) {
+			this._emitQueueUpdate();
+			return {
+				steering: [...this._steeringMessages],
+				followUp: [...this._followUpMessages],
+			};
+		}
+
+		const [text] = this._followUpMessages.splice(item.index, 1);
+		const [entry] = this._followUpQueueEntries.splice(item.index, 1);
+		this._steeringMessages.push(text);
+		this._steeringQueueEntries.push(entry);
+		this._rebuildAgentQueues();
+		this._emitQueueUpdate();
+		return {
+			steering: [...this._steeringMessages],
+			followUp: [...this._followUpMessages],
+		};
 	}
 
 	/** Number of pending messages (includes both steering and follow-up) */
@@ -2449,7 +2547,9 @@ export class AgentSession {
 	// =========================================================================
 
 	private syncQueueModesFromSettings(): void {
-		this.agent.steeringMode = this.settingsManager.getSteeringMode();
+		// Steering messages are interventions for the next LLM turn and should be
+		// delivered together even when older settings still say one-at-a-time.
+		this.agent.steeringMode = "all";
 		this.agent.followUpMode = this.settingsManager.getFollowUpMode();
 	}
 
@@ -2458,7 +2558,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
-		this.agent.steeringMode = mode;
+		this.agent.steeringMode = "all";
 		this.settingsManager.setSteeringMode(mode);
 	}
 
@@ -4198,10 +4298,13 @@ export class AgentSession {
 	 * Get session statistics.
 	 */
 	getSessionStats(): SessionStats {
-		const state = this.state;
-		const userMessages = state.messages.filter((m) => m.role === "user").length;
-		const assistantMessages = state.messages.filter((m) => m.role === "assistant").length;
-		const toolResults = state.messages.filter((m) => m.role === "toolResult").length;
+		const entries = this.sessionManager.getEntries();
+		const messages = entries
+			.filter((entry) => entry.type === "message")
+			.map((entry) => entry.message);
+		const userMessages = messages.filter((m) => m.role === "user").length;
+		const assistantMessages = messages.filter((m) => m.role === "assistant").length;
+		const toolResults = messages.filter((m) => m.role === "toolResult").length;
 
 		let toolCalls = 0;
 		let totalInput = 0;
@@ -4210,7 +4313,7 @@ export class AgentSession {
 		let totalCacheWrite = 0;
 		let totalCost = 0;
 
-		for (const message of state.messages) {
+		for (const message of messages) {
 			if (message.role === "assistant") {
 				const assistantMsg = message as AssistantMessage;
 				toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
@@ -4229,7 +4332,7 @@ export class AgentSession {
 			assistantMessages,
 			toolCalls,
 			toolResults,
-			totalMessages: state.messages.length,
+			totalMessages: messages.length,
 			tokens: {
 				input: totalInput,
 				output: totalOutput,

@@ -85,6 +85,12 @@ function getPromptResponses(outputLines: string[], id: string): ParsedOutputLine
 	);
 }
 
+function getResponses(outputLines: string[], id: string, command: string): ParsedOutputLine[] {
+	return parseOutputLines(outputLines).filter(
+		(record) => record.id === id && record.type === "response" && record.command === command,
+	);
+}
+
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -137,11 +143,19 @@ function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number
 		resourceLoader: createTestResourceLoader(),
 	});
 
+	let currentCwd = tempDir;
 	const runtimeHost = {
 		session,
+		get cwd() {
+			return currentCwd;
+		},
 		newSession: vi.fn(async () => ({ cancelled: true })),
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
+		setCwd: vi.fn(async (cwd: string) => {
+			currentCwd = cwd;
+			return { cancelled: false };
+		}),
 		dispose: vi.fn(async () => {}),
 		setRebindSession: vi.fn(),
 	} as unknown as AgentSessionRuntime;
@@ -166,6 +180,7 @@ function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number
 
 async function startRpcMode(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
 	lineHandler: (line: string) => void;
+	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
 }> {
 	rpcIo.outputLines = [];
@@ -175,7 +190,7 @@ async function startRpcMode(options: { withAuth: boolean; responseDelayMs: numbe
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-	return { lineHandler: rpcIo.lineHandler!, cleanup };
+	return { lineHandler: rpcIo.lineHandler!, runtimeHost, cleanup };
 }
 
 describe("RPC prompt response semantics", () => {
@@ -275,6 +290,97 @@ describe("RPC prompt response semantics", () => {
 			});
 
 			await sleep(150);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("records permission mode changes as hidden system events", async () => {
+		const { lineHandler, runtimeHost, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "perm-1", type: "set_permission_mode", mode: "yolo" }));
+
+			await vi.waitFor(() => {
+				const responses = getResponses(rpcIo.outputLines, "perm-1", "set_permission_mode");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					success: true,
+					data: { mode: "yolo" },
+				});
+			});
+
+			const systemEvents = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "system_event");
+			expect(systemEvents).toHaveLength(1);
+			expect(systemEvents[0]).toMatchObject({
+				eventType: "approval_mode_changed",
+				eventLabel: "Approval mode changed to yolo",
+				display: false,
+				data: { mode: "yolo" },
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("records extension flag changes as hidden system events", async () => {
+		const { lineHandler, runtimeHost, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "flag-1", type: "set_flag", name: "disable-supervisor", value: true }));
+
+			await vi.waitFor(() => {
+				const responses = getResponses(rpcIo.outputLines, "flag-1", "set_flag");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					success: true,
+				});
+			});
+
+			const systemEvents = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "system_event");
+			expect(systemEvents).toHaveLength(1);
+			expect(systemEvents[0]).toMatchObject({
+				eventType: "extension_toggled",
+				eventLabel: "Extension flag disable-supervisor changed to true",
+				display: false,
+				data: { name: "disable-supervisor", value: true },
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("records successful cwd changes as hidden system events", async () => {
+		const { lineHandler, runtimeHost, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			const nextCwd = join(runtimeHost.cwd, "next-cwd");
+			mkdirSync(nextCwd, { recursive: true });
+			lineHandler(JSON.stringify({ id: "cwd-1", type: "set_cwd", cwd: nextCwd }));
+
+			await vi.waitFor(() => {
+				const responses = getResponses(rpcIo.outputLines, "cwd-1", "set_cwd");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					success: true,
+					data: { cancelled: false },
+				});
+			});
+
+			const systemEvents = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "system_event");
+			expect(systemEvents).toHaveLength(1);
+			expect(systemEvents[0]).toMatchObject({
+				eventType: "cwd_changed",
+				eventLabel: `Working directory changed to ${runtimeHost.cwd}`,
+				display: false,
+				data: { cwd: runtimeHost.cwd },
+			});
 		} finally {
 			await cleanup();
 		}

@@ -768,7 +768,7 @@ describe("rollback-then-continue flows", () => {
 			});
 		} else {
 			// Session start was empty — use restoreFiles with no target
-			fix.mgr.restoreFiles(fix.cwd, {
+			await fix.mgr.restoreFiles(fix.cwd, {
 				entries: [],
 				appendEntry: (type, data) => {
 					fix.entries.push({ type, data, customType: type });

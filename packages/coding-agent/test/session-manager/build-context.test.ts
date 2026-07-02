@@ -7,6 +7,7 @@ import {
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
+	type SystemEventEntry,
 	type ThinkingLevelChangeEntry,
 } from "../../src/core/session-manager.ts";
 
@@ -59,6 +60,26 @@ function thinkingLevel(id: string, parentId: string | null, level: string): Thin
 
 function modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
+}
+
+function systemEvent(
+	id: string,
+	parentId: string | null,
+	eventType: SystemEventEntry["eventType"],
+	eventLabel: string,
+	display = false,
+	data?: Record<string, unknown>,
+): SystemEventEntry {
+	return {
+		type: "system_event",
+		id,
+		parentId,
+		timestamp: "2025-01-01T00:00:00Z",
+		eventType,
+		eventLabel,
+		display,
+		data,
+	};
 }
 
 function memoryContext(id: string, parentId: string | null, fingerprint: string, text: string): CustomMessageEntry {
@@ -145,6 +166,31 @@ describe("buildSessionContext", () => {
 			const ctx = buildSessionContext(entries);
 			// Assistant message overwrites model change
 			expect(ctx.model).toEqual({ provider: "anthropic", modelId: "claude-test" });
+		});
+
+		it("injects hidden system events into LLM context as custom messages", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "hello"),
+				systemEvent("2", "1", "agent_changed", "Agent changed to frontend-dev", false, {
+					agentName: "frontend-dev",
+				}),
+				msg("3", "2", "assistant", "hi"),
+			];
+
+			const ctx = buildSessionContext(entries);
+
+			expect(ctx.messages).toHaveLength(3);
+			expect(ctx.messages[1]).toMatchObject({
+				role: "custom",
+				customType: "system_event",
+				display: false,
+				content: "System event: Agent changed to frontend-dev",
+				details: {
+					eventType: "agent_changed",
+					eventLabel: "Agent changed to frontend-dev",
+					data: { agentName: "frontend-dev" },
+				},
+			});
 		});
 	});
 

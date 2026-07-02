@@ -46,6 +46,7 @@ import type { CompactionPreparation, CompactionResult } from "../compaction/inde
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { FileSnapshotManager } from "../file-store/file-snapshot-manager.ts";
+import type { FileSystemCapability } from "../filesystem-capability.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
@@ -515,6 +516,13 @@ export interface ExtensionContext {
 	globalDataDir: string;
 	/** File snapshot manager for live change tracking. Null if not initialized. */
 	fileSnapshotManager: FileSnapshotManager | null;
+	/**
+	 * Workspace filesystem capability.
+	 *
+	 * Extensions must use this for project working-tree files. Local sessions route
+	 * to node:fs; remote/sandbox sessions can route to the remote workspace.
+	 */
+	fs: FileSystemCapability;
 	/**
 	 * Respond to a UI event from a remote source.
 	 * First response wins (original UI or respondUI), subsequent calls are ignored.

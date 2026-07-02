@@ -15,6 +15,7 @@ export const DEFAULT_CONFIG: SupervisorConfig = {
     maxContinueCount: 5,
     defaultDelayMs: 30_000,
     pauseThresholdMs: 300_000,
+    minContinueConfidence: 0.6,
     guards: [
         { name: "incomplete-keywords", type: "keyword", enable: true, keywords: ["TODO", "FIXME", "WIP", "HACK"] },
     ],

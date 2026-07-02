@@ -20,6 +20,14 @@ import { loadConfig, DEFAULT_CONFIG } from "./config.ts";
 import { checkWithSmallModel } from "./checker.ts";
 import { Scheduler } from "./scheduler.ts";
 import {
+    buildIncompleteSignature,
+    checkKeywordGuardAgainstCode,
+    getDecisionConfidence,
+    isIncompleteSignatureSimilar,
+    shouldAutoContinueFromGuards,
+    shouldAutoContinueFromModelCheck,
+} from "./decision.ts";
+import {
     CONTINUE_PROMPT,
     TODO_GUARD_PROMPT,
     SPECS_GUARD_PROMPT,
@@ -34,6 +42,7 @@ import {
     GOAL_CHECKLIST_SYSTEM_PROMPT,
     GOAL_CHECKLIST_USER_PROMPT,
 } from "./prompts.ts";
+import { advanceChecklistAfterPassedCheck, applyChecklistProgress } from "./checklist.ts";
 import { setForensicDir, appendForensic, forensicTs } from "./forensic.ts";
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -578,8 +587,14 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             lastTaskReports = reports;
             channel.emit("supervisor.taskReport", { type: "taskReport" as const, tasks: reports });
 
-            // Phase 2: If any guard says incomplete → continue immediately
-            const hasIncompleteGuards = guardResults.some((r) => !r.completed && r.remainingItems.length > 0);
+            // Phase 2: Only confident incomplete guards can trigger auto-continue.
+            // Low-confidence signals are kept in reports/forensics but fall through
+            // to the model check instead of starting a loop by themselves.
+            const guardDecision = shouldAutoContinueFromGuards(
+                guardResults,
+                config.minContinueConfidence,
+            );
+            const hasIncompleteGuards = guardDecision.shouldContinue;
 
             if (hasIncompleteGuards) {
                 log(`Guards detected incomplete tasks`);
@@ -588,12 +603,9 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 // Stagnation detection: compare this round's incomplete signature
                 // with the previous round. If identical, the guard results have
                 // not changed and the agent is stuck.
-                const currentSignature = guardResults
-                    .filter((r) => !r.completed)
-                    .map((r) => `${r.guardName}:${r.remainingItems.sort().join(",")}`)
-                    .join("|");
+                const currentSignature = buildIncompleteSignature(guardDecision.incompleteResults);
 
-                if (currentSignature === lastIncompleteSignature) {
+                if (isIncompleteSignatureSimilar(currentSignature, lastIncompleteSignature)) {
                     stagnationCount++;
                     log(`Stagnation detected (count=${stagnationCount}), signature=${currentSignature}`);
                     appendForensic({
@@ -655,16 +667,17 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
                 const continueMessage = generateContinueMessage(
                     activeGuards,
-                    guardResults,
+                    guardDecision.incompleteResults,
                     null,
                 );
 
                 const checkDurationMs = Date.now() - checkStartedAt;
+                const decisionConfidence = getDecisionConfidence(guardDecision.incompleteResults);
 
-                lastCheckResult = { completed: false, confidence: 0.9, incompleteTasks: [], guardResults };
+                lastCheckResult = { completed: false, confidence: decisionConfidence, incompleteTasks: [], guardResults };
                 recordGoldResult({
                     verdict: "incomplete",
-                    confidence: 0.9,
+                    confidence: decisionConfidence,
                     reason: "Active guards found remaining work.",
                     evidence: guardResults.map((r) => ({
                         kind: "guard",
@@ -675,7 +688,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                     durationMs: checkDurationMs,
                 });
 
-                const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "incomplete", 0.9, guardResults, guardTimings, undefined, "continue", "Active guards found remaining work");
+                const record = buildTriggerRecord(checkStartedAt, checkDurationMs, "incomplete", decisionConfidence, guardResults, guardTimings, undefined, "continue", "Active guards found remaining work");
                 appendTriggerRecord(record);
 
                 scheduleContinue(continueMessage);
@@ -695,14 +708,88 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             const hasModelIncomplete = modelCheck.completed === false || modelCheck.incompleteTasks.length > 0;
 
             if (!hasModelIncomplete) {
-                log(`All guards passed + model check passed → idle`);
+                log(`All guards passed + model check passed`);
                 const checkDurationMs = Date.now() - checkStartedAt;
                 currentState = "idle";
                 lastCheckResult = { ...modelCheck, guardResults };
+
+                const passedEvidenceSummary = modelCheck.modelResponse ?? "Guards and model check passed.";
+                const checklistAdvance = activeGoal
+                    ? advanceChecklistAfterPassedCheck(activeGoal, passedEvidenceSummary)
+                    : undefined;
+
+                if (checklistAdvance?.hasRemaining) {
+                    activeGoal = {
+                        ...checklistAdvance.goal,
+                        continuationCount: schedulerInstance?.getContinueCount() ?? checklistAdvance.goal.continuationCount,
+                    };
+                    persistGoalRuntimeState();
+                    channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+
+                    const continueMessage = [
+                        "The current checklist item passed supervisor verification.",
+                        checklistAdvance.completedItem
+                            ? `Completed checklist item: ${checklistAdvance.completedItem.text}`
+                            : undefined,
+                        checklistAdvance.nextItem
+                            ? `Continue with the next checklist item: ${checklistAdvance.nextItem.text}`
+                            : undefined,
+                        "Do not call supervisor_complete until every checklist item has been individually completed and verified.",
+                    ].filter(Boolean).join("\n");
+
+                    recordGoldResult({
+                        verdict: "incomplete",
+                        confidence: modelCheck.confidence,
+                        reason: "Current checklist item passed, but later checklist items remain.",
+                        evidence: [
+                            ...guardResults.map((r) => ({
+                                kind: "guard" as const,
+                                summary: `${r.guardName}: ${r.detail ?? "completed"}`,
+                                passed: true,
+                            })),
+                            {
+                                kind: "model" as const,
+                                summary: passedEvidenceSummary,
+                                passed: true,
+                            },
+                            {
+                                kind: "assistant_claim" as const,
+                                summary: `Checklist advanced to: ${checklistAdvance.nextItem?.text ?? "next item"}`,
+                                passed: false,
+                            },
+                        ],
+                        continueMessage,
+                        durationMs: checkDurationMs,
+                    });
+
+                    const record = buildTriggerRecord(
+                        checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
+                        guardResults, guardTimings,
+                        {
+                            passed: true,
+                            confidence: modelCheck.confidence,
+                            response: modelCheck.modelResponse,
+                            durationMs: modelCheckDurationMs,
+                            model: config.smallModel,
+                        },
+                        "continue", "Checklist has remaining items",
+                    );
+                    appendTriggerRecord(record);
+                    emitStatusChanged();
+                    scheduleContinue(continueMessage);
+                    return;
+                }
+
+                if (checklistAdvance) {
+                    activeGoal = checklistAdvance.goal;
+                    persistGoalRuntimeState();
+                    channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+                }
+
                 recordGoldResult({
                     verdict: "complete",
                     confidence: modelCheck.confidence,
-                    reason: modelCheck.modelResponse ?? "Guards and model check passed.",
+                    reason: passedEvidenceSummary,
                     evidence: [
                         ...guardResults.map((r) => ({
                             kind: "guard" as const,
@@ -760,6 +847,52 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             }
 
             // Phase 4: Model detected incompleteness → continue with model's assessment
+            if (!shouldAutoContinueFromModelCheck(modelCheck, config.minContinueConfidence)) {
+                log(`Model incomplete below confidence threshold (${modelCheck.confidence} < ${config.minContinueConfidence}); skipping auto-continue`);
+                const checkDurationMs = Date.now() - checkStartedAt;
+                currentState = "idle";
+                lastCheckResult = { ...modelCheck, guardResults };
+                recordGoldResult({
+                    verdict: "incomplete",
+                    confidence: modelCheck.confidence,
+                    reason: modelCheck.modelResponse ?? "Low-confidence incomplete model result; auto-continue skipped.",
+                    evidence: [
+                        ...guardResults.map((r) => ({
+                            kind: "guard" as const,
+                            summary: `${r.guardName}: ${r.detail ?? (r.completed ? "completed" : r.remainingItems.join(", "))}`,
+                            passed: r.completed,
+                        })),
+                        ...modelCheck.incompleteTasks.map((t) => ({
+                            kind: "model" as const,
+                            summary: `[${t.severity}] ${t.description}`,
+                            passed: false,
+                        })),
+                    ],
+                    durationMs: checkDurationMs,
+                });
+
+                const record = buildTriggerRecord(
+                    checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
+                    guardResults, guardTimings,
+                    {
+                        passed: false,
+                        confidence: modelCheck.confidence,
+                        response: modelCheck.modelResponse,
+                        durationMs: modelCheckDurationMs,
+                        model: config.smallModel,
+                    },
+                    "idle", "Low-confidence incomplete result; auto-continue skipped",
+                );
+                appendTriggerRecord(record);
+                appendForensic({
+                    ts: forensicTs(),
+                    type: "continue_skipped",
+                    reason: `low confidence incomplete (${modelCheck.confidence} < ${config.minContinueConfidence})`,
+                });
+                emitStatusChanged();
+                return;
+            }
+
             log(`Model detected incomplete tasks`);
             const checkDurationMs = Date.now() - checkStartedAt;
             const continueMessage = generateContinueMessage(
@@ -1130,21 +1263,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         guard: Extract<GuardConfig, { type: "keyword" }>,
         context: string,
     ): GuardCheckResult {
-        const found = guard.keywords.filter((kw) =>
-            context.toLowerCase().includes(kw.toLowerCase()),
-        );
-
-        return {
-            guardName: guard.name,
-            completed: found.length === 0,
-            confidence: found.length === 0 ? 1 : 0.7,
-            remainingItems: found.length > 0
-                ? [`Keywords found indicating incomplete work: ${found.join(", ")}`]
-                : [],
-            detail: found.length > 0
-                ? `Found: ${found.join(", ")}`
-                : "No incomplete keywords",
-        };
+        return checkKeywordGuardAgainstCode(guard, context);
     }
 
     async function checkCustomGuard(
@@ -1392,63 +1511,6 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
     function extractMentionedPaths(text: string): string[] {
         const matches = text.match(/(?:[\w.-]+\/)+[\w.-]+|[\w.-]+\.(?:ts|tsx|js|jsx|json|md|txt|css|scss|html|mjs|cjs)/g);
         return Array.from(new Set(matches ?? []));
-    }
-
-    function applyChecklistProgress(goal: GoalState): GoalState {
-        const checklist = goal.checklist;
-        if (!checklist || checklist.length === 0) return goal;
-        const now = Date.now();
-
-        if (goal.status === "complete") {
-            const completedChecklist = checklist.map((item) => ({
-                ...item,
-                status: "done" as const,
-                updatedAt: now,
-            }));
-            return {
-                ...goal,
-                currentMilestone: undefined,
-                checklist: completedChecklist,
-            };
-        }
-
-        if (goal.status === "blocked" || goal.status === "needs_user") {
-            const blockedChecklist = checklist.map((item) =>
-                item.status === "in_progress"
-                    ? { ...item, status: "blocked" as const, updatedAt: now }
-                    : item,
-            );
-            return {
-                ...goal,
-                currentMilestone: blockedChecklist.find((item) => item.status !== "done")?.text,
-                checklist: blockedChecklist,
-            };
-        }
-
-        const hasActiveItem = checklist.some((item) => item.status === "in_progress");
-        if (hasActiveItem) {
-            return {
-                ...goal,
-                currentMilestone: checklist.find((item) => item.status === "in_progress")?.text
-                    ?? checklist.find((item) => item.status !== "done")?.text,
-            };
-        }
-
-        let promoted = false;
-        const promotedChecklist = checklist.map((item) => {
-            if (!promoted && item.status === "pending") {
-                promoted = true;
-                return { ...item, status: "in_progress" as const, updatedAt: now };
-            }
-            return item;
-        });
-
-        return {
-            ...goal,
-            currentMilestone: promotedChecklist.find((item) => item.status === "in_progress")?.text
-                ?? promotedChecklist.find((item) => item.status !== "done")?.text,
-            checklist: promotedChecklist,
-        };
     }
 
     function getStatus(): SupervisorStatus {
