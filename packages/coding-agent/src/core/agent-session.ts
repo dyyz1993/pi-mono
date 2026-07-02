@@ -1424,13 +1424,36 @@ export class AgentSession {
 	}
 
 	private static readonly _SYSTEM_PATH_ALLOWLIST = ["/tmp/**", "/private/tmp/**", "/var/folders/**", "/dev/null"];
+	private static readonly _READ_ONLY_PATH_TOOLS = new Set(["read", "grep", "glob", "find", "ls"]);
+	private static readonly _WRITE_PATH_TOOLS = new Set(["edit", "write", "multiedit", "patch"]);
+	private static readonly _SENSITIVE_READ_PATHS = [
+		"/etc/passwd",
+		"/etc/shadow",
+		"/etc/sudoers",
+		"/private/etc/passwd",
+		"/private/etc/shadow",
+		"/private/etc/sudoers",
+		"**/.aws/**",
+		"**/.config/opencode/**",
+		"**/.docker/**",
+		"**/.gnupg/**",
+		"**/.kube/**",
+		"**/.netrc",
+		"**/.npmrc",
+		"**/.ssh/**",
+		"**/*credentials*",
+		"**/id_ed25519",
+		"**/id_rsa",
+		"**/*.key",
+		"**/*.pem",
+	];
 
 	private async _checkPathBoundary(
 		toolName: string,
 		toolCallId: string | undefined,
 		args: unknown,
 	): Promise<{ block: true; reason: string } | undefined> {
-		const FILE_TOOLS = new Set(["read", "edit", "write", "multiedit", "patch"]);
+		const FILE_TOOLS = new Set([...AgentSession._READ_ONLY_PATH_TOOLS, ...AgentSession._WRITE_PATH_TOOLS]);
 		if (!FILE_TOOLS.has(toolName)) return undefined;
 
 		const rawPath = getPathArg(args);
@@ -1451,7 +1474,10 @@ export class AgentSession {
 
 		if (this._getPermissionProfile().skipPathBoundaryApproval) return undefined;
 
-		const scope = ["edit", "write", "multiedit", "patch"].includes(toolName) ? "write" : "read";
+		const scope = AgentSession._WRITE_PATH_TOOLS.has(toolName) ? "write" : "read";
+		if (scope === "read" && !AgentSession._isSensitiveReadPath(normalizedPath)) {
+			return undefined;
+		}
 		const subject = scope === "write" ? "file.write" : "file.read";
 		const parentDir = `${normalizedPath.split("/").slice(0, -1).join("/")}/**`;
 		const input = asRecord(args);
@@ -1496,6 +1522,10 @@ export class AgentSession {
 		};
 
 		return this._applyPermissionDecision(await this._askPermission(request, input), input);
+	}
+
+	private static _isSensitiveReadPath(normalizedPath: string): boolean {
+		return AgentSession._SENSITIVE_READ_PATHS.some((pattern) => matchPathGlob(normalizedPath, pattern));
 	}
 
 	applyAgentConfig(agent: AgentConfig): void {
