@@ -46,6 +46,7 @@ interface CapturedEvent {
 function createMockChannel() {
 	const emittedEvents: CapturedEvent[] = [];
 	const handlers = new Map<string, (params: Record<string, unknown>) => unknown>();
+	const receiveHandlers: Array<(data: unknown) => void> = [];
 
 	const channel = {
 		emit(event: CapturedEvent) {
@@ -57,15 +58,22 @@ function createMockChannel() {
 		on(_event: string, _handler: unknown) {
 			return () => {};
 		},
-		call(_method: string, _params: unknown) {
+		call(method: string, params: Record<string, unknown>) {
+			return channel.invoke({ __call: method, ...params });
+		},
+		send(data: CapturedEvent) {
+			emittedEvents.push(data);
+		},
+		invoke(data: unknown) {
+			for (const handler of receiveHandlers) handler(data);
 			return Promise.resolve(undefined);
 		},
-		send(_data: unknown) {},
-		invoke(_data: unknown) {
-			return Promise.resolve(undefined);
-		},
-		onReceive(_handler: unknown) {
-			return () => {};
+		onReceive(handler: (data: unknown) => void) {
+			receiveHandlers.push(handler);
+			return () => {
+				const index = receiveHandlers.indexOf(handler);
+				if (index >= 0) receiveHandlers.splice(index, 1);
+			};
 		},
 		name: "bash",
 	};
@@ -79,9 +87,14 @@ function createMockExtensionAPI(channelObj: ReturnType<typeof createMockChannel>
 	const sentMessages: Array<{ message: Record<string, unknown>; options?: Record<string, unknown> }> = [];
 	const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 	let toolOperationsProvider: Record<string, unknown> | undefined;
+	const eventHandlers = new Map<string, Array<() => unknown>>();
 
 	const api = {
-		on: (_event: string, _handler: unknown) => {},
+		on: (event: string, handler: () => unknown) => {
+			const handlers = eventHandlers.get(event) ?? [];
+			handlers.push(handler);
+			eventHandlers.set(event, handlers);
+		},
 		appendEntry: (customType: string, data: unknown) => {
 			appendedEntries.push({ customType, data });
 			return "";
@@ -101,7 +114,7 @@ function createMockExtensionAPI(channelObj: ReturnType<typeof createMockChannel>
 		getToolOperationsProvider: () => toolOperationsProvider,
 	} as unknown as ExtensionAPI;
 
-	return { api, sentUserMessages, sentMessages, appendedEntries };
+	return { api, sentUserMessages, sentMessages, appendedEntries, eventHandlers };
 }
 
 function createMockContext(cwd: string): ExtensionContext {
@@ -135,9 +148,15 @@ interface RegisteredTools {
 	};
 }
 
+interface ProviderBashExecOptions {
+	signal?: AbortSignal;
+	timeout?: number;
+	onData?: (data: Buffer) => void;
+}
+
 function setupExtension(cwd: string) {
 	const channelObj = createMockChannel();
-	const { api, sentUserMessages, sentMessages, appendedEntries } = createMockExtensionAPI(channelObj);
+	const { api, sentUserMessages, sentMessages, appendedEntries, eventHandlers } = createMockExtensionAPI(channelObj);
 	const ctx = createMockContext(cwd);
 	// biome-ignore lint/complexity/noBannedTypes: test mock
 	const tools: Record<string, { name: string; parameters: unknown; execute: Function }> = {};
@@ -151,12 +170,9 @@ function setupExtension(cwd: string) {
 
 	bashExt(api);
 
-	// session_start handlers are registered via pi.on — but our mock doesn't capture them.
-	// The extension's session_start handler is where channel handlers are set up.
-	// We need to call it manually.
-	// Since we intercepted registerChannel, the channel is available.
-	// But session_start is an event handler registered via pi.on which we stubbed.
-	// We need to find and invoke it.
+	for (const handler of eventHandlers.get("session_start") ?? []) {
+		void handler();
+	}
 
 	return {
 		api,
@@ -471,6 +487,49 @@ describe("bash-ext tool execution paths", () => {
 
 		expect((r1.content[0] as { text: string }).text).toContain("proc1");
 		expect((r2.content[0] as { text: string }).text).toContain("proc2");
+	});
+
+	it("providerBash process can be manually moved to background through the bash channel", async () => {
+		const cwd = makeTempDir();
+		const { api, tools, ctx, channelObj } = setupExtension(cwd);
+		let resolveProvider!: () => void;
+		let markProviderStarted!: () => void;
+		const providerStarted = new Promise<void>((resolve) => {
+			markProviderStarted = resolve;
+		});
+
+		(api as unknown as { setToolOperationsProvider: (provider: unknown) => void }).setToolOperationsProvider({
+			bash: {
+				exec: async (_command: string, _cwd: string, options: ProviderBashExecOptions) => {
+					options.onData?.(Buffer.from("remote-start\n"));
+					markProviderStarted();
+					await new Promise<void>((resolve) => {
+						resolveProvider = resolve;
+					});
+					options.onData?.(Buffer.from("remote-done\n"));
+					return { exitCode: 0 };
+				},
+			},
+		});
+
+		const execPromise = tools.bash.execute(
+			"tc-provider-bg",
+			{ command: "remote long command", description: "provider background", timeout: 30 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		await providerStarted;
+
+		await channelObj.channel.invoke({ __call: "background", toolCallId: "tc-provider-bg" });
+		resolveProvider();
+
+		const result = await execPromise;
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("Moved to background");
+		expect(result.details).toHaveProperty("background");
+		expect(channelObj.emittedEvents.some((event) => event.type === "background")).toBe(true);
+		expect(channelObj.emittedEvents.some((event) => event.type === "terminated")).toBe(false);
 	});
 });
 
