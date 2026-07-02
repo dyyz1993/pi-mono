@@ -4,6 +4,20 @@ export const COORDINATOR_CHANNEL_NAME = "coordinator";
 
 export type SessionStatus = "idle" | "streaming" | "stopped" | "completed" | "not_found";
 export type DelegateReplyMode = "auto" | "interrupt" | "followUp";
+export type DelegateStatusWaitingType =
+  | "streaming"
+  | "compacting"
+  | "completed"
+  | "idle"
+  | "stopped"
+  | "not_found";
+
+export interface DelegateStatusDetail {
+  phase: string;
+  waitingType: DelegateStatusWaitingType;
+  waitingSince?: number;
+  lastMessages?: string[];
+}
 
 export interface DelegatedTask {
   sessionId: string;
@@ -16,7 +30,11 @@ export interface DelegatedTask {
   completedAt?: number;
   result?: string;
   isCompacting?: boolean;
-  contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
+  contextUsage?: {
+    tokens: number | null;
+    contextWindow: number;
+    percent: number | null;
+  };
 }
 
 export interface DelegateCreateResult {
@@ -36,8 +54,14 @@ export interface DelegateListResult {
 
 export interface DelegateStatusExt {
   task: DelegatedTask | null;
+  status?: SessionStatus | "not_found";
+  detail?: DelegateStatusDetail;
   isCompacting?: boolean;
-  contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
+  contextUsage?: {
+    tokens: number | null;
+    contextWindow: number;
+    percent: number | null;
+  };
 }
 
 export interface CoordinatorChannelContract extends ChannelContract {
@@ -47,6 +71,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         task: string;
         title?: string;
         agent?: string;
+        agentName?: string;
         model?: string;
         projectPath?: string;
         replyMode?: DelegateReplyMode;
@@ -54,7 +79,11 @@ export interface CoordinatorChannelContract extends ChannelContract {
       return: DelegateCreateResult;
     };
     session_delegate_send: {
-      params: { targetSessionId: string; message: string; mode?: "followUp" | "steer" };
+      params: {
+        targetSessionId: string;
+        message: string;
+        mode?: "followUp" | "steer";
+      };
       return: DelegateSendResult;
     };
     session_delegate_status: {
@@ -83,6 +112,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         task: string;
         title?: string;
         agent?: string;
+        agentName?: string;
         model?: string;
         projectPath?: string;
       };
@@ -93,6 +123,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         task: string;
         title?: string;
         agent?: string;
+        agentName?: string;
         model?: string;
         timeoutMs?: number;
         projectPath?: string;

@@ -445,6 +445,22 @@ describe("Bug: session_delegate_stop registered twice in index.ts", () => {
   });
 });
 
+describe("session_delegate public tool routing guidance", () => {
+  it("describes session_delegate as async-only and not for ordinary subtasks", () => {
+    const indexSource = fs.readFileSync(path.join(__dirname, "index.ts"), "utf-8");
+
+    const delegateToolStart = indexSource.indexOf('name: "session_delegate"');
+    expect(delegateToolStart).toBeGreaterThan(-1);
+    const nextToolStart = indexSource.indexOf('name: "session_delegate_send"', delegateToolStart);
+    const delegateToolBlock = indexSource.slice(delegateToolStart, nextToolStart);
+
+    expect(delegateToolBlock).toContain("Asynchronously dispatch/delegate");
+    expect(delegateToolBlock).toContain("explicitly asks for an async delegation/dispatch/background task");
+    expect(delegateToolBlock).toContain("Do NOT use this for ordinary 'subtask'");
+    expect(delegateToolBlock).toContain("子任务/子代理");
+  });
+});
+
 // ── Regression tests for bugs found during audit ──
 
 describe("buildPrompt() keeps completed task history until explicit cleanup", () => {

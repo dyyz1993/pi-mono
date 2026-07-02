@@ -151,6 +151,17 @@ describe("session_delegate handler", () => {
 		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined);
 	});
 
+	it("passes agentName alias from params to pm.delegate", async () => {
+		const ctx = useCtx();
+		await ctx.client.call("session_delegate", {
+			task: "Do something",
+			projectPath: "/tmp/proj",
+			agentName: "frontend-dev",
+		} as never);
+
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined);
+	});
+
 	it("passes model from params to pm.delegate", async () => {
 		const ctx = useCtx();
 		await ctx.client.call("session_delegate", {
@@ -351,6 +362,39 @@ describe("session_delegate_status handler", () => {
 
 		expect(result.task!.status).toBe("streaming");
 		expect(ctx.store.get("sess-y")!.status).toBe("streaming");
+	});
+
+	it("returns status detail from the process manager", async () => {
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({
+				status: "streaming" as const,
+				detail: {
+					phase: "执行中",
+					waitingType: "streaming",
+					waitingSince: 123,
+					lastMessages: ["助手: 正在执行 ls"],
+				},
+			}),
+		});
+		ctx.store.add({
+			sessionId: "sess-detail",
+			title: "Detailed task",
+			task: "task",
+			projectPath: "/tmp",
+			dispatchedAt: 100,
+			status: "idle",
+		});
+
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-detail",
+		});
+
+		expect(result.detail).toMatchObject({
+			phase: "执行中",
+			waitingType: "streaming",
+			waitingSince: 123,
+			lastMessages: ["助手: 正在执行 ls"],
+		});
 	});
 
 	it("returns isCompacting and contextUsage", async () => {
@@ -728,6 +772,20 @@ describe("session_delegate_fork handler", () => {
 		expect(ctx.pm.delegate_fork).toHaveBeenCalledWith("orig-sess", "Forked task", "Fork Title", "/tmp/fork", "backend-dev", undefined);
 	});
 
+	it("passes agentName alias from params to pm.delegate_fork", async () => {
+		const ctx = useCtx();
+
+		await ctx.client.call("session_delegate_fork", {
+			sessionId: "orig-sess",
+			task: "Forked task",
+			title: "Fork Title",
+			projectPath: "/tmp/fork",
+			agentName: "backend-dev",
+		} as never);
+
+		expect(ctx.pm.delegate_fork).toHaveBeenCalledWith("orig-sess", "Forked task", "Fork Title", "/tmp/fork", "backend-dev", undefined);
+	});
+
 	it("passes model from params to pm.delegate_fork", async () => {
 		const ctx = useCtx();
 
@@ -792,6 +850,18 @@ describe("session_delegate_sync handler", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.finalText).toBe("done");
 		expect(ctx.pm.delegate_sync).toHaveBeenCalledWith("sync task", undefined, 180_000, "/tmp/sync", undefined, undefined, undefined);
+	});
+
+	it("passes agentName alias from params to pm.delegate_sync", async () => {
+		const ctx = useCtx();
+
+		await ctx.client.call("session_delegate_sync", {
+			task: "sync task",
+			projectPath: "/tmp/sync",
+			agentName: "frontend-dev",
+		} as never);
+
+		expect(ctx.pm.delegate_sync).toHaveBeenCalledWith("sync task", "frontend-dev", 180_000, "/tmp/sync", undefined, undefined, undefined);
 	});
 
 	it("adds task to store when title is provided", async () => {

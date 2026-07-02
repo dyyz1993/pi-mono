@@ -121,6 +121,16 @@ describe("subagent-v2 tool registration", () => {
 		expect(schema.required).not.toContain("agent");
 	});
 
+	it("subagent tool description clearly owns ordinary subtask requests", async () => {
+		const harness = await createSubagentHarness();
+		const tool = harness.session.getToolDefinition("subagent") as { description?: string } | undefined;
+
+		expect(tool?.description).toContain("ordinary subtask");
+		expect(tool?.description).toContain("子任务/子代理");
+		expect(tool?.description).toContain("Do not use session_delegate");
+		expect(tool?.description).toContain("async dispatch/delegation/background execution");
+	});
+
 	it("does not mention local agent directories in SSH tool-proxy mode", async () => {
 		process.env.PI_REMOTE_SSH_TOOL_PROXY = "1";
 		const harness = await createSubagentHarness();

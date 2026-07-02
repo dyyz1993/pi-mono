@@ -249,6 +249,11 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("<available_agents>");
 			expect(prompt).toContain("<name>build</name>");
 			expect(prompt).toContain("<filePath>(builtin)</filePath>");
+			expect(prompt).toContain("ordinary subtask/subagent/child task");
+			expect(prompt).toContain("子任务/子代理");
+			expect(prompt).toContain(
+				"Use `session_delegate` only for explicit asynchronous delegation/dispatch/background work",
+			);
 			expect(prompt).toContain('Default agent is "build"');
 			expect(prompt).not.toContain("private-planner");
 			expect(breakdown.agentsChars).toBeGreaterThan(0);

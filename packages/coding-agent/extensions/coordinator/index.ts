@@ -45,6 +45,7 @@ const DelegateParams = Type.Object({
   task: Type.String({ description: "Task description to delegate to the background session" }),
   title: Type.Optional(Type.String({ description: "Short title for this delegated task" })),
   agent: Type.Optional(Type.String({ description: "Agent role/name to switch the delegated session to before sending the task" })),
+  agentName: Type.Optional(Type.String({ description: "Alias for agent. Prefer agent; accepted for compatibility with UI/API naming." })),
   model: Type.Optional(Type.String({ description: "Model to switch the delegated session to before sending the task, in provider/modelId format" })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
   replyMode: Type.Optional(Type.Union([
@@ -80,6 +81,7 @@ const DelegateForkParams = Type.Object({
   task: Type.String({ description: "Task description for the forked session" }),
   title: Type.Optional(Type.String({ description: "Short title for the forked task" })),
   agent: Type.Optional(Type.String({ description: "Agent role/name to switch the forked session to before sending the task" })),
+  agentName: Type.Optional(Type.String({ description: "Alias for agent. Prefer agent; accepted for compatibility with UI/API naming." })),
   model: Type.Optional(Type.String({ description: "Model to switch the forked session to before sending the task, in provider/modelId format" })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the forked session in. Defaults to the current working directory." })),
 });
@@ -108,6 +110,10 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     () => store ?? new TaskStore("/tmp/coordinator-fallback"),
   );
 
+  function getRequestedAgent(params: { agent?: string; agentName?: string }): string | undefined {
+    return params.agent ?? params.agentName;
+  }
+
   pi.on("context", (event, _ctx) => {
     if (!store) return;
     const prompt = store.buildPrompt();
@@ -124,7 +130,9 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     name: "session_delegate",
     label: "Session Delegate",
     description: [
-      "Delegate a task to a background pi session asynchronously.",
+      "Asynchronously dispatch/delegate a task to a background pi session.",
+      "Use this only when the user explicitly asks for an async delegation/dispatch/background task, or says not to wait for completion.",
+      "Do NOT use this for ordinary 'subtask', 'subagent', 'child task', or Chinese '子任务/子代理' requests; use the public subagent tool for those so the parent waits for and records the result.",
       "Optionally specify a projectPath to run the session in a specific project directory.",
       "Choose replyMode at creation time: interrupt (default, delegate replies are inserted into this parent immediately), followUp (queue replies until this parent finishes), or auto (idle sends immediately, busy queues).",
       "Returns immediately with a sessionId; do not poll session_delegate_status just to wait for completion.",
@@ -143,7 +151,8 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
           pi.appendEntry("coordinator_worktree_created", { branch: params.worktree.branch, worktreePath: projectPath });
         }
 
-        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, params.agent, params.model);
+        const requestedAgent = getRequestedAgent(params);
+        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, requestedAgent, params.model);
 
         if (!result.sessionId) {
           console.debug("[coordinator] delegate failed: no sessionId returned");
@@ -159,15 +168,15 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
           status: result.status,
           task: params.task,
           title: params.title,
-          agent: params.agent,
+          agent: requestedAgent,
           model: params.model,
           projectPath,
           replyMode: params.replyMode ?? "interrupt",
           dispatchedBy: sid,
         });
         return {
-          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${params.agent ?? "default"}, model: ${params.model ?? "default"}, replyMode: ${params.replyMode ?? "interrupt"}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
-          details: { ...result, dispatchedBy: sid, projectPath, agent: params.agent, model: params.model, replyMode: params.replyMode ?? "interrupt" },
+          content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${requestedAgent ?? "default"}, model: ${params.model ?? "default"}, replyMode: ${params.replyMode ?? "interrupt"}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
+          details: { ...result, dispatchedBy: sid, projectPath, agent: requestedAgent, model: params.model, replyMode: params.replyMode ?? "interrupt" },
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -218,18 +227,32 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
     description: "Diagnostic-only status check for a delegated task session. Do not use this in a polling loop after session_delegate; asynchronous delegates are expected to call session_delegate_send back when they have progress or final results.",
     parameters: DelegateStatusParams,
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+      const remote = await serverProxy.delegate_status(params.sessionId);
       const task = store?.get(params.sessionId);
       if (task) {
-        const status = task.status === "completed" ? "DONE" : task.status.toUpperCase();
+        const status = remote.status === "completed" ? "DONE" : remote.status.toUpperCase();
+        const detailLines = remote.detail
+          ? [
+              `Phase: ${remote.detail.phase}`,
+              `Type: ${remote.detail.waitingType}`,
+              ...(remote.detail.lastMessages?.length
+                ? ["Recent:", ...remote.detail.lastMessages.map((line) => `- ${line}`)]
+                : []),
+            ]
+          : [];
         return {
-          content: [{ type: "text" as const, text: `Task "${task.title}" (${params.sessionId}): ${status}` }],
-          details: { task },
+          content: [
+            {
+              type: "text" as const,
+              text: [`Task "${task.title}" (${params.sessionId}): ${status}`, ...detailLines].join("\n"),
+            },
+          ],
+          details: { task: { ...task, status: remote.status }, status: remote.status, detail: remote.detail },
         };
       }
-      const remote = await serverProxy.delegate_status(params.sessionId);
       return {
-        content: [{ type: "text" as const, text: `Session ${params.sessionId} status: ${remote.status}` }],
-        details: { task: null },
+        content: [{ type: "text" as const, text: `Session ${params.sessionId} status: ${remote.status}${remote.detail?.phase ? `\nPhase: ${remote.detail.phase}` : ""}` }],
+        details: { task: null, status: remote.status, detail: remote.detail },
       };
     },
   });
@@ -248,21 +271,22 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
       try {
         const sid = currentSessionId || ctx.sessionManager.getSessionId();
         const projectPath = params.projectPath || ctx.cwd;
-        const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title, projectPath, params.agent, params.model);
+        const requestedAgent = getRequestedAgent(params);
+        const result = await serverProxy.delegate_fork(params.sessionId, params.task, params.title, projectPath, requestedAgent, params.model);
         pi.appendEntry("coordinator_fork", {
           sessionId: result.sessionId,
           forkedFrom: params.sessionId,
           status: result.status,
           task: params.task,
           title: params.title,
-          agent: params.agent,
+          agent: requestedAgent,
           model: params.model,
           projectPath,
           dispatchedBy: sid,
         });
         return {
-          content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${params.agent ?? "default"}, model: ${params.model ?? "default"}). Task: ${params.task}` }],
-          details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid, projectPath, agent: params.agent, model: params.model },
+          content: [{ type: "text" as const, text: `Forked session ${params.sessionId} → ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${requestedAgent ?? "default"}, model: ${params.model ?? "default"}). Task: ${params.task}` }],
+          details: { ...result, forkedFrom: params.sessionId, dispatchedBy: sid, projectPath, agent: requestedAgent, model: params.model },
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
