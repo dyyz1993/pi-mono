@@ -944,7 +944,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "clear_queue": {
-				return success(id, "clear_queue", session.clearQueue());
+				return success(id, "clear_queue", session.clearQueue(command.item));
+			}
+
+			case "promote_follow_up": {
+				return success(id, "promote_follow_up", session.promoteQueuedFollowUp(command.item));
 			}
 
 			case "get_flags": {

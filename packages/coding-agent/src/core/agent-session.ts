@@ -353,6 +353,14 @@ export type PermissionMode = PermissionProfileName;
 /** @deprecated Use "normal" or "yolo" */
 export type LegacyPermissionMode = LegacyPermissionProfileName;
 
+export type QueueItemRef = { type: "steering" | "followUp"; index: number; text: string };
+export type FollowUpQueueItemRef = { type: "followUp"; index: number; text: string };
+
+type QueuedUserMessage = {
+	text: string;
+	images?: ImageContent[];
+};
+
 function normalizePermissionMode(mode: string): PermissionMode {
 	return normalizePermissionProfile(mode);
 }
@@ -566,8 +574,10 @@ export class AgentSession {
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
+	private _steeringQueueEntries: QueuedUserMessage[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	private _followUpQueueEntries: QueuedUserMessage[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -1020,12 +1030,14 @@ export class AgentSession {
 				const steeringIndex = this._steeringMessages.indexOf(messageText);
 				if (steeringIndex !== -1) {
 					this._steeringMessages.splice(steeringIndex, 1);
+					this._steeringQueueEntries.splice(steeringIndex, 1);
 					this._emitQueueUpdate();
 				} else {
 					// Check follow-up queue
 					const followUpIndex = this._followUpMessages.indexOf(messageText);
 					if (followUpIndex !== -1) {
 						this._followUpMessages.splice(followUpIndex, 1);
+						this._followUpQueueEntries.splice(followUpIndex, 1);
 						this._emitQueueUpdate();
 					}
 				}
@@ -2115,16 +2127,9 @@ export class AgentSession {
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
 		this._steeringMessages.push(text);
+		this._steeringQueueEntries.push({ text, images });
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
-		}
-		this.agent.steer({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		this.agent.steer(this._queuedUserMessageToAgentMessage({ text, images }));
 	}
 
 	/**
@@ -2132,16 +2137,31 @@ export class AgentSession {
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
 		this._followUpMessages.push(text);
+		this._followUpQueueEntries.push({ text, images });
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
+		this.agent.followUp(this._queuedUserMessageToAgentMessage({ text, images }));
+	}
+
+	private _queuedUserMessageToAgentMessage(entry: QueuedUserMessage): AgentMessage {
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: entry.text }];
+		if (entry.images) {
+			content.push(...entry.images);
 		}
-		this.agent.followUp({
+		return {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+	}
+
+	private _rebuildAgentQueues(): void {
+		this.agent.clearAllQueues();
+		for (const entry of this._steeringQueueEntries) {
+			this.agent.steer(this._queuedUserMessageToAgentMessage(entry));
+		}
+		for (const entry of this._followUpQueueEntries) {
+			this.agent.followUp(this._queuedUserMessageToAgentMessage(entry));
+		}
 	}
 
 	/**
@@ -2256,14 +2276,51 @@ export class AgentSession {
 	 * Useful for restoring to editor when user aborts.
 	 * @returns Object with steering and followUp arrays
 	 */
-	clearQueue(): { steering: string[]; followUp: string[] } {
+	clearQueue(item?: QueueItemRef): { steering: string[]; followUp: string[] } {
+		if (item) {
+			const messages = item.type === "steering" ? this._steeringMessages : this._followUpMessages;
+			const entries = item.type === "steering" ? this._steeringQueueEntries : this._followUpQueueEntries;
+			if (messages[item.index] !== item.text) {
+				this._emitQueueUpdate();
+				return { steering: [], followUp: [] };
+			}
+			const removed = messages.splice(item.index, 1);
+			entries.splice(item.index, 1);
+			this._rebuildAgentQueues();
+			this._emitQueueUpdate();
+			return item.type === "steering" ? { steering: removed, followUp: [] } : { steering: [], followUp: removed };
+		}
+
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
+		this._steeringQueueEntries = [];
 		this._followUpMessages = [];
+		this._followUpQueueEntries = [];
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };
+	}
+
+	promoteQueuedFollowUp(item: FollowUpQueueItemRef): { steering: string[]; followUp: string[] } {
+		if (this._followUpMessages[item.index] !== item.text) {
+			this._emitQueueUpdate();
+			return {
+				steering: [...this._steeringMessages],
+				followUp: [...this._followUpMessages],
+			};
+		}
+
+		const [text] = this._followUpMessages.splice(item.index, 1);
+		const [entry] = this._followUpQueueEntries.splice(item.index, 1);
+		this._steeringMessages.push(text);
+		this._steeringQueueEntries.push(entry);
+		this._rebuildAgentQueues();
+		this._emitQueueUpdate();
+		return {
+			steering: [...this._steeringMessages],
+			followUp: [...this._followUpMessages],
+		};
 	}
 
 	/** Number of pending messages (includes both steering and follow-up) */
@@ -2486,7 +2543,9 @@ export class AgentSession {
 	// =========================================================================
 
 	private syncQueueModesFromSettings(): void {
-		this.agent.steeringMode = this.settingsManager.getSteeringMode();
+		// Steering messages are interventions for the next LLM turn and should be
+		// delivered together even when older settings still say one-at-a-time.
+		this.agent.steeringMode = "all";
 		this.agent.followUpMode = this.settingsManager.getFollowUpMode();
 	}
 
@@ -2495,7 +2554,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
-		this.agent.steeringMode = mode;
+		this.agent.steeringMode = "all";
 		this.settingsManager.setSteeringMode(mode);
 	}
 

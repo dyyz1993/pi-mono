@@ -118,9 +118,11 @@ export interface AgentOptions {
 class PendingMessageQueue {
 	private messages: AgentMessage[] = [];
 	public mode: QueueMode;
+	private readonly drainAll: boolean;
 
-	constructor(mode: QueueMode) {
+	constructor(mode: QueueMode, options: { drainAll?: boolean } = {}) {
 		this.mode = mode;
+		this.drainAll = options.drainAll ?? false;
 	}
 
 	enqueue(message: AgentMessage): void {
@@ -132,7 +134,7 @@ class PendingMessageQueue {
 	}
 
 	drain(): AgentMessage[] {
-		if (this.mode === "all") {
+		if (this.drainAll || this.mode === "all") {
 			const drained = this.messages.slice();
 			this.messages = [];
 			return drained;
@@ -209,7 +211,9 @@ export class Agent {
 		this.beforeToolCall = options.beforeToolCall;
 		this.afterToolCall = options.afterToolCall;
 		this.prepareNextTurn = options.prepareNextTurn;
-		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
+		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time", {
+			drainAll: true,
+		});
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.sessionId = options.sessionId;
 		this.thinkingBudgets = options.thinkingBudgets;

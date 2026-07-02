@@ -792,8 +792,19 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
-	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
-		const response = await this.send({ type: "clear_queue" });
+	async clearQueue(item?: { type: "steering" | "followUp"; index: number; text: string }): Promise<{
+		steering: string[];
+		followUp: string[];
+	}> {
+		const response = await this.send({ type: "clear_queue", item });
+		return this.getData(response);
+	}
+
+	async promoteQueuedFollowUp(item: { type: "followUp"; index: number; text: string }): Promise<{
+		steering: string[];
+		followUp: string[];
+	}> {
+		const response = await this.send({ type: "promote_follow_up", item });
 		return this.getData(response);
 	}
 
