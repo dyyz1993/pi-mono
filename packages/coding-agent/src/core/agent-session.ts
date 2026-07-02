@@ -93,6 +93,7 @@ import { createMcpToolDefinition } from "./mcp/tool-converter.ts";
 import type { McpServerConfig } from "./mcp/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
+import type { PathMetadata } from "./package-manager.ts";
 import {
 	createAutoApproverProvider,
 	createDangerousCommandProvider,
@@ -2060,14 +2061,84 @@ export class AgentSession {
 	}
 
 	/**
-	 * Queue a steering message while the agent is running.
-	 * Delivered after the current assistant turn finishes executing its tool calls,
-	 * before the next LLM call.
+	 * Queue a steering message.
+	 *
+	 * - `steer(text, images?)`: backward-compatible, queues new text content.
+	 * - `steer({ text, images, promote, immediate })`: full options.
+	 *
+	 * When `promote` is set, the message at that index in the follow-up queue is
+	 * promoted to steer (moved, not copied). `immediate` triggers a soft interrupt
+	 * so the queued prompt takes effect without waiting for the current tool turn
+	 * to complete.
+	 *
 	 * Expands skill commands and prompt templates. Errors on extension commands.
-	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	steer(text: string, images?: ImageContent[]): Promise<void>;
+	steer(opts: {
+		/** Text to steer the agent with. Optional — if omitted with `promote`, only queue promotion happens. */
+		text?: string;
+		/** Optional image attachments to include with the message. */
+		images?: ImageContent[];
+		/** Index in the follow-up queue to promote to steer. Takes priority over `text` if both are set. */
+		promote?: number;
+		/** If true, interrupt the current tool execution so this steer takes effect immediately. */
+		immediate?: boolean;
+	}): Promise<void>;
+	async steer(
+		input:
+			| string
+			| {
+					text?: string;
+					images?: ImageContent[];
+					promote?: number;
+					immediate?: boolean;
+			  },
+		images?: ImageContent[],
+	): Promise<void> {
+		if (typeof input === "string") {
+			return this._steerText(input, images);
+		}
+		const opts = input;
+
+		if (opts.promote !== undefined) {
+			// Promote from follow-up queue, no text expansion needed
+			this.agent.steer({ promote: opts.promote, immediate: opts.immediate });
+			await this._runIfIdle();
+			return;
+		}
+
+		if (opts.text) {
+			// New message with optional interrupt
+			await this._steerText(opts.text, opts.images, opts.immediate);
+			return;
+		}
+
+		// Only immediate flag, no content — just interrupt
+		if (opts.immediate) {
+			this.agent.interrupt();
+			await this._runIfIdle();
+		}
+	}
+
+	/**
+	 * If the agent is idle and the steering queue has messages, drain them
+	 * and start a new run. This ensures that steer({ immediate }) or
+	 * steer({ promote, immediate }) triggers a cycle even when issued
+	 * outside an active run.
+	 */
+	private async _runIfIdle(): Promise<void> {
+		if (this.isStreaming) return;
+		const msgs = this.agent.drainSteeringMessages();
+		if (msgs.length > 0) {
+			await this.agent.prompt(msgs);
+		}
+	}
+
+	/**
+	 * Old-style steer: text + images, with optional immediate.
+	 */
+	private async _steerText(text: string, images?: ImageContent[], immediate?: boolean): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2083,6 +2154,9 @@ export class AgentSession {
 			return;
 		}
 		await this._queueSteer(finalText, images);
+		if (immediate) {
+			this.agent.interrupt();
+		}
 	}
 
 	/**
@@ -3278,7 +3352,7 @@ export class AgentSession {
 
 	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
 		path: string;
-		metadata: { source: string; scope: "temporary"; origin: "top-level"; baseDir?: string };
+		metadata: PathMetadata;
 	}> {
 		return entries.map((entry) => {
 			const source = this.getExtensionSourceLabel(entry.extensionPath);

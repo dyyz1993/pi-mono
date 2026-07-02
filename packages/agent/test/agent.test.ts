@@ -301,6 +301,112 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
+	it("steer(AgentMessage) should append messages (backward compat)", () => {
+		const agent = new Agent();
+
+		const msg1 = { role: "user" as const, content: "first", timestamp: Date.now() };
+		const msg2 = { role: "user" as const, content: "second", timestamp: Date.now() };
+
+		agent.steer(msg1);
+		agent.steer(msg2);
+
+		// Old API appends — both should be in the steering queue
+		const drained = agent.drainSteeringMessages();
+		expect(drained).toHaveLength(2);
+		expect((drained[0] as any).content).toBe("first");
+		expect((drained[1] as any).content).toBe("second");
+	});
+
+	it("steer({ message }) should overwrite previous steer messages", () => {
+		const agent = new Agent();
+
+		const msg1 = { role: "user" as const, content: "first", timestamp: Date.now() };
+		const msg2 = { role: "user" as const, content: "second", timestamp: Date.now() };
+
+		// New API: first via message, second via message — only the latest survives
+		agent.steer({ message: msg1 });
+		agent.steer({ message: msg2 });
+
+		const drained = agent.drainSteeringMessages();
+		expect(drained).toHaveLength(1);
+		expect((drained[0] as any).content).toBe("second");
+	});
+
+	it("steer({ promote: i }) should overwrite previous steer messages", () => {
+		const agent = new Agent();
+
+		const f1 = { role: "user" as const, content: "f1", timestamp: Date.now() };
+		const f2 = { role: "user" as const, content: "f2", timestamp: Date.now() };
+		agent.followUp(f1);
+		agent.followUp(f2);
+
+		const msg1 = { role: "user" as const, content: "m1", timestamp: Date.now() };
+		agent.steer({ message: msg1 }); // steer direction set to m1
+
+		agent.steer({ promote: 1 }); // promoted f2 overwrites m1
+
+		const drained = agent.drainSteeringMessages();
+		expect(drained).toHaveLength(1);
+		expect((drained[0] as any).content).toBe("f2");
+	});
+
+	it("steer({ promote: i }) should promote from followUp queue", () => {
+		const agent = new Agent();
+
+		const f1 = { role: "user" as const, content: "f1", timestamp: Date.now() };
+		const f2 = { role: "user" as const, content: "f2", timestamp: Date.now() };
+		agent.followUp(f1);
+		agent.followUp(f2);
+
+		agent.steer({ promote: 1 });
+
+		// f2 should be promoted to steer
+		const drained = agent.drainSteeringMessages();
+		expect(drained).toHaveLength(1);
+		expect((drained[0] as any).content).toBe("f2");
+
+		// f1 should remain in followUp
+		// followUp queue has no public drainer, but hasQueuedMessages should still return true
+		expect(agent.hasQueuedMessages()).toBe(true);
+	});
+
+	it("steer({ immediate: true }) should call interrupt when idle and not throw", () => {
+		const agent = new Agent();
+		expect(() => agent.steer({ immediate: true })).not.toThrow();
+	});
+
+	it("interrupt() should not throw when idle", () => {
+		const agent = new Agent();
+		expect(() => agent.interrupt()).not.toThrow();
+	});
+
+	it("interrupt() should produce a signal that is replaced on next call", () => {
+		const agent = new Agent();
+		const sig1 = agent.getInterruptSignal();
+		expect(sig1?.aborted).toBe(false);
+
+		agent.interrupt();
+		const sig2 = agent.getInterruptSignal();
+		// sig1 should now be aborted (it was the old controller's signal)
+		expect(sig1?.aborted).toBe(true);
+		// sig2 should be a fresh signal
+		expect(sig2?.aborted).toBe(false);
+		// They should be different objects
+		expect(sig1).not.toBe(sig2);
+	});
+
+	it("drainSteeringMessages() returns empty array when nothing queued", () => {
+		const agent = new Agent();
+		expect(agent.drainSteeringMessages()).toEqual([]);
+	});
+
+	it("getInterruptSignal() returns undefined-able signal", () => {
+		const agent = new Agent();
+		const sig = agent.getInterruptSignal();
+		expect(sig).toBeDefined();
+		expect(sig?.aborted).toBe(false);
+	});
+
 	it("should handle abort controller", () => {
 		const agent = new Agent();
 
