@@ -27,6 +27,8 @@ export interface DelegatedTask {
   dispatchedAt: number;
   status: SessionStatus;
   replyMode?: DelegateReplyMode;
+  timeoutMs?: number;
+  timeoutAt?: number;
   completedAt?: number;
   result?: string;
   isCompacting?: boolean;
@@ -75,6 +77,7 @@ export interface CoordinatorChannelContract extends ChannelContract {
         model?: string;
         projectPath?: string;
         replyMode?: DelegateReplyMode;
+        timeoutMs?: number;
       };
       return: DelegateCreateResult;
     };

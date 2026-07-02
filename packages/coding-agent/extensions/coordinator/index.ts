@@ -48,6 +48,7 @@ const DelegateParams = Type.Object({
   agentName: Type.Optional(Type.String({ description: "Alias for agent. Prefer agent; accepted for compatibility with UI/API naming." })),
   model: Type.Optional(Type.String({ description: "Model to switch the delegated session to before sending the task, in provider/modelId format" })),
   projectPath: Type.Optional(Type.String({ description: "Project directory to run the delegated session in. Defaults to the current working directory." })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Hard timeout in milliseconds for the async delegate. Defaults to 10 minutes; invalid or non-positive values use the default." })),
   replyMode: Type.Optional(Type.Union([
     Type.Literal("interrupt"),
     Type.Literal("followUp"),
@@ -152,7 +153,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
         }
 
         const requestedAgent = getRequestedAgent(params);
-        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, requestedAgent, params.model);
+        const result = await serverProxy.delegate(params.task, projectPath, params.replyMode, requestedAgent, params.model, params.timeoutMs);
 
         if (!result.sessionId) {
           console.debug("[coordinator] delegate failed: no sessionId returned");
@@ -172,11 +173,12 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
           model: params.model,
           projectPath,
           replyMode: params.replyMode ?? "interrupt",
+          timeoutMs: params.timeoutMs,
           dispatchedBy: sid,
         });
         return {
           content: [{ type: "text" as const, text: `Delegated task to session ${result.sessionId} (status: ${result.status}, cwd: ${projectPath}, agent: ${requestedAgent ?? "default"}, model: ${params.model ?? "default"}, replyMode: ${params.replyMode ?? "interrupt"}). This is asynchronous: do not poll for completion; the delegated session is instructed to call session_delegate_send back to this parent when it has progress or a final result.` }],
-          details: { ...result, dispatchedBy: sid, projectPath, agent: requestedAgent, model: params.model, replyMode: params.replyMode ?? "interrupt" },
+          details: { ...result, dispatchedBy: sid, projectPath, agent: requestedAgent, model: params.model, replyMode: params.replyMode ?? "interrupt", timeoutMs: params.timeoutMs },
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);

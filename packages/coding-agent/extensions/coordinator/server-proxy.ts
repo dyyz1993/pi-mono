@@ -19,7 +19,8 @@ export function createServerProxy(client: {
       projectPath,
       replyMode?: DelegateReplyMode,
       agent?: string,
-      model?: string
+      model?: string,
+      timeoutMs?: number
     ) {
       return client.call("session_delegate", {
         task,
@@ -27,6 +28,7 @@ export function createServerProxy(client: {
         replyMode,
         agent,
         model,
+        timeoutMs,
       });
     },
 
