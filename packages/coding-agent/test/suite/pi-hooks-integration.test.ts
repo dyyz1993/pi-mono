@@ -7,7 +7,7 @@
  * Uses the faux provider per AGENTS.md rules — no real API calls.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@dyyz1993/pi-agent-core";
@@ -395,6 +395,125 @@ describe("pi-hooks harness integration", () => {
 		expect(readFileSync(markerFile, "utf-8")).toBe("skill");
 		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
 		expect(toolResults.map(getMessageText).join("\n")).toContain("Hook blocked by skill:hooked-skill");
+	});
+
+	it("does not register hooks from rules frontmatter", async () => {
+		let executed = false;
+		const markerFile = join(harnessTempName(), "rule-hook.txt");
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Run bash",
+			parameters: Type.Object({ command: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "ran" }], details: {} };
+			},
+		};
+
+		const harness = await createHarness({
+			tools: [bashTool],
+			extensionFactories: [piHooksFactory],
+		});
+		harnesses.push(harness);
+
+		const rulesDir = join(harness.tempDir, ".pi", "rules");
+		mkdirSync(rulesDir, { recursive: true });
+		writeFileSync(
+			join(rulesDir, "ignored-hook.md"),
+			[
+				"---",
+				"hooks:",
+				"  PreToolUse:",
+				"    - matcher: bash",
+				"      hooks:",
+				`        - type: command`,
+				`          command: "printf rule > ${markerFile}; exit 2"`,
+				"---",
+				"# Rule hook should be ignored",
+			].join("\n"),
+		);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("bash", { command: "echo hi" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run echo");
+
+		expect(executed).toBe(true);
+		expect(existsSync(markerFile)).toBe(false);
+	});
+
+	it("consumes once skill hooks after the first matching tool event", async () => {
+		let executedCount = 0;
+		const tempDir = harnessTempName();
+		mkdirSync(tempDir, { recursive: true });
+		const markerFile = join(tempDir, "skill-once-hook.txt");
+		const skillDir = join(tempDir, "skills", "once-skill");
+		mkdirSync(skillDir, { recursive: true });
+		const skillPath = join(skillDir, "SKILL.md");
+		writeFileSync(skillPath, "---\nname: once-skill\ndescription: Once skill\n---\nUse once hooks.");
+
+		const skill: Skill = {
+			name: "once-skill",
+			description: "Once skill",
+			filePath: skillPath,
+			baseDir: skillDir,
+			sourceInfo: createSyntheticSourceInfo(skillPath, { source: "test" }),
+			disableModelInvocation: false,
+			hooks: {
+				PreToolUse: [
+					{
+						matcher: "bash",
+						hooks: [
+							{
+								type: "command",
+								command: `printf once >> ${JSON.stringify(markerFile)}; exit 2`,
+								once: true,
+							},
+						],
+					},
+				],
+			},
+		};
+		const extensionsResult = await createTestExtensionsResult([piHooksFactory], tempDir);
+		const resourceLoader = createTestResourceLoader({ extensionsResult });
+		resourceLoader.getSkills = () => ({ skills: [skill], diagnostics: [] });
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Run bash",
+			parameters: Type.Object({ command: Type.String() }),
+			execute: async () => {
+				executedCount++;
+				return { content: [{ type: "text", text: "ran" }], details: {} };
+			},
+		};
+
+		const harness = await createHarness({
+			tools: [bashTool],
+			resourceLoader,
+			cwd: tempDir,
+			initialActiveToolNames: ["skill", "bash"],
+		});
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("skill", { name: "once-skill" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "echo first" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("bash", { command: "echo second" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("use the once skill, then run bash twice");
+
+		expect(executedCount).toBe(1);
+		expect(readFileSync(markerFile, "utf-8")).toBe("once");
+		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
+		const toolResultText = toolResults.map(getMessageText).join("\n");
+		expect(toolResultText).toContain("Hook blocked by skill:once-skill");
+		expect(toolResultText).toContain("ran");
 	});
 });
 

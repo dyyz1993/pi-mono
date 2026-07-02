@@ -53,6 +53,10 @@
           "path": "extensions.md"
         },
         {
+          "title": "Hooks",
+          "path": "hooks.md"
+        },
+        {
           "title": "Skills",
           "path": "skills.md"
         },
