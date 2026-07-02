@@ -141,6 +141,31 @@ describe("ExtensionRunner", () => {
 
 			await expect(pendingCall).rejects.toThrow("register failed");
 		});
+
+		it("reuses resolved channels after pending registrations are flushed", () => {
+			const runtime = createExtensionRuntime();
+			runtime.registerChannel("coordinator_client");
+
+			let registrations = 0;
+			const resolvedChannel = {
+				name: "coordinator_client",
+				send: () => {},
+				onReceive: () => () => {},
+				invoke: async () => ({}),
+				call: async () => ({}),
+			};
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.flushPendingChannels((name) => {
+				registrations += 1;
+				if (name === "coordinator_client") return resolvedChannel;
+				throw new Error(`unexpected channel ${name}`);
+			});
+
+			const reused = runtime.registerChannel("coordinator_client");
+
+			expect(reused).toBe(resolvedChannel);
+			expect(registrations).toBe(1);
+		});
 	});
 
 	describe("project_trust", () => {

@@ -382,6 +382,17 @@ export class ExtensionRunner {
 		return this.permissionProviders.get(name);
 	}
 
+	private createIdempotentRegisterChannel(registerChannel: (name: string) => Channel): (name: string) => Channel {
+		return (name: string) => {
+			const existing = this.runtime.resolvedChannels.get(name);
+			if (existing) return existing;
+
+			const channel = registerChannel(name);
+			this.runtime.resolvedChannels.set(name, channel);
+			return channel;
+		};
+	}
+
 	bindCore(
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,
@@ -475,30 +486,26 @@ export class ExtensionRunner {
 	}
 
 	flushPendingChannels(registerChannel: (name: string) => Channel): void {
-		console.error(
-			`[DIAG:flushPendingChannels] pending=${this.runtime.pendingChannelRegistrations.length} names=[${this.runtime.pendingChannelRegistrations.map((p) => p.name).join(",")}] resolved=[${[...this.runtime.resolvedChannels.keys()].join(",")}]`,
-		);
-		if (this.runtime.pendingChannelRegistrations.length === 0) return;
+		const registerOrReuseChannel = this.createIdempotentRegisterChannel(registerChannel);
+		if (this.runtime.pendingChannelRegistrations.length === 0) {
+			this.runtime.registerChannel = registerOrReuseChannel;
+			return;
+		}
 
 		for (const pending of this.runtime.pendingChannelRegistrations) {
 			try {
-				const channel = registerChannel(pending.name);
-				this.runtime.resolvedChannels.set(pending.name, channel);
+				const channel = registerOrReuseChannel(pending.name);
 				pending.resolve(channel);
-				console.error(`[DIAG:flushPendingChannels] resolved "${pending.name}" OK`);
 			} catch (err) {
-				console.error(
-					`[DIAG:flushPendingChannels] FAILED to resolve "${pending.name}": ${err instanceof Error ? err.message : String(err)}`,
-				);
 				pending.reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		}
 		this.runtime.pendingChannelRegistrations = [];
-		this.runtime.registerChannel = registerChannel;
+		this.runtime.registerChannel = registerOrReuseChannel;
 	}
 
 	updateRegisterChannel(registerChannel: (name: string) => Channel): void {
-		this.runtime.registerChannel = registerChannel;
+		this.runtime.registerChannel = this.createIdempotentRegisterChannel(registerChannel);
 	}
 
 	bindCommandContext(actions?: ExtensionCommandContextActions): void {

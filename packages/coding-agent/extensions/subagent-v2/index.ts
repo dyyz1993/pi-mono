@@ -137,13 +137,10 @@ export default function(pi: ExtensionAPI) {
 
   /** Probe coordinator availability with a short timeout. Returns an error message or null. */
   async function probeCoordinator(): Promise<string | null> {
-    console.error(`[DIAG:probeCoordinator] coordinatorRaw.name=${coordinatorRaw.name} resolved=${(coordinatorRaw as unknown as { call?: unknown }).call !== undefined}`);
     try {
       await coordinatorClient.call("session_delegate_list", {}, 5_000);
-      console.error(`[DIAG:probeCoordinator] call succeeded`);
       return null;
     } catch (err) {
-      console.error(`[DIAG:probeCoordinator] call failed: ${err instanceof Error ? err.message : String(err)}`);
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("timed out") || msg.includes("timeout")) {
         return "Coordinator extension is not available. Ensure the coordinator extension is loaded (it provides the Process Manager and session delegation).";
