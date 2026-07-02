@@ -161,6 +161,30 @@ export function createCoordinatorHandler(
   getSessionId: () => string,
   getStore: () => TaskStore,
 ): void {
+  const markTaskStopped = (
+    sessionId: string,
+    options: { error?: string; result?: string } = {}
+  ): boolean => {
+    const store = getStore();
+    const task = store.get(sessionId);
+    if (!task) return false;
+    const wasTerminal = task.status === "stopped" || task.status === "completed";
+    store.update(sessionId, {
+      status: "stopped",
+      completedAt: task.completedAt ?? Date.now(),
+      result: options.result ?? task.result,
+    });
+    if (!wasTerminal) {
+      channel.emit("task_stopped", { sessionId });
+      if (options.error) {
+        channel.emit("task_error", {
+          sessionId,
+          error: options.error,
+        });
+      }
+    }
+    return !wasTerminal;
+  };
   channel.handle("session_delegate", async (params) => {
       const { task, title, agent, model, projectPath: rawProjectPath, replyMode } = params;
       const projectPath = rawProjectPath || process.cwd();
@@ -228,13 +252,27 @@ export function createCoordinatorHandler(
     }
     try {
       const remote = await pm.delegate_status(sessionId);
-      store.update(sessionId, resolveTaskStatus(task, remote.status));
+      const taskStatus =
+        remote.status === "not_found" ? "stopped" : remote.status;
+      if (remote.status === "not_found") {
+        markTaskStopped(sessionId, { error: "Delegate session not found" });
+      } else if (taskStatus === "stopped") {
+        markTaskStopped(sessionId);
+      } else {
+        store.update(sessionId, resolveTaskStatus(task, taskStatus));
+      }
       const compactInfo = await pm.delegate_compact_status(sessionId);
-      return { task: store.get(sessionId) ?? null, isCompacting: compactInfo.isCompacting, contextUsage: compactInfo.contextUsage };
-    } catch {
+      return {
+        task: store.get(sessionId) ?? null,
+        status: remote.status,
+        isCompacting: compactInfo.isCompacting,
+        contextUsage: compactInfo.contextUsage,
+      };
+    } catch (err) {
       // Ghost session — keep a stopped record so the parent can still see that
       // the delegated task disappeared and remove it manually if needed.
-      store.markStopped(sessionId);
+      const msg = err instanceof Error ? err.message : String(err);
+      markTaskStopped(sessionId, { error: msg });
       return { task: store.get(sessionId) ?? null };
     }
   });
@@ -245,11 +283,20 @@ export function createCoordinatorHandler(
     for (const t of tasks) {
       try {
         const remote = await pm.delegate_status(t.sessionId);
-        store.update(t.sessionId, resolveTaskStatus(t, remote.status));
-      } catch {
+        const taskStatus =
+          remote.status === "not_found" ? "stopped" : remote.status;
+        if (remote.status === "not_found") {
+          markTaskStopped(t.sessionId, { error: "Delegate session not found" });
+        } else if (taskStatus === "stopped") {
+          markTaskStopped(t.sessionId);
+        } else {
+          store.update(t.sessionId, resolveTaskStatus(t, taskStatus));
+        }
+      } catch (err) {
         // Ghost session — do not erase the task during list refresh. Mark it as
         // stopped and let explicit remove/clear handle cleanup.
-        store.markStopped(t.sessionId);
+        const msg = err instanceof Error ? err.message : String(err);
+        markTaskStopped(t.sessionId, { error: msg });
       }
     }
     return { tasks: store.list() };
