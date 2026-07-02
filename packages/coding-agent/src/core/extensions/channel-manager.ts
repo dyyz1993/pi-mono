@@ -17,6 +17,15 @@ export class ChannelManager {
 			throw new Error(`Channel "${name}" is already registered`);
 		}
 
+		return this.createChannel(name);
+	}
+
+	registerOrReplace(name: string): Channel {
+		this.unregister(name);
+		return this.createChannel(name);
+	}
+
+	private createChannel(name: string): Channel {
 		const entry: ChannelEntry = {
 			name,
 			handlers: new Set(),

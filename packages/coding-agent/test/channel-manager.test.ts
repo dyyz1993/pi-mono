@@ -24,6 +24,29 @@ describe("ChannelManager", () => {
 		expect(() => cm.register("test")).toThrow(/already registered/);
 	});
 
+	it("registerOrReplace replaces an existing channel without keeping stale handlers", () => {
+		const first = cm.register("test");
+		const staleHandler = vi.fn();
+		first.onReceive(staleHandler);
+
+		const second = cm.registerOrReplace("test");
+		const freshHandler = vi.fn();
+		second.onReceive(freshHandler);
+
+		cm.handleInbound({ type: "channel_data", name: "test", data: "fresh" });
+		expect(staleHandler).not.toHaveBeenCalled();
+		expect(freshHandler).toHaveBeenCalledWith("fresh");
+	});
+
+	it("registerOrReplace rejects pending invokes from the replaced channel", async () => {
+		const first = cm.register("test");
+		const pending = first.invoke({ action: "before-replace" }, 5000);
+
+		cm.registerOrReplace("test");
+
+		await expect(pending).rejects.toThrow(/unregistered/);
+	});
+
 	it("channel.send() emits channel_data message", () => {
 		const ch = cm.register("test");
 		ch.send({ action: "list" });
