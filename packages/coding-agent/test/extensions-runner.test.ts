@@ -98,6 +98,51 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
+	describe("deferred channel registration", () => {
+		it("keeps pre-flush channel calls pending until the channel is resolved", async () => {
+			const runtime = createExtensionRuntime();
+			const raw = runtime.registerChannel("coordinator");
+			let settled = false;
+			const pendingCall = raw
+				.call("session_delegate_list", { parentSessionId: "parent-session" }, 1000)
+				.then((value) => {
+					settled = true;
+					return value;
+				});
+
+			await Promise.resolve();
+			expect(settled).toBe(false);
+
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.flushPendingChannels((name) => ({
+				name,
+				send: () => {},
+				onReceive: () => () => {},
+				invoke: async (data) => ({ invoked: data }),
+				call: async (method, params) => ({ method, ...params }),
+			}));
+
+			await expect(pendingCall).resolves.toEqual({
+				method: "session_delegate_list",
+				parentSessionId: "parent-session",
+			});
+			expect(settled).toBe(true);
+		});
+
+		it("rejects pre-flush channel calls if channel registration fails", async () => {
+			const runtime = createExtensionRuntime();
+			const raw = runtime.registerChannel("broken");
+			const pendingCall = raw.call("ping", {}, 1000);
+
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.flushPendingChannels(() => {
+				throw new Error("register failed");
+			});
+
+			await expect(pendingCall).rejects.toThrow("register failed");
+		});
+	});
+
 	describe("project_trust", () => {
 		it("continues past undecided handlers and returns the first yes/no decision", async () => {
 			const undecidedPath = path.join(extensionsDir, "undecided.ts");
