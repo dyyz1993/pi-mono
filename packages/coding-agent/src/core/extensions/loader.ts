@@ -211,8 +211,9 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		if (runtime.resolvedChannels.has(name)) {
 			return runtime.resolvedChannels.get(name)!;
 		}
-		if (runtime.pendingChannelRegistrations.some((pending) => pending.name === name)) {
-			throw new Error(`Channel "${name}" is already registered`);
+		const pendingChannel = runtime.pendingChannelRegistrations.find((pending) => pending.name === name);
+		if (pendingChannel) {
+			return pendingChannel.channel;
 		}
 
 		const bufferedSends: unknown[] = [];
@@ -293,6 +294,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 
 		runtime.pendingChannelRegistrations.push({
 			name,
+			channel: deferred,
 			resolve: (channel) => {
 				realChannel = channel;
 				for (const handler of bufferedHandlers) {

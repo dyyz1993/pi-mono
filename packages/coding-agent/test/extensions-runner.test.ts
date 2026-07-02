@@ -166,6 +166,22 @@ describe("ExtensionRunner", () => {
 			expect(reused).toBe(resolvedChannel);
 			expect(registrations).toBe(1);
 		});
+
+		it("reuses duplicate pre-flush channel registrations", () => {
+			const runtime = createExtensionRuntime();
+
+			const firstCoordinator = runtime.registerChannel("coordinator");
+			const secondCoordinator = runtime.registerChannel("coordinator");
+			const firstClient = runtime.registerChannel("coordinator_client");
+			const secondClient = runtime.registerChannel("coordinator_client");
+
+			expect(secondCoordinator).toBe(firstCoordinator);
+			expect(secondClient).toBe(firstClient);
+			expect(runtime.pendingChannelRegistrations.map((pending) => pending.name)).toEqual([
+				"coordinator",
+				"coordinator_client",
+			]);
+		});
 	});
 
 	describe("project_trust", () => {
