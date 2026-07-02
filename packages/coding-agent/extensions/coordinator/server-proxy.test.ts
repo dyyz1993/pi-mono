@@ -201,6 +201,9 @@ describe("serverProxy delegate", () => {
       task: "run tests",
       projectPath: "/tmp/project",
       replyMode: undefined,
+      agent: undefined,
+      model: undefined,
+      timeoutMs: undefined,
     });
   });
 
@@ -216,6 +219,27 @@ describe("serverProxy delegate", () => {
       task: "run tests",
       projectPath: "/tmp/project",
       replyMode: "interrupt",
+      agent: undefined,
+      model: undefined,
+      timeoutMs: undefined,
+    });
+  });
+
+  it("passes agent, model, and timeoutMs to client.call", async () => {
+    client.mockCall("session_delegate", () => ({
+      sessionId: "sess-del-4",
+      status: "started",
+    }));
+
+    await proxy.delegate("run tests", "/tmp/project", "followUp", "frontend-dev", "openai/gpt-4.1", 1234);
+
+    expect(client.call).toHaveBeenCalledWith("session_delegate", {
+      task: "run tests",
+      projectPath: "/tmp/project",
+      replyMode: "followUp",
+      agent: "frontend-dev",
+      model: "openai/gpt-4.1",
+      timeoutMs: 1234,
     });
   });
 });

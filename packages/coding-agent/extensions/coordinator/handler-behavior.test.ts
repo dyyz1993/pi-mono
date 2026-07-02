@@ -118,7 +118,7 @@ describe("session_delegate handler", () => {
 
 		expect(result.sessionId).toBe("sess-1");
 		expect(result.status).toBe("started");
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, undefined, 600000);
 
 		const stored = ctx.store.get("sess-1");
 		expect(stored).toBeDefined();
@@ -126,6 +126,8 @@ describe("session_delegate handler", () => {
 		expect(stored!.projectPath).toBe("/tmp/proj");
 		expect(stored!.status).toBe("idle");
 		expect(stored!.replyMode).toBe("interrupt");
+		expect(stored!.timeoutMs).toBe(600000);
+		expect(stored!.timeoutAt).toBeGreaterThan(stored!.dispatchedAt);
 	});
 
 	it("passes replyMode from params to pm.delegate and store", async () => {
@@ -136,7 +138,7 @@ describe("session_delegate handler", () => {
 			replyMode: "followUp",
 		});
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", "followUp", undefined, undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", "followUp", undefined, undefined, 600000);
 		expect(ctx.store.get("sess-1")!.replyMode).toBe("followUp");
 	});
 
@@ -148,7 +150,7 @@ describe("session_delegate handler", () => {
 			agent: "frontend-dev",
 		});
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined, 600000);
 	});
 
 	it("passes agentName alias from params to pm.delegate", async () => {
@@ -159,7 +161,7 @@ describe("session_delegate handler", () => {
 			agentName: "frontend-dev",
 		} as never);
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined);
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, "frontend-dev", undefined, 600000);
 	});
 
 	it("passes model from params to pm.delegate", async () => {
@@ -170,7 +172,76 @@ describe("session_delegate handler", () => {
 			model: "openai/gpt-4.1",
 		});
 
-		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, "openai/gpt-4.1");
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, "openai/gpt-4.1", 600000);
+	});
+
+	it("passes explicit timeoutMs to pm.delegate and stores timeout metadata", async () => {
+		const ctx = useCtx();
+		await ctx.client.call("session_delegate", {
+			task: "Do something",
+			projectPath: "/tmp/proj",
+			timeoutMs: 5000,
+		});
+
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, undefined, 5000);
+		expect(ctx.store.get("sess-1")!.timeoutMs).toBe(5000);
+		expect(ctx.store.get("sess-1")!.timeoutAt).toBeGreaterThan(Date.now() - 1000);
+	});
+
+	it("uses default timeoutMs when timeoutMs is invalid", async () => {
+		const ctx = useCtx();
+		await ctx.client.call("session_delegate", {
+			task: "Do something",
+			projectPath: "/tmp/proj",
+			timeoutMs: 0,
+		});
+
+		expect(ctx.pm.delegate).toHaveBeenCalledWith("Do something", "/tmp/proj", undefined, undefined, undefined, 600000);
+		expect(ctx.store.get("sess-1")!.timeoutMs).toBe(600000);
+	});
+
+	it("stops async delegate and emits terminal events when timeout elapses", async () => {
+		const ctx = useCtx();
+		await ctx.client.call("session_delegate", {
+			task: "Do something slow",
+			projectPath: "/tmp/proj",
+			timeoutMs: 50,
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		expect(ctx.pm.delegate_stop).toHaveBeenCalledWith("sess-1");
+		expect(ctx.store.get("sess-1")).toMatchObject({
+			status: "stopped",
+			result: "Timed out after 50ms",
+		});
+		expect(ctx.emittedEvents.get("task_stopped")).toContainEqual({ sessionId: "sess-1" });
+		expect(ctx.emittedEvents.get("task_error")).toContainEqual({
+			sessionId: "sess-1",
+			error: "Timed out after 50ms",
+		});
+	});
+
+	it("marks already-overdue restored delegates as stopped during list refresh", async () => {
+		const ctx = useCtx();
+		ctx.store.add({
+			sessionId: "sess-overdue",
+			title: "Overdue",
+			task: "slow task",
+			projectPath: "/tmp",
+			dispatchedAt: Date.now() - 1000,
+			status: "streaming",
+			timeoutMs: 50,
+			timeoutAt: Date.now() - 500,
+		});
+
+		await ctx.client.call("session_delegate_list", {});
+
+		expect(ctx.pm.delegate_stop).toHaveBeenCalledWith("sess-overdue");
+		expect(ctx.store.get("sess-overdue")).toMatchObject({
+			status: "stopped",
+			result: "Timed out after 50ms",
+		});
 	});
 
 	it("returns error result when pm.delegate throws", async () => {
