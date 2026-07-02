@@ -39,7 +39,6 @@ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import type { UnknownRecord } from "../../utils/type-helpers.ts";
 import { theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-ui.ts";
 import type {
 	RpcAgentSummary,
 	RpcAllTool,
@@ -57,6 +56,7 @@ import type {
 	RpcTool,
 	TreeEntry,
 } from "./rpc-types.ts";
+import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-ui.ts";
 
 // Re-export types for consumers
 export type {
