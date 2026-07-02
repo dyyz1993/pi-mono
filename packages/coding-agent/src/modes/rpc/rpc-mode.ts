@@ -28,7 +28,13 @@ import {
 	writeRawStdout,
 } from "../../core/output-guard.ts";
 import { isPermissionProfileInput, listPermissionProfiles } from "../../core/permissions/index.ts";
-import type { CompactionEntry, CustomEntry, SessionEntry, SessionMessageEntry } from "../../core/session-manager.ts";
+import type {
+	CompactionEntry,
+	CustomEntry,
+	SessionEntry,
+	SessionMessageEntry,
+	SystemEventType,
+} from "../../core/session-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import type { UnknownRecord } from "../../utils/type-helpers.ts";
 import { theme } from "../interactive/theme/theme.ts";
@@ -69,6 +75,19 @@ function formatPermissionModes(): string {
 	const builtin = listPermissionProfiles().map((profile) => profile.name);
 	const legacy = ["auto", "acceptEdits", "dontAsk", "always-allow", "always-deny"];
 	return [...builtin, ...legacy].join(", ");
+}
+
+function isSystemEventType(value: string): value is SystemEventType {
+	return (
+		value === "model_changed" ||
+		value === "agent_changed" ||
+		value === "cwd_changed" ||
+		value === "worktree_entered" ||
+		value === "worktree_exited" ||
+		value === "approval_mode_changed" ||
+		value === "extension_toggled" ||
+		value === "skill_toggled"
+	);
 }
 
 function getTreeEntryLabel(entry: SessionEntry): string | undefined {
@@ -584,6 +603,23 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "set_session_name");
 			}
 
+			case "append_system_event": {
+				if (!isSystemEventType(command.eventType)) {
+					return error(id, "append_system_event", `Invalid system event type: "${command.eventType}"`);
+				}
+				const label = command.eventLabel.trim();
+				if (!label) {
+					return error(id, "append_system_event", "System event label cannot be empty");
+				}
+				const entryId = session.sessionManager.appendSystemEvent(
+					command.eventType,
+					label,
+					command.data,
+					command.display ?? false,
+				);
+				return success(id, "append_system_event", { entryId });
+			}
+
 			// =================================================================
 			// Messages
 			// =================================================================
@@ -974,6 +1010,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "set_flag": {
 				session.extensionRunner.setFlagValue(command.name, command.value);
+				session.sessionManager.appendSystemEvent(
+					"extension_toggled",
+					`Extension flag ${command.name} changed to ${String(command.value)}`,
+					{ name: command.name, value: command.value },
+				);
 				return success(id, "set_flag");
 			}
 
@@ -984,9 +1025,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "set_cwd": {
+				const previousCwd = runtimeHost.cwd;
 				const result = await runtimeHost.setCwd(command.cwd);
 				if (!result.cancelled) {
 					await rebindSession();
+					const cwd = runtimeHost.cwd;
+					if (cwd !== previousCwd) {
+						session.sessionManager.appendSystemEvent("cwd_changed", `Working directory changed to ${cwd}`, {
+							cwd,
+							previousCwd,
+						});
+					}
 				}
 				return success(id, "set_cwd", result);
 			}
@@ -1078,6 +1127,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					);
 				}
 				session.setPermissionMode(command.mode);
+				session.sessionManager.appendSystemEvent(
+					"approval_mode_changed",
+					`Approval mode changed to ${command.mode}`,
+					{ mode: command.mode },
+				);
 				return success(id, "set_permission_mode", { mode: command.mode });
 			}
 
