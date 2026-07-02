@@ -128,11 +128,11 @@ export interface SteerOptions {
 class PendingMessageQueue {
 	private messages: AgentMessage[] = [];
 	public mode: QueueMode;
-	private readonly drainAll: boolean;
+	private readonly alwaysDrainAll: boolean;
 
 	constructor(mode: QueueMode, options: { drainAll?: boolean } = {}) {
 		this.mode = mode;
-		this.drainAll = options.drainAll ?? false;
+		this.alwaysDrainAll = options.drainAll ?? false;
 	}
 
 	enqueue(message: AgentMessage): void {
@@ -144,7 +144,7 @@ class PendingMessageQueue {
 	}
 
 	drain(): AgentMessage[] {
-		if (this.drainAll || this.mode === "all") {
+		if (this.alwaysDrainAll || this.mode === "all") {
 			const drained = this.messages.slice();
 			this.messages = [];
 			return drained;
