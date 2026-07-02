@@ -1,12 +1,12 @@
 {
 	"name": "@dyyz1993/pi-coding-agent",
-	"version": "0.78.8",
+	"version": "0.78.9",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "@dyyz1993/pi-coding-agent",
-			"version": "0.78.8",
+			"version": "0.78.9",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sandbox-runtime": "0.0.26",
