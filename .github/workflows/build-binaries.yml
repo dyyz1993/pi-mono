@@ -139,4 +139,4 @@ jobs:
           npm --version
 
       - name: Publish npm packages
-        run: node scripts/publish.mjs
+        run: node scripts/publish.mjs --package @dyyz1993/pi-coding-agent

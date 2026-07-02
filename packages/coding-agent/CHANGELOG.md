@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.78.8] - 2026-07-02
+
+### Fixed
+
+- Published the RPC queue item APIs needed by chat clients to remove a single queued message or promote one follow-up into steering without clearing the entire queue.
+
 ## [0.78.5] - 2026-07-02
 
 ### Added

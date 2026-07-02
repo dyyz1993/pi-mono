@@ -12,10 +12,34 @@ const packages = [
 ];
 
 const dryRun = process.argv.includes("--dry-run");
-const unknownArgs = process.argv.slice(2).filter((arg) => arg !== "--dry-run");
+const selectedPackages = [];
+const unknownArgs = [];
+for (let i = 2; i < process.argv.length; i += 1) {
+	const arg = process.argv[i];
+	if (arg === "--dry-run") continue;
+	if (arg === "--package") {
+		const packageName = process.argv[i + 1];
+		if (!packageName) {
+			unknownArgs.push(arg);
+			continue;
+		}
+		selectedPackages.push(packageName);
+		i += 1;
+		continue;
+	}
+	unknownArgs.push(arg);
+}
 
 if (unknownArgs.length > 0) {
-	console.error(`Usage: node scripts/publish.mjs [--dry-run]`);
+	console.error(`Usage: node scripts/publish.mjs [--dry-run] [--package <name>]`);
+	process.exit(1);
+}
+
+const packagesToPublish =
+	selectedPackages.length === 0 ? packages : packages.filter((pkg) => selectedPackages.includes(pkg.name));
+const missingPackages = selectedPackages.filter((name) => !packages.some((pkg) => pkg.name === name));
+if (missingPackages.length > 0) {
+	console.error(`Unknown package(s): ${missingPackages.join(", ")}`);
 	process.exit(1);
 }
 
@@ -82,14 +106,16 @@ for (const pkg of packages) {
 	packageVersions.set(pkg.name, packageJson.version);
 }
 
-const versions = [...new Set(packageVersions.values())];
-if (versions.length !== 1) {
-	throw new Error(`Publish packages are not lockstep versioned: ${versions.join(", ")}`);
+const publishVersions = [...new Set(packagesToPublish.map((pkg) => packageVersions.get(pkg.name)))];
+if (selectedPackages.length === 0 && publishVersions.length !== 1) {
+	throw new Error(`Publish packages are not lockstep versioned: ${publishVersions.join(", ")}`);
 }
 
-console.log(`Publishing pi packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
+const versionLabel =
+	publishVersions.length === 1 ? publishVersions[0] : packagesToPublish.map((pkg) => `${pkg.name}@${packageVersions.get(pkg.name)}`).join(", ");
+console.log(`Publishing pi packages at ${versionLabel}${dryRun ? " (dry run)" : ""}\n`);
 
-for (const pkg of packages) {
+for (const pkg of packagesToPublish) {
 	const version = packageVersions.get(pkg.name);
 	assertBuildOutputExists(pkg.directory);
 	const published = isPublished(pkg.name, version);
