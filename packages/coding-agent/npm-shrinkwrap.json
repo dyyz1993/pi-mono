@@ -1,18 +1,18 @@
 {
 	"name": "@dyyz1993/pi-coding-agent",
-	"version": "0.78.1",
+	"version": "0.78.4",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "@dyyz1993/pi-coding-agent",
-			"version": "0.78.1",
+			"version": "0.78.4",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sandbox-runtime": "0.0.26",
-				"@dyyz1993/pi-agent-core": "^0.78.0",
-				"@dyyz1993/pi-ai": "^0.78.0",
-				"@dyyz1993/pi-tui": "^0.78.0",
+				"@dyyz1993/pi-agent-core": "^0.78.4",
+				"@dyyz1993/pi-ai": "^0.78.4",
+				"@dyyz1993/pi-tui": "^0.78.4",
 				"@modelcontextprotocol/sdk": "1.29.0",
 				"@silvia-odwyer/photon-node": "0.3.4",
 				"chalk": "5.6.2",
@@ -495,11 +495,11 @@
 			}
 		},
 		"node_modules/@dyyz1993/pi-agent-core": {
-			"version": "0.78.1",
-			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-agent-core/-/pi-agent-core-0.78.1.tgz",
+			"version": "0.78.4",
+			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-agent-core/-/pi-agent-core-0.78.4.tgz",
 			"license": "MIT",
 			"dependencies": {
-				"@dyyz1993/pi-ai": "^0.78.0",
+				"@dyyz1993/pi-ai": "^0.78.4",
 				"ignore": "7.0.5",
 				"typebox": "1.1.38",
 				"yaml": "2.9.0"
@@ -509,8 +509,8 @@
 			}
 		},
 		"node_modules/@dyyz1993/pi-ai": {
-			"version": "0.78.1",
-			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-ai/-/pi-ai-0.78.1.tgz",
+			"version": "0.78.4",
+			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-ai/-/pi-ai-0.78.4.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.91.1",
@@ -532,8 +532,8 @@
 			}
 		},
 		"node_modules/@dyyz1993/pi-tui": {
-			"version": "0.78.1",
-			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-tui/-/pi-tui-0.78.1.tgz",
+			"version": "0.78.4",
+			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-tui/-/pi-tui-0.78.4.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"get-east-asian-width": "1.6.0",
@@ -807,8 +807,7 @@
 			},
 			"engines": {
 				"node": ">=18"
-			},
-			"peer": true
+			}
 		},
 		"node_modules/@nodable/entities": {
 			"version": "2.1.0",
@@ -1501,8 +1500,7 @@
 			"funding": {
 				"type": "opencollective",
 				"url": "https://opencollective.com/express"
-			},
-			"peer": true
+			}
 		},
 		"node_modules/express-rate-limit": {
 			"version": "8.5.2",
@@ -1848,8 +1846,7 @@
 			"license": "MIT",
 			"engines": {
 				"node": ">=16.9.0"
-			},
-			"peer": true
+			}
 		},
 		"node_modules/hosted-git-info": {
 			"version": "9.0.3",
@@ -1977,8 +1974,7 @@
 			"license": "MIT",
 			"bin": {
 				"jiti": "lib/jiti-cli.mjs"
-			},
-			"peer": true
+			}
 		},
 		"node_modules/jose": {
 			"version": "6.2.3",
@@ -2883,8 +2879,7 @@
 			"license": "MIT",
 			"funding": {
 				"url": "https://github.com/sponsors/colinhacks"
-			},
-			"peer": true
+			}
 		},
 		"node_modules/zod-to-json-schema": {
 			"version": "3.25.2",
