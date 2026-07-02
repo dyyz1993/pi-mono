@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.78.9] - 2026-07-02
+
+### Fixed
+
+- Republished the queue item RPC APIs in a fresh coding-agent package version after earlier 0.78.x npm versions were occupied by stale tarballs.
+
 ## [0.78.8] - 2026-07-02
 
 ### Fixed
