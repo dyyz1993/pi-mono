@@ -70,6 +70,9 @@ const SubagentParams = Type.Object({
       'Do not pass the literal string "default" unless you intentionally want automatic resolution.',
     ].join(" "),
   })),
+  agentName: Type.Optional(Type.String({
+    description: "Alias for agent. Prefer agent; accepted for compatibility with UI/API naming.",
+  })),
   task: Type.String({ description: "Task instruction to delegate to the agent" }),
   description: Type.Optional(Type.String({ description: "Short (3-5 word) summary of the task, shown in UI. If omitted, derived from the task parameter." })),
   model: Type.Optional(Type.String({ description: "Model override for the subagent (e.g. 'claude-sonnet-4-20250514'). Takes precedence over the agent definition's model. If omitted, inherits from the agent definition or parent." })),
@@ -154,12 +157,16 @@ export default function(pi: ExtensionAPI) {
     label: "Subagent",
     description: !canLoadConfiguredAgents
       ? [
-        "Delegate a task to a builtin subagent with isolated context.",
+        "Run an ordinary subtask/child task in a builtin subagent with isolated context and wait for its result.",
+        "Prefer this tool when the user says 'subtask', 'subagent', 'child task', or Chinese '子任务/子代理'.",
+        "Do not use session_delegate for those ordinary subtask requests unless the user explicitly asks for async dispatch/delegation/background execution.",
         "SSH tool-proxy mode (quick SSH sandbox) does not expose local user or project agent files.",
         "The task is dispatched through the coordinator channel to Process Manager.",
       ].join(" ")
       : [
-        "Delegate a task to a specialized subagent with isolated context.",
+        "Run an ordinary subtask/child task in a specialized subagent with isolated context and wait for its result.",
+        "Prefer this tool when the user says 'subtask', 'subagent', 'child task', or Chinese '子任务/子代理'.",
+        "Do not use session_delegate for those ordinary subtask requests unless the user explicitly asks for async dispatch/delegation/background execution.",
         "Agents are discovered from ~/.pi/agent/agents/ (user) and .pi/agents/ (project).",
         'Use agentScope to control discovery: "user" (default), "project", or "both".',
         "The task is dispatched through the coordinator channel to Process Manager.",
@@ -203,7 +210,8 @@ export default function(pi: ExtensionAPI) {
         projectAgentsDir: discovery.projectAgentsDir,
         result: null,
       };
-      const agentResolution = resolveSubagentAgentName(params.agent, agents);
+      const requestedAgent = params.agent ?? params.agentName;
+      const agentResolution = resolveSubagentAgentName(requestedAgent, agents);
       if (agentResolution.requestedAgentName) details.requestedAgentName = agentResolution.requestedAgentName;
       if (agentResolution.resolvedAgentName) details.resolvedAgentName = agentResolution.resolvedAgentName;
       details.usedDefaultAgent = agentResolution.usedDefaultAgent;
@@ -338,7 +346,7 @@ export default function(pi: ExtensionAPI) {
 
     renderCall(args, theme, _context) {
       const scope: AgentScope = args.agentScope ?? "user";
-      const agentName = args.agent || "...";
+      const agentName = args.agent || args.agentName || "...";
       const desc = args.description || "";
       const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
       const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10) || 0;
