@@ -144,11 +144,11 @@ describe("ExtensionRunner", () => {
 
 		it("reuses resolved channels after pending registrations are flushed", () => {
 			const runtime = createExtensionRuntime();
-			runtime.registerChannel("coordinator_client");
+			runtime.registerChannel("auxiliary_channel");
 
 			let registrations = 0;
 			const resolvedChannel = {
-				name: "coordinator_client",
+				name: "auxiliary_channel",
 				send: () => {},
 				onReceive: () => () => {},
 				invoke: async () => ({}),
@@ -157,11 +157,11 @@ describe("ExtensionRunner", () => {
 			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
 			runner.flushPendingChannels((name) => {
 				registrations += 1;
-				if (name === "coordinator_client") return resolvedChannel;
+				if (name === "auxiliary_channel") return resolvedChannel;
 				throw new Error(`unexpected channel ${name}`);
 			});
 
-			const reused = runtime.registerChannel("coordinator_client");
+			const reused = runtime.registerChannel("auxiliary_channel");
 
 			expect(reused).toBe(resolvedChannel);
 			expect(registrations).toBe(1);
@@ -172,14 +172,14 @@ describe("ExtensionRunner", () => {
 
 			const firstCoordinator = runtime.registerChannel("coordinator");
 			const secondCoordinator = runtime.registerChannel("coordinator");
-			const firstClient = runtime.registerChannel("coordinator_client");
-			const secondClient = runtime.registerChannel("coordinator_client");
+			const firstAuxiliary = runtime.registerChannel("auxiliary_channel");
+			const secondAuxiliary = runtime.registerChannel("auxiliary_channel");
 
 			expect(secondCoordinator).toBe(firstCoordinator);
-			expect(secondClient).toBe(firstClient);
+			expect(secondAuxiliary).toBe(firstAuxiliary);
 			expect(runtime.pendingChannelRegistrations.map((pending) => pending.name)).toEqual([
 				"coordinator",
-				"coordinator_client",
+				"auxiliary_channel",
 			]);
 		});
 	});

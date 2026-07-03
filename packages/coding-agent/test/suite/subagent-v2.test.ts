@@ -388,39 +388,6 @@ describe("subagent_resume tool", () => {
 	});
 });
 
-describe("subagent tool error handling", () => {
-	it("returns error when coordinator channel call fails", async () => {
-		const harness = await createSubagentHarness();
-
-		harness.setResponses([
-			fauxAssistantMessage(
-				fauxToolCall("subagent", {
-					agent: "build",
-					task: "do something",
-				}),
-				{ stopReason: "toolUse" },
-			),
-			fauxAssistantMessage("The subagent failed."),
-		]);
-
-		await harness.session.prompt("run a subagent");
-
-		const toolResults = harness.session.messages.filter((m) => m.role === "toolResult");
-		expect(toolResults.length).toBeGreaterThanOrEqual(1);
-
-		const resultText = toolResults[0]!.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("");
-
-		// Should contain either "Agent failed" (coordinator not available)
-		// or "Unknown agent" (if discoverAgents didn't find "build")
-		expect(
-			resultText.includes("Agent failed") || resultText.includes("Unknown agent") || resultText.includes("error"),
-		).toBe(true);
-	});
-});
-
 // ── Cross-wired channel helpers for normal execution path tests ──
 
 type DelegateSyncHandler = (
@@ -444,9 +411,10 @@ function createCrossWiredChannels(delegateHandler: DelegateSyncHandler) {
 		setImmediate(() => serverManager.handleInbound(msg));
 	});
 
-	// Register "coordinator_client" on both sides
-	const serverRaw = serverManager.register("coordinator_client");
-	const clientRaw = clientManager.register("coordinator_client");
+	// Register the shared "coordinator" channel used by both session_delegate
+	// and subagent so tests match app-side routing.
+	const serverRaw = serverManager.register("coordinator");
+	const clientRaw = clientManager.register("coordinator");
 
 	// Set up the server-side mock handler
 	const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
@@ -459,7 +427,45 @@ function createCrossWiredChannels(delegateHandler: DelegateSyncHandler) {
 		clientCoordinatorRaw: clientRaw,
 		coordinatorServer,
 		registerChannel: (name: string): Channel => {
-			if (name === "coordinator_client") {
+			if (name === "coordinator") {
+				return clientRaw;
+			}
+			return clientManager.register(name);
+		},
+	};
+}
+
+function createCrossWiredCoordinatorOnly(
+	delegateHandler: DelegateSyncHandler,
+	options: { includeListHandler?: boolean } = {},
+) {
+	let clientManager: ChannelManager;
+	let serverManager: ChannelManager;
+
+	serverManager = new ChannelManager((msg: ChannelDataMessage) => {
+		setImmediate(() => clientManager.handleInbound(msg));
+	});
+
+	clientManager = new ChannelManager((msg: ChannelDataMessage) => {
+		setImmediate(() => serverManager.handleInbound(msg));
+	});
+
+	const serverRaw = serverManager.register("coordinator");
+	const clientRaw = clientManager.register("coordinator");
+
+	const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
+	coordinatorServer.handle("session_delegate_sync", delegateHandler);
+	if (options.includeListHandler ?? true) {
+		coordinatorServer.handle("session_delegate_list", async () => ({ tasks: [] }));
+	}
+
+	return {
+		clientManager,
+		serverManager,
+		clientCoordinatorRaw: clientRaw,
+		coordinatorServer,
+		registerChannel: (name: string): Channel => {
+			if (name === "coordinator") {
 				return clientRaw;
 			}
 			return clientManager.register(name);
@@ -503,6 +509,122 @@ async function createHarnessWithCoordinator(delegateHandler: DelegateSyncHandler
 // ── Normal execution path tests ──
 
 describe("subagent tool normal execution path", () => {
+	it("does not require delegate-list probing before dispatching a subagent", async () => {
+		const channelInfo = createCrossWiredCoordinatorOnly(
+			async () => ({
+				sessionId: "sess-no-probe",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "Direct sync dispatch works without list probing",
+			}),
+			{ includeListHandler: false },
+		);
+
+		const h = await createHarness({
+			extensionFactories: [subagentV2Factory],
+		});
+		harnesses.push(h);
+
+		const agentsDir = join(h.tempDir, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "test-worker.md"),
+			[
+				"---",
+				"name: test-worker",
+				"description: A test worker agent",
+				"mode: subagent",
+				"---",
+				"You are a test worker agent.",
+			].join("\n"),
+		);
+
+		await h.session.bindExtensions({
+			registerChannel: channelInfo.registerChannel,
+		});
+
+		h.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "run without probing list",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("The subagent finished."),
+		]);
+
+		await h.session.prompt("run a subagent");
+
+		const toolResults = h.session.messages.filter((m) => m.role === "toolResult");
+		expect(toolResults.length).toBeGreaterThanOrEqual(1);
+		const resultText = toolResults[0]!.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("");
+
+		expect(resultText).toContain("Direct sync dispatch works without list probing");
+		expect(resultText).not.toContain("Coordinator extension is not available");
+	});
+
+	it("uses the shared coordinator channel so subagent matches session_delegate routing", async () => {
+		const channelInfo = createCrossWiredCoordinatorOnly(async () => ({
+			sessionId: "sess-shared-channel",
+			status: "completed" as const,
+			exitCode: 0,
+			finalText: "Shared coordinator channel works",
+		}));
+
+		const h = await createHarness({
+			extensionFactories: [subagentV2Factory],
+		});
+		harnesses.push(h);
+
+		const agentsDir = join(h.tempDir, ".pi", "agents");
+		mkdirSync(agentsDir, { recursive: true });
+		writeFileSync(
+			join(agentsDir, "test-worker.md"),
+			[
+				"---",
+				"name: test-worker",
+				"description: A test worker agent",
+				"mode: subagent",
+				"---",
+				"You are a test worker agent.",
+			].join("\n"),
+		);
+
+		await h.session.bindExtensions({
+			registerChannel: channelInfo.registerChannel,
+		});
+
+		h.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "use the shared channel",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("The subagent finished."),
+		]);
+
+		await h.session.prompt("run a subagent");
+
+		const toolResults = h.session.messages.filter((m) => m.role === "toolResult");
+		expect(toolResults.length).toBeGreaterThanOrEqual(1);
+		const resultText = toolResults[0]!.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("");
+
+		expect(resultText).toContain("Shared coordinator channel works");
+	});
+
 	it("returns successful result when coordinator responds with exitCode 0", async () => {
 		const { harness } = await createHarnessWithCoordinator(async () => ({
 			sessionId: "sess-ok",
@@ -757,8 +879,8 @@ describe("subagent tool normal execution path", () => {
 		managers.client = clientManager;
 		managers.server = serverManager;
 
-		const serverRaw = serverManager.register("coordinator_client");
-		const clientRaw = clientManager.register("coordinator_client");
+		const serverRaw = serverManager.register("coordinator");
+		const clientRaw = clientManager.register("coordinator");
 
 		const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
 
@@ -812,7 +934,7 @@ describe("subagent tool normal execution path", () => {
 
 		await h.session.bindExtensions({
 			registerChannel: (name: string): Channel => {
-				if (name === "coordinator_client") return clientRaw;
+				if (name === "coordinator") return clientRaw;
 				return clientManager.register(name);
 			},
 		});
@@ -925,8 +1047,8 @@ describe("subagent tool normal execution path", () => {
 		managers.client = clientManager;
 		managers.server = serverManager;
 
-		const serverRaw = serverManager.register("coordinator_client");
-		const clientRaw = clientManager.register("coordinator_client");
+		const serverRaw = serverManager.register("coordinator");
+		const clientRaw = clientManager.register("coordinator");
 
 		const { server: coordinatorServer } = createTypedChannel<CoordinatorChannelContract>(serverRaw);
 
@@ -974,7 +1096,7 @@ describe("subagent tool normal execution path", () => {
 
 		await h.session.bindExtensions({
 			registerChannel: (name: string): Channel => {
-				if (name === "coordinator_client") return clientRaw;
+				if (name === "coordinator") return clientRaw;
 				return clientManager.register(name);
 			},
 		});

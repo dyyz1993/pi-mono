@@ -214,7 +214,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			onError: (err) => {
 				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 			},
-			registerChannel: (name: string) => channelManager.registerOrReplace(name),
+			registerChannel: (name: string) => channelManager.registerOrReuse(name),
 		});
 
 		unsubscribe?.();

@@ -25,6 +25,14 @@ export class ChannelManager {
 		return this.createChannel(name);
 	}
 
+	registerOrReuse(name: string): Channel {
+		const existing = this.channels.get(name);
+		if (existing) {
+			return this.createChannelHandle(existing);
+		}
+		return this.createChannel(name);
+	}
+
 	private createChannel(name: string): Channel {
 		const entry: ChannelEntry = {
 			name,
@@ -32,6 +40,12 @@ export class ChannelManager {
 			pendingInvokes: new Map(),
 		};
 		this.channels.set(name, entry);
+
+		return this.createChannelHandle(entry);
+	}
+
+	private createChannelHandle(entry: ChannelEntry): Channel {
+		const { name } = entry;
 
 		const invokeImpl = (data: unknown, timeoutMs: number = DEFAULT_INVOKE_TIMEOUT): Promise<unknown> => {
 			return new Promise((resolve, reject) => {

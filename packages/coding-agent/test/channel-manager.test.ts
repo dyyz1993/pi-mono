@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelManager } from "../src/core/extensions/channel-manager.ts";
+import { ServerChannel } from "../src/core/extensions/server-channel.ts";
 
 describe("ChannelManager", () => {
 	let output: ReturnType<typeof vi.fn>;
@@ -45,6 +46,71 @@ describe("ChannelManager", () => {
 		cm.registerOrReplace("test");
 
 		await expect(pending).rejects.toThrow(/unregistered/);
+	});
+
+	it("registerOrReuse keeps existing server handlers attached", () => {
+		const first = cm.register("coordinator");
+		const server = new ServerChannel(first);
+		server.handle("ping", () => ({ ok: true }));
+
+		cm.registerOrReuse("coordinator");
+		cm.handleInbound({
+			type: "channel_data",
+			name: "coordinator",
+			data: { __call: "ping", invokeId: "inv_reuse" },
+		});
+
+		expect(output).toHaveBeenCalledWith({
+			type: "channel_data",
+			name: "coordinator",
+			data: { ok: true, invokeId: "inv_reuse" },
+		});
+	});
+
+	it("registerOrReuse preserves in-flight invokes", async () => {
+		const first = cm.register("coordinator");
+		const pending = first.call("session_delegate_list", { parentSessionId: "parent" }, 5000);
+		const sent = output.mock.calls[0][0];
+
+		cm.registerOrReuse("coordinator");
+		cm.handleInbound({
+			type: "channel_data",
+			name: "coordinator",
+			data: { invokeId: sent.data.invokeId, tasks: [] },
+		});
+
+		await expect(pending).resolves.toEqual({ invokeId: sent.data.invokeId, tasks: [] });
+	});
+
+	it("registerOrReuse survives repeated rebinds during concurrent calls", async () => {
+		let clientManager: ChannelManager;
+		let serverManager: ChannelManager;
+
+		clientManager = new ChannelManager((msg) => setImmediate(() => serverManager.handleInbound(msg)));
+		serverManager = new ChannelManager((msg) => setImmediate(() => clientManager.handleInbound(msg)));
+
+		const serverRaw = serverManager.register("coordinator");
+		const clientRaw = clientManager.register("coordinator");
+		const server = new ServerChannel(serverRaw);
+
+		let handled = 0;
+		server.handle("session_delegate_sync", async (params) => {
+			handled += 1;
+			await new Promise((resolve) => setTimeout(resolve, handled % 3));
+			return { status: "completed", exitCode: 0, finalText: String(params) };
+		});
+
+		const calls: Array<Promise<unknown>> = [];
+		for (let i = 0; i < 40; i++) {
+			if (i % 2 === 0) clientManager.registerOrReuse("coordinator");
+			if (i % 3 === 0) serverManager.registerOrReuse("coordinator");
+			calls.push(clientRaw.call("session_delegate_sync", { task: `task-${i}` }, 5000));
+		}
+
+		const results = await Promise.all(calls);
+		expect(results).toHaveLength(40);
+		expect(handled).toBe(40);
+		expect(results.every((result) => (result as { exitCode?: number }).exitCode === 0)).toBe(true);
 	});
 
 	it("channel.send() emits channel_data message", () => {
