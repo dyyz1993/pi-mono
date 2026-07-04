@@ -831,6 +831,38 @@ describe("subagent tool normal execution path", () => {
 		expect(capturedParams!.timeoutMs).toBe(60000);
 	});
 
+	it("uses a 30 minute default timeout for subagent tasks", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-default-timeout",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "ok",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "check default timeout",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.timeoutMs).toBe(1_800_000);
+	});
+
 	it("appends subagent entry on success", async () => {
 		const { harness } = await createHarnessWithCoordinator(async () => ({
 			sessionId: "sess-entry",
@@ -1130,6 +1162,41 @@ describe("subagent tool normal execution path", () => {
 });
 
 describe("subagent_resume tool normal execution path", () => {
+	it("uses a 30 minute default timeout for resumed subagent tasks", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-resume-default-timeout",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "Resumed successfully!",
+			};
+		});
+
+		const sessionDir = join(tmpdir(), `pi-resume-default-timeout-${Date.now()}`);
+		mkdirSync(sessionDir, { recursive: true });
+		const sessionFile = join(sessionDir, "test-session.jsonl");
+		writeFileSync(sessionFile, '{"role":"user","content":"hello"}\n');
+		tempDirs.push(sessionDir);
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent_resume", {
+					sessionPath: sessionFile,
+					instruction: "Continue the task",
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Resumed."),
+		]);
+
+		await harness.session.prompt("resume a subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.timeoutMs).toBe(1_800_000);
+	});
+
 	it("resumes session with sessionPath", async () => {
 		const { harness } = await createHarnessWithCoordinator(async () => ({
 			sessionId: "sess-resume",
