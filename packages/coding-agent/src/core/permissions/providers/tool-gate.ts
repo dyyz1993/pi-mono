@@ -6,11 +6,17 @@ export interface ToolGateProviderOptions {
 	priority?: number;
 }
 
+const REQUIRED_SYSTEM_TOOLS = new Set(["session_delegate_send"]);
+
 export function createToolGateProvider(options: ToolGateProviderOptions = {}): PermissionProvider {
 	return {
 		name: options.name ?? "tool-gate",
 		priority: options.priority,
 		check(ctx) {
+			if (REQUIRED_SYSTEM_TOOLS.has(ctx.toolName)) {
+				return { type: "pass" };
+			}
+
 			const inputRecord = inputToPermissionRecord(ctx.input);
 			const allowedTools = ctx.agent?.tools;
 			const disallowedTools = ctx.agent?.disallowedTools;
