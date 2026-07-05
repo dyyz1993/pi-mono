@@ -50,6 +50,29 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("default tools", () => {
+		test("includes current tier, concrete model, and thinking level when provided", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: "/tmp/project",
+				modelContext: {
+					tier: "max",
+					provider: "anthropic",
+					modelId: "claude-opus-4",
+					modelName: "Claude Opus 4",
+					thinkingLevel: "high",
+					reasoning: true,
+				},
+			});
+
+			expect(prompt).toContain("<current_model_context>");
+			expect(prompt).toContain("Tier: max");
+			expect(prompt).toContain("Model: anthropic/claude-opus-4");
+			expect(prompt).toContain("Model name: Claude Opus 4");
+			expect(prompt).toContain("Thinking level: high");
+			expect(prompt).toContain("Reasoning capable: yes");
+		});
+
 		test("includes all default tools when snippets are provided", () => {
 			const prompt = buildSystemPrompt({
 				toolSnippets: {
