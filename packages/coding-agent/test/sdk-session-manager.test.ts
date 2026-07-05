@@ -42,6 +42,12 @@ describe("createAgentSession session manager defaults", () => {
 
 		expect(sessionDir).toBe(expectedSessionDir);
 		expect(sessionFile?.startsWith(`${expectedSessionDir}/`)).toBe(true);
+		expect(session.systemPrompt).toContain("<current_model_context>");
+		expect(session.systemPrompt).toContain(`Model: ${model!.provider}/${model!.id}`);
+		expect(session.systemPrompt).toContain("Thinking level:");
+
+		session.setThinkingLevel("high");
+		expect(session.systemPrompt).toContain("Thinking level: high");
 
 		session.dispose();
 	});
