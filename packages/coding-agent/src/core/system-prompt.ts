@@ -9,6 +9,15 @@ import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
+	/** Current model/tier metadata that should be visible to the assistant. */
+	modelContext?: {
+		tier?: string;
+		provider?: string;
+		modelId?: string;
+		modelName?: string;
+		thinkingLevel?: string;
+		reasoning?: boolean;
+	};
 	/** Tools to include in prompt. Default: [read, bash, edit, write] */
 	selectedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
@@ -50,6 +59,28 @@ function emptyBreakdown(): SystemPromptBreakdown {
 	};
 }
 
+function buildModelContextSection(modelContext: BuildSystemPromptOptions["modelContext"]): string {
+	if (!modelContext) return "";
+
+	const lines: string[] = [];
+	if (modelContext.tier) lines.push(`Tier: ${modelContext.tier}`);
+	if (modelContext.provider || modelContext.modelId) {
+		const provider = modelContext.provider ?? "unknown-provider";
+		const modelId = modelContext.modelId ?? "unknown-model";
+		lines.push(`Model: ${provider}/${modelId}`);
+	}
+	if (modelContext.modelName && modelContext.modelName !== modelContext.modelId) {
+		lines.push(`Model name: ${modelContext.modelName}`);
+	}
+	if (modelContext.thinkingLevel) lines.push(`Thinking level: ${modelContext.thinkingLevel}`);
+	if (modelContext.reasoning !== undefined) {
+		lines.push(`Reasoning capable: ${modelContext.reasoning ? "yes" : "no"}`);
+	}
+
+	if (lines.length === 0) return "";
+	return `\n\n<current_model_context>\n${lines.join("\n")}\n</current_model_context>`;
+}
+
 /** Build the system prompt with tools, guidelines, and context */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	return buildSystemPromptWithBreakdown(options).prompt;
@@ -59,6 +90,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 export function buildSystemPromptWithBreakdown(options: BuildSystemPromptOptions): BuildSystemPromptResult {
 	const {
 		customPrompt,
+		modelContext,
 		selectedTools,
 		toolSnippets,
 		promptGuidelines,
@@ -79,6 +111,7 @@ export function buildSystemPromptWithBreakdown(options: BuildSystemPromptOptions
 	const date = `${year}-${month}-${day}`;
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
+	const modelContextSection = buildModelContextSection(modelContext);
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
@@ -119,6 +152,7 @@ export function buildSystemPromptWithBreakdown(options: BuildSystemPromptOptions
 		}
 
 		// Add date and working directory last
+		prompt += modelContextSection;
 		prompt += `\nCurrent date: ${date}`;
 		prompt += `\nCurrent working directory: ${promptCwd}`;
 
@@ -232,6 +266,7 @@ ${guidelines}${docsSection}`;
 	}
 
 	// Add date and working directory last
+	prompt += modelContextSection;
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 

@@ -1357,6 +1357,7 @@ export class AgentSession {
 		this._tierModels = { ...mapping };
 		this.sessionManager.appendTierModelsChange(mapping);
 		this.settingsManager.setTierModels(mapping);
+		this._refreshSystemPromptForRuntimeContext();
 	}
 
 	/** Current thinking level */
@@ -1685,6 +1686,34 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 
+	private _getCurrentModelContext(): BuildSystemPromptOptions["modelContext"] {
+		const model = this.model;
+		const modelKey = model ? `${model.provider}/${model.id}` : undefined;
+		const normalizedTierModels = this.getTierModels();
+		const tier = modelKey
+			? ["fast", "pro", "max"].find((key) => normalizedTierModels[key] === modelKey)
+			: undefined;
+
+		if (!model && !tier && !this.thinkingLevel) {
+			return undefined;
+		}
+
+		return {
+			tier,
+			provider: model?.provider,
+			modelId: model?.id,
+			modelName: model?.name,
+			thinkingLevel: this.thinkingLevel,
+			reasoning: model?.reasoning,
+		};
+	}
+
+	private _refreshSystemPromptForRuntimeContext(): void {
+		if (!this._baseSystemPrompt) return;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._baseSystemPrompt;
+	}
+
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
@@ -1714,6 +1743,7 @@ export class AgentSession {
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
+			modelContext: this._getCurrentModelContext(),
 			skills: activeSkills,
 			agents: availableAgents,
 			contextFiles: loadedContextFiles,
@@ -2565,6 +2595,7 @@ export class AgentSession {
 				previousLevel,
 			});
 		}
+		this._refreshSystemPromptForRuntimeContext();
 	}
 
 	/**
