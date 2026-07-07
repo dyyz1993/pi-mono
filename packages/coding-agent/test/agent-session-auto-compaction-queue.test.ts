@@ -53,6 +53,10 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	) => settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
 }));
 
+function tokensAboveThreshold(contextWindow: number | undefined): number {
+	return Math.max(190_000, (contextWindow ?? 200_000) - 1_000);
+}
+
 describe("AgentSession auto-compaction queue resume", () => {
 	let session: AgentSession;
 	let sessionManager: SessionManager;
@@ -192,11 +196,11 @@ describe("AgentSession auto-compaction queue resume", () => {
 			provider: model.provider,
 			model: model.id,
 			usage: {
-				input: 600_000,
+				input: tokensAboveThreshold(model.contextWindow),
 				output: 10_000,
 				cacheRead: 0,
 				cacheWrite: 0,
-				totalTokens: 610_000,
+				totalTokens: tokensAboveThreshold(model.contextWindow) + 10_000,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
@@ -250,11 +254,11 @@ describe("AgentSession auto-compaction queue resume", () => {
 			provider: model.provider,
 			model: model.id,
 			usage: {
-				input: 180_000,
+				input: tokensAboveThreshold(model.contextWindow) - 10_000,
 				output: 10_000,
 				cacheRead: 0,
 				cacheWrite: 0,
-				totalTokens: 190_000,
+				totalTokens: tokensAboveThreshold(model.contextWindow),
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
@@ -369,11 +373,11 @@ describe("AgentSession auto-compaction queue resume", () => {
 			provider: model.provider,
 			model: model.id,
 			usage: {
-				input: 180_000,
+				input: tokensAboveThreshold(model.contextWindow) - 10_000,
 				output: 10_000,
 				cacheRead: 0,
 				cacheWrite: 0,
-				totalTokens: 190_000,
+				totalTokens: tokensAboveThreshold(model.contextWindow),
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",

@@ -24,6 +24,10 @@ function createUsage(totalTokens: number) {
 	};
 }
 
+function tokensAboveThreshold(model: Model<any>): number {
+	return Math.max(190_000, (model.contextWindow ?? 200_000) - 1_000);
+}
+
 function createAssistant(
 	harness: Harness,
 	options: {
@@ -406,7 +410,7 @@ describe("AgentSession compaction characterization", () => {
 		const staleTimestamp = Date.now() - 10_000;
 		const staleAssistant = createAssistant(harness, {
 			stopReason: "stop",
-			totalTokens: 610_000,
+			totalTokens: tokensAboveThreshold(harness.getModel()),
 			timestamp: staleTimestamp,
 		});
 
@@ -443,7 +447,7 @@ describe("AgentSession compaction characterization", () => {
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 		const successfulAssistant = createAssistant(harness, {
 			stopReason: "stop",
-			totalTokens: 190_000,
+			totalTokens: tokensAboveThreshold(harness.getModel()),
 			timestamp: Date.now(),
 		});
 		const errorAssistant = createAssistant(harness, {
@@ -493,7 +497,7 @@ describe("AgentSession compaction characterization", () => {
 		const preCompactionTimestamp = Date.now() - 10_000;
 		const keptAssistant = createAssistant(harness, {
 			stopReason: "stop",
-			totalTokens: 190_000,
+			totalTokens: tokensAboveThreshold(harness.getModel()),
 			timestamp: preCompactionTimestamp,
 		});
 
