@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -44,6 +45,30 @@ function createAssistant(
 		model: model.id,
 		usage: createUsage(options.totalTokens ?? 0),
 	};
+}
+
+function getMessageText(message: AgentMessage): string {
+	switch (message.role) {
+		case "user":
+		case "custom":
+		case "toolResult":
+			return typeof message.content === "string"
+				? message.content
+				: message.content
+						.filter((block): block is { type: "text"; text: string } => block.type === "text")
+						.map((block) => block.text)
+						.join("\n");
+		case "assistant":
+			return message.content
+				.filter((block): block is { type: "text"; text: string } => block.type === "text")
+				.map((block) => block.text)
+				.join("\n");
+		case "branchSummary":
+		case "compactionSummary":
+			return message.summary;
+		case "bashExecution":
+			return `${message.command}\n${message.output}`;
+	}
 }
 
 function useSummaryStreamFn(harness: Harness, summary: string): () => number {
@@ -131,6 +156,82 @@ describe("AgentSession compaction characterization", () => {
 		expect(result.summary).toBe("summary from extension");
 		expect(compactionEntries).toHaveLength(1);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+	});
+
+	it("passes effective deleted and summarized history to session_before_compact", async () => {
+		let hookInput = "";
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 30 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => {
+						hookInput = event.preparation.messagesToSummarize.map(getMessageText).join("\n");
+						return {
+							compaction: {
+								summary: "summary from effective history",
+								firstKeptEntryId: event.preparation.firstKeptEntryId,
+								tokensBefore: event.preparation.tokensBefore,
+								details: {},
+							},
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const now = Date.now();
+		const deletedId = harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "deleted secret should not reach compaction hook ".repeat(20) }],
+			timestamp: now - 6000,
+		});
+		harness.sessionManager.appendMessage(
+			createAssistant(harness, {
+				stopReason: "stop",
+				totalTokens: 100,
+				timestamp: now - 5000,
+			}),
+		);
+		const summarizedUserId = harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "raw summarized prompt should not reach hook ".repeat(20) }],
+			timestamp: now - 4000,
+		});
+		const summarizedAssistant = createAssistant(harness, {
+			stopReason: "stop",
+			totalTokens: 100,
+			timestamp: now - 3000,
+		});
+		summarizedAssistant.content = [{ type: "text", text: "raw summarized answer should not reach hook ".repeat(20) }];
+		const summarizedAssistantId = harness.sessionManager.appendMessage(summarizedAssistant);
+		harness.sessionManager.appendSegmentSummary(
+			[summarizedUserId, summarizedAssistantId],
+			"safe summary visible to compaction hook",
+		);
+		harness.sessionManager.appendDeletion([deletedId]);
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "recent user should stay outside hook summary ".repeat(20) }],
+			timestamp: now - 2000,
+		});
+		const recentAssistant = createAssistant(harness, {
+			stopReason: "stop",
+			totalTokens: 80_000,
+			timestamp: now - 1000,
+		});
+		recentAssistant.content = [
+			{ type: "text", text: "recent assistant should stay outside hook summary ".repeat(1000) },
+		];
+		harness.sessionManager.appendMessage(recentAssistant);
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+
+		await harness.session.compact();
+
+		expect(hookInput).not.toContain("deleted secret");
+		expect(hookInput).not.toContain("raw summarized prompt");
+		expect(hookInput).not.toContain("raw summarized answer");
+		expect(hookInput).toContain("safe summary visible to compaction hook");
 	});
 
 	it("throws when compacting without a model", async () => {

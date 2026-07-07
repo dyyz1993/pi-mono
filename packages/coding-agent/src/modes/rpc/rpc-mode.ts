@@ -281,7 +281,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				await session.steer(command.message, command.images);
+				if (command.promote !== undefined || command.immediate) {
+					await session.steer({
+						text: command.message,
+						images: command.images,
+						promote: command.promote,
+						immediate: command.immediate,
+					});
+				} else {
+					await session.steer(command.message ?? "", command.images);
+				}
 				return success(id, "steer");
 			}
 

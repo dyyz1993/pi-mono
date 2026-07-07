@@ -106,6 +106,33 @@ function createCompactionEntry(summary: string, firstKeptEntryId: string): Compa
 	return entry;
 }
 
+function createDeletionEntry(targetIds: string[]): SessionEntry {
+	const id = `test-id-${entryCounter++}`;
+	const entry: SessionEntry = {
+		type: "deletion",
+		id,
+		parentId: lastId,
+		timestamp: new Date().toISOString(),
+		targetIds,
+	};
+	lastId = id;
+	return entry;
+}
+
+function createSegmentSummaryEntry(targetIds: string[], summary: string): SessionEntry {
+	const id = `test-id-${entryCounter++}`;
+	const entry: SessionEntry = {
+		type: "segment_summary",
+		id,
+		parentId: lastId,
+		timestamp: new Date().toISOString(),
+		targetIds,
+		summary,
+	};
+	lastId = id;
+	return entry;
+}
+
 function createModelChangeEntry(provider: string, modelId: string): ModelChangeEntry {
 	const id = `test-id-${entryCounter++}`;
 	const entry: ModelChangeEntry = {
@@ -435,6 +462,54 @@ describe("prepareCompaction with previous compaction", () => {
 		expect(summarizedText).toContain("user msg 3 - kept by compaction1");
 		expect(summarizedText).not.toContain("First summary");
 		expect(preparation!.previousSummary).toBe("First summary");
+	});
+});
+
+describe("prepareCompaction with entry actions", () => {
+	it("should use effective history for deleted and summarized entries", () => {
+		const deletedUser = createMessageEntry(createUserMessage("deleted secret should not be compacted ".repeat(20)));
+		const assistantAfterDeletedUser = createMessageEntry(
+			createAssistantMessage("assistant around deleted message ".repeat(20)),
+		);
+		const summarizedUser = createMessageEntry(createUserMessage("raw summarized detail one ".repeat(20)));
+		const summarizedAssistant = createMessageEntry(createAssistantMessage("raw summarized detail two ".repeat(20)));
+		const segmentSummary = createSegmentSummaryEntry(
+			[summarizedUser.id, summarizedAssistant.id],
+			"safe segment summary should be compacted",
+		);
+		const deletion = createDeletionEntry([deletedUser.id]);
+		const recentUser = createMessageEntry(createUserMessage("recent user should stay outside summary ".repeat(20)));
+		const recentAssistant = createMessageEntry(
+			createAssistantMessage(
+				"recent assistant should stay outside summary ".repeat(20),
+				createMockUsage(8000, 2000),
+			),
+		);
+
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 30,
+		};
+		const preparation = prepareCompaction(
+			[
+				deletedUser,
+				assistantAfterDeletedUser,
+				summarizedUser,
+				summarizedAssistant,
+				segmentSummary,
+				deletion,
+				recentUser,
+				recentAssistant,
+			],
+			settings,
+		);
+
+		expect(preparation).toBeDefined();
+		const summarizedText = extractText(preparation!.messagesToSummarize);
+		expect(summarizedText).not.toContain("deleted secret");
+		expect(summarizedText).not.toContain("raw summarized detail one");
+		expect(summarizedText).not.toContain("raw summarized detail two");
+		expect(summarizedText).toContain("safe segment summary should be compacted");
 	});
 });
 

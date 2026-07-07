@@ -831,6 +831,38 @@ describe("subagent tool normal execution path", () => {
 		expect(capturedParams!.timeoutMs).toBe(60000);
 	});
 
+	it("uses a 30 minute coordinator timeout when omitted", async () => {
+		let capturedParams: Record<string, unknown> | undefined;
+
+		const { harness } = await createHarnessWithCoordinator(async (params) => {
+			capturedParams = params as Record<string, unknown>;
+			return {
+				sessionId: "sess-default-timeout",
+				status: "completed" as const,
+				exitCode: 0,
+				finalText: "ok",
+			};
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("subagent", {
+					agent: "test-worker",
+					task: "check default timeout",
+					agentScope: "project",
+					confirmProjectAgents: false,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("run a subagent");
+
+		expect(capturedParams).toBeDefined();
+		expect(capturedParams!.timeoutMs).toBe(1_800_000);
+	});
+
 	it("appends subagent entry on success", async () => {
 		const { harness } = await createHarnessWithCoordinator(async () => ({
 			sessionId: "sess-entry",

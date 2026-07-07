@@ -370,8 +370,30 @@ export class RpcClient {
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
-	async steer(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "steer", message, images });
+	steer(message: string, images?: ImageContent[]): Promise<void>;
+	steer(options: { text?: string; images?: ImageContent[]; promote?: number; immediate?: boolean }): Promise<void>;
+	async steer(
+		input:
+			| string
+			| {
+					text?: string;
+					images?: ImageContent[];
+					promote?: number;
+					immediate?: boolean;
+			  },
+		images?: ImageContent[],
+	): Promise<void> {
+		if (typeof input === "string") {
+			await this.send({ type: "steer", message: input, images });
+			return;
+		}
+		await this.send({
+			type: "steer",
+			message: input.text,
+			images: input.images,
+			promote: input.promote,
+			immediate: input.immediate,
+		});
 	}
 
 	/**
