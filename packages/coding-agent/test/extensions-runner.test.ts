@@ -98,6 +98,92 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
+	describe("deferred channel registration", () => {
+		it("keeps pre-flush channel calls pending until the channel is resolved", async () => {
+			const runtime = createExtensionRuntime();
+			const raw = runtime.registerChannel("coordinator");
+			let settled = false;
+			const pendingCall = raw
+				.call("session_delegate_list", { parentSessionId: "parent-session" }, 1000)
+				.then((value) => {
+					settled = true;
+					return value;
+				});
+
+			await Promise.resolve();
+			expect(settled).toBe(false);
+
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.flushPendingChannels((name) => ({
+				name,
+				send: () => {},
+				onReceive: () => () => {},
+				invoke: async (data) => ({ invoked: data }),
+				call: async (method, params) => ({ method, ...params }),
+			}));
+
+			await expect(pendingCall).resolves.toEqual({
+				method: "session_delegate_list",
+				parentSessionId: "parent-session",
+			});
+			expect(settled).toBe(true);
+		});
+
+		it("rejects pre-flush channel calls if channel registration fails", async () => {
+			const runtime = createExtensionRuntime();
+			const raw = runtime.registerChannel("broken");
+			const pendingCall = raw.call("ping", {}, 1000);
+
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.flushPendingChannels(() => {
+				throw new Error("register failed");
+			});
+
+			await expect(pendingCall).rejects.toThrow("register failed");
+		});
+
+		it("reuses resolved channels after pending registrations are flushed", () => {
+			const runtime = createExtensionRuntime();
+			runtime.registerChannel("auxiliary_channel");
+
+			let registrations = 0;
+			const resolvedChannel = {
+				name: "auxiliary_channel",
+				send: () => {},
+				onReceive: () => () => {},
+				invoke: async () => ({}),
+				call: async () => ({}),
+			};
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.flushPendingChannels((name) => {
+				registrations += 1;
+				if (name === "auxiliary_channel") return resolvedChannel;
+				throw new Error(`unexpected channel ${name}`);
+			});
+
+			const reused = runtime.registerChannel("auxiliary_channel");
+
+			expect(reused).toBe(resolvedChannel);
+			expect(registrations).toBe(1);
+		});
+
+		it("reuses duplicate pre-flush channel registrations", () => {
+			const runtime = createExtensionRuntime();
+
+			const firstCoordinator = runtime.registerChannel("coordinator");
+			const secondCoordinator = runtime.registerChannel("coordinator");
+			const firstAuxiliary = runtime.registerChannel("auxiliary_channel");
+			const secondAuxiliary = runtime.registerChannel("auxiliary_channel");
+
+			expect(secondCoordinator).toBe(firstCoordinator);
+			expect(secondAuxiliary).toBe(firstAuxiliary);
+			expect(runtime.pendingChannelRegistrations.map((pending) => pending.name)).toEqual([
+				"coordinator",
+				"auxiliary_channel",
+			]);
+		});
+	});
+
 	describe("project_trust", () => {
 		it("continues past undecided handlers and returns the first yes/no decision", async () => {
 			const undecidedPath = path.join(extensionsDir, "undecided.ts");

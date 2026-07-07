@@ -580,6 +580,7 @@ function collectAutoExtensionEntries(dir: string): string[] {
 		const dirEntries = readdirSync(dir, { withFileTypes: true });
 		for (const entry of dirEntries) {
 			if (entry.name.startsWith(".")) continue;
+			if (entry.name.startsWith("_")) continue;
 			if (entry.name === "node_modules") continue;
 
 			const fullPath = join(dir, entry.name);

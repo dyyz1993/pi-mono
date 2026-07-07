@@ -17,12 +17,35 @@ export class ChannelManager {
 			throw new Error(`Channel "${name}" is already registered`);
 		}
 
+		return this.createChannel(name);
+	}
+
+	registerOrReplace(name: string): Channel {
+		this.unregister(name);
+		return this.createChannel(name);
+	}
+
+	registerOrReuse(name: string): Channel {
+		const existing = this.channels.get(name);
+		if (existing) {
+			return this.createChannelHandle(existing);
+		}
+		return this.createChannel(name);
+	}
+
+	private createChannel(name: string): Channel {
 		const entry: ChannelEntry = {
 			name,
 			handlers: new Set(),
 			pendingInvokes: new Map(),
 		};
 		this.channels.set(name, entry);
+
+		return this.createChannelHandle(entry);
+	}
+
+	private createChannelHandle(entry: ChannelEntry): Channel {
+		const { name } = entry;
 
 		const invokeImpl = (data: unknown, timeoutMs: number = DEFAULT_INVOKE_TIMEOUT): Promise<unknown> => {
 			return new Promise((resolve, reject) => {

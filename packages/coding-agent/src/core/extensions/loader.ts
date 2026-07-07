@@ -47,6 +47,8 @@ import type {
 	ToolDefinition,
 } from "./types.ts";
 
+const DEFERRED_CHANNEL_TIMEOUT_MS = 30_000;
+
 /** Modules available to extensions via virtualModules (for compiled Bun binary) */
 const VIRTUAL_MODULES: Record<string, unknown> = {
 	typebox: _bundledTypebox,
@@ -209,13 +211,49 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		if (runtime.resolvedChannels.has(name)) {
 			return runtime.resolvedChannels.get(name)!;
 		}
-		if (runtime.pendingChannelRegistrations.some((pending) => pending.name === name)) {
-			throw new Error(`Channel "${name}" is already registered`);
+		const pendingChannel = runtime.pendingChannelRegistrations.find((pending) => pending.name === name);
+		if (pendingChannel) {
+			return pendingChannel.channel;
 		}
 
 		const bufferedSends: unknown[] = [];
 		const bufferedHandlers: Array<(data: unknown) => void> = [];
 		let realChannel: Channel | undefined;
+		let channelResolutionError: Error | undefined;
+		const waiters = new Set<{
+			resolve: (channel: Channel) => void;
+			reject: (error: Error) => void;
+			timer: ReturnType<typeof setTimeout>;
+		}>();
+
+		const waitForResolvedChannel = (timeoutMs?: number): Promise<Channel> => {
+			if (realChannel) return Promise.resolve(realChannel);
+			if (channelResolutionError) return Promise.reject(channelResolutionError);
+
+			const effectiveTimeout = timeoutMs ?? DEFERRED_CHANNEL_TIMEOUT_MS;
+			return new Promise((resolve, reject) => {
+				const waiter = {
+					resolve: (channel: Channel) => {
+						clearTimeout(waiter.timer);
+						resolve(channel);
+					},
+					reject: (error: Error) => {
+						clearTimeout(waiter.timer);
+						reject(error);
+					},
+					timer: setTimeout(() => {
+						waiters.delete(waiter);
+						reject(new Error(`Channel "${name}" not yet resolved after ${effectiveTimeout}ms`));
+					}, effectiveTimeout),
+				};
+				waiters.add(waiter);
+			});
+		};
+
+		const remainingTimeout = (timeoutMs: number | undefined, startedAt: number): number | undefined => {
+			if (timeoutMs === undefined) return undefined;
+			return Math.max(1, timeoutMs - (Date.now() - startedAt));
+		};
 
 		const deferred: Channel = {
 			name,
@@ -236,22 +274,27 @@ export function createExtensionRuntime(): ExtensionRuntime {
 					if (index >= 0) bufferedHandlers.splice(index, 1);
 				};
 			},
-			invoke: (data, timeoutMs) => {
+			invoke: async (data, timeoutMs) => {
 				if (realChannel) {
 					return realChannel.invoke(data, timeoutMs);
 				}
-				return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
+				const startedAt = Date.now();
+				const channel = await waitForResolvedChannel(timeoutMs);
+				return channel.invoke(data, remainingTimeout(timeoutMs, startedAt));
 			},
-			call: (method, params, timeoutMs) => {
+			call: async (method, params, timeoutMs) => {
 				if (realChannel) {
 					return realChannel.call(method, params, timeoutMs);
 				}
-				return Promise.reject(new Error(`Channel "${name}" not yet resolved`));
+				const startedAt = Date.now();
+				const channel = await waitForResolvedChannel(timeoutMs);
+				return channel.call(method, params, remainingTimeout(timeoutMs, startedAt));
 			},
 		};
 
 		runtime.pendingChannelRegistrations.push({
 			name,
+			channel: deferred,
 			resolve: (channel) => {
 				realChannel = channel;
 				for (const handler of bufferedHandlers) {
@@ -262,8 +305,18 @@ export function createExtensionRuntime(): ExtensionRuntime {
 					channel.send(buffered);
 				}
 				bufferedSends.length = 0;
+				for (const waiter of waiters) {
+					waiters.delete(waiter);
+					waiter.resolve(channel);
+				}
 			},
-			reject: () => {},
+			reject: (error) => {
+				channelResolutionError = error;
+				for (const waiter of waiters) {
+					waiters.delete(waiter);
+					waiter.reject(error);
+				}
+			},
 		});
 
 		return deferred;

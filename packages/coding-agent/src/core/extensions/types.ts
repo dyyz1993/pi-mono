@@ -1867,6 +1867,7 @@ export interface ExtensionRuntimeState {
 	pendingPermissionProviderRegistrations: Array<{ provider: PermissionProvider; extensionPath: string }>;
 	pendingChannelRegistrations: Array<{
 		name: string;
+		channel: Channel;
 		resolve: (channel: Channel) => void;
 		reject: (error: Error) => void;
 	}>;

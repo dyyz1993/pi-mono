@@ -14,7 +14,7 @@ import { getExtensionRuntimeResourcePolicy } from "../runtime-policy.ts";
 
 import { type SubagentChannelContract } from "./subagent-shared/index.ts";
 import { createIsolatedWorktree } from "../coordinator/worktree-isolation.ts";
-import type { CoordinatorChannelContract } from "../coordinator/types.ts";
+import { COORDINATOR_CHANNEL_NAME, type CoordinatorChannelContract } from "../coordinator/types.ts";
 
 interface SubagentDetails {
   agentScope: AgentScope;
@@ -30,6 +30,8 @@ interface SubagentDetails {
     error?: string;
   } | null;
 }
+
+const DEFAULT_SUBAGENT_TIMEOUT_SECONDS = 1800;
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
@@ -77,7 +79,7 @@ const SubagentParams = Type.Object({
   description: Type.Optional(Type.String({ description: "Short (3-5 word) summary of the task, shown in UI. If omitted, derived from the task parameter." })),
   model: Type.Optional(Type.String({ description: "Model override for the subagent (e.g. 'claude-sonnet-4-20250514'). Takes precedence over the agent definition's model. If omitted, inherits from the agent definition or parent." })),
   background: Type.Optional(Type.Boolean({ description: "Run in background mode. Default: false.", default: false })),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds. Default: 300.", default: 300 })),
+  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds. Default: 1800 (30 minutes).", default: DEFAULT_SUBAGENT_TIMEOUT_SECONDS })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
   agentScope: Type.Optional(AgentScopeSchema),
   confirmProjectAgents: Type.Optional(
@@ -96,7 +98,7 @@ const SubagentResumeParams = Type.Object({
   sessionPath: Type.Optional(Type.String({ description: "Path to the saved session file" })),
   instruction: Type.Optional(Type.String({ description: "Additional instruction for the resumed agent" })),
   background: Type.Optional(Type.Boolean({ description: "Run in background mode. Default: false.", default: false })),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds. Default: 300.", default: 300 })),
+  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds. Default: 1800 (30 minutes).", default: DEFAULT_SUBAGENT_TIMEOUT_SECONDS })),
 });
 
 export function resolveSessionPath(sessionId: string, sessionsBase?: string): string | null {
@@ -132,25 +134,11 @@ export default function(pi: ExtensionAPI) {
   const rawChannel = pi.registerChannel("subagent");
   const channel = createTypedChannel<SubagentChannelContract>(rawChannel).server;
 
-  const coordinatorRaw = pi.registerChannel("coordinator_client");
+  // Use the same coordinator channel as session_delegate. This keeps ordinary
+  // subtask routing aligned with the delegate tool and avoids stale secondary
+  // coordinator channels after runtime rebind/reload.
+  const coordinatorRaw = pi.registerChannel(COORDINATOR_CHANNEL_NAME);
   const coordinatorClient = createTypedChannel<CoordinatorChannelContract>(coordinatorRaw).client;
-
-  /** Probe coordinator availability with a short timeout. Returns an error message or null. */
-  async function probeCoordinator(): Promise<string | null> {
-    console.error(`[DIAG:probeCoordinator] coordinatorRaw.name=${coordinatorRaw.name} resolved=${(coordinatorRaw as unknown as { call?: unknown }).call !== undefined}`);
-    try {
-      await coordinatorClient.call("session_delegate_list", {}, 5_000);
-      console.error(`[DIAG:probeCoordinator] call succeeded`);
-      return null;
-    } catch (err) {
-      console.error(`[DIAG:probeCoordinator] call failed: ${err instanceof Error ? err.message : String(err)}`);
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("timed out") || msg.includes("timeout")) {
-        return "Coordinator extension is not available. Ensure the coordinator extension is loaded (it provides the Process Manager and session delegation).";
-      }
-      return `Coordinator channel error: ${msg}`;
-    }
-  }
 
   pi.registerTool({
     name: "subagent",
@@ -178,7 +166,7 @@ export default function(pi: ExtensionAPI) {
       const agentScope: AgentScope = params.agentScope ?? "user";
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const agents = discovery.agents;
-      const timeoutMs = (params.timeout ?? 300) * 1000;
+      const timeoutMs = (params.timeout ?? DEFAULT_SUBAGENT_TIMEOUT_SECONDS) * 1000;
 
       // ── Recursion depth check ──
       const maxDepth = params.maxDepth ?? 5;
@@ -251,16 +239,6 @@ export default function(pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: `Unknown agent: "${requested}". Available agents: ${available}.` }],
           details,
-        };
-      }
-
-      // ── Coordinator availability check (after agent discovery, before RPC) ──
-      const coordError = await probeCoordinator();
-      if (coordError) {
-        return {
-          content: [{ type: "text", text: coordError }],
-          details,
-          isError: true,
         };
       }
 
@@ -402,22 +380,12 @@ export default function(pi: ExtensionAPI) {
         };
       }
 
-      const timeoutMs = (params.timeout ?? 300) * 1000;
+      const timeoutMs = (params.timeout ?? DEFAULT_SUBAGENT_TIMEOUT_SECONDS) * 1000;
       const details: SubagentDetails = { agentScope: "user", projectAgentsDir: null, result: null };
       const startedAt = Date.now();
       const resumePrompt =
         params.instruction ?? "Continue the previous task from where you left off.";
       const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10) || 0;
-
-      // ── Coordinator availability check (after session path validation, before RPC) ──
-      const coordError = await probeCoordinator();
-      if (coordError) {
-        return {
-          content: [{ type: "text", text: coordError }],
-          details,
-          isError: true,
-        };
-      }
 
       // Subscribe to delegate_progress events during the sync call
       const unsubProgress = coordinatorClient.on("delegate_progress", (progressData) => {

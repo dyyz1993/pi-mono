@@ -101,6 +101,7 @@ export interface RpcClientSurface {
 
 	prompt(message: string, images?: ImageContent[]): Promise<void>;
 	steer(message: string, images?: ImageContent[]): Promise<void>;
+	steer(options: { text?: string; images?: ImageContent[]; promote?: number; immediate?: boolean }): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;
 	abort(): Promise<void>;
 	continue(): Promise<void>;

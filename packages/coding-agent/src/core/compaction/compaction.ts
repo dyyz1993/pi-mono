@@ -99,6 +99,88 @@ function getMessageFromEntryForCompaction(entry: SessionEntry): AgentMessage | u
 	return getMessageFromEntry(entry);
 }
 
+function buildCompactionMessageResolver(pathEntries: SessionEntry[]) {
+	const deletedIds = new Set<string>();
+	for (const entry of pathEntries) {
+		if (entry.type === "deletion") {
+			for (const targetId of entry.targetIds) {
+				deletedIds.add(targetId);
+			}
+		}
+	}
+
+	const deletedToolCallIds = new Set<string>();
+	for (const entry of pathEntries) {
+		if (entry.type === "message" && deletedIds.has(entry.id)) {
+			const message = entry.message;
+			if (message.role === "assistant" && Array.isArray(message.content)) {
+				for (const part of message.content as Array<{ type: string; id?: string }>) {
+					if (part.type === "toolCall" && part.id) {
+						deletedToolCallIds.add(part.id);
+					}
+				}
+			}
+		}
+	}
+	for (const entry of pathEntries) {
+		if (entry.type === "message" && entry.message.role === "toolResult") {
+			if (deletedToolCallIds.has(entry.message.toolCallId)) {
+				deletedIds.add(entry.id);
+			}
+		}
+	}
+
+	const strippedToolCallIds = new Set<string>();
+	for (const entry of pathEntries) {
+		if (entry.type === "message" && deletedIds.has(entry.id) && entry.message.role === "toolResult") {
+			strippedToolCallIds.add(entry.message.toolCallId);
+		}
+	}
+
+	const segmentTargets = new Map<string, { summary: string; isFirst: boolean; timestamp: string }>();
+	for (const entry of pathEntries) {
+		if (entry.type === "segment_summary") {
+			for (let i = 0; i < entry.targetIds.length; i++) {
+				const targetId = entry.targetIds[i];
+				if (deletedIds.has(targetId) || segmentTargets.has(targetId)) continue;
+				segmentTargets.set(targetId, {
+					summary: entry.summary,
+					isFirst: i === 0,
+					timestamp: entry.timestamp,
+				});
+			}
+		}
+	}
+
+	return (entry: SessionEntry): AgentMessage | undefined => {
+		if (entry.type === "message" && deletedIds.has(entry.id)) {
+			return undefined;
+		}
+
+		const segment = segmentTargets.get(entry.id);
+		if (segment) {
+			return segment.isFirst ? createBranchSummaryMessage(segment.summary, entry.id, segment.timestamp) : undefined;
+		}
+
+		if (
+			entry.type === "message" &&
+			entry.message.role === "assistant" &&
+			Array.isArray(entry.message.content) &&
+			strippedToolCallIds.size > 0
+		) {
+			const filteredContent = entry.message.content.filter(
+				(part: { type: string; id?: string }) =>
+					!(part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id)),
+			);
+			if (filteredContent.length !== entry.message.content.length) {
+				return { ...entry.message, content: filteredContent as typeof entry.message.content };
+			}
+		}
+
+		return getMessageFromEntryForCompaction(entry);
+	};
+}
+
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
 export interface CompactionResult<T = unknown> {
 	summary: string;
@@ -725,11 +807,12 @@ export function prepareCompaction(
 	const firstKeptEntryId = firstKeptEntry.id;
 
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
+	const resolveCompactionMessage = buildCompactionMessageResolver(pathEntries);
 
 	// Messages to summarize (will be discarded after summary)
 	const messagesToSummarize: AgentMessage[] = [];
 	for (let i = boundaryStart; i < historyEnd; i++) {
-		const msg = getMessageFromEntryForCompaction(pathEntries[i]);
+		const msg = resolveCompactionMessage(pathEntries[i]);
 		if (msg) messagesToSummarize.push(msg);
 	}
 
@@ -737,7 +820,7 @@ export function prepareCompaction(
 	const turnPrefixMessages: AgentMessage[] = [];
 	if (cutPoint.isSplitTurn) {
 		for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-			const msg = getMessageFromEntryForCompaction(pathEntries[i]);
+			const msg = resolveCompactionMessage(pathEntries[i]);
 			if (msg) turnPrefixMessages.push(msg);
 		}
 	}

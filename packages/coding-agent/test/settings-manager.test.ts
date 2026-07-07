@@ -336,6 +336,46 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("retry settings", () => {
+		it("uses app-aligned retry defaults", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getRetrySettings()).toEqual({
+				enabled: true,
+				maxRetries: 20,
+				baseDelayMs: 5000,
+			});
+		});
+
+		it("persists explicit retry overrides instead of falling back to defaults", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			manager.applyOverrides({
+				retry: {
+					enabled: false,
+					maxRetries: 7,
+					baseDelayMs: 1234,
+				},
+			});
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.retry).toEqual({
+				enabled: false,
+				maxRetries: 7,
+				baseDelayMs: 1234,
+			});
+
+			const reloaded = SettingsManager.create(projectDir, agentDir);
+			expect(reloaded.getRetrySettings()).toEqual({
+				enabled: false,
+				maxRetries: 7,
+				baseDelayMs: 1234,
+			});
+		});
+	});
+
 	describe("shellCommandPrefix", () => {
 		it("should load shellCommandPrefix from settings", () => {
 			const settingsPath = join(agentDir, "settings.json");

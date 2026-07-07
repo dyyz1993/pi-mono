@@ -214,7 +214,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			onError: (err) => {
 				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 			},
-			registerChannel: (name: string) => channelManager.register(name),
+			registerChannel: (name: string) => channelManager.registerOrReuse(name),
 		});
 
 		unsubscribe?.();
@@ -281,7 +281,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				await session.steer(command.message, command.images);
+				if (command.promote !== undefined || command.immediate) {
+					await session.steer({
+						text: command.message,
+						images: command.images,
+						promote: command.promote,
+						immediate: command.immediate,
+					});
+				} else {
+					await session.steer(command.message ?? "", command.images);
+				}
 				return success(id, "steer");
 			}
 
@@ -303,9 +312,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "new_session": {
 				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 				const result = await runtimeHost.newSession(options);
-				if (!result.cancelled) {
-					await rebindSession();
-				}
 				return success(id, "new_session", result);
 			}
 
@@ -483,9 +489,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "fork": {
 				const result = await runtimeHost.fork(command.entryId, { position: command.position });
-				if (!result.cancelled) {
-					await rebindSession();
-				}
 				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
 			}
 
@@ -578,9 +581,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return error(id, "clone", "Cannot clone session: no current entry selected");
 				}
 				const result = await runtimeHost.fork(leafId, { position: "at" });
-				if (!result.cancelled) {
-					await rebindSession();
-				}
 				return success(id, "clone", { cancelled: result.cancelled });
 			}
 
@@ -1028,7 +1028,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const previousCwd = runtimeHost.cwd;
 				const result = await runtimeHost.setCwd(command.cwd);
 				if (!result.cancelled) {
-					await rebindSession();
 					const cwd = runtimeHost.cwd;
 					if (cwd !== previousCwd) {
 						session.sessionManager.appendSystemEvent("cwd_changed", `Working directory changed to ${cwd}`, {
