@@ -39,6 +39,32 @@ describe("tool-gate provider", () => {
 		});
 	});
 
+	it("always permits coordinator delegate reply tools even when an agent allowlist omits them", async () => {
+		const provider = createToolGateProvider();
+
+		expect(
+			await provider.check(
+				makeContext({
+					toolName: "session_delegate_send",
+					agent: { tools: ["read", "write", "edit", "bash"] },
+				}),
+			),
+		).toEqual({ type: "pass" });
+	});
+
+	it("always permits coordinator delegate reply tools even when an agent blocklist includes them", async () => {
+		const provider = createToolGateProvider();
+
+		expect(
+			await provider.check(
+				makeContext({
+					toolName: "session_delegate_send",
+					agent: { disallowedTools: ["session_delegate_send"] },
+				}),
+			),
+		).toEqual({ type: "pass" });
+	});
+
 	it("supports wildcard tool allowlist entries", async () => {
 		const provider = createToolGateProvider();
 
