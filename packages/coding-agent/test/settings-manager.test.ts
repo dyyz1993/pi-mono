@@ -344,6 +344,7 @@ describe("SettingsManager", () => {
 				enabled: true,
 				maxRetries: 20,
 				baseDelayMs: 5000,
+				maxDelayMs: 60000,
 			});
 		});
 
@@ -372,7 +373,34 @@ describe("SettingsManager", () => {
 				enabled: false,
 				maxRetries: 7,
 				baseDelayMs: 1234,
+				maxDelayMs: 60000,
 			});
+		});
+
+		it("persists maxDelayMs override through round-trip", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			manager.applyOverrides({
+				retry: {
+					enabled: true,
+					maxRetries: 24,
+					baseDelayMs: 5000,
+					maxDelayMs: 30000,
+				},
+			});
+			await manager.flush();
+
+			// Verify raw file — maxDelayMs written as-is (migration runs only on load)
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.retry.maxDelayMs).toBe(30000);
+			expect(savedSettings.retry.maxRetries).toBe(24);
+
+			// Reload — migration moves retry.maxDelayMs → retry.provider.maxRetryDelayMs in memory
+			const reloaded = SettingsManager.create(projectDir, agentDir);
+			const retrySettings = reloaded.getRetrySettings();
+			expect(retrySettings.maxRetries).toBe(24);
+			expect(retrySettings.maxDelayMs).toBe(30000);
 		});
 	});
 

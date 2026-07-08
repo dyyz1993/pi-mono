@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { StringEnum } from "@dyyz1993/pi-ai";
 import {
   type AgentScope,
@@ -359,7 +359,8 @@ export default function(pi: ExtensionAPI) {
   pi.registerTool({
     name: "subagent_resume",
     label: "Subagent Resume",
-    description: "Resume a previously interrupted subagent session by dispatching a new session with resume context.",
+    description:
+      "Resume a previously interrupted subagent session. If the session still exists, dispatches a non-blocking resume message via session_delegate_send. Falls back to creating a new sync session only if the target session is gone.",
     parameters: SubagentResumeParams,
 
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
@@ -380,11 +381,78 @@ export default function(pi: ExtensionAPI) {
         };
       }
 
-      const timeoutMs = (params.timeout ?? DEFAULT_SUBAGENT_TIMEOUT_SECONDS) * 1000;
-      const details: SubagentDetails = { agentScope: "user", projectAgentsDir: null, result: null };
-      const startedAt = Date.now();
+      const sessionId = params.sessionId ?? basename(sPath, ".jsonl");
       const resumePrompt =
         params.instruction ?? "Continue the previous task from where you left off.";
+      const details: SubagentDetails = { agentScope: "user", projectAgentsDir: null, result: null };
+      const startedAt = Date.now();
+
+      // ── Fast path: try to resume the EXISTING session non-blockingly. ──
+      // This avoids the cost and recursive-timeout risk of spinning up a brand
+      // new sync session (see issue #151 P3). We check status first; if the
+      // session is alive (or stopped-but-resumable), session_delegate_send
+      // will deliver the resume message and return immediately.
+      try {
+        const statusResult = await coordinatorClient.call(
+          "session_delegate_status",
+          { sessionId },
+          15_000,
+        );
+        if (statusResult.status !== "not_found") {
+          const sendResult = await coordinatorClient.call(
+            "session_delegate_send",
+            {
+              targetSessionId: sessionId,
+              message: `[Resuming from session: ${sPath.split("/").pop()}]\n\n${resumePrompt}`,
+            },
+            30_000,
+          );
+
+          pi.appendEntry("subagent", {
+            toolCallId,
+            sessionId,
+            sessionPath: sPath,
+            description: "(resumed, non-blocking)",
+            instruction: params.instruction ?? "(resume)",
+            startedAt,
+            completedAt: Date.now(),
+            exitCode: sendResult.delivered ? 0 : 1,
+            finalText: sendResult.delivered
+              ? `Resume message delivered to session ${sessionId}. The session is running in the background — use session_delegate_status({"sessionId":"${sessionId}"}) to check progress.`
+              : `Failed to deliver resume message (target status: ${sendResult.targetStatus}).`,
+          });
+
+          if (!sendResult.delivered) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Could not deliver resume message to session ${sessionId} (status: ${sendResult.targetStatus}). The session may have been removed.`,
+                },
+              ],
+              details: { ...details, result: { sessionId, status: "failed", exitCode: 1, finalText: sendResult.targetStatus } },
+              isError: true,
+            };
+          }
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Resume message delivered to session ${sessionId} (was ${statusResult.status}). The session continues in the background.\n\nCheck progress with session_delegate_status({"sessionId":"${sessionId}"}).`,
+              },
+            ],
+            details: { ...details, result: { sessionId, status: "resumed", exitCode: 0, finalText: "delivered" } },
+          };
+        }
+      } catch {
+        // Status check failed (e.g. session not registered as a delegate
+        // child). Fall through to the sync-create path below so resume still
+        // works for sessions that were never tracked by the coordinator.
+      }
+
+      // ── Fallback: target session is gone, create a new sync session. ──
+      const timeoutMs = (params.timeout ?? DEFAULT_SUBAGENT_TIMEOUT_SECONDS) * 1000;
       const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10) || 0;
 
       // Subscribe to delegate_progress events during the sync call
