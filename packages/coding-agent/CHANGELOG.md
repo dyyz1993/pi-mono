@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- CLI RPC client: `pi rpc`, `pi channel`, `pi subscribe` subcommands for invoking RPC commands, calling extension channel methods, and streaming session events from the command line without writing Node.js scripts ([#53](https://github.com/dyyz1993/pi-mono/issues/53), implemented via `src/cli/rpc-command.ts`, `rpc-cli.ts`, `channel-cli.ts`, `subscribe-cli.ts`).
+- Added public `RpcClient.rawSend(command)` method to expose the private `send()` channel so the CLI can invoke arbitrary RPC methods without a typed wrapper.
+
 ## [0.78.10] - 2026-07-02
 
 ### Fixed
