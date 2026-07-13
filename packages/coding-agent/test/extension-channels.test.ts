@@ -475,10 +475,12 @@ describe("Extension Channel Integration", () => {
 			snapshotManager.onTurnEnd(tempDir, 1, appendEntry);
 			await runner.emit({ type: "turn_end", turnIndex: 1, message: {} as never, toolResults: [] });
 
-			// Verify getFileDiff with the file's entryId returns correct old/new content
+			// Verify getFileDiff with fromHash returns correct old/new content
 			const approveFile = snapshotManager.getModifiedFiles().find((f) => f.path === "approve.txt");
 			expect(approveFile).toBeDefined();
-			const diff = snapshotManager.getFileDiff({ filePath: "approve.txt", fromEntryId: approveFile!.entryId });
+			const fromHash = snapshotManager.resolveTargetTreeHash(approveFile!.entryId, []);
+			expect(fromHash).not.toBeNull();
+			const diff = snapshotManager.getFileDiff({ filePath: "approve.txt", fromHash: fromHash ?? undefined });
 			expect(diff).not.toBeNull();
 			expect(diff!.oldContent).toBe("v1\n");
 			expect(diff!.newContent).toBe("v2\n");

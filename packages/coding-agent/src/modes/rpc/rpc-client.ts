@@ -137,6 +137,7 @@ export interface RollbackPreviewResult {
 export interface ModifiedFilesResult {
 	files: Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>;
 	resolvedFromEntryId: string | null;
+	targetTreeHash?: string | null;
 }
 
 export interface FileDiffResult {
@@ -744,16 +745,14 @@ export class RpcClient {
 
 	async getFileDiff(options: {
 		filePath: string;
-		fromEntryId?: string;
-		toEntryId?: string;
-		useBaselineHash?: boolean;
+		fromHash?: string;
+		toHash?: string;
 	}): Promise<FileDiffResult | null> {
 		const response = await this.send({
 			type: "get_file_diff",
 			filePath: options.filePath,
-			fromEntryId: options.fromEntryId,
-			toEntryId: options.toEntryId,
-			useBaselineHash: options.useBaselineHash,
+			fromHash: options.fromHash,
+			toHash: options.toHash,
 		});
 		return this.getData(response);
 	}

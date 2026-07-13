@@ -428,7 +428,7 @@ export class FileSnapshotManager {
 		return null;
 	}
 
-	private resolveTargetTreeHash(targetEntryId: string, entries: SessionEntry[]): string | null {
+	resolveTargetTreeHash(targetEntryId: string, entries: SessionEntry[]): string | null {
 		const snapshot = this.snapshotIndex.get(targetEntryId);
 		if (snapshot) return snapshot.snapshotTreeHash;
 		const pathSnap = this.getLatestSnapshotOnPath(entries, targetEntryId);
@@ -644,27 +644,9 @@ export class FileSnapshotManager {
 		return result;
 	}
 
-	getFileDiff(options: {
-		filePath: string;
-		fromEntryId?: string;
-		toEntryId?: string;
-		useBaselineHash?: boolean;
-	}): FileDiffInfo | null {
-		const snapshots = [...this.snapshotIndex.values()].sort((a, b) => a.turnIndex - b.turnIndex);
-		const fromSnap = options.fromEntryId
-			? snapshots.find((snapshot) => snapshot.entryId === options.fromEntryId)
-			: undefined;
-		const toSnap = options.toEntryId
-			? snapshots.find((snapshot) => snapshot.entryId === options.toEntryId)
-			: undefined;
-		const fromHash = options.fromEntryId
-			? options.useBaselineHash
-				? (fromSnap?.baselineTreeHash ?? this.sessionStartTreeHash)
-				: (fromSnap?.snapshotTreeHash ?? null)
-			: this.sessionStartTreeHash;
-		const toHash = options.toEntryId
-			? (toSnap?.snapshotTreeHash ?? null)
-			: (this.lastCommittedTreeHash ?? this.sessionStartTreeHash);
+	getFileDiff(options: { filePath: string; fromHash?: string; toHash?: string }): FileDiffInfo | null {
+		const fromHash = options.fromHash ?? this.sessionStartTreeHash;
+		const toHash = options.toHash ?? this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
 
 		const targetFilePath = new Set([options.filePath]);
 		const oldContent = fromHash
