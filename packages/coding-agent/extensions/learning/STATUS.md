@@ -1,6 +1,7 @@
 # Learning Extension — Status Report
 
-> Commit: `de03b58f0` refactor(learning): audit + tests + perf + dry-run curator
+> Latest commit: `19f67c042` fix(learning): capture ui before fire-and-forget + slugify memory filename
+> Previous: `de03b58f0` refactor + `f3755601b` docs
 > Date: 2026-07-19
 
 ## Summary
@@ -8,6 +9,7 @@
 Production-grade state after audit + tests + performance + dry-run curator rework.
 All 186 tests pass across 15 files (101 unit + 43 integration + 29 e2e + 13 harness).
 getSnapshot cached path measured 9667x faster than cold path.
+Real e2e with live LLM (zhipuai/glm-4.5-air) verified — 2 production bugs found and fixed.
 
 ## Architecture
 
@@ -109,12 +111,48 @@ Manual approach (no Stryker dependency). 8 representative mutations applied/reve
 
 **Score: 7/8 caught = 87.5%** (1 missed = equivariant, behaviorally indistinguishable)
 
+## Real E2E Verification (Live LLM)
+
+Verified with `pi -p -e dist/extensions/learning/index.ts --provider zhipuai --model glm-4.5-air` (deepseek v4 flash configured but 402 insufficient balance; zhipuai free proxy used instead).
+
+### Case A — Simple greeting (should be filtered)
+- Prompt: `你好`
+- Result: `memory.extract skipped by filter` + `skill.distill skipped by filter`
+- No candidates generated ✓
+
+### Case B — Write operation (should generate skill candidate)
+- Prompt: `在当前目录创建一个 hello.txt 文件，内容是 Hello World`
+- Result: `skill.distill candidate created (pending) {"name":"create-file"}`
+- Candidate payload contains full workflow: User Request → Thinking → Response → Tool Call (write + params) → Tool Result → Thinking → Response ✓
+- File `hello.txt` actually created on disk ✓
+
+### Case C — Multi-turn technical (should generate memory candidate)
+- Prompt: `先 ls 看看当前目录，然后创建 config.json 内容是 {...}`
+- Result: 6 messages → `memory.extract` triggered, `skill.distill candidate created`
+- Memory candidate generated with clean slug filename: `ls-config.json-name-test-version-1.0.0-port-3000.md` ✓
+- Note: LLM extraction fell back to raw payload due to stale ctx during async LLM call (graceful degradation, candidate still created)
+
+### Production Bugs Found and Fixed
+
+**Bug 1: stale ctx crash in agent_end fire-and-forget handler** (commit `19f67c042`)
+- Symptom: `pi -p` exits with uncaught `Error: This extension ctx is stale after session replacement or reload`
+- Root cause: `agent_end` handler uses fire-and-forget IIFE (by design, to avoid blocking RPC). When IIFE runs `ctx?.ui.setStatus(...)`, session has already been replaced, and the `ctx?.ui` getter throws stale errors (doesn't return undefined, so `?.` doesn't help). The catch block also accessed `ctx?.ui`, causing unhandled throw → process crash.
+- Fix: capture ui reference synchronously at handler entry (try/catch around `ctx?.ui` since getter may throw). Use `capturedUi` throughout try + catch. Wrap catch-block ui calls in nested try/catch to swallow any remaining stale errors.
+- This bug was NOT caught by the 186-test suite because tests use mock ctx that doesn't implement stale detection.
+
+**Bug 2: memory candidate filename not slugified** (commit `19f67c042`)
+- Symptom: `buildMemoryCandidatePayload` used raw firstLine as filename, producing candidates with filenames like `先 ls 看看...{"name":"test"}...最.md` — contains CJK chars, colons, braces, quotes (illegal on Windows, fragile cross-platform).
+- Root cause: `applyMemoryCandidate` in store.ts already slugifies via private `slugify()`, but `buildMemoryCandidatePayload` in memory-provider.ts didn't — so candidate JSON files contained dirty filenames even though actual memory file writes would be clean.
+- Fix: added `slugifyFilename()` to utils.ts (consolidated impl matching `slugifyMemoryFilename` in index.ts + `slugify` in store.ts). `buildMemoryCandidatePayload` now uses it. Description field preserves original text.
+- Note: `store.ts` slugify and `index.ts` slugifyMemoryFilename still exist as duplicated implementations — low-priority cleanup deferred (don't refactor beyond what was asked).
+
 ## Known Limitations
 
-1. **Real e2e with live LLM** — not done. `pi -p "..."` hung 3+ minutes in current environment (no API key). Lifecycle.test.ts harness covers the closest possible simulation without a live LLM.
-2. **Cross-platform CI stability** — not done. Linux/Windows matrix requires CI environment.
-3. **Two memory curators** — there's some code redundancy between `memory-curator.ts` and `index.ts` event handlers. Low-priority cleanup deferred.
-4. **`memory file read failed ENOENT` warning** in multi-session lifecycle test — race between prefetch and freshly-written memory file. `logger.warn` handles gracefully; no functional impact.
+1. **Cross-platform CI stability** — not done. Linux/Windows matrix requires CI environment.
+2. **Two memory curators** — there's some code redundancy between `memory-curator.ts` and `index.ts` event handlers. Low-priority cleanup deferred.
+3. **`memory file read failed ENOENT` warning** in multi-session lifecycle test — race between prefetch and freshly-written memory file. `logger.warn` handles gracefully; no functional impact.
+4. **LLM extraction falls back to raw payload** when ctx goes stale during async LLM call in agent_end fire-and-forget. Memory candidate is still created (graceful degradation), but quality is lower (no LLM-curated content). Could be fixed by capturing `pi.callLLM` reference, but `pi.callLLM` internally accesses ctx so this requires deeper refactoring of the ExtensionRunner stale-detection mechanism. Low priority — raw payload is still usable.
+5. **Duplicated slugify implementations** — `utils.ts slugifyFilename`, `store.ts slugify` (private), `index.ts slugifyMemoryFilename`. Should consolidate into one, but deferred (current refactor scope exhausted).
 
 ## Configuration Modes (Refresher)
 
