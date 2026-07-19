@@ -1,13 +1,13 @@
 # Learning Extension — Status Report
 
-> Latest commit: `19f67c042` fix(learning): capture ui before fire-and-forget + slugify memory filename
+> Latest commit: `60f60aeaf` refactor(learning): consolidate slugify + add skill LLM distillation
 > Previous: `de03b58f0` refactor + `f3755601b` docs
 > Date: 2026-07-19
 
 ## Summary
 
 Production-grade state after audit + tests + performance + dry-run curator rework.
-All 186 tests pass across 15 files (101 unit + 43 integration + 29 e2e + 13 harness).
+All 195 tests pass across 15 files (182 learning + 13 harness) (101 unit + 43 integration + 29 e2e + 13 harness).
 getSnapshot cached path measured 9667x faster than cold path.
 Real e2e with live LLM (zhipuai/glm-4.5-air) verified — 2 production bugs found and fixed.
 
@@ -110,6 +110,47 @@ Manual approach (no Stryker dependency). 8 representative mutations applied/reve
 | 8 | `serializeMemory` `replace(/\.md$/i, "")` → `replace(/\.md$/, "")` | ✅ | `.MD` uppercase extension breaks filename |
 
 **Score: 7/8 caught = 87.5%** (1 missed = equivariant, behaviorally indistinguishable)
+
+## Post-E2E Optimizations (Round 2)
+
+After real e2e verification surfaced 2 production bugs (commit `19f67c042`), a second optimization pass addressed remaining items:
+
+### #2 Slugify Consolidation
+Three duplicated slugify implementations existed:
+- `utils.ts slugifyFilename` (returns `stem.md`)
+- `store.ts slugify` (private, returns `stem`)
+- `index.ts slugifyMemoryFilename` (returns `stem.md`, strips `.md` first)
+
+**Fix**: `utils.ts` now exports both `slugifyFilename` (with `.md`) and `slugifyStem` (without). `store.ts` deleted its `slugify` and uses `slugifyStem` at 6 call sites. `index.ts` deleted `slugifyMemoryFilename` and uses `slugifyFilename`. Single source of truth.
+
+### #3 Skill LLM Distillation
+Previously `maybeDistillSkill` built candidate payloads directly from raw workflow text (including verbose thinking, raw tool output). Now it uses LLM to refine.
+
+**New prompt** `DISTILL_PROMPT` asks LLM to:
+- Extract the essential, reusable procedure
+- Strip dead-end thinking and redundant tool output
+- Preserve: core operation sequence, key parameters, preconditions, verification steps
+- Output JSON with `name`, `description`, `body`, `shouldSkip`
+
+**Three response paths**:
+1. `shouldSkip=true` → LLM judged workflow too task-specific → skip candidate
+2. Valid response → use distilled name/description/body
+3. LLM throws or returns invalid JSON → fall back to raw payload (graceful degradation)
+
+**`parseDistillResponse` return type** distinguishes:
+- `{skipped: true}` — explicit skip
+- `{skipped: false, name, description, body}` — valid distilled result
+- `null` — invalid response (triggers fallback)
+
+### #1 Stale ctx Investigation (No Fix — Framework Limitation)
+Investigated capturing `pi.callLLM` reference before fire-and-forget. **Finding**: `pi.callLLM` is implemented in `loader.ts:523-526` as `runtime.assertActive(); return runtime.callLLM(options)`. The stale check is **inside** the method, not on the property accessor. So capturing the reference doesn't bypass it.
+
+**Conclusion**: The current graceful degradation (catch stale error, fall back to raw payload, candidate still generated) is the **correct fix at the extension layer**. A real fix requires a pi framework change: either a stale-safe `callLLM` variant, or moving LLM work into a synchronous phase before fire-and-forget. Out of scope for learning extension.
+
+### Test Growth
+- Before: 186 tests (15 files)
+- After: 195 tests (15 files: 182 learning + 13 harness)
+- New: 9 tests in skill-provider.test.ts covering parseDistillResponse (5) + maybeDistillSkill with LLM (4)
 
 ## Real E2E Verification (Live LLM)
 
