@@ -117,6 +117,18 @@ function disabledRun(domain: LearningRunCuratorParams["domain"]): LearningRun {
   };
 }
 
+/**
+ * Read a memory entrypoint file if it exists, returning empty string otherwise.
+ * Centralizes the try/catch so callers stay linear.
+ */
+async function readMemoryEntrypoint(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
 async function uniqueMemoryFilePath(memoryDir: string, filename: string): Promise<{ filename: string; filePath: string }> {
   const stem = filename.replace(/\.md$/i, "") || "memory";
   let candidate = `${stem}.md`;
@@ -692,13 +704,27 @@ export default function learningExtension(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event) => {
     if (!learningAvailable || !memoryDir) return;
-    let memoryContent = "";
-    try {
-      memoryContent = await readFile(join(memoryDir, ENTRYPOINT_NAME), "utf-8");
-    } catch {
-      // No MEMORY.md yet, that's fine
-    }
-    const truncated = truncateEntrypoint(memoryContent);
+    // Read project + global memory entrypoints; merge into one prompt.
+    // Global memory holds user-type memories that follow the user across projects;
+    // project memory holds project/feedback/reference/bookmark types.
+    const storeForMemory = getStore();
+    const globalMemoryDir = storeForMemory?.paths.globalMemoryDir ?? "";
+    const projectMemoryContent = await readMemoryEntrypoint(join(memoryDir, ENTRYPOINT_NAME));
+    const globalMemoryContent = globalMemoryDir
+      ? await readMemoryEntrypoint(join(globalMemoryDir, ENTRYPOINT_NAME))
+      : "";
+    // Compose: global section + project section (each truncated individually
+    // to bound size, then combined; truncateEntrypoint is applied to the merged
+    // result below to enforce the overall cap).
+    const mergedRaw = [globalMemoryContent, projectMemoryContent]
+      .filter(Boolean)
+      .map((section, index) =>
+        index === 0 && globalMemoryContent && projectMemoryContent
+          ? `## Global memory (cross-project)\n\n${globalMemoryContent}\n\n## Project memory\n\n${projectMemoryContent}`
+          : section,
+      )
+      .join("\n\n");
+    const truncated = truncateEntrypoint(mergedRaw);
     const memoryPrompt = MEMORY_SYSTEM_PROMPT(truncated.content);
 
     const lastUserText = event.prompt ?? "";

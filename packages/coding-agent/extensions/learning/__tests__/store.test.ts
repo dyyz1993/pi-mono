@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { isInsidePath, serializeMemory, serializeSkill, LearningStore } from "../store.ts";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "node:path";
@@ -255,5 +255,85 @@ describe("LearningStore.listActiveSkillBodies", () => {
     expect(result[0]!.name).toBe("high-use");
     expect(result[1]!.name).toBe("low-use");
     expect(result[0]!.usageCount).toBeGreaterThan(result[1]!.usageCount);
+  });
+});
+
+describe("LearningStore global memory scope", () => {
+  let tempProject: string;
+  let store: LearningStore;
+
+  beforeEach(() => {
+    tempProject = mkdtempSync(join(tmpdir(), "store-global-mem-"));
+    store = new LearningStore(tempProject);
+  });
+
+  afterEach(() => {
+    if (existsSync(tempProject)) rmSync(tempProject, { recursive: true, force: true });
+  });
+
+  function approvedMemoryCandidate(id: string, payload: { filename: string; description: string; memoryType: "user" | "project"; content: string; scope?: "project" | "global" }) {
+    return {
+      version: 1 as const,
+      id,
+      domain: "memory" as const,
+      action: "create-memory" as const,
+      status: "approved" as const,
+      title: id,
+      summary: id,
+      confidence: "medium" as const,
+      sourceSessionId: undefined,
+      sourceMessageIds: [],
+      createdAt: Date.now(),
+      payload,
+      fileRefs: [],
+      decision: "approved" as const,
+      decidedAt: Date.now(),
+    };
+  }
+
+  it("writes to project memory dir when scope is 'project' or undefined", async () => {
+    const payload = { filename: "project-thing.md", description: "project thing", memoryType: "project" as const, content: "project content" };
+    await store.applyMemoryCandidate(payload, approvedMemoryCandidate("c1", payload));
+    const projectExists = existsSync(join(store.paths.memoryDir, "project-thing.md"));
+    const globalExists = existsSync(join(store.paths.globalMemoryDir, "project-thing.md"));
+    expect(projectExists).toBe(true);
+    expect(globalExists).toBe(false);
+  });
+
+  it("writes to global memory dir when scope is 'global'", async () => {
+    const payload = { filename: "user-role.md", description: "user role", memoryType: "user" as const, content: "user is a backend dev", scope: "global" as const };
+    await store.applyMemoryCandidate(payload, approvedMemoryCandidate("c2", payload));
+    const projectExists = existsSync(join(store.paths.memoryDir, "user-role.md"));
+    const globalExists = existsSync(join(store.paths.globalMemoryDir, "user-role.md"));
+    expect(projectExists).toBe(false);
+    expect(globalExists).toBe(true);
+  });
+
+  it("listMemoryFiles returns memories from both scopes", async () => {
+    const projectPayload = { filename: "proj.md", description: "proj", memoryType: "project" as const, content: "proj" };
+    const globalPayload = { filename: "glob.md", description: "glob", memoryType: "user" as const, content: "glob", scope: "global" as const };
+    await store.applyMemoryCandidate(projectPayload, approvedMemoryCandidate("c1", projectPayload));
+    await store.applyMemoryCandidate(globalPayload, approvedMemoryCandidate("c2", globalPayload));
+
+    const files = await store.listMemoryFiles();
+    const filenames = files.map((f) => f.filename);
+    expect(filenames).toContain("proj.md");
+    expect(filenames).toContain("glob.md");
+  });
+
+  it("maintains separate MEMORY.md entrypoints for each scope", async () => {
+    const projectPayload = { filename: "proj.md", description: "proj desc", memoryType: "project" as const, content: "proj" };
+    const globalPayload = { filename: "glob.md", description: "glob desc", memoryType: "user" as const, content: "glob", scope: "global" as const };
+    await store.applyMemoryCandidate(projectPayload, approvedMemoryCandidate("c1", projectPayload));
+    await store.applyMemoryCandidate(globalPayload, approvedMemoryCandidate("c2", globalPayload));
+
+    const projectEntry = readFileSync(join(store.paths.memoryDir, "MEMORY.md"), "utf-8");
+    const globalEntry = readFileSync(join(store.paths.globalMemoryDir, "MEMORY.md"), "utf-8");
+
+    expect(projectEntry).toContain("proj desc");
+    expect(projectEntry).not.toContain("glob desc");
+
+    expect(globalEntry).toContain("glob desc");
+    expect(globalEntry).not.toContain("proj desc");
   });
 });

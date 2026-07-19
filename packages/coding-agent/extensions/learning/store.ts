@@ -29,12 +29,18 @@ export interface LearningPaths {
 	projectUserStateDir: string;
 	learningDir: string;
 	memoryDir: string;
+	/** Global memory dir shared across all projects (~/.pi/agent/learning/memory). */
+	globalMemoryDir: string;
+	/** Global learning dir (~/.pi/agent/learning). */
+	globalLearningDir: string;
 	skillsDir: string;
 	candidatesDir: string;
 	runsDir: string;
 	snapshotsDir: string;
 	archiveMemoryDir: string;
 	archiveSkillsDir: string;
+	/** Archive dir for global memory (~/.pi/agent/learning/memory/.archive). */
+	archiveGlobalMemoryDir: string;
 }
 
 export const DEFAULT_LEARNING_CONFIG: LearningConfig = {
@@ -163,21 +169,29 @@ function mergeConfig(base: LearningConfig, patch: Partial<LearningConfig>): Lear
 
 export function getLearningPaths(projectRoot: string): LearningPaths {
 	const resolvedProjectRoot = resolveProjectIdentity(projectRoot);
-	const projectUserStateDir = join(getAgentDir(), "projects", encodeProjectPath(resolvedProjectRoot));
+	const agentDir = getAgentDir();
+	const projectUserStateDir = join(agentDir, "projects", encodeProjectPath(resolvedProjectRoot));
 	const learningDir = join(projectUserStateDir, "learning");
 	const memoryDir = join(projectUserStateDir, "memory");
 	const skillsDir = join(projectUserStateDir, "skills");
+	// Global dir: ~/.pi/agent/learning (shared across all projects).
+	// Used for user-type memories that should follow the user everywhere.
+	const globalLearningDir = join(agentDir, "learning");
+	const globalMemoryDir = join(globalLearningDir, "memory");
 	return {
 		projectRoot: resolvedProjectRoot,
 		projectUserStateDir,
 		learningDir,
 		memoryDir,
+		globalMemoryDir,
+		globalLearningDir,
 		skillsDir,
 		candidatesDir: join(learningDir, "candidates"),
 		runsDir: join(learningDir, "runs"),
 		snapshotsDir: join(learningDir, "snapshots"),
 		archiveMemoryDir: join(memoryDir, ".archive"),
 		archiveSkillsDir: join(skillsDir, ".archive"),
+		archiveGlobalMemoryDir: join(globalMemoryDir, ".archive"),
 	};
 }
 
@@ -490,8 +504,12 @@ export class LearningStore {
 
 	async listMemoryFiles(): Promise<LearningMemorySummary[]> {
 		const files: LearningMemorySummary[] = [];
+		// Project-scoped memories
 		this.collectMemoryFiles(this.paths.memoryDir, "active", files);
 		this.collectMemoryFiles(this.paths.archiveMemoryDir, "archived", files);
+		// Global (cross-project) memories — user-type memories live here
+		this.collectMemoryFiles(this.paths.globalMemoryDir, "active", files);
+		this.collectMemoryFiles(this.paths.archiveGlobalMemoryDir, "archived", files);
 		files.sort((a, b) => b.mtimeMs - a.mtimeMs);
 		return files;
 	}
@@ -555,16 +573,22 @@ export class LearningStore {
 			? slugifyStem(payload.filename.slice(0, -3), "memory")
 			: slugifyStem(payload.filename, "memory");
 		let filename = `${baseName}.md`;
-		let target = safeJoin(this.paths.memoryDir, filename);
+		// Scope: "global" writes to the cross-project memory dir (~/.pi/agent/learning/memory);
+		// default "project" writes to project-scoped dir. Backward compatible: omitting scope
+		// keeps the pre-existing project-scoped behavior.
+		const scope = payload.scope ?? "project";
+		const memoryDir = scope === "global" ? this.paths.globalMemoryDir : this.paths.memoryDir;
+		await mkdir(memoryDir, { recursive: true });
+		let target = safeJoin(memoryDir, filename);
 		let suffix = 2;
 		while (existsSync(target)) {
 			filename = `${baseName}-${suffix}.md`;
-			target = safeJoin(this.paths.memoryDir, filename);
+			target = safeJoin(memoryDir, filename);
 			suffix += 1;
 		}
 		await writeFile(target, serializeMemory(payload, { sourceSessionId: candidate.sourceSessionId }), "utf-8");
 		await this.ensureMemoryEntrypoint();
-		return [fileRef(target, filename, "memory"), fileRef(join(this.paths.memoryDir, MEMORY_ENTRYPOINT), MEMORY_ENTRYPOINT, "memory-index")];
+		return [fileRef(target, filename, "memory"), fileRef(join(memoryDir, MEMORY_ENTRYPOINT), MEMORY_ENTRYPOINT, "memory-index")];
 	}
 
 	async applySkillCandidate(
@@ -660,12 +684,33 @@ export class LearningStore {
 	}
 
 	private async ensureMemoryEntrypoint(): Promise<void> {
-		const entrypoint = safeJoin(this.paths.memoryDir, MEMORY_ENTRYPOINT);
-		const files = await this.listMemoryFiles();
-		const activeFiles = files.filter((file) => file.state === "active");
+		await this.ensureScopedMemoryEntrypoint(this.paths.memoryDir, "Project Memory", (f) =>
+			this.isGlobalMemoryFile(f) === false,
+		);
+		await this.ensureScopedMemoryEntrypoint(this.paths.globalMemoryDir, "Global Memory", (f) =>
+			this.isGlobalMemoryFile(f) === true,
+		);
+	}
 
-		// Skip rebuild if entrypoint is newer than all active memory files
-		// (avoids repeated disk writes during high-frequency getSnapshot calls)
+	/**
+	 * Returns true if the memory file lives under the global memory dir.
+	 * Used to split the combined listMemoryFiles() result by scope.
+	 */
+	private isGlobalMemoryFile(file: LearningMemorySummary): boolean {
+		const rel = file.filePath;
+		return rel.startsWith(this.paths.globalMemoryDir);
+	}
+
+	private async ensureScopedMemoryEntrypoint(
+		dir: string,
+		heading: string,
+		predicate: (file: LearningMemorySummary) => boolean,
+	): Promise<void> {
+		const entrypoint = safeJoin(dir, MEMORY_ENTRYPOINT);
+		const files = await this.listMemoryFiles();
+		const activeFiles = files.filter((file) => file.state === "active" && predicate(file));
+
+		// Skip rebuild if entrypoint is newer than all active memory files in this scope
 		try {
 			const entryStat = await stat(entrypoint);
 			const newestMemory = activeFiles.reduce<number>((max, f) => Math.max(max, f.mtimeMs ?? 0), 0);
@@ -677,11 +722,12 @@ export class LearningStore {
 		}
 
 		const lines = [
-			"# Project Memory",
+			`# ${heading}`,
 			"",
 			...activeFiles.map((file) => `- [${file.description ?? file.filename}](${file.filename})`),
 			"",
 		];
+		await mkdir(dir, { recursive: true });
 		await writeFile(entrypoint, lines.join("\n"), "utf-8");
 	}
 

@@ -84,6 +84,13 @@ export interface LearningMemoryCandidatePayload {
 	description: string;
 	memoryType: "user" | "feedback" | "project" | "reference" | "bookmark";
 	content: string;
+	/**
+	 * Storage scope. "project" (default) writes to project-scoped memory dir;
+	 * "global" writes to ~/.pi/agent/learning/memory (shared across projects).
+	 * Use "global" for memories that should follow the user everywhere
+	 * (e.g. role, preferences, expertise).
+	 */
+	scope?: "project" | "global";
 }
 
 export interface LearningSkillCandidatePayload {
