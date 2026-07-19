@@ -77,6 +77,38 @@ function createToolResultMsg(toolName: string, content: string, isError = false)
 	};
 }
 
+/**
+ * Append a valid (assistant toolCall + toolResult) pair to the session.
+ * Without the assistant toolCall, sanitizeToolProtocolEntries would strip
+ * the toolResult as an orphan, breaking microcompact stress tests.
+ */
+function appendToolResultPair(harness: Harness, toolName: string, content: string, isError = false): void {
+	const model = harness.getModel();
+	const toolCallId = `tc-${Math.random().toString(36).slice(2, 8)}`;
+	const ts = Date.now();
+	harness.sessionManager.appendMessage({
+		role: "assistant",
+		content: [
+			{ type: "text", text: `Calling ${toolName}` },
+			{ type: "toolCall", id: toolCallId, name: toolName, arguments: {} },
+		],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: createUsage(10),
+		stopReason: "toolUse",
+		timestamp: ts - 1,
+	} as AssistantMessage);
+	harness.sessionManager.appendMessage({
+		role: "toolResult",
+		toolName,
+		toolCallId,
+		content: [{ type: "text", text: content }],
+		isError,
+		timestamp: ts,
+	});
+}
+
 function createAssistantMsg(text: string): AssistantMessage {
 	return {
 		role: "assistant",
@@ -129,7 +161,7 @@ describe("Multi-compaction stress tests", () => {
 
 			// Tool result (varying sizes: 1KB to 20KB)
 			const sizeKb = (turn % 20) + 1;
-			harness.sessionManager.appendMessage(createToolResultMsg("read", largeContent(turn, sizeKb)));
+			appendToolResultPair(harness, "read", largeContent(turn, sizeKb));
 
 			// Assistant response
 			harness.sessionManager.appendMessage(
@@ -210,9 +242,7 @@ describe("Multi-compaction stress tests", () => {
 				content: [{ type: "text", text: `read file ${i}` }],
 				timestamp: Date.now() - (500 - i),
 			});
-			harness.sessionManager.appendMessage(
-				createToolResultMsg("read", `Content of file ${i}: ${"data ".repeat(100)}`),
-			);
+			appendToolResultPair(harness, "read", `Content of file ${i}: ${"data ".repeat(100)}`);
 		}
 
 		const startTime = Date.now();
@@ -255,9 +285,7 @@ describe("Multi-compaction stress tests", () => {
 					content: [{ type: "text", text: `Cycle ${cycle} message ${j}` }],
 					timestamp: Date.now(),
 				});
-				harness.sessionManager.appendMessage(
-					createToolResultMsg("read", `Result data for cycle ${cycle} msg ${j}: ${"x ".repeat(200)}`),
-				);
+				appendToolResultPair(harness, "read", `Result data for cycle ${cycle} msg ${j}: ${"x ".repeat(200)}`);
 				harness.sessionManager.appendMessage(createAssistantMsg(`Cycle ${cycle} response ${j}`));
 			}
 
@@ -306,9 +334,7 @@ describe("Multi-compaction stress tests", () => {
 					content: [{ type: "text", text: `Round ${round} prompt ${j}` }],
 					timestamp: Date.now(),
 				});
-				harness.sessionManager.appendMessage(
-					createToolResultMsg("bash", `Output round ${round} cmd ${j}: ${"output ".repeat(100)}`),
-				);
+				appendToolResultPair(harness, "bash", `Output round ${round} cmd ${j}: ${"output ".repeat(100)}`);
 				harness.sessionManager.appendMessage(createAssistantMsg(`Round ${round} response ${j}`));
 			}
 
@@ -353,7 +379,7 @@ describe("Multi-compaction stress tests", () => {
 				content: [{ type: "text", text: `Message ${i}` }],
 				timestamp: Date.now() - (100 - i),
 			});
-			harness.sessionManager.appendMessage(createToolResultMsg("read", `File content ${i}: ${"data ".repeat(50)}`));
+			appendToolResultPair(harness, "read", `File content ${i}: ${"data ".repeat(50)}`);
 			harness.sessionManager.appendMessage(createAssistantMsg(`Response ${i}`));
 		}
 
@@ -396,7 +422,7 @@ describe("Multi-compaction stress tests", () => {
 				content: [{ type: "text", text: `read file-${i}` }],
 				timestamp: Date.now() - (20 - i),
 			});
-			harness.sessionManager.appendMessage(createToolResultMsg("read", largeContent(i, 100)));
+			appendToolResultPair(harness, "read", largeContent(i, 100));
 		}
 
 		const startTime = Date.now();
