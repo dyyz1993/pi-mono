@@ -381,3 +381,50 @@ describe("maybeDistillSkill with LLM", () => {
     expect(snapshot.candidates[0]!.payload.name).toBe("create-file");
   });
 });
+describe("SKILL_SYSTEM_PROMPT", () => {
+  it("returns empty string for empty skill list", async () => {
+    const { SKILL_SYSTEM_PROMPT } = await import("../prompts.ts");
+    expect(SKILL_SYSTEM_PROMPT([])).toBe("");
+  });
+
+  it("includes skill name, description, and body", async () => {
+    const { SKILL_SYSTEM_PROMPT } = await import("../prompts.ts");
+    const result = SKILL_SYSTEM_PROMPT([
+      {
+        name: "create-file",
+        description: "Create a file with content",
+        body: "# Skill: create-file\n\n## Procedure\n1. Use write tool",
+      },
+    ]);
+    expect(result).toContain("# learning skills");
+    expect(result).toContain("create-file");
+    expect(result).toContain("Create a file with content");
+    expect(result).toContain("## Procedure");
+    expect(result).toContain("Use write tool");
+  });
+
+  it("truncates long skill bodies", async () => {
+    const { SKILL_SYSTEM_PROMPT } = await import("../prompts.ts");
+    const longBody = "x".repeat(2000);
+    const result = SKILL_SYSTEM_PROMPT(
+      [{ name: "big", description: "d", body: longBody }],
+      100,
+    );
+    expect(result).toContain("...");
+    expect(result.length).toBeLessThan(longBody.length + 500);
+  });
+
+  it("limits to maxSkills", async () => {
+    const { SKILL_SYSTEM_PROMPT } = await import("../prompts.ts");
+    const skills = Array.from({ length: 12 }, (_, i) => ({
+      name: `skill-${i}`,
+      description: `desc-${i}`,
+      body: `body-${i}`,
+    }));
+    const result = SKILL_SYSTEM_PROMPT(skills, 1500, 5);
+    expect(result).toContain("skill-0");
+    expect(result).toContain("skill-4");
+    expect(result).not.toContain("skill-5");
+    expect(result).not.toContain("skill-11");
+  });
+});

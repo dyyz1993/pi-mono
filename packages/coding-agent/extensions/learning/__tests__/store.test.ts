@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { isInsidePath, serializeMemory, serializeSkill, LearningStore } from "../store.ts";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
+import { join } from "node:path";
 
 describe("isInsidePath", () => {
   it("returns true for identical paths", () => {
@@ -175,5 +177,83 @@ describe("LearningStore.getSnapshot cache", () => {
     const snap2 = await store.getSnapshot();
     expect(snap2).not.toBe(snap1);
     expect(snap2.overview.pendingCandidates).toBe(1);
+  });
+});
+
+describe("LearningStore.listActiveSkillBodies", () => {
+  let tempProject: string;
+  let store: LearningStore;
+
+  beforeEach(() => {
+    tempProject = mkdtempSync(join(tmpdir(), "store-skill-bodies-"));
+    store = new LearningStore(tempProject);
+  });
+
+  afterEach(() => {
+    if (existsSync(tempProject)) rmSync(tempProject, { recursive: true, force: true });
+  });
+
+  it("returns empty array when no skills exist", async () => {
+    const result = await store.listActiveSkillBodies();
+    expect(result).toEqual([]);
+  });
+
+  it("returns active skills with name, description, body", async () => {
+    await store.applySkillCandidate(
+      {
+        name: "create-file",
+        description: "Create a file",
+        body: "# Skill: create-file\n\n## Procedure\n1. Use write",
+      },
+      {
+        version: 1,
+        id: "test-1",
+        domain: "skill",
+        action: "create-skill",
+        status: "approved",
+        title: "Create file",
+        summary: "Create file skill",
+        confidence: "medium",
+        sourceSessionId: undefined,
+        sourceMessageIds: [],
+        createdAt: Date.now(),
+        payload: {
+          name: "create-file",
+          description: "Create a file",
+          body: "# Skill: create-file\n\n## Procedure\n1. Use write",
+        },
+        fileRefs: [],
+        decision: "approved",
+        decidedAt: Date.now(),
+      },
+    );
+    const result = await store.listActiveSkillBodies();
+    expect(result).toHaveLength(1);
+    expect(result[0]!.name).toBe("create-file");
+    expect(result[0]!.description).toBe("Create a file");
+    expect(result[0]!.body).toContain("# Skill: create-file");
+    expect(result[0]!.body).toContain("## Procedure");
+  });
+
+  it("sorts by usageCount DESC (apply multiple times increments usage)", async () => {
+    const lowPayload = { name: "low-use", description: "d1", body: "b1" };
+    const highPayload = { name: "high-use", description: "d2", body: "b2" };
+    const mkCandidate = (id: string, payload: { name: string; description: string; body: string }) => ({
+      version: 1 as const, id, domain: "skill" as const, action: "create-skill" as const,
+      status: "approved" as const, title: id, summary: id, confidence: "medium" as const,
+      sourceSessionId: undefined, sourceMessageIds: [], createdAt: Date.now(),
+      payload, fileRefs: [], decision: "approved" as const, decidedAt: Date.now(),
+    });
+    await store.applySkillCandidate(lowPayload, mkCandidate("c1", lowPayload));
+    // Apply high-use 3 times to bump usageCount to 3
+    await store.applySkillCandidate(highPayload, mkCandidate("c2", highPayload));
+    await store.applySkillCandidate(highPayload, mkCandidate("c3", highPayload));
+    await store.applySkillCandidate(highPayload, mkCandidate("c4", highPayload));
+
+    const result = await store.listActiveSkillBodies();
+    expect(result).toHaveLength(2);
+    expect(result[0]!.name).toBe("high-use");
+    expect(result[1]!.name).toBe("low-use");
+    expect(result[0]!.usageCount).toBeGreaterThan(result[1]!.usageCount);
   });
 });

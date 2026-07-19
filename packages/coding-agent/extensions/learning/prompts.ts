@@ -302,3 +302,57 @@ Respond with JSON only:
 
 If the workflow is too task-specific to generalize (e.g. one-off debugging, exploratory
 back-and-forth with no clear procedure), set shouldSkip=true and leave other fields empty.`;
+
+export interface SkillPromptEntry {
+	name: string;
+	description: string;
+	body: string;
+}
+
+/**
+ * Build the skill injection section for the system prompt.
+ *
+ * Unlike memory (passive facts), skills are reusable workflow templates. The
+ * prompt frames them as suggestions: "if the user's request matches one of
+ * these, consider following this procedure."
+ *
+ * Bodies are truncated to control token cost; descriptions are kept verbatim
+ * because they are the primary matching signal.
+ */
+export const SKILL_SYSTEM_PROMPT = (
+	skills: SkillPromptEntry[],
+	maxBodyCharsPerSkill = 1500,
+	maxSkills = 8,
+): string => {
+	if (skills.length === 0) return "";
+	const selected = skills.slice(0, maxSkills);
+	const items = selected
+		.map((skill, index) => {
+			const truncated =
+				skill.body.length > maxBodyCharsPerSkill
+					? `${skill.body.slice(0, maxBodyCharsPerSkill)}...`
+					: skill.body;
+			return `### Skill ${index + 1}: ${skill.name}\n\n**When to use:** ${skill.description}\n\n\`\`\`markdown\n${truncated}\n\`\`\``;
+		})
+		.join("\n\n---\n\n");
+	return `# learning skills
+
+You have a library of reusable skill templates curated from past sessions. Each
+skill captures a proven workflow (procedure + verification steps) that worked
+well in a previous task.
+
+## Available skills
+
+${items}
+
+## How to use skills
+
+- **Match by description.** When the user's request matches a skill's "When to
+  use" description, consider following that skill's procedure.
+- **Adapt, don't copy.** Skills are templates. Adjust parameters, file paths,
+  and specifics to the current task. Do not blindly replay hardcoded values.
+- **Skip when not relevant.** If no skill matches, proceed normally. Do not
+  force-fit a skill to an unrelated request.
+- **Verify after applying.** Each skill lists verification steps — run them to
+  confirm the task succeeded before declaring completion.`;
+};

@@ -505,6 +505,43 @@ export class LearningStore {
 		return skills;
 	}
 
+	/**
+	 * List active skills with their full body content, for prompt injection.
+	 *
+	 * Reads each skill's SKILL.md frontmatter (name + description) and the body
+	 * below the frontmatter. Only "active" skills are included; disabled and
+	 * archived skills are skipped so they don't consume prompt tokens.
+	 *
+	 * Results are sorted by usageCount DESC (most-used first) so that when the
+	 * prompt injector truncates to a max count, the most relevant skills survive.
+	 */
+	async listActiveSkillBodies(): Promise<{ name: string; description: string; body: string; usageCount: number }[]> {
+		const usage = await this.loadUsage();
+		const summaries: LearningSkillSummary[] = [];
+		this.collectSkillSummaries(this.paths.skillsDir, "active", usage, summaries);
+		const active = summaries.filter((skill) => skill.state === "active");
+		const enriched = await Promise.all(
+			active.map(async (skill) => {
+				let body = "";
+				try {
+					const raw = readFileSyncUtf8(skill.filePath);
+					const parsed = parseFrontmatter(raw);
+					body = parsed.body.trim();
+				} catch {
+					body = "";
+				}
+				return {
+					name: skill.name,
+					description: skill.description,
+					body,
+					usageCount: skill.usageCount,
+				};
+			}),
+		);
+		enriched.sort((a, b) => b.usageCount - a.usageCount);
+		return enriched;
+	}
+
 	private candidatePath(candidateId: string): string {
 		return safeJoin(this.paths.candidatesDir, `${slugifyStem(candidateId, "candidate")}.json`);
 	}

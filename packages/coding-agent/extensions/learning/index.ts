@@ -38,7 +38,7 @@ import {
   logger,
 } from "./utils.ts";
 import { loadSkipWordStore, addHistoryEntry, saveSkipWordStore, getGlobalLearningDir, getDefaultRules } from "./skip-rules.ts";
-import { MEMORY_SYSTEM_PROMPT } from "./prompts.ts";
+import { MEMORY_SYSTEM_PROMPT, SKILL_SYSTEM_PROMPT } from "./prompts.ts";
 import { getExtensionRuntimeResourcePolicy } from "../runtime-policy.ts";
 
 function sourceMessageIds(messages: AgentMessage[]): string[] {
@@ -719,7 +719,16 @@ export default function learningExtension(pi: ExtensionAPI) {
       });
     }
 
-    return { systemPrompt: `${event.systemPrompt}\n\n${memoryPrompt}` };
+    const currentStore = getStore();
+    const skillBodies = currentStore ? await currentStore.listActiveSkillBodies() : [];
+    const skillPrompt = SKILL_SYSTEM_PROMPT(
+      skillBodies.map((skill) => ({ name: skill.name, description: skill.description, body: skill.body })),
+    );
+    const sections = [memoryPrompt, skillPrompt].filter(Boolean);
+    const appendedSystemPrompt = sections.length > 0
+      ? `${event.systemPrompt}\n\n${sections.join("\n\n")}`
+      : event.systemPrompt;
+    return { systemPrompt: appendedSystemPrompt };
   });
 
   // --- Context: non-blocking memory injection ---
