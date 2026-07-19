@@ -108,6 +108,10 @@ const DEFAULT_IGNORE_PATTERNS = [
 	"*.wasm",
 	"*.sqlite",
 	"*.db",
+	"*.db-shm",
+	"*.db-wal",
+	"*.sqlite-shm",
+	"*.sqlite-wal",
 ];
 
 interface ScanContext {

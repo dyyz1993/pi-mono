@@ -776,6 +776,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 				if (command.toUserMsgEntryId) {
 					const entries = session.sessionManager.getEntries();
+					// 回滚预览 = target→current 的累积文件差异（回滚会影响的所有文件）
 					const files = fileSnapshotManager.getRollbackPreviewFiles({
 						targetEntryId: command.toUserMsgEntryId,
 						entries,

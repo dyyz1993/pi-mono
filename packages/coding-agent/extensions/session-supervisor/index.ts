@@ -407,6 +407,12 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
 
     // ── Inject active goal into system prompt ──
 
+    interface TurnFileDiff {
+        path: string;
+        status: "added" | "modified" | "deleted";
+        unifiedDiff: string;
+    }
+
     pi.on("before_agent_start", async (event) => {
         if (!activeGoal || activeGoal.status === "cancelled" || activeGoal.status === "complete") {
             return {};
@@ -695,13 +701,22 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 return;
             }
 
-            // Phase 3: All guards passed → run fallback model check
+            // Phase 3: All guards passed → run intent-driven model check
             const modelCheckStart = Date.now();
+
+            // 获取本轮文件改动，用于意图对照检查
+            const turnFileDiffs = await collectTurnFileDiffs(pi).catch((err) => {
+                log(`collectTurnFileDiffs failed: ${err instanceof Error ? err.message : String(err)}`);
+                return [] as TurnFileDiff[];
+            });
+
             const modelCheck = await checkWithSmallModel(
                 event.messages as Array<{ role: string; content: unknown }>,
                 config,
                 pi.callLLM.bind(pi),
                 ctx.sessionSignal,
+                activeGoal ?? undefined,
+                turnFileDiffs,
             );
             const modelCheckDurationMs = Date.now() - modelCheckStart;
 
@@ -726,16 +741,18 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                     persistGoalRuntimeState();
                     channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
 
-                    const continueMessage = [
-                        "The current checklist item passed supervisor verification.",
-                        checklistAdvance.completedItem
-                            ? `Completed checklist item: ${checklistAdvance.completedItem.text}`
-                            : undefined,
-                        checklistAdvance.nextItem
-                            ? `Continue with the next checklist item: ${checklistAdvance.nextItem.text}`
-                            : undefined,
-                        "Do not call supervisor_complete until every checklist item has been individually completed and verified.",
-                    ].filter(Boolean).join("\n");
+                    const continueMessage = modelCheck.adjustmentSuggestion
+                        ? `[Supervisor/IntentCheck] ${modelCheck.adjustmentSuggestion}`
+                        : [
+                              "The current checklist item passed supervisor verification.",
+                              checklistAdvance.completedItem
+                                  ? `Completed checklist item: ${checklistAdvance.completedItem.text}`
+                                  : undefined,
+                              checklistAdvance.nextItem
+                                  ? `Continue with the next checklist item: ${checklistAdvance.nextItem.text}`
+                                  : undefined,
+                              "Do not call supervisor_complete until every checklist item has been individually completed and verified.",
+                          ].filter(Boolean).join("\n");
 
                     recordGoldResult({
                         verdict: "incomplete",
@@ -895,11 +912,13 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
             log(`Model detected incomplete tasks`);
             const checkDurationMs = Date.now() - checkStartedAt;
-            const continueMessage = generateContinueMessage(
-                activeGuards,
-                guardResults,
-                modelCheck,
-            );
+            const continueMessage = modelCheck.adjustmentSuggestion
+                ? `[Supervisor/IntentCheck] ${modelCheck.adjustmentSuggestion}`
+                : generateContinueMessage(
+                      activeGuards,
+                      guardResults,
+                      modelCheck,
+                  );
 
             lastCheckResult = { ...modelCheck, guardResults };
             recordGoldResult({
@@ -963,6 +982,41 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             emitStatusChanged();
         }
     });
+
+    async function collectTurnFileDiffs(pi: ExtensionAPI): Promise<TurnFileDiff[]> {
+        try {
+            const statResult = await pi.exec("git", ["diff", "--name-status", "HEAD"], {
+                cwd: projectRoot || undefined,
+                timeout: 10_000,
+            });
+            if (statResult.exitCode !== 0 || !statResult.stdout.trim()) {
+                return [];
+            }
+            const entries = statResult.stdout.trim().split("\n");
+            const diffs: TurnFileDiff[] = [];
+            for (const line of entries) {
+                const parts = line.split("\t");
+                if (parts.length < 2) continue;
+                const status = parts[0]!;
+                const filePath = parts[1]!;
+                const mappedStatus: TurnFileDiff["status"] =
+                    status.startsWith("A") ? "added" :
+                    status.startsWith("D") ? "deleted" : "modified";
+                const diffResult = await pi.exec("git", ["diff", "HEAD", "--", filePath], {
+                    cwd: projectRoot || undefined,
+                    timeout: 10_000,
+                });
+                diffs.push({
+                    path: filePath,
+                    status: mappedStatus,
+                    unifiedDiff: diffResult.stdout || "(empty diff)",
+                });
+            }
+            return diffs.slice(0, 10);
+        } catch {
+            return [];
+        }
+    }
 
     pi.on("session_shutdown", async () => {
         schedulerInstance?.cancelAll();

@@ -280,6 +280,19 @@ export interface CheckResult {
     incompleteTasks: IncompleteTask[];
     modelResponse?: string;
     guardResults?: GuardCheckResult[];
+    /** 意图对照检查发现的语义问题（按严重程度排序） */
+    findings?: CheckFinding[];
+    /** 下一步具体调整方向（替代笼统的"请继续"） */
+    adjustmentSuggestion?: string;
+}
+
+export interface CheckFinding {
+    /** 问题维度 */
+    dimension: "coverage" | "actual_change" | "quality" | "scope_overflow" | "verification";
+    /** 问题描述 */
+    description: string;
+    /** 严重程度 */
+    severity: "high" | "medium" | "low";
 }
 
 export interface IncompleteTask {
@@ -313,6 +326,24 @@ export const CompletionCheckSchema = Type.Object({
             ]),
         }),
     ),
+    findings: Type.Array(
+        Type.Object({
+            dimension: Type.Union([
+                Type.Literal("coverage"),
+                Type.Literal("actual_change"),
+                Type.Literal("quality"),
+                Type.Literal("scope_overflow"),
+                Type.Literal("verification"),
+            ]),
+            description: Type.String(),
+            severity: Type.Union([
+                Type.Literal("high"),
+                Type.Literal("medium"),
+                Type.Literal("low"),
+            ]),
+        }),
+    ),
+    adjustmentSuggestion: Type.String({ description: "下一步具体调整方向；如果 completed 为 true 可留空" }),
     reasoning: Type.String({ description: "判断理由" }),
 });
 

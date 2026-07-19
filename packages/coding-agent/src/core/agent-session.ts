@@ -1690,9 +1690,7 @@ export class AgentSession {
 		const model = this.model;
 		const modelKey = model ? `${model.provider}/${model.id}` : undefined;
 		const normalizedTierModels = this.getTierModels();
-		const tier = modelKey
-			? ["fast", "pro", "max"].find((key) => normalizedTierModels[key] === modelKey)
-			: undefined;
+		const tier = modelKey ? ["fast", "pro", "max"].find((key) => normalizedTierModels[key] === modelKey) : undefined;
 
 		if (!model && !tier && !this.thinkingLevel) {
 			return undefined;
@@ -4355,6 +4353,7 @@ export class AgentSession {
 				oldLeafId,
 				summaryEntry,
 				fromExtension: summaryText ? fromExtension : undefined,
+				skipFiles: options.skipFiles === true,
 			});
 
 			// Emit to custom tools

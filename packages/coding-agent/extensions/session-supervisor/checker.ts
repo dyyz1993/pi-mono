@@ -2,12 +2,19 @@ import type { ExtensionAPI } from "@dyyz1993/pi-coding-agent";
 import type {
     SupervisorConfig,
     CheckResult,
+    GoalState,
 } from "./types.ts";
 import { CompletionCheckSchema } from "./types.ts";
-import { COMPLETION_CHECK_SYSTEM_PROMPT } from "./prompts.ts";
+import { INTENT_CHECK_SYSTEM_PROMPT } from "./prompts.ts";
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { appendForensic, forensicTs } from "./forensic.ts";
+
+interface FileDiffSummary {
+    path: string;
+    status: "added" | "modified" | "deleted";
+    unifiedDiff: string;
+}
 
 function truncateText(value: string, max = 4000): string {
     return value.length > max ? `${value.slice(0, max)}…[truncated ${value.length - max} chars]` : value;
@@ -30,6 +37,8 @@ export async function checkWithSmallModel(
     config: SupervisorConfig,
     callLLM: ExtensionAPI["callLLM"],
     signal?: AbortSignal,
+    goal?: GoalState,
+    fileDiffs?: FileDiffSummary[],
 ): Promise<CheckResult> {
     const recentMessages = messages.slice(-10);
     const checkStartedAt = Date.now();
@@ -43,18 +52,27 @@ export async function checkWithSmallModel(
         })
         .join("\n\n");
 
+    // 意图对照检查：如果有 goal，用新 prompt 把目标/checklist/diff 喂给模型
+    const hasGoalContext = Boolean(goal && goal.objective.trim());
+    const systemPrompt = hasGoalContext ? INTENT_CHECK_SYSTEM_PROMPT : INTENT_CHECK_SYSTEM_PROMPT;
+    const userContent = hasGoalContext
+        ? buildIntentCheckUserContent(goal!, fileDiffs ?? [], conversationSummary)
+        : conversationSummary;
+
     appendForensic({
         ts: forensicTs(),
         type: "model_check_start",
         messagesCount: messages.length,
         messagesTruncated: messages.length > recentMessages.length,
         smallModel: config.smallModel,
+        hasGoalContext,
+        fileDiffsCount: fileDiffs?.length ?? 0,
     });
     appendForensic({
         ts: forensicTs(),
         type: "model_check_raw_input",
-        messages: summarizeMessages([{ role: "user", content: conversationSummary }]),
-        systemPromptLength: COMPLETION_CHECK_SYSTEM_PROMPT.length,
+        messages: summarizeMessages([{ role: "user", content: userContent }]),
+        systemPromptLength: systemPrompt.length,
     });
 
     try {
@@ -62,12 +80,18 @@ export async function checkWithSmallModel(
             completed: boolean;
             confidence: number;
             incompleteTasks: CheckResult["incompleteTasks"];
+            findings: Array<{
+                dimension: string;
+                description: string;
+                severity: "high" | "medium" | "low";
+            }>;
+            adjustmentSuggestion: string;
             reasoning: string;
         }>(
             callLLM,
             {
-                systemPrompt: COMPLETION_CHECK_SYSTEM_PROMPT,
-                messages: [{ role: "user" as const, content: conversationSummary }],
+                systemPrompt,
+                messages: [{ role: "user" as const, content: userContent }],
                 model: config.smallModel,
                 maxTokens: 1024,
                 signal,
@@ -81,6 +105,8 @@ export async function checkWithSmallModel(
             completed: response.completed,
             confidence: response.confidence,
             incompleteTasks: response.incompleteTasks,
+            findingsCount: response.findings?.length ?? 0,
+            hasAdjustmentSuggestion: Boolean(response.adjustmentSuggestion),
             reasoningLength: response.reasoning.length,
         });
 
@@ -89,6 +115,8 @@ export async function checkWithSmallModel(
             confidence: response.confidence,
             incompleteTasks: response.incompleteTasks,
             modelResponse: response.reasoning,
+            findings: response.findings as CheckResult["findings"],
+            adjustmentSuggestion: response.adjustmentSuggestion || undefined,
         };
     } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
@@ -110,6 +138,36 @@ export async function checkWithSmallModel(
             modelResponse: `Check failed: ${error}`,
         };
     }
+}
+
+function buildIntentCheckUserContent(
+    goal: GoalState,
+    fileDiffs: FileDiffSummary[],
+    conversationSummary: string,
+): string {
+    const checklistSection = goal.checklist && goal.checklist.length > 0
+        ? goal.checklist
+            .map((item) => `[${item.status}] ${item.text}${item.evidence ? ` → ${item.evidence}` : ""}`)
+            .join("\n")
+        : "(no checklist items)";
+
+    const diffSection = fileDiffs.length > 0
+        ? fileDiffs
+            .map((d) => `--- ${d.path} (${d.status}) ---\n${truncateText(d.unifiedDiff, 2000)}`)
+            .join("\n\n")
+        : "(no file changes this turn)";
+
+    return `## User Goal
+${goal.objective}
+
+## Checklist Progress
+${checklistSection}
+
+## File Changes This Turn
+${diffSection}
+
+## Recent Conversation
+${conversationSummary}`;
 }
 
 async function callLLMStructured<T>(
