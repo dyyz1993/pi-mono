@@ -238,6 +238,15 @@ export function calculateContextTokens(usage: Usage): number {
 }
 
 /**
+ * Calculate input-only context tokens from usage (excludes output).
+ * This is the true "context occupancy" — what the model actually consumed as input.
+ * Used for accurate context usage display.
+ */
+export function calculateInputContextTokens(usage: Usage): number {
+	return usage.input + usage.cacheRead + usage.cacheWrite;
+}
+
+/**
  * Get usage from an assistant message if available.
  * Skips aborted and error messages as they don't have valid usage data.
  */

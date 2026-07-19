@@ -41,6 +41,7 @@ import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
+	calculateInputContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
 	computeFileLists,
@@ -50,11 +51,17 @@ import {
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
-} from "./compaction/index.ts";
+	} from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import type { Channel } from "./extensions/channel-types.ts";
+import {
+	estimateContentTokens,
+	estimateContentTokensFromChars,
+	estimateCharsAsTokens as tokenizerEstimateCharsAsTokens,
+	identifyProvider,
+} from "./tokenizer/index.ts";
 import {
 	type CallLLMOptions,
 	type ContextUsage,
@@ -507,31 +514,63 @@ function classifyContextMessage(message: AgentMessage): "conversation" | "memory
 	return "conversation";
 }
 
-function estimateAssistantMessageParts(message: AssistantMessage): {
-	conversation: number;
-	thinking: number;
-	toolInputs: number;
-} {
-	let conversationChars = 0;
-	let thinkingChars = 0;
-	let toolInputChars = 0;
+		function estimateAssistantMessageParts(
+			message: AssistantMessage,
+			model?: { provider?: string; id?: string } | null,
+		): {
+			conversation: number;
+			thinking: number;
+			toolInputs: number;
+		} {
+			let conversationChars = 0;
+			let thinkingChars = 0;
+			let toolInputChars = 0;
+			const provider = identifyProvider(model);
 
-	for (const block of message.content) {
-		if (block.type === "thinking") {
-			thinkingChars += block.thinking.length;
-		} else if (block.type === "text") {
-			conversationChars += block.text.length;
-		} else if (block.type === "toolCall") {
-			toolInputChars += block.name.length + JSON.stringify(block.arguments).length;
+			for (const block of message.content) {
+				if (block.type === "thinking") {
+					thinkingChars += block.thinking.length;
+					thinkingChars += (block.thinkingSignature ?? "").length;
+				} else if (block.type === "text") {
+					conversationChars += block.text.length;
+				} else if (block.type === "toolCall") {
+					toolInputChars += block.name.length + JSON.stringify(block.arguments).length;
+					// OpenAI tool_call format serialization overhead (measured):
+					// {"id":"...","type":"function","function":{"name":"...","arguments":"..."}}
+					// = ~65 chars of structure, plus the id content (NOT counted above)
+					// Structure uses chars/4 (same as provider side), content uses provider factor
+					toolInputChars += (block.id ?? "").length + 65;
+				}
+			}
+
+			// Content tokens use provider-specific factor (accurate for Chinese/code mix)
+			// Structure tokens use chars/4 (matches provider snapshot measurement)
+
+			// Compute per-message JSON structure overhead based on actual content blocks.
+			// Measured overhead for each element (OpenAI completions format):
+			//   text content:  33 chars — {"role":"assistant","content":""}
+			//   null content:  35 chars — {"role":"assistant","content":null}
+			//   reasoning:     23 chars — ,"reasoning_content":""
+			//   tool_calls:    16 chars — ,"tool_calls":[]
+			const hasTextContent = message.content.some((b) => b.type === "text" && (b.text?.length ?? 0) > 0);
+			const hasThinking = message.content.some((b) => b.type === "thinking");
+			const hasToolCalls = message.content.some((b) => b.type === "toolCall");
+
+			// Base envelope (structure → chars/4)
+			conversationChars += hasTextContent ? 33 : 35;
+
+			// reasoning_content field wrapper (structure → chars/4)
+			if (hasThinking) conversationChars += 23;
+
+			// tool_calls array wrapper (structure → chars/4)
+			if (hasToolCalls) conversationChars += 16;
+
+			return {
+				conversation: estimateContentTokensFromChars(conversationChars, provider),
+				thinking: estimateContentTokensFromChars(thinkingChars, provider),
+				toolInputs: estimateContentTokensFromChars(toolInputChars, provider),
+			};
 		}
-	}
-
-	return {
-		conversation: estimateCharsAsTokens(conversationChars),
-		thinking: estimateCharsAsTokens(thinkingChars),
-		toolInputs: estimateCharsAsTokens(toolInputChars),
-	};
-}
 
 function providerSectionTokens(
 	providerRequest: ProviderRequestContextUsage | undefined,
@@ -3953,7 +3992,7 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = Math.min(settings.baseDelayMs * 2 ** (this._retryAttempt - 1), settings.maxDelayMs);
 
 		this._emit({
 			type: "auto_retry_start",
@@ -4467,7 +4506,9 @@ export class AgentSession {
 				if (entry.type === "message" && entry.message.role === "assistant") {
 					const assistant = entry.message;
 					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
-						const contextTokens = calculateContextTokens(assistant.usage);
+						// Use input-only tokens (excludes output) for context usage display.
+						// calculateContextTokens includes output which inflates context occupancy.
+						const contextTokens = calculateInputContextTokens(assistant.usage);
 						if (contextTokens > 0) {
 							const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, contextTokens, {
 								usage: assistant.usage,
@@ -4488,10 +4529,16 @@ export class AgentSession {
 		}
 
 		const estimate = estimateContextTokens(this.messages);
-		const tokens = estimate.usageTokens > 0 ? estimate.tokens : breakdownTokens;
+		// For the fallback path, strip output from usage-based estimate to get input-only tokens.
+		const lastUsage = getLastAssistantUsage(this.messages);
+		const tokens = lastUsage
+			? calculateInputContextTokens(lastUsage) + estimate.trailingTokens
+			: estimate.usageTokens > 0
+				? estimate.tokens
+				: breakdownTokens;
 		const percent = (tokens / contextWindow) * 100;
 		const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, {
-			usage: getLastAssistantUsage(this.messages),
+			usage: lastUsage,
 			trailingTokens: estimate.trailingTokens,
 		});
 
@@ -4586,18 +4633,29 @@ export class AgentSession {
 
 		for (const message of this.messages) {
 			if (message.role === "assistant") {
-				const assistantTokens = estimateAssistantMessageParts(message);
+				const assistantTokens = estimateAssistantMessageParts(message, this.model);
 				messageTokens.conversation += assistantTokens.conversation;
 				messageTokens.thinking += assistantTokens.thinking;
 				messageTokens.toolInputs += assistantTokens.toolInputs;
 				continue;
 			}
 			if (message.role === "toolResult") {
-				messageTokens.toolOutputs += estimateTokens(message);
+				// Provider serializes as: {"role":"tool","content":"...","tool_call_id":"..."}
+				// Measured structure overhead: ~46 chars (role, content wrapper, tool_call_id field)
+				// plus tool_call_id content (not counted by content chars).
+				const contentChars = getMessageText(message).length;
+				const toolCallIdChars = (message.toolCallId ?? "").length;
+				const provider = identifyProvider(this.model);
+				messageTokens.toolOutputs +=
+					estimateContentTokensFromChars(contentChars, provider) + estimateCharsAsTokens(46 + toolCallIdChars);
 				continue;
 			}
+			// Provider serializes as: {"role":"user","content":"..."} or {"role":"user","content":[...]}
+			// Measured structure overhead: ~28 chars (role label, content wrapper).
 			const category = classifyContextMessage(message);
-			messageTokens[category] += estimateTokens(message);
+			const contentChars = getMessageText(message).length;
+			const provider = identifyProvider(this.model);
+			messageTokens[category] += estimateContentTokensFromChars(contentChars, provider) + estimateCharsAsTokens(28);
 		}
 
 		const compaction = this._getContextUsageCompactionInfo();
@@ -4609,8 +4667,21 @@ export class AgentSession {
 		const mcpToolTokens = estimateCharsAsTokens(toolDefinitionChars.mcpChars);
 		const providerToolInputTokens = providerToolInteractionTokens(providerRequest, "input");
 		const providerToolOutputTokens = providerToolInteractionTokens(providerRequest, "output");
-		const toolInputTokens = providerToolInputTokens > 0 ? providerToolInputTokens : messageTokens.toolInputs;
-		const toolOutputTokens = providerToolOutputTokens > 0 ? providerToolOutputTokens : messageTokens.toolOutputs;
+		// When provider tool interaction data is available, it gives content-only tokens.
+		// Add per-interaction JSON structure overhead (tool_call wrapper / tool_result wrapper)
+		// that the provider's content-only estimate misses.
+		const toolInteractionInputCount =
+			providerRequest?.toolInteractions?.reduce((sum, t) => sum + t.inputCount, 0) ?? 0;
+		const toolInteractionOutputCount =
+			providerRequest?.toolInteractions?.reduce((sum, t) => sum + t.outputCount, 0) ?? 0;
+		const toolInputTokens =
+			providerToolInputTokens > 0
+				? providerToolInputTokens + estimateCharsAsTokens(toolInteractionInputCount * 65)
+				: messageTokens.toolInputs;
+		const toolOutputTokens =
+			providerToolOutputTokens > 0
+				? providerToolOutputTokens + estimateCharsAsTokens(toolInteractionOutputCount * 46)
+				: messageTokens.toolOutputs;
 		const localMessageTokens =
 			messageTokens.conversation +
 			messageTokens.thinking +
@@ -4621,9 +4692,21 @@ export class AgentSession {
 			messageTokens.lsp;
 		const localSystemTokens = systemTokens + contextFileTokens + skillTokens + agentTokens;
 		const localToolTokens = builtinAndExtensionToolTokens + mcpToolTokens;
+		// openai-completions 系（DeepSeek/OpenAI 等）把 system prompt 放在 messages[0]
+		// (role:"system")，而不是顶层 system key。此时 provider 快照的 system section 为空
+		// （JSON.stringify(null) = 4 chars → 1 token），但 messages section 包含了 system
+		// prompt 内容。而 localSystemTokens 已经被归入 system_base/skills/agents breakdown 项，
+		// 如果不对 messages section 做修正，system prompt 会被 messages delta 双重归因（虚高）。
+		// 判定依据：当 provider system section tokens ≤ 1（只有 null/空值）时，说明 system
+		// prompt 不在独立 system key 里，而是混在了 messages 中。
+		const providerSystemSectionTokens = providerSectionTokens(providerRequest, "system");
+		const systemPromptInMessages = providerSystemSectionTokens <= 1;
 		const providerDeltas = {
-			system: positiveDeltaTokens(providerSectionTokens(providerRequest, "system"), localSystemTokens),
-			messages: positiveDeltaTokens(providerSectionTokens(providerRequest, "messages"), localMessageTokens),
+			system: positiveDeltaTokens(providerSystemSectionTokens, localSystemTokens),
+			messages: positiveDeltaTokens(
+				providerSectionTokens(providerRequest, "messages") - (systemPromptInMessages ? localSystemTokens : 0),
+				localMessageTokens,
+			),
 			tools: positiveDeltaTokens(providerSectionTokens(providerRequest, "tools"), localToolTokens),
 			options: providerSectionTokens(providerRequest, "options"),
 		};

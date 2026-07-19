@@ -386,11 +386,72 @@ describe("AgentSession.getSessionStats", () => {
 			const usage = session.getContextUsage();
 			const byId = new Map(usage?.breakdown?.map((item) => [item.id, item]));
 
-			expect(byId.get("tool_inputs")?.tokens).toBe(50);
-			expect(byId.get("tool_outputs")?.tokens).toBe(300);
+			// tool_inputs/outputs now include JSON structure overhead for tool_call/tool_result wrappers
+			expect(byId.get("tool_inputs")?.tokens).toBeGreaterThanOrEqual(50);
+			expect(byId.get("tool_outputs")?.tokens).toBeGreaterThanOrEqual(300);
 			expect(byId.get("provider_messages")?.tokens).toBeGreaterThan(0);
 			expect(byId.get("provider_tools")?.tokens).toBeGreaterThan(0);
 			expect(byId.get("provider_options")?.tokens).toBe(200);
+			expect(usage?.tokens).toBe(usage?.breakdown?.reduce((sum, item) => sum + item.tokens, 0));
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("does not double-count system prompt in provider_messages for openai-completions format", () => {
+		// openai-completions (DeepSeek/OpenAI) puts the system prompt into messages[0]
+		// (role: "system") instead of a top-level "system" key. The provider snapshot
+		// captures system section = null (4 chars), and messages section includes the
+		// system prompt. _buildContextUsageBreakdown already attributes system prompt
+		// to system_base/skills/agents. Without correction, the messages delta would
+		// double-count system prompt tokens, inflating provider_messages.
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("real user request", 1));
+			sessionManager.appendMessage(createAssistantMessage("visible answer", 10_000, 2));
+			sessionManager.appendCustomEntry("provider_request_context_usage", {
+				version: 1,
+				provider: "opencode-go",
+				modelId: "deepseek-v4-flash",
+				api: "openai-completions",
+				timestamp: new Date().toISOString(),
+				payloadChars: 80_000,
+				payloadTokens: 20_000,
+				// openai-completions: NO top-level "system" key
+				topLevelKeys: ["messages", "model", "tools"],
+				sections: [
+					// system section is null → tokens = 1 (from JSON.stringify(null) = 4 chars / 4)
+					{ id: "system", label: "Provider system/instructions", chars: 4, tokens: 1 },
+					// messages section INCLUDES system prompt (role:"system" at messages[0])
+					// Total: 20K chars = system prompt + conversation
+					{ id: "messages", label: "Provider messages/input", chars: 80_000, tokens: 20_000, count: 5 },
+					{ id: "tools", label: "Provider tools", chars: 0, tokens: 0, count: 0 },
+					{ id: "options", label: "Provider options/metadata", chars: 0, tokens: 0 },
+				],
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const usage = session.getContextUsage();
+			const byId = new Map(usage?.breakdown?.map((item) => [item.id, item]));
+
+			// The system prompt is attributed to system_base (not provider_messages)
+			const systemBase = byId.get("system_base")?.tokens ?? 0;
+			const providerSystem = byId.get("provider_system")?.tokens ?? 0;
+			const providerMessages = byId.get("provider_messages")?.tokens ?? 0;
+
+			// provider_system should be 0 because the system section is null
+			expect(providerSystem).toBe(0);
+
+			// provider_messages should NOT include the system prompt tokens.
+			// Without the fix, it would be ~20K - localMessageTokens ≈ 19K+.
+			// With the fix, it should be much smaller: messages_delta = (20K - systemBase) - localMessageTokens.
+			// The localMessageTokens for "real user request" + "visible answer" ≈ a few hundred tokens.
+			// So provider_messages should be at most ~20K - systemBase - localMessageTokens,
+			// NOT the full 20K - localMessageTokens.
+			expect(providerMessages).toBeLessThan(20_000 - systemBase);
+
+			// The total should still balance
 			expect(usage?.tokens).toBe(usage?.breakdown?.reduce((sum, item) => sum + item.tokens, 0));
 		} finally {
 			session.dispose();
