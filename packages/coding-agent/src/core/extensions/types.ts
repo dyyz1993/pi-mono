@@ -60,6 +60,7 @@ import type {
 	SessionEntry,
 	SessionManager,
 } from "../session-manager.ts";
+import type { Settings } from "../settings-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -502,6 +503,14 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Get the effective merged settings (global deep-merged with project).
+	 *
+	 * Returns a fresh structuredClone on each call; callers can freely mutate.
+	 * Use this to read user configuration from .pi/settings.json — including
+	 * custom keys that aren't part of the typed Settings schema (cast as needed).
+	 */
+	getSettings(): Readonly<Settings>;
 	/** The name of the current extension. */
 	extensionName: string;
 	/** Canonical git root (worktree-aware). Falls back to cwd if not a git repo. */
@@ -1948,6 +1957,7 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	getSettings: () => Settings;
 }
 
 /**

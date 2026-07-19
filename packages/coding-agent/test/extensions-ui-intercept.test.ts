@@ -88,6 +88,7 @@ describe("UI Interception", () => {
 		getContextUsage: () => undefined,
 		compact: () => {},
 		getSystemPrompt: () => "",
+		getSettings: () => ({}),
 	};
 
 	beforeEach(() => {

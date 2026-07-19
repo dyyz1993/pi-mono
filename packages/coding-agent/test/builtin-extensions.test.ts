@@ -137,6 +137,7 @@ const extensionContextActions: ExtensionContextActions = {
 	getContextUsage: () => undefined,
 	compact: () => {},
 	getSystemPrompt: () => "",
+	getSettings: () => ({}),
 };
 
 // ─── Test suite ────────────────────────────────────────────────────────────

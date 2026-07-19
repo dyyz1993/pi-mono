@@ -1711,6 +1711,7 @@ export class InteractiveMode {
 				})();
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
+			getSettings: () => this.settingsManager.getSettings(),
 			extensionName: "shortcut",
 			projectRoot: this.sessionManager.getCwd(),
 			sessionDataDir: "",

@@ -80,6 +80,7 @@ const stubContextActions: ExtensionContextActions = {
 	getContextUsage: () => undefined,
 	compact: () => {},
 	getSystemPrompt: () => "",
+	getSettings: () => ({}),
 };
 
 /**

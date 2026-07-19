@@ -45,6 +45,7 @@ import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { join, resolve as nodePathResolve } from "node:path";
 import { createRequire } from "node:module";
 import { Type } from "typebox";
+import type { Settings } from "@dyyz1993/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ToolResultEvent,
@@ -89,16 +90,29 @@ interface OutputGuardConfig {
 	saveToFile: boolean;
 }
 
-function loadConfig(_ctx: ExtensionContext): OutputGuardConfig {
-	// Note: ExtensionContext does not expose settings. User configuration
-	// via .pi/settings.json is not currently supported. Use defaults only.
-	// TODO: When ExtensionAPI exposes a settings accessor, wire it here.
+/**
+ * Load output-guard config, with user overrides from .pi/settings.json.
+ *
+ * Users can configure outputGuard under the top-level "outputGuard" key:
+ *
+ *   "outputGuard": {
+ *     "maxLines": 3000,
+ *     "maxBytes": 102400,
+ *     "findLimit": 200,
+ *     "lsLimit": 50,
+ *     "saveToFile": false
+ *   }
+ *
+ * Unknown keys are ignored. Missing keys fall back to defaults.
+ */
+export function loadConfig(ctx: ExtensionContext): OutputGuardConfig {
+	const userConfig = (ctx.getSettings() as Settings & { outputGuard?: Partial<OutputGuardConfig> }).outputGuard ?? {};
 	return {
-		maxLines: DEFAULT_MAX_LINES,
-		maxBytes: DEFAULT_MAX_BYTES,
-		findLimit: DEFAULT_FIND_LIMIT,
-		lsLimit: DEFAULT_LS_LIMIT,
-		saveToFile: true,
+		maxLines: userConfig.maxLines ?? DEFAULT_MAX_LINES,
+		maxBytes: userConfig.maxBytes ?? DEFAULT_MAX_BYTES,
+		findLimit: userConfig.findLimit ?? DEFAULT_FIND_LIMIT,
+		lsLimit: userConfig.lsLimit ?? DEFAULT_LS_LIMIT,
+		saveToFile: userConfig.saveToFile ?? true,
 	};
 }
 

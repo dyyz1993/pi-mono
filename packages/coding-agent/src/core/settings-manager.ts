@@ -447,6 +447,17 @@ export class SettingsManager {
 		return structuredClone(this.projectSettings);
 	}
 
+	/**
+	 * Get the effective merged settings (global deep-merged with project).
+	 *
+	 * Returns a structuredClone so callers can freely mutate without affecting
+	 * the internal state. This is what extensions should use to read user
+	 * configuration via ctx.getSettings().
+	 */
+	getSettings(): Settings {
+		return structuredClone(this.settings);
+	}
+
 	isProjectTrusted(): boolean {
 		return this.projectTrusted;
 	}

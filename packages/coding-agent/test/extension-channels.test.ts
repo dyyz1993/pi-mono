@@ -129,6 +129,7 @@ describe("Extension Channel Integration", () => {
 		getContextUsage: () => undefined,
 		compact: () => {},
 		getSystemPrompt: () => "",
+		getSettings: () => ({}),
 	};
 
 	beforeEach(() => {

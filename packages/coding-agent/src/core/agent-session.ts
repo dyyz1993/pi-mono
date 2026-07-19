@@ -3564,6 +3564,7 @@ export class AgentSession {
 				},
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getSettings: () => this.settingsManager.getSettings(),
 			},
 			{
 				registerProvider: (name, config) => {
