@@ -1,13 +1,13 @@
 # Learning Extension — Status Report
 
-> Latest commit: `422bafe74` feat(extensions): add pi.callLLMSafe for stale-safe background LLM work
+> Latest commit: `ea9d80a0b` feat(learning): redact secrets before persisting to memory/skill files
 > Previous: `de03b58f0` refactor + `f3755601b` docs
 > Date: 2026-07-19
 
 ## Summary
 
 Production-grade state after audit + tests + performance + dry-run curator rework.
-All 202 tests pass across 15 files (189 learning + 13 harness) + 113 framework tests (101 unit + 43 integration + 29 e2e + 13 harness).
+All 229 tests pass across 16 files (216 learning + 13 harness) + 113 framework tests (101 unit + 43 integration + 29 e2e + 13 harness).
 getSnapshot cached path measured 9667x faster than cold path.
 Real e2e with live LLM (zhipuai/glm-4.5-air) verified — 2 production bugs found and fixed.
 
@@ -169,6 +169,67 @@ After (`422bafe74`):
   2. Use the write tool to write the content to the specified path.
   ```
 - Description also upgraded from hardcoded `"create file skill"` to LLM-generated `"Creates a file with specified content at a given path"`.
+
+## Secret Redaction (New Feature)
+
+### Problem: Secrets Persisted to Disk in Plaintext
+When users paste API keys, passwords, or private keys into the conversation
+(e.g. "remember my OpenAI key is sk-xxx"), learning would faithfully extract
+and write them to `~/.pi/agent/.../memory/<slug>.md` in plaintext. The memory
+directory is readable by any process running as the user, and the secret would
+persist indefinitely across sessions.
+
+### Fix: Two-Phase Detection + Redaction (commit `ea9d80a0b`)
+
+**Phase 1: Known-format regex patterns (zero false positive)**
+
+| Pattern | Label | Example |
+|---|---|---|
+| `AKIA[0-9A-Z]{16}` | `aws-access-key` | AWS IAM access key |
+| `sk-[a-zA-Z0-9]{20,}` | `openai-key` | OpenAI API key |
+| `sk-ant-[a-zA-Z0-9-_]{20,}` | `anthropic-key` | Anthropic API key |
+| `sk-or-[a-zA-Z0-9-_]{20,}` | `openrouter-key` | OpenRouter API key |
+| `ghp_/gho_/ghs_/ghr_[a-zA-Z0-9]{36,}` | `github-*` | GitHub tokens |
+| `glpat-[a-zA-Z0-9_-]{20,}` | `gitlab-pat` | GitLab PAT |
+| `-----BEGIN ... PRIVATE KEY-----` | `private-key` | PEM blocks |
+| `eyJ...\.eyJ...\.sig` | `jwt` | JWT tokens |
+| `Bearer\|Authorization\|X-Api-Key: ...` | `auth-header` | Auth headers |
+| `(mongo\|postgres\|redis\|...)://user:pass@host` | `db-connection-string` | DB URLs |
+
+**Phase 2: Shannon entropy (catches unknown formats)**
+
+- Tokens ≥ 24 chars with entropy ≥ 4.5 bits/char
+- Catches base64/hex-encoded secrets with no recognizable prefix
+- Tuned below ordinary English text entropy (~3.5-4.0) to avoid false positives
+- Skips already-redacted `[REDACTED:...]` placeholders from phase 1
+
+**Replacement format**: `[REDACTED:<label>]` preserves type info for downstream
+LLM processing (so the LLM still knows "user mentioned an OpenAI key" without
+seeing the key itself).
+
+**Integration points**:
+- `memory-provider.ts`: redact before `shouldExtract`/`buildMemoryCandidatePayload`
+- `skill-provider.ts`: redact before `shouldDistill`/`buildSkillCandidatePayload`
+- Both log `"redacted secrets before processing {count:N}"` when N>0
+
+`redactSecretsInMessages` walks `AgentMessage[]` content blocks:
+- text blocks
+- thinking blocks (LLM thinking can echo secrets from prior tool results)
+- toolCall arguments (serialize → redact → parse back, preserves object shape)
+
+**E2E verification (DeepSeek V4 Flash)**:
+- Prompt: `"remember my OpenAI key is sk-abcdefghij..."`
+- Log: `"memory.extract redacted secrets before processing {count:2}"`
+- Result: candidate body contains LLM-distilled user preference content;
+  the secret was replaced with `[REDACTED:openai-key]` BEFORE the LLM saw it,
+  so the LLM never had a chance to echo it back.
+
+**Tests**: 27 new in `secret-detector.test.ts`
+- `shannonEntropy` (5): empty, repeated, alternating, random, prose
+- Known patterns (9): AWS/OpenAI/Anthropic/GitHub/RSA/JWT/mongo/Bearer/multi
+- Entropy-based (4): long base64, prose, short id, placeholder skip
+- Edge cases (3): no secrets, empty, repeated
+- `redactSecretsInMessages` (6): unchanged, text, thinking, args, string, no-mutate
 
 ## Skill Prompt Injection (New Feature)
 
