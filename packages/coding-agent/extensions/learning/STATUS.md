@@ -1,13 +1,13 @@
 # Learning Extension — Status Report
 
-> Latest commit: `ea9d80a0b` feat(learning): redact secrets before persisting to memory/skill files
+> Latest commit: `6a3249254` test(learning): add testkit to deduplicate harness mock boilerplate
 > Previous: `de03b58f0` refactor + `f3755601b` docs
 > Date: 2026-07-19
 
 ## Summary
 
 Production-grade state after audit + tests + performance + dry-run curator rework.
-All 229 tests pass across 16 files (216 learning + 13 harness) + 113 framework tests (101 unit + 43 integration + 29 e2e + 13 harness).
+All 247 tests pass across 17 files (234 learning + 13 harness) + 113 framework tests (101 unit + 43 integration + 29 e2e + 13 harness).
 getSnapshot cached path measured 9667x faster than cold path.
 Real e2e with live LLM (zhipuai/glm-4.5-air) verified — 2 production bugs found and fixed.
 
@@ -169,6 +169,68 @@ After (`422bafe74`):
   2. Use the write tool to write the content to the specified path.
   ```
 - Description also upgraded from hardcoded `"create file skill"` to LLM-generated `"Creates a file with specified content at a given path"`.
+
+## Round 3: Cross-Project, UX, CI, Testkit (4 new features)
+
+### #1 Cross-Project Global Memory Scope (commit `10c5a1600`)
+
+**Problem**: All memories were project-scoped. User-type memories
+("I'm a backend dev") had to be re-learned in every new project.
+
+**Fix**: Opt-in `scope: "global"` field on memory candidate payload.
+- Global dir: `~/.pi/agent/learning/memory` (shared across all projects)
+- Project dir: unchanged (`~/.pi/agent/projects/<proj>/memory`)
+- Backward compatible: omitting scope keeps project-scoped behavior
+- `before_agent_start` merges both entrypoints into one prompt with
+  "Global memory" / "Project memory" section headings
+
+### #2 Embedding Vector Search — SKIPPED
+
+**Decision**: Current LLM-based retrieval (Layer 1: ≤30 files all-inject;
+Layer 4: LLM selects from larger sets) is sufficient for typical usage.
+Embedding only wins at 50+ memories, which most users won't reach.
+Adding `pi.embed` to the framework is high-cost vs low ROI. Skipped.
+
+### #3 /learning Slash Command + Auto-Notification (commit `c0f5d6d69`)
+
+**Problem**: Pending candidates silently accumulated on disk. Users had
+to know about channel methods to act on them — most never discovered this.
+
+**Fix**:
+- `/learning` slash command: interactive review loop
+  - Lists pending candidates (domain + title)
+  - For each: `ui.select` shows Approve / Reject / Skip / Exit
+  - Calls `store.approveCandidate` / `rejectCandidate` based on choice
+  - `notify()` gives feedback after each action
+- `agent_end` auto-notification:
+  - If `pendingCount > 0`, notify: "Learning has N pending candidates.
+    Run /learning to review."
+  - Surfaces pending work without requiring explicit check
+
+### #4 Cross-Platform CI Matrix (commit `982a39f6c`)
+
+New workflow `learning-cross-platform.yml`:
+- Runs on ubuntu-latest, windows-latest, macos-latest
+- Path-filtered: only triggers when `extensions/learning/**` changes
+- Separate from main CI (Bun + ubuntu only) — isolates risk
+- `fail-fast: false` so all platforms report independently
+- Covers: path separators, filesystem ops, CRLF in frontmatter, case sensitivity
+
+### #5 Local Testkit (commit `6a3249254`)
+
+**Problem**: Every harness test reimplemented the same fake-pi / fake-channel
+boilerplate. Adding a mock field required patching 4+ files.
+
+**Fix**: `__tests__/testkit.ts` centralizes:
+- `createFakeChannel(outputs?)` — capturing channel
+- `createFakePi(handlers, channel, overrides?)` — fake pi with defaults
+- `createLearningTestRuntime(overrides?)` — one-call bundle
+- `emit(handlers, event, payload, ctx?)` — invoke handlers (awaits async)
+- `resetMocks(runtime)` — clear mock call counts
+
+**Scope**: Learning-local for now. Can promote to `@dyyz1993/pi-testkit`
+package if other extensions adopt it. Existing tests unchanged (migration
+is mechanical, deferred to avoid churn in this round).
 
 ## Secret Redaction (New Feature)
 
