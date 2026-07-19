@@ -196,19 +196,6 @@ function stripThinkingFromMessages(messages: AgentMessage[]): AgentMessage[] {
 	});
 }
 
-/** Strip thinking blocks from assistant messages in-place (mutates the array). */
-function stripThinkingFromMessagesInPlace(messages: AgentMessage[]): void {
-	for (let i = 0; i < messages.length; i++) {
-		const message = messages[i];
-		if (message.role !== "assistant") continue;
-		const assistant = message as AssistantMessage;
-		const content = assistant.content.filter((block) => block.type !== "thinking");
-		if (content.length !== assistant.content.length) {
-			messages[i] = { ...assistant, content };
-		}
-	}
-}
-
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
 export interface CompactionResult<T = unknown> {
 	summary: string;
@@ -976,22 +963,21 @@ export function prepareCompaction(
 	const resolveCompactionMessage = buildCompactionMessageResolver(pathEntries);
 
 	// Messages to summarize (will be discarded after summary)
+	// Use effectiveEntries (which already has deletions, segments, and thinking stripped)
+	// instead of pathEntries, since the indices come from effectiveEntries-based cut points.
 	const messagesToSummarize: AgentMessage[] = [];
 	for (let i = boundaryStart; i < historyEnd; i++) {
-		const msg = resolveCompactionMessage(pathEntries[i]);
+		const msg = getMessageFromEntryForCompaction(effectiveEntries[i]);
 		if (msg) messagesToSummarize.push(msg);
 	}
-	// Strip thinking blocks from messages sent to LLM for summarization
-	stripThinkingFromMessagesInPlace(messagesToSummarize);
 
 	// Messages for turn prefix summary (if splitting a turn)
 	const turnPrefixMessages: AgentMessage[] = [];
 	if (cutPoint.isSplitTurn) {
 		for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-			const msg = resolveCompactionMessage(pathEntries[i]);
+			const msg = getMessageFromEntryForCompaction(effectiveEntries[i]);
 			if (msg) turnPrefixMessages.push(msg);
 		}
-		stripThinkingFromMessagesInPlace(turnPrefixMessages);
 	}
 
 	// If there's nothing to summarize (no messages to discard and no turn prefix to split),
