@@ -31,6 +31,10 @@ import {
   ENTRYPOINT_NAME,
   MAX_MEMORY_BYTES_PER_FILE,
   MAX_RELEVANT_MEMORIES,
+  messageText,
+  truncateEntrypoint,
+  findExistingMemoryContext,
+  logger,
 } from "./utils.ts";
 import { loadSkipWordStore, addHistoryEntry, saveSkipWordStore, getGlobalLearningDir, getDefaultRules } from "./skip-rules.ts";
 import { MEMORY_SYSTEM_PROMPT } from "./prompts.ts";
@@ -100,7 +104,7 @@ function disabledRun(domain: LearningRunCuratorParams["domain"]): LearningRun {
   return {
     version: 1,
     id: `learning-disabled-${now}`,
-    domain: "curator",
+    domain,
     type: domain === "memory" ? "memory-curator" : "skill-curator",
     mode: "manual",
     status: "failed",
@@ -135,46 +139,6 @@ async function uniqueMemoryFilePath(memoryDir: string, filename: string): Promis
     suffix += 1;
   }
   return { filename: candidate, filePath };
-}
-
-function buildMemoryFrontmatter(fields: { name: string; description: string; type: string }): string {
-  return `---\nname: ${fields.name}\ndescription: ${fields.description}\ntype: ${fields.type}\n---`;
-}
-
-function stripMarkdownCodeBlock(text: string): string {
-  let cleaned = text.trim();
-  if (cleaned.startsWith("```")) {
-    const firstNewline = cleaned.indexOf("\n");
-    if (firstNewline !== -1) cleaned = cleaned.slice(firstNewline + 1);
-    const lastBacktick = cleaned.lastIndexOf("```");
-    if (lastBacktick !== -1) cleaned = cleaned.slice(0, lastBacktick);
-    cleaned = cleaned.trim();
-  }
-  return cleaned;
-}
-
-function extractMessageText(message: AgentMessage): string {
-  if (!("content" in message)) return "";
-  const content = (message as { content: unknown }).content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((part): part is { type: "text"; text: string } => {
-        const record = part as Record<string, unknown>;
-        return record.type === "text" && typeof record.text === "string";
-      })
-      .map((part) => part.text)
-      .join("");
-  }
-  return "";
-}
-
-function findExistingMemoryContext(messages: AgentMessage[]): string | null {
-  for (const msg of messages) {
-    const match = extractMessageText(msg).match(/<memory_context\s+fingerprint="([^"]+)"/);
-    if (match) return match[1]!;
-  }
-  return null;
 }
 
 export default function learningExtension(pi: ExtensionAPI) {
@@ -233,7 +197,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         "utf-8",
       );
     } catch (error) {
-      console.debug("[learning] persist injected memory fingerprints failed:", error instanceof Error ? error.message : error);
+      logger.warn("persist injected memory fingerprints failed", { error: error instanceof Error ? error.message : error });
     }
   }
 
@@ -250,7 +214,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         markActiveInjectedMemoryFingerprint(fingerprint, { persist: false });
       }
     } catch (error) {
-      console.debug("[learning] restore injected memory fingerprints failed:", error instanceof Error ? error.message : error);
+      logger.warn("restore injected memory fingerprints failed", { error: error instanceof Error ? error.message : error });
     }
   }
 
@@ -375,7 +339,7 @@ export default function learningExtension(pi: ExtensionAPI) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/stale/i.test(msg)) throw err;
-      console.debug("[learning] LLM call failed:", msg);
+      logger.warn("LLM call failed", { error: msg });
       throw err;
     }
   };
@@ -434,7 +398,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         try {
           entrypointContent = await readFile(join(memoryDir, ENTRYPOINT_NAME), "utf-8");
         } catch (error) {
-          console.debug("[learning] entrypoint read failed:", error instanceof Error ? error.message : error);
+          logger.warn("entrypoint read failed", { error: error instanceof Error ? error.message : error });
         }
         return {
           type: "list_result" as const,
@@ -443,7 +407,7 @@ export default function learningExtension(pi: ExtensionAPI) {
           memoryDir,
         };
       } catch (error) {
-        console.debug("[learning] memory list failed:", error instanceof Error ? error.message : error);
+        logger.warn("memory list failed", { error: error instanceof Error ? error.message : error });
         return { type: "list_result" as const, files: [], entrypointContent: null, memoryDir };
       }
     });
@@ -502,6 +466,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         irrelevantFiles: selectedFiles,
       });
       await saveSkipWordStore(getGlobalLearningDir(), skipStore);
+      markMemorySelectionDirty();
 
       pi.appendEntry("memory_irrelevant_marked", { query, selectedFiles, source: "learning" });
       memoryChannelEmit("memory_irrelevant_marked", {
@@ -738,23 +703,12 @@ export default function learningExtension(pi: ExtensionAPI) {
     if (!learningAvailable || !memoryDir) return;
     let memoryContent = "";
     try {
-      memoryContent = await readFile(join(memoryDir, "MEMORY.md"), "utf-8");
+      memoryContent = await readFile(join(memoryDir, ENTRYPOINT_NAME), "utf-8");
     } catch {
       // No MEMORY.md yet, that's fine
     }
-    const truncated = (() => {
-      const lines = memoryContent.split("\n");
-      const sliced = lines.slice(0, 200);
-      let c = sliced.join("\n");
-      if (Buffer.byteLength(c, "utf-8") > 25000) {
-        const bytes = Buffer.from(c, "utf-8");
-        c = bytes.slice(0, 25000).toString("utf-8");
-        const lastNewline = c.lastIndexOf("\n");
-        if (lastNewline !== -1) c = c.slice(0, lastNewline);
-      }
-      return { content: c, wasTruncated: lines.length > 200 || Buffer.byteLength(memoryContent, "utf-8") > 25000 };
-    })();
-    const memoryPrompt = MEMORY_SYSTEM_PROMPT(memoryDir, truncated.content);
+    const truncated = truncateEntrypoint(memoryContent);
+    const memoryPrompt = MEMORY_SYSTEM_PROMPT(truncated.content);
 
     const lastUserText = event.prompt ?? "";
     const shouldPrefetch =
@@ -815,56 +769,95 @@ ${memoryText}
   });
 
   // --- Agent end: memory extraction, dream, purification + skill distill ---
+  // NOTE: These LLM-backed operations can take tens of seconds. Running them
+  // synchronously (via await) blocks the agent_end event from reaching the
+  // RPC client, which keeps the agent status as "streaming" and causes
+  // subsequent user messages to be force-converted to "steer". We run them
+  // in the background (fire-and-forget) so agent_end resolves immediately.
 
   pi.on("agent_end", async (event) => {
     if (!learningAvailable) return;
     const activeStore = getStore();
     const messages = event.messages as AgentMessage[];
     const sessionId = ctx?.sessionManager?.getSessionId();
-    try {
-      if (!hasFailedToolResult(messages)) {
-        await maybeExtractMemory({
-          store: activeStore,
-          messages,
-          sourceSessionId: sessionId,
-          sourceMessageIds: sourceMessageIds(messages),
-        });
-        await maybeDistillSkill({
-          store: activeStore,
-          messages,
-          sourceSessionId: sessionId,
-          sourceMessageIds: sourceMessageIds(messages),
-        });
-      }
 
-      // Dream consolidation
-      const dreamResult = await memoryCurator.maybeRun(memoryDir, callLLMWithRetry);
-      if (dreamResult) {
-        markMemorySelectionDirty();
-        pi.appendEntry("memory_dream_result", {
-          status: "completed",
-          merges: dreamResult.merges,
-          deletions: dreamResult.deletions,
-          updates: dreamResult.updates,
-          source: "learning",
-        });
-      }
+    void (async () => {
+      try {
+        const hasFailed = hasFailedToolResult(messages);
+        logger.info("agent_end processing", { sessionId, messagesCount: messages.length, hasFailed });
+        if (!hasFailed) {
+          await maybeExtractMemory({
+            store: activeStore,
+            messages,
+            sourceSessionId: sessionId,
+            sourceMessageIds: sourceMessageIds(messages),
+            callLLM: callLLMWithRetry,
+          });
+          await maybeDistillSkill({
+            store: activeStore,
+            messages,
+            sourceSessionId: sessionId,
+            sourceMessageIds: sourceMessageIds(messages),
+          });
+        }
 
-      // Purification
-      const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
-      if (purifyResult) {
-        markMemorySelectionDirty();
-        pi.appendEntry("memory_dream_result", { status: "purified", keywords: purifyResult, source: "learning" });
-      }
+        // Dream consolidation — dry-run only, plan 不直接执行
+        // 架构变更：之前 maybeRun 会直接修改 memory 文件绕过审批，
+        // 现在改为只生成 plan，写入 run 历史供用户查看。
+        // 用户想执行时通过 learning.runCurator({ domain: "memory", mode: "apply" }) 手动触发。
+        const dreamPlan = await memoryCurator.maybeRun(memoryDir, callLLMWithRetry);
+        if (dreamPlan) {
+          markMemorySelectionDirty();
+          const mergeCount = dreamPlan.merges?.length ?? 0;
+          const deletionCount = dreamPlan.deletions?.length ?? 0;
+          const updateCount = dreamPlan.updates?.length ?? 0;
+          logger.info("dream plan generated (dry-run)", { merges: mergeCount, deletions: deletionCount, updates: updateCount });
+          // 写入 run 历史供用户查看 dream 建议
+          await activeStore.recordRun({
+            version: 1,
+            id: `dream-plan-${Date.now()}`,
+            domain: "memory",
+            type: "memory-curator",
+            mode: "dry-run",
+            status: "completed",
+            startedAt: Date.now(),
+            completedAt: Date.now(),
+            summary: `Dream plan: ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates (not applied)`,
+            actions: [
+              {
+                action: "none",
+                summary: `Proposed ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates. Run learning.runCurator with mode=apply to execute.`,
+                fileRefs: [],
+              },
+            ],
+          });
+          pi.appendEntry("memory_dream_result", {
+            status: "plan-generated",
+            merges: mergeCount,
+            deletions: deletionCount,
+            updates: updateCount,
+            applied: false,
+            source: "learning",
+          });
+        }
 
-      const snapshot = await activeStore.getSnapshot();
-      channel?.emit("learning.snapshot", snapshot);
-      ctx?.ui.setStatus("learning", "learning idle");
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      ctx?.ui.setStatus("learning", "learning error");
-      ctx?.ui.notify(`Learning error: ${message}`, "warning");
-    }
+        // Purification
+        const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
+        if (purifyResult) {
+          markMemorySelectionDirty();
+          pi.appendEntry("memory_dream_result", { status: "purified", keywords: purifyResult, source: "learning" });
+        }
+
+        const snapshot = await activeStore.getSnapshot();
+        channel?.emit("learning.snapshot", snapshot);
+        ctx?.ui.setStatus("learning", "learning idle");
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("agent_end processing failed", { error: message });
+        ctx?.ui.setStatus("learning", "learning error");
+        ctx?.ui.notify(`Learning error: ${message}`, "warning");
+      }
+    })();
   });
 
   // --- Channel handlers ---

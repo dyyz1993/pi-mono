@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
 import { encodeProjectPath, getAgentDir, resolveProjectIdentity } from "@dyyz1993/pi-coding-agent";
 import {
@@ -17,6 +17,7 @@ import {
 	type LearningSkillSummary,
 	type LearningSnapshot,
 } from "./contract.ts";
+import { parseFrontmatter } from "./utils.ts";
 
 const CONFIG_FILE = "config.json";
 const EVENTS_FILE = "events.jsonl";
@@ -93,14 +94,9 @@ function ensureDir(path: string): void {
 	}
 }
 
-function isInsidePath(path: string, baseDir: string): boolean {
-	const resolvedPath = resolve(path);
-	const resolvedBase = resolve(baseDir);
-	return (
-		resolvedPath === resolvedBase ||
-		resolvedPath.startsWith(`${resolvedBase}/`) ||
-		resolvedPath.startsWith(`${resolvedBase}\\`)
-	);
+export function isInsidePath(path: string, baseDir: string): boolean {
+	const rel = relative(resolve(baseDir), resolve(path));
+	return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"));
 }
 
 function safeJoin(baseDir: string, ...parts: string[]): string {
@@ -132,36 +128,13 @@ function fileRef(path: string, label: string, kind: LearningFileKind): LearningF
 	}
 }
 
-function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
-	const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-	if (!normalized.startsWith("---")) {
-		return { frontmatter: {}, body: normalized };
-	}
-	const endIndex = normalized.indexOf("\n---", 3);
-	if (endIndex === -1) {
-		return { frontmatter: {}, body: normalized };
-	}
-	const frontmatterText = normalized.slice(4, endIndex);
-	const body = normalized.slice(endIndex + 4).trim();
-	const frontmatter: Record<string, string> = {};
-	for (const line of frontmatterText.split("\n")) {
-		const colonIndex = line.indexOf(":");
-		if (colonIndex === -1) continue;
-		const key = line.slice(0, colonIndex).trim();
-		const value = line.slice(colonIndex + 1).trim();
-		if (key) {
-			frontmatter[key] = value;
-		}
-	}
-	return { frontmatter, body };
-}
-
-function serializeMemory(payload: LearningMemoryCandidatePayload, metadata: { sourceSessionId?: string }): string {
+export function serializeMemory(payload: LearningMemoryCandidatePayload, metadata: { sourceSessionId?: string }): string {
 	const sourceSession = metadata.sourceSessionId ? `sourceSession: ${metadata.sourceSessionId}\n` : "";
-	return `---\nname: ${payload.description}\ndescription: ${payload.description}\ntype: ${payload.memoryType}\n${sourceSession}createdAt: ${new Date().toISOString()}\n---\n\n${payload.content.trim()}\n`;
+	const name = payload.filename.replace(/\.md$/i, "");
+	return `---\nname: ${name}\ndescription: ${payload.description}\ntype: ${payload.memoryType}\n${sourceSession}createdAt: ${new Date().toISOString()}\n---\n\n${payload.content.trim()}\n`;
 }
 
-function serializeSkill(payload: LearningSkillCandidatePayload): string {
+export function serializeSkill(payload: LearningSkillCandidatePayload): string {
 	return `---\nname: ${payload.name}\ndescription: ${payload.description}\n---\n\n${payload.body.trim()}\n`;
 }
 
@@ -225,10 +198,29 @@ export function getProjectPrivateSkillsDir(projectRoot: string): string {
 
 export class LearningStore {
 	readonly paths: LearningPaths;
+	private snapshotCache: { value: LearningSnapshot; ts: number } | null = null;
+	private static readonly SNAPSHOT_TTL_MS = 5_000;
 
 	constructor(projectRoot: string) {
 		this.paths = getLearningPaths(projectRoot);
 		this.ensureBaseDirs();
+	}
+
+	invalidateSnapshot(): void {
+		this.snapshotCache = null;
+	}
+
+	private getCachedSnapshot(): LearningSnapshot | null {
+		if (!this.snapshotCache) return null;
+		if (Date.now() - this.snapshotCache.ts > LearningStore.SNAPSHOT_TTL_MS) {
+			this.snapshotCache = null;
+			return null;
+		}
+		return this.snapshotCache.value;
+	}
+
+	private setCachedSnapshot(value: LearningSnapshot): void {
+		this.snapshotCache = { value, ts: Date.now() };
 	}
 
 	ensureBaseDirs(): void {
@@ -253,6 +245,7 @@ export class LearningStore {
 	}
 
 	async setConfig(patch: Partial<LearningConfig>): Promise<LearningConfig> {
+		this.invalidateSnapshot();
 		const next = mergeConfig(await this.getConfig(), patch);
 		await writeJson(join(this.paths.learningDir, CONFIG_FILE), next);
 		return next;
@@ -266,6 +259,7 @@ export class LearningStore {
 		sourceMessageIds?: string[];
 		confidence?: "low" | "medium" | "high";
 	}): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		return this.writeCandidate({
 			version: 1,
 			id: nowId("memory-candidate"),
@@ -295,6 +289,7 @@ export class LearningStore {
 		targetPath?: string;
 		fileRefs?: LearningFileRef[];
 	}): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		return this.writeCandidate({
 			version: 1,
 			id: nowId("skill-candidate"),
@@ -352,6 +347,7 @@ export class LearningStore {
 	}
 
 	async approveCandidate(candidateId: string, options?: { mergeTargetSkillName?: string }): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		const candidate = await this.getCandidate(candidateId);
 		if (candidate.status !== "pending") {
 			return candidate;
@@ -398,6 +394,7 @@ export class LearningStore {
 	}
 
 	async rejectCandidate(candidateId: string): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		const candidate = await this.getCandidate(candidateId);
 		if (candidate.status !== "pending") {
 			return candidate;
@@ -452,6 +449,8 @@ export class LearningStore {
 	}
 
 	async getSnapshot(): Promise<LearningSnapshot> {
+		const cached = this.getCachedSnapshot();
+		if (cached) return cached;
 		const config = await this.getConfig();
 		await this.ensureMemoryEntrypoint();
 		const memoryFiles = await this.listMemoryFiles();
@@ -496,6 +495,7 @@ export class LearningStore {
 			runs,
 		};
 		await writeJson(join(this.paths.snapshotsDir, "latest.json"), snapshot);
+		this.setCachedSnapshot(snapshot);
 		return snapshot;
 	}
 
@@ -520,24 +520,33 @@ export class LearningStore {
 		return safeJoin(this.paths.candidatesDir, `${slugify(candidateId, "candidate")}.json`);
 	}
 
-	private async applyMemoryCandidate(
+	async applyMemoryCandidate(
 		payload: LearningMemoryCandidatePayload,
 		candidate: LearningCandidate,
 	): Promise<LearningFileRef[]> {
-		const filename = payload.filename.endsWith(".md")
-			? slugify(payload.filename.slice(0, -3), "memory") + ".md"
-			: `${slugify(payload.filename, "memory")}.md`;
-		const target = safeJoin(this.paths.memoryDir, filename);
+		this.invalidateSnapshot();
+		const baseName = payload.filename.endsWith(".md")
+			? slugify(payload.filename.slice(0, -3), "memory")
+			: slugify(payload.filename, "memory");
+		let filename = `${baseName}.md`;
+		let target = safeJoin(this.paths.memoryDir, filename);
+		let suffix = 2;
+		while (existsSync(target)) {
+			filename = `${baseName}-${suffix}.md`;
+			target = safeJoin(this.paths.memoryDir, filename);
+			suffix += 1;
+		}
 		await writeFile(target, serializeMemory(payload, { sourceSessionId: candidate.sourceSessionId }), "utf-8");
 		await this.ensureMemoryEntrypoint();
 		return [fileRef(target, filename, "memory"), fileRef(join(this.paths.memoryDir, MEMORY_ENTRYPOINT), MEMORY_ENTRYPOINT, "memory-index")];
 	}
 
-	private async applySkillCandidate(
+	async applySkillCandidate(
 		payload: LearningSkillCandidatePayload,
 		candidate: LearningCandidate,
 		options?: { mergeTargetSkillName?: string },
 	): Promise<LearningFileRef[]> {
+		this.invalidateSnapshot();
 		if (candidate.action === "archive-skill") {
 			const targetName = candidate.targetId ?? payload.name;
 			return this.archiveSkill(targetName);
@@ -564,10 +573,13 @@ export class LearningStore {
 			refs.push(fileRef(target, relativePath, this.kindForSkillFile(relativePath)));
 		}
 		const usage = await this.loadUsage();
+		const existing = usage.skills[skillName] ?? {};
 		usage.skills[skillName] = {
-			...(usage.skills[skillName] ?? {}),
+			...existing,
 			state: "active",
 			pinned: payload.pinned ?? false,
+			usageCount: (existing.usageCount ?? 0) + 1,
+			lastUsedAt: Date.now(),
 		};
 		await this.saveUsage(usage);
 		return refs;
@@ -624,12 +636,24 @@ export class LearningStore {
 	private async ensureMemoryEntrypoint(): Promise<void> {
 		const entrypoint = safeJoin(this.paths.memoryDir, MEMORY_ENTRYPOINT);
 		const files = await this.listMemoryFiles();
+		const activeFiles = files.filter((file) => file.state === "active");
+
+		// Skip rebuild if entrypoint is newer than all active memory files
+		// (avoids repeated disk writes during high-frequency getSnapshot calls)
+		try {
+			const entryStat = await stat(entrypoint);
+			const newestMemory = activeFiles.reduce<number>((max, f) => Math.max(max, f.mtimeMs ?? 0), 0);
+			if (entryStat.mtimeMs >= newestMemory) {
+				return;
+			}
+		} catch {
+			// entrypoint doesn't exist yet → fall through and create
+		}
+
 		const lines = [
 			"# Project Memory",
 			"",
-			...files
-				.filter((file) => file.state === "active")
-				.map((file) => `- [${file.description ?? file.filename}](${file.filename})`),
+			...activeFiles.map((file) => `- [${file.description ?? file.filename}](${file.filename})`),
 			"",
 		];
 		await writeFile(entrypoint, lines.join("\n"), "utf-8");
@@ -786,7 +810,13 @@ export class LearningStore {
 
 	private async runSkillCurator(mode: LearningCuratorMode): Promise<LearningRun> {
 		const skills = await this.listSkills();
-		const stale = skills.filter((skill) => !skill.pinned && skill.state === "active" && skill.usageCount === 0);
+		const STALE_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+		const now = Date.now();
+		const stale = skills.filter((skill) => {
+			if (skill.pinned || skill.state !== "active") return false;
+			const lastUsed = skill.lastUsedAt ?? 0;
+			return now - lastUsed > STALE_THRESHOLD_MS;
+		});
 		const actions = stale.map((skill) => ({
 			action: "archive-skill" as const,
 			targetId: skill.name,

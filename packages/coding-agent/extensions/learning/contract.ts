@@ -4,18 +4,13 @@ export const LEARNING_CHANNEL_NAME = "learning";
 
 export type LearningMode = "off" | "pending" | "auto";
 export type LearningCuratorMode = "dry-run" | "pending" | "auto";
-export type LearningDomain = "memory" | "skill" | "curator";
+export type LearningDomain = "memory" | "skill";
 export type LearningCandidateStatus = "pending" | "approved" | "rejected";
 export type LearningCandidateAction =
 	| "create-memory"
-	| "update-memory"
 	| "create-skill"
 	| "merge-skill"
-	| "archive-skill"
-	| "restore-skill"
-	| "disable-skill"
-	| "promote-skill"
-	| "curator-report";
+	| "archive-skill";
 export type LearningFileKind =
 	| "memory"
 	| "memory-index"

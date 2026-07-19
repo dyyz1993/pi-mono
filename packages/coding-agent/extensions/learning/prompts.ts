@@ -3,10 +3,9 @@
  *
  * Copied from legacy memory/prompts.ts with minimal changes:
  * - "legacy memory" → "learning" in system prompt
- * - save_memory / create_bookmark tool references preserved as-is (tools are shared)
  */
 
-export const MEMORY_SYSTEM_PROMPT = (_memoryDir: string, memoryContent: string): string => `# learning memory
+export const MEMORY_SYSTEM_PROMPT = (memoryContent: string): string => `# learning memory
 
 You have a persistent memory system managed by the learning extension.
 Its physical storage path is runtime-owned and may be on a different filesystem
@@ -183,7 +182,6 @@ Respond with JSON only:
 export const DREAM_PROMPT = (
   allContent: string,
   indexContent: string,
-  _memoryDir: string,
 ): string => `You are performing a dream — a reflective pass over memory files.
 Analyze all memories and determine what to consolidate.
 
