@@ -16,6 +16,7 @@ import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
+import { handleRpcCommand } from "./cli/rpc-command.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
 import { ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
@@ -487,6 +488,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handleHooksCommand(args)) {
+		return;
+	}
+
+	if (await handleRpcCommand(args)) {
 		return;
 	}
 

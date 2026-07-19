@@ -42,7 +42,7 @@ import type {
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
 /** RpcCommand without the id field (for internal send) */
-type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
+export type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 export interface RpcClientOptions {
 	/** Path to the CLI entry point (default: searches for dist/cli.js) */
@@ -1204,6 +1204,19 @@ export class RpcClient {
 				pending?.reject(writeError);
 			}
 		});
+	}
+
+	/**
+	 * Send an arbitrary RPC command and await its response.
+	 *
+	 * The typed wrappers above (`getState`, `prompt`, …) all delegate to the
+	 * private {@link send}; this method exposes the same channel so CLI tools
+	 * (e.g. `pi rpc --method <name>`) can invoke any command without a
+	 * dedicated wrapper. The full {@link RpcResponse} is returned — callers
+	 * decide whether to unwrap `.data`.
+	 */
+	async rawSend(command: RpcCommandBody): Promise<RpcResponse> {
+		return this.send(command);
 	}
 
 	private writeLine(obj: object): void {
