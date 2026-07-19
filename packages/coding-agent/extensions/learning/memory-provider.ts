@@ -3,6 +3,7 @@ import { LearningStore } from "./store.ts";
 import type { LearningMemoryCandidatePayload } from "./contract.ts";
 import { EXTRACTION_PROMPT } from "./prompts.ts";
 import { messageText, extractToolCalls, stripMarkdownCodeBlock, slugifyFilename, logger, type CallLLMFn } from "./utils.ts";
+import { redactSecretsInMessages } from "./secret-detector.ts";
 
 export function extractText(messages: AgentMessage[]): string {
 	return messages
@@ -83,7 +84,13 @@ export async function maybeExtractMemory(input: {
 		return;
 	}
 
-	let payload = buildMemoryCandidatePayload(input.messages);
+	// 提取前 redact secrets，避免把 API key / 密码写入 memory 文件
+	const { messages: redactedMessages, redactionCount } = redactSecretsInMessages<AgentMessage>(input.messages);
+	if (redactionCount > 0) {
+		logger.info("memory.extract redacted secrets before processing", { count: redactionCount });
+	}
+
+	let payload = buildMemoryCandidatePayload(redactedMessages);
 	if (!payload) return;
 
 	// 如果有 LLM，用它提取高质量内容

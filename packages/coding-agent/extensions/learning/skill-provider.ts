@@ -2,6 +2,7 @@ import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { LearningStore } from "./store.ts";
 import type { LearningSkillCandidatePayload } from "./contract.ts";
 import { messageText, extractToolCalls, stripMarkdownCodeBlock, logger, type CallLLMFn } from "./utils.ts";
+import { redactSecretsInMessages } from "./secret-detector.ts";
 import { DISTILL_PROMPT } from "./prompts.ts";
 
 export function extractWorkflowText(messages: AgentMessage[]): string {
@@ -238,13 +239,19 @@ export async function maybeDistillSkill(input: {
 		return;
 	}
 
-	let payload = buildSkillCandidatePayload(input.messages);
+	// 提取前 redact secrets，避免把 API key / 密码写入 skill 文件
+	const { messages: redactedMessages, redactionCount } = redactSecretsInMessages<AgentMessage>(input.messages);
+	if (redactionCount > 0) {
+		logger.info("skill.distill redacted secrets before processing", { count: redactionCount });
+	}
+
+	let payload = buildSkillCandidatePayload(redactedMessages);
 	if (!payload) return;
 
 	// 如果有 LLM，用它精炼 skill 内容（去掉 thinking 噪声，提取核心步骤）
 	if (input.callLLM) {
 		try {
-			const workflow = buildWorkflowDocument(input.messages);
+			const workflow = buildWorkflowDocument(redactedMessages);
 			const response = await input.callLLM({
 				systemPrompt: DISTILL_PROMPT(workflow),
 				messages: [{ role: "user", content: "Distill this workflow into a reusable skill." }],
