@@ -84,6 +84,8 @@ function createMockPiWithChannel(projectRoot: string): {
       handlers[event]!.push(handler);
     }),
     callLLM: vi.fn(async () => JSON.stringify({ selected: [] })),
+
+    callLLMSafe: vi.fn(async () => JSON.stringify({ selected: [] })),
     registerTool: vi.fn(),
     registerChannel: vi.fn(() => fakeChannel),
     appendEntry: vi.fn(),

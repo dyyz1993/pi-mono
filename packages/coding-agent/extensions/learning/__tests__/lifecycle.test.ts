@@ -109,6 +109,12 @@ function createLifecycleRuntime(): LifecycleRuntime {
       }
       return JSON.stringify({ actions: [{ op: "skip" }] });
     }),
+    callLLMSafe: vi.fn(async (opts: { systemPrompt: string; messages: Array<{ role: string; content: string }> }) => {
+      if (opts.systemPrompt.includes("memory") || opts.systemPrompt.includes("Memory")) {
+        return JSON.stringify({ selected: [] });
+      }
+      return JSON.stringify({ actions: [{ op: "skip" }] });
+    }),
     registerTool: vi.fn(),
     registerChannel: vi.fn(() => fakeChannel),
     appendEntry: vi.fn((customType: string, data?: unknown) => {

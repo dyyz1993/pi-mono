@@ -1606,6 +1606,23 @@ export interface ExtensionAPI {
 	 */
 	callLLM(options: CallLLMOptions): Promise<string>;
 
+	/**
+	 * Stale-safe variant of callLLM for background work.
+	 *
+	 * Unlike callLLM, this does NOT throw when the extension ctx is stale
+	 * (after session replacement / reload). It calls the underlying LLM
+	 * directly, which is safe because the LLM provider settings live on the
+	 * AgentSession instance and survive ctx invalidation.
+	 *
+	 * Use this ONLY inside pi.background tasks or async fire-and-forget work
+	 * that legitimately needs to outlive the original session. For normal
+	 * request-scoped LLM calls, prefer callLLM — the stale check is a useful
+	 * guard against subtle bugs.
+	 *
+	 * Behavior parity with callLLM otherwise (same options, same return shape).
+	 */
+	callLLMSafe(options: CallLLMOptions): Promise<string>;
+
 	// =========================================================================
 	// Provider Registration
 	// =========================================================================

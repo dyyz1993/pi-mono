@@ -55,6 +55,7 @@ function createMockPi(options: { callLLM?: ExtensionAPI["callLLM"] } = {}) {
       handlers[event]!.push(handler);
     }),
     callLLM: vi.fn(options.callLLM ?? (async () => JSON.stringify({ selected: [] }))),
+    callLLMSafe: vi.fn(options.callLLM ?? (async () => JSON.stringify({ selected: [] }))),
     registerTool: vi.fn((tool: unknown) => {
       registeredTools.push(tool);
     }),

@@ -316,6 +316,8 @@ describe("maybeDistillSkill with LLM", () => {
       store,
       messages: writeOpMessages(),
       callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+
+      callLLMSafe: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
     });
     expect(callLLM).toHaveBeenCalledTimes(1);
     const snapshot = await store.getSnapshot();
@@ -339,6 +341,8 @@ describe("maybeDistillSkill with LLM", () => {
       store,
       messages: writeOpMessages(),
       callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+
+      callLLMSafe: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
     });
     const snapshot = await store.getSnapshot();
     expect(snapshot.candidates).toHaveLength(0);
@@ -356,6 +360,8 @@ describe("maybeDistillSkill with LLM", () => {
       store,
       messages: writeOpMessages(),
       callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+
+      callLLMSafe: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
     });
     const snapshot = await store.getSnapshot();
     expect(snapshot.candidates).toHaveLength(1);
@@ -375,6 +381,8 @@ describe("maybeDistillSkill with LLM", () => {
       store,
       messages: writeOpMessages(),
       callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+
+      callLLMSafe: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
     });
     const snapshot = await store.getSnapshot();
     expect(snapshot.candidates).toHaveLength(1);

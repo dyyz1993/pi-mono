@@ -324,10 +324,12 @@ export default function learningExtension(pi: ExtensionAPI) {
 
   const callLLMWithRetry = async (opts: Parameters<ExtensionAPI["callLLM"]>[0]): Promise<string> => {
     try {
-      return await pi.callLLM(opts);
+      // Use callLLMSafe so background LLM work (memory extract, skill distill)
+      // survives session replacement / reload. The stale check in callLLM
+      // would otherwise force graceful fallback to raw payload every time.
+      return await pi.callLLMSafe(opts);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (/stale/i.test(msg)) throw err;
       logger.warn("LLM call failed", { error: msg });
       throw err;
     }
