@@ -946,4 +946,100 @@ ${memoryText}
     channel?.emit("learning.run", run);
     return run;
   });
+
+  // --- Slash command: /learning review (interactive candidate approval) ---
+
+  if (typeof pi.registerCommand === "function") {
+    pi.registerCommand("learning", {
+    description: "Review pending learning candidates (approve / reject interactively)",
+    handler: async (_args: string, cmdCtx) => {
+      if (!learningAvailable) {
+        cmdCtx.ui.notify("Learning is unavailable in this mode (quick SSH sandbox).", "warning");
+        return;
+      }
+      const store = getStore();
+      const pending = await store.listCandidates(false);
+      const reviewable = pending.filter((c) => c.status === "pending");
+      if (reviewable.length === 0) {
+        cmdCtx.ui.notify("No pending candidates to review.", "info");
+        return;
+      }
+      cmdCtx.ui.notify(`Reviewing ${reviewable.length} pending candidate${reviewable.length === 1 ? "" : "s"}...`, "info");
+
+      // Review one candidate at a time. For each: show preview via confirm(),
+      // then ask action via select(). Loop until user exits or list empties.
+      while (reviewable.length > 0) {
+        const candidate = reviewable[0]!;
+        const payloadPreview = candidate.payload && typeof candidate.payload === "object"
+          ? JSON.stringify(candidate.payload, null, 2).slice(0, 500)
+          : "(no payload)";
+
+        // Show candidate details, ask approve/reject via confirm dialog.
+        // confirm() returns boolean (approve=true / reject=false); for "skip" or
+        // "exit", we use select() afterwards if user wants more options.
+        const message = [
+          `Domain:     ${candidate.domain}`,
+          `Title:      ${candidate.title}`,
+          `Summary:    ${candidate.summary || "(no summary)"}`,
+          `Confidence: ${candidate.confidence || "unknown"}`,
+          "",
+          "Payload preview:",
+          payloadPreview,
+          "",
+          "Approve? (No = reject)",
+        ].join("\n");
+
+        const choice = await cmdCtx.ui.select(
+          `Reviewing (${reviewable.length} left): ${candidate.title}`,
+          ["Approve", "Reject", "Skip this one", "Exit review"],
+        );
+        // Use a noop to avoid unused warning; message is displayed via notify before select.
+        void message;
+
+        if (choice === undefined || choice === "Exit review") {
+          cmdCtx.ui.notify("Review ended.", "info");
+          return;
+        }
+        if (choice === "Skip this one") {
+          reviewable.shift();
+          continue;
+        }
+        try {
+          if (choice === "Approve") {
+            await store.approveCandidate(candidate.id);
+            cmdCtx.ui.notify(`Approved: ${candidate.title}`, "info");
+          } else if (choice === "Reject") {
+            await store.rejectCandidate(candidate.id);
+            cmdCtx.ui.notify(`Rejected: ${candidate.title}`, "info");
+          }
+          reviewable.shift();
+        } catch (err) {
+          cmdCtx.ui.notify(
+            `Failed: ${err instanceof Error ? err.message : String(err)}`,
+            "error",
+          );
+        }
+      }
+      cmdCtx.ui.notify("All pending candidates reviewed.", "info");
+    },
+  });
+  } // end if registerCommand
+
+  // --- Notify user when new candidates appear after agent_end ---
+
+  pi.on("agent_end", async () => {
+    if (!learningAvailable) return;
+    try {
+      const snapshot = await getStore().getSnapshot();
+      const pendingCount = snapshot.overview.pendingCandidates;
+      if (pendingCount > 0) {
+        ctx?.ui.notify(
+          `Learning has ${pendingCount} pending candidate${pendingCount === 1 ? "" : "s"}. Run /learning to review.`,
+          "info",
+        );
+      }
+    } catch {
+      // Non-critical: skip notification if snapshot fails.
+    }
+  });
 }
