@@ -34,6 +34,7 @@ import {
   messageText,
   truncateEntrypoint,
   findExistingMemoryContext,
+  slugifyFilename,
   logger,
 } from "./utils.ts";
 import { loadSkipWordStore, addHistoryEntry, saveSkipWordStore, getGlobalLearningDir, getDefaultRules } from "./skip-rules.ts";
@@ -114,18 +115,6 @@ function disabledRun(domain: LearningRunCuratorParams["domain"]): LearningRun {
     actions: [],
     error: "learning-unavailable-quick-ssh-sandbox",
   };
-}
-
-function slugifyMemoryFilename(input: string, fallback = "memory"): string {
-  const base = input
-    .trim()
-    .toLowerCase()
-    .replace(/\.md$/i, "")
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/--+/g, "-")
-    .slice(0, 64);
-  return `${base || fallback}.md`;
 }
 
 async function uniqueMemoryFilePath(memoryDir: string, filename: string): Promise<{ filename: string; filePath: string }> {
@@ -677,7 +666,7 @@ export default function learningExtension(pi: ExtensionAPI) {
       _ctx?: ExtensionContext,
     ): Promise<AgentToolResult<{ filename: string }>> => {
       await mkdir(memoryDir, { recursive: true });
-      const requestedFilename = slugifyMemoryFilename(params.filename ?? params.name, "memory");
+      const requestedFilename = slugifyFilename(params.filename ?? params.name, "memory");
       const { filename, filePath } = await uniqueMemoryFilePath(memoryDir, requestedFilename);
       const fm = buildFrontmatter({
         name: params.name,
@@ -807,6 +796,7 @@ ${memoryText}
             messages,
             sourceSessionId: sessionId,
             sourceMessageIds: sourceMessageIds(messages),
+            callLLM: callLLMWithRetry,
           });
         }
 

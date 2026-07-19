@@ -1,12 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import {
   buildSkillCandidatePayload,
   buildWorkflowDocument,
   deriveSkillName,
   extractWorkflowText,
+  maybeDistillSkill,
+  parseDistillResponse,
   shouldDistill,
 } from "../skill-provider.ts";
+import { LearningStore } from "../store.ts";
 
 function userMessage(text: string): AgentMessage {
   return {
@@ -202,5 +208,176 @@ describe("extractWorkflowText", () => {
     expect(text).toContain("r1");
     expect(text).toContain("second");
     expect(text).not.toContain("ignored");
+  });
+});
+
+
+describe("parseDistillResponse", () => {
+  it("parses valid response with name, description, body", () => {
+    const response = JSON.stringify({
+      name: "create-file",
+      description: "Create a file with given content",
+      body: "# Skill: create-file\n\n## Procedure\n1. ...",
+      shouldSkip: false,
+    });
+    const result = parseDistillResponse(response);
+    expect(result).toEqual({
+      skipped: false,
+      name: "create-file",
+      description: "Create a file with given content",
+      body: "# Skill: create-file\n\n## Procedure\n1. ...",
+    });
+  });
+
+  it("returns {skipped:true} when shouldSkip is true", () => {
+    const response = JSON.stringify({ shouldSkip: true });
+    expect(parseDistillResponse(response)).toEqual({ skipped: true });
+  });
+
+  it("returns null when name or body is missing", () => {
+    expect(parseDistillResponse(JSON.stringify({ name: "x" }))).toBeNull();
+    expect(parseDistillResponse(JSON.stringify({ body: "y" }))).toBeNull();
+    expect(parseDistillResponse(JSON.stringify({}))).toBeNull();
+  });
+
+  it("returns null for invalid JSON", () => {
+    expect(parseDistillResponse("not json")).toBeNull();
+    expect(parseDistillResponse("")).toBeNull();
+  });
+
+  it("strips markdown code fences before parsing", () => {
+    const response = "```json\n" + JSON.stringify({
+      name: "test",
+      description: "d",
+      body: "b",
+    }) + "\n```";
+    const result = parseDistillResponse(response);
+    expect(result && !result.skipped ? result.name : null).toBe("test");
+  });
+});
+
+describe("maybeDistillSkill with LLM", () => {
+  let tempDir: string;
+  let store: LearningStore;
+  let previousAgentDir: string | undefined;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "skill-distill-"));
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(tempDir, "agent");
+    store = new LearningStore(projectDir);
+  });
+
+  afterEach(() => {
+    if (previousAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
+    if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function writeOpMessages(): AgentMessage[] {
+    return [
+      { role: "user", content: [{ type: "text", text: "创建 hello.txt 文件 内容 Hello" }], timestamp: Date.now() },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "I should use the write tool" },
+          { type: "toolCall", name: "write", arguments: { path: "hello.txt", content: "Hello" } },
+        ],
+        timestamp: Date.now(),
+      } as AgentMessage,
+      { role: "toolResult", content: [{ type: "text", text: "Created hello.txt" }], timestamp: Date.now() } as AgentMessage,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Done. Created hello.txt" }],
+        timestamp: Date.now(),
+      } as AgentMessage,
+    ];
+  }
+
+  it("uses LLM to refine skill content when callLLM provided", async () => {
+    const callLLM = vi.fn(async () => JSON.stringify({
+      name: "create-text-file",
+      description: "Create a text file with specified content",
+      body: "# Skill: create-text-file\n\n## When to use\nWhen you need to create a file.\n\n## Procedure\n1. Use write tool\n2. Verify",
+      shouldSkip: false,
+    }));
+    await store.setConfig({
+      version: 1,
+      enabled: true,
+      memory: { recallEnabled: true, extractMode: "off", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+      skills: { distillMode: "pending", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+    });
+    await maybeDistillSkill({
+      store,
+      messages: writeOpMessages(),
+      callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+    });
+    expect(callLLM).toHaveBeenCalledTimes(1);
+    const snapshot = await store.getSnapshot();
+    expect(snapshot.candidates).toHaveLength(1);
+    const candidate = snapshot.candidates[0]!;
+    expect(candidate.payload.name).toBe("create-text-file");
+    expect(candidate.payload.description).toBe("Create a text file with specified content");
+    expect(candidate.payload.body).toContain("# Skill: create-text-file");
+    expect(candidate.payload.body).not.toContain("I should use the write tool"); // thinking stripped
+  });
+
+  it("skips candidate when LLM returns shouldSkip=true", async () => {
+    const callLLM = vi.fn(async () => JSON.stringify({ shouldSkip: true }));
+    await store.setConfig({
+      version: 1,
+      enabled: true,
+      memory: { recallEnabled: true, extractMode: "off", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+      skills: { distillMode: "pending", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+    });
+    await maybeDistillSkill({
+      store,
+      messages: writeOpMessages(),
+      callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+    });
+    const snapshot = await store.getSnapshot();
+    expect(snapshot.candidates).toHaveLength(0);
+  });
+
+  it("falls back to raw payload when LLM throws", async () => {
+    const callLLM = vi.fn(async () => { throw new Error("stale ctx"); });
+    await store.setConfig({
+      version: 1,
+      enabled: true,
+      memory: { recallEnabled: true, extractMode: "off", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+      skills: { distillMode: "pending", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+    });
+    await maybeDistillSkill({
+      store,
+      messages: writeOpMessages(),
+      callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+    });
+    const snapshot = await store.getSnapshot();
+    expect(snapshot.candidates).toHaveLength(1);
+    // Fallback: raw payload with original name from deriveSkillName
+    expect(snapshot.candidates[0]!.payload.name).toBe("create-file");
+  });
+
+  it("falls back to raw payload when LLM returns invalid JSON", async () => {
+    const callLLM = vi.fn(async () => "not json at all");
+    await store.setConfig({
+      version: 1,
+      enabled: true,
+      memory: { recallEnabled: true, extractMode: "off", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+      skills: { distillMode: "pending", curatorMode: "dry-run", curatorSchedule: { enabled: false, intervalMinutes: 1440 } },
+    });
+    await maybeDistillSkill({
+      store,
+      messages: writeOpMessages(),
+      callLLM: callLLM as unknown as Parameters<typeof maybeDistillSkill>[0]["callLLM"],
+    });
+    const snapshot = await store.getSnapshot();
+    expect(snapshot.candidates).toHaveLength(1);
+    expect(snapshot.candidates[0]!.payload.name).toBe("create-file");
   });
 });

@@ -45,6 +45,15 @@ export function slugifyFilename(input: string, fallback = "memory"): string {
 	return `${base || fallback}.md`;
 }
 
+/**
+ * Slugify a string into a safe filename stem (without .md extension).
+ * Same as slugifyFilename but returns the stem only.
+ */
+export function slugifyStem(input: string, fallback = "memory"): string {
+	return slugifyFilename(input, fallback).replace(/\.md$/i, "");
+}
+
+
 export type MemoryType = "user" | "feedback" | "project" | "reference" | "bookmark";
 
 export interface MemoryHeader {

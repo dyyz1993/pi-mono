@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { LearningStore } from "./store.ts";
 import type { LearningSkillCandidatePayload } from "./contract.ts";
-import { messageText, extractToolCalls, logger } from "./utils.ts";
+import { messageText, extractToolCalls, stripMarkdownCodeBlock, logger, type CallLLMFn } from "./utils.ts";
+import { DISTILL_PROMPT } from "./prompts.ts";
 
 export function extractWorkflowText(messages: AgentMessage[]): string {
 	return messages
@@ -166,6 +167,30 @@ export function buildWorkflowDocument(messages: AgentMessage[]): string {
 	return lines.join("\n").trim();
 }
 
+/**
+ * 解析 LLM distill 响应。返回 null 表示无效响应或 shouldSkip=true。
+ */
+export type DistillResult =
+	| { skipped: true }
+	| { skipped: false; name: string; description: string; body: string }
+	| null; // invalid response
+
+export function parseDistillResponse(response: string): DistillResult {
+	try {
+		const parsed = JSON.parse(stripMarkdownCodeBlock(response));
+		if (parsed.shouldSkip === true) return { skipped: true };
+		if (!parsed.name || !parsed.body) return null;
+		return {
+			skipped: false,
+			name: String(parsed.name),
+			description: String(parsed.description ?? parsed.name),
+			body: String(parsed.body),
+		};
+	} catch {
+		return null;
+	}
+}
+
 export function buildSkillCandidatePayload(messages: AgentMessage[]): LearningSkillCandidatePayload | null {
 	const workflow = buildWorkflowDocument(messages);
 	if (!workflow) return null;
@@ -202,6 +227,7 @@ export async function maybeDistillSkill(input: {
 	messages: AgentMessage[];
 	sourceSessionId?: string;
 	sourceMessageIds?: string[];
+	callLLM?: CallLLMFn;
 }): Promise<void> {
 	const config = await input.store.getConfig();
 	if (!config.enabled || config.skills.distillMode === "off") return;
@@ -212,8 +238,37 @@ export async function maybeDistillSkill(input: {
 		return;
 	}
 
-	const payload = buildSkillCandidatePayload(input.messages);
+	let payload = buildSkillCandidatePayload(input.messages);
 	if (!payload) return;
+
+	// 如果有 LLM，用它精炼 skill 内容（去掉 thinking 噪声，提取核心步骤）
+	if (input.callLLM) {
+		try {
+			const workflow = buildWorkflowDocument(input.messages);
+			const response = await input.callLLM({
+				systemPrompt: DISTILL_PROMPT(workflow),
+				messages: [{ role: "user", content: "Distill this workflow into a reusable skill." }],
+			});
+			const distilled = parseDistillResponse(response);
+			if (distilled?.skipped) {
+				logger.info("skill.distill llm decided to skip", { name: payload.name });
+				return; // LLM 判断不值得蒸馏
+			}
+			if (distilled && !distilled.skipped) {
+				payload = {
+					...payload,
+					name: distilled.name,
+					description: distilled.description,
+					body: distilled.body,
+				};
+			}
+			// distilled === null (invalid response) → 继续用原始 payload
+		} catch (err) {
+			logger.warn("skill.distill llm failed, falling back to raw payload", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
 
 	if (config.skills.distillMode === "pending") {
 		await input.store.createSkillCandidate({

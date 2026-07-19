@@ -269,3 +269,36 @@ Respond with JSON only:
 {
   "keywords": ["keyword1", "keyword2", ...]
 }`;
+
+
+export const DISTILL_PROMPT = (
+  workflow: string,
+): string => `You are the skill distillation subagent. Analyze the completed workflow
+below and distill it into a reusable skill.
+
+## Raw workflow (user request, thinking, tool calls, results, response)
+${workflow}
+
+## Your task
+Extract the essential, reusable procedure from this workflow. Strip:
+- Verbose thinking that explored dead-ends
+- Redundant tool result output (keep only signal, not raw dumps)
+- Task-specific details that won't generalize (specific file names, hardcoded values)
+
+Preserve:
+- The core sequence of operations (what was done in what order)
+- Key parameters and decision points (why this approach was chosen)
+- Preconditions (what must be true before running this skill)
+- Verification steps (how to confirm the task succeeded)
+
+## Output format
+Respond with JSON only:
+{
+  "name": "kebab-case-skill-name (e.g. create-file, deploy-app, fix-tests)",
+  "description": "One sentence describing when to use this skill (≤100 chars)",
+  "body": "# Skill: <name>\n\n## When to use\n...\n\n## Procedure\n1. ...\n2. ...\n\n## Verification\n...",
+  "shouldSkip": false
+}
+
+If the workflow is too task-specific to generalize (e.g. one-off debugging, exploratory
+back-and-forth with no clear procedure), set shouldSkip=true and leave other fields empty.`;

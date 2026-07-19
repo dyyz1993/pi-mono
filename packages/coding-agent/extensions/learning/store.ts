@@ -17,7 +17,7 @@ import {
 	type LearningSkillSummary,
 	type LearningSnapshot,
 } from "./contract.ts";
-import { parseFrontmatter } from "./utils.ts";
+import { parseFrontmatter, slugifyStem } from "./utils.ts";
 
 const CONFIG_FILE = "config.json";
 const EVENTS_FILE = "events.jsonl";
@@ -75,17 +75,6 @@ interface UsageFile {
 
 function nowId(prefix: string): string {
 	return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function slugify(input: string, fallback: string): string {
-	const slug = input
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9._-]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.replace(/--+/g, "-")
-		.slice(0, 64);
-	return slug || fallback;
 }
 
 function ensureDir(path: string): void {
@@ -517,7 +506,7 @@ export class LearningStore {
 	}
 
 	private candidatePath(candidateId: string): string {
-		return safeJoin(this.paths.candidatesDir, `${slugify(candidateId, "candidate")}.json`);
+		return safeJoin(this.paths.candidatesDir, `${slugifyStem(candidateId, "candidate")}.json`);
 	}
 
 	async applyMemoryCandidate(
@@ -526,8 +515,8 @@ export class LearningStore {
 	): Promise<LearningFileRef[]> {
 		this.invalidateSnapshot();
 		const baseName = payload.filename.endsWith(".md")
-			? slugify(payload.filename.slice(0, -3), "memory")
-			: slugify(payload.filename, "memory");
+			? slugifyStem(payload.filename.slice(0, -3), "memory")
+			: slugifyStem(payload.filename, "memory");
 		let filename = `${baseName}.md`;
 		let target = safeJoin(this.paths.memoryDir, filename);
 		let suffix = 2;
@@ -559,7 +548,7 @@ export class LearningStore {
 	}
 
 	private async createSkillPackage(payload: LearningSkillCandidatePayload): Promise<LearningFileRef[]> {
-		const skillName = slugify(payload.name, "generated-skill");
+		const skillName = slugifyStem(payload.name, "generated-skill");
 		const skillDir = safeJoin(this.paths.skillsDir, skillName);
 		await mkdir(skillDir, { recursive: true });
 		const skillPath = safeJoin(skillDir, SKILL_ENTRYPOINT);
@@ -586,7 +575,7 @@ export class LearningStore {
 	}
 
 	private async mergeSkill(targetName: string, payload: LearningSkillCandidatePayload): Promise<LearningFileRef[]> {
-		const skillName = slugify(targetName, "generated-skill");
+		const skillName = slugifyStem(targetName, "generated-skill");
 		const skillDir = safeJoin(this.paths.skillsDir, skillName);
 		const skillPath = safeJoin(skillDir, SKILL_ENTRYPOINT);
 		if (!existsSync(skillPath)) {
@@ -616,7 +605,7 @@ export class LearningStore {
 	}
 
 	private async archiveSkill(skillName: string): Promise<LearningFileRef[]> {
-		const safeName = slugify(skillName, "generated-skill");
+		const safeName = slugifyStem(skillName, "generated-skill");
 		const source = safeJoin(this.paths.skillsDir, safeName);
 		const target = safeJoin(this.paths.archiveSkillsDir, safeName);
 		if (!existsSync(source)) {
