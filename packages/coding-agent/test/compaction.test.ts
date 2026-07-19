@@ -17,6 +17,7 @@ import {
 import {
 	buildSessionContext,
 	type CompactionEntry,
+	type DeletionEntry,
 	type ModelChangeEntry,
 	migrateSessionEntries,
 	parseSessionEntries,
@@ -62,6 +63,33 @@ function createAssistantMessage(text: string, usage?: Usage): AssistantMessage {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
+	};
+}
+
+function createAssistantToolCallMessage(toolCallId: string, text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [
+			{ type: "text", text },
+			{ type: "toolCall", id: toolCallId, name: "bash", arguments: { command: "printf old" } },
+		],
+		usage: createMockUsage(100, 50),
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+	};
+}
+
+function createToolResultMessage(toolCallId: string, text: string): AgentMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "bash",
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: Date.now(),
 	};
 }
 
@@ -419,9 +447,107 @@ describe("buildSessionContext", () => {
 		expect(loaded.model).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-5" });
 		expect(loaded.thinkingLevel).toBe("high");
 	});
+
+	it("should strip orphan assistant tool calls from context", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("start")),
+			createMessageEntry(createAssistantToolCallMessage("orphan-tool", "assistant text stays")),
+			createMessageEntry(createUserMessage("continue after interrupted tool call")),
+		];
+
+		const loaded = buildSessionContext(entries);
+		const assistant = loaded.messages.find((message) => message.role === "assistant") as AssistantMessage;
+
+		expect(assistant.content.some((part) => part.type === "text" && part.text === "assistant text stays")).toBe(true);
+		expect(assistant.content.some((part) => part.type === "toolCall")).toBe(false);
+	});
+
+	it("should drop orphan tool results from context", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("start")),
+			createMessageEntry(createToolResultMessage("missing-call", "ORPHAN_TOOL_RESULT_SHOULD_NOT_REACH_MODEL")),
+			createMessageEntry(createUserMessage("continue")),
+		];
+
+		const loaded = buildSessionContext(entries);
+		const text = extractText(loaded.messages);
+
+		expect(loaded.messages.some((message) => message.role === "toolResult")).toBe(false);
+		expect(text).not.toContain("ORPHAN_TOOL_RESULT_SHOULD_NOT_REACH_MODEL");
+	});
+
+	it("should keep valid adjacent assistant tool call groups", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("start")),
+			createMessageEntry(createAssistantToolCallMessage("valid-tool", "assistant uses tool")),
+			createMessageEntry(createToolResultMessage("valid-tool", "VALID_TOOL_RESULT_STAYS")),
+			createMessageEntry(createUserMessage("continue")),
+		];
+
+		const loaded = buildSessionContext(entries);
+		const assistant = loaded.messages.find((message) => message.role === "assistant") as AssistantMessage;
+
+		expect(assistant.content.some((part) => part.type === "toolCall" && part.id === "valid-tool")).toBe(true);
+		expect(loaded.messages.some((message) => message.role === "toolResult")).toBe(true);
+		expect(extractText(loaded.messages)).toContain("VALID_TOOL_RESULT_STAYS");
+	});
 });
 
 describe("prepareCompaction with previous compaction", () => {
+	it("should strip assistant thinking from messages prepared for compaction", () => {
+		const u1 = createMessageEntry(createUserMessage("old user request to summarize"));
+		const assistantWithThinking = createMessageEntry({
+			...createAssistantMessage("visible assistant result"),
+			content: [
+				{ type: "thinking", thinking: "PRIVATE_THINKING_SHOULD_NOT_BE_SUMMARIZED" },
+				{ type: "text", text: "visible assistant result" },
+			],
+		});
+		const u2 = createMessageEntry(createUserMessage("recent user message".repeat(10)));
+		const a2 = createMessageEntry(
+			createAssistantMessage("recent assistant message".repeat(10), createMockUsage(5000, 1000)),
+		);
+
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 10,
+		};
+		const preparation = prepareCompaction([u1, assistantWithThinking, u2, a2], settings);
+
+		expect(preparation).toBeDefined();
+		expect(JSON.stringify(preparation!.messagesToSummarize)).toContain("visible assistant result");
+		expect(JSON.stringify(preparation!.messagesToSummarize)).not.toContain(
+			"PRIVATE_THINKING_SHOULD_NOT_BE_SUMMARIZED",
+		);
+	});
+
+	it("should not summarize messages hidden by deletion entries", () => {
+		const u1 = createMessageEntry(createUserMessage("old user request to keep as history"));
+		const deletedAssistant = createMessageEntry(
+			createAssistantToolCallMessage("tool-deleted-1", "DELETED_ASSISTANT_SHOULD_NOT_BE_SUMMARIZED".repeat(20)),
+		);
+		const deletedToolResult = createMessageEntry(
+			createToolResultMessage("tool-deleted-1", "DELETED_TOOL_RESULT_SHOULD_NOT_BE_SUMMARIZED".repeat(50)),
+		);
+		const deletion = createDeletionEntry([deletedAssistant.id]);
+		const u2 = createMessageEntry(createUserMessage("recent user message".repeat(10)));
+		const a2 = createMessageEntry(
+			createAssistantMessage("recent assistant message".repeat(10), createMockUsage(5000, 1000)),
+		);
+
+		const settings: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 10,
+		};
+		const preparation = prepareCompaction([u1, deletedAssistant, deletedToolResult, deletion, u2, a2], settings);
+
+		expect(preparation).toBeDefined();
+		const summarizedText = extractText(preparation!.messagesToSummarize);
+		expect(summarizedText).toContain("old user request");
+		expect(summarizedText).not.toContain("DELETED_ASSISTANT_SHOULD_NOT_BE_SUMMARIZED");
+		expect(summarizedText).not.toContain("DELETED_TOOL_RESULT_SHOULD_NOT_BE_SUMMARIZED");
+	});
+
 	it("should be a no-op when previously kept messages still fit and nothing would be discarded", () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
 		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"));
