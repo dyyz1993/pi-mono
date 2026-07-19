@@ -196,6 +196,19 @@ function stripThinkingFromMessages(messages: AgentMessage[]): AgentMessage[] {
 	});
 }
 
+/** Strip thinking blocks from assistant messages in-place (mutates the array). */
+function stripThinkingFromMessagesInPlace(messages: AgentMessage[]): void {
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i];
+		if (message.role !== "assistant") continue;
+		const assistant = message as AssistantMessage;
+		const content = assistant.content.filter((block) => block.type !== "thinking");
+		if (content.length !== assistant.content.length) {
+			messages[i] = { ...assistant, content };
+		}
+	}
+}
+
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
 export interface CompactionResult<T = unknown> {
 	summary: string;
@@ -968,6 +981,8 @@ export function prepareCompaction(
 		const msg = resolveCompactionMessage(pathEntries[i]);
 		if (msg) messagesToSummarize.push(msg);
 	}
+	// Strip thinking blocks from messages sent to LLM for summarization
+	stripThinkingFromMessagesInPlace(messagesToSummarize);
 
 	// Messages for turn prefix summary (if splitting a turn)
 	const turnPrefixMessages: AgentMessage[] = [];
@@ -976,6 +991,7 @@ export function prepareCompaction(
 			const msg = resolveCompactionMessage(pathEntries[i]);
 			if (msg) turnPrefixMessages.push(msg);
 		}
+		stripThinkingFromMessagesInPlace(turnPrefixMessages);
 	}
 
 	// If there's nothing to summarize (no messages to discard and no turn prefix to split),
