@@ -2,7 +2,7 @@ import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { LearningStore } from "./store.ts";
 import type { LearningMemoryCandidatePayload } from "./contract.ts";
 import { EXTRACTION_PROMPT } from "./prompts.ts";
-import { messageText, extractToolCalls, stripMarkdownCodeBlock, logger, type CallLLMFn } from "./utils.ts";
+import { messageText, extractToolCalls, stripMarkdownCodeBlock, slugifyFilename, logger, type CallLLMFn } from "./utils.ts";
 
 export function extractText(messages: AgentMessage[]): string {
 	return messages
@@ -60,7 +60,7 @@ export function buildMemoryCandidatePayload(messages: AgentMessage[]): LearningM
 	const description = firstLine.slice(0, 90);
 	return {
 		type: "memory",
-		filename: `${description}.md`,
+		filename: slugifyFilename(description),
 		description,
 		memoryType: "project",
 		content: text.slice(0, 4000),

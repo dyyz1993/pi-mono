@@ -780,6 +780,15 @@ ${memoryText}
     const activeStore = getStore();
     const messages = event.messages as AgentMessage[];
     const sessionId = ctx?.sessionManager?.getSessionId();
+    // Capture ui reference before fire-and-forget — ctx may become stale
+    // (session replacement/reload) during async LLM work, and ctx?.ui getter
+    // throws stale errors instead of returning undefined.
+    let capturedUi: ExtensionContext["ui"] | undefined;
+    try {
+      capturedUi = ctx?.ui;
+    } catch {
+      // ctx already stale — skip UI updates
+    }
 
     void (async () => {
       try {
@@ -850,12 +859,16 @@ ${memoryText}
 
         const snapshot = await activeStore.getSnapshot();
         channel?.emit("learning.snapshot", snapshot);
-        ctx?.ui.setStatus("learning", "learning idle");
+        capturedUi?.setStatus("learning", "learning idle");
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error("agent_end processing failed", { error: message });
-        ctx?.ui.setStatus("learning", "learning error");
-        ctx?.ui.notify(`Learning error: ${message}`, "warning");
+        try {
+          capturedUi?.setStatus("learning", "learning error");
+          capturedUi?.notify(`Learning error: ${message}`, "warning");
+        } catch {
+          // ui reference may also be stale; swallow to avoid unhandled throw
+        }
       }
     })();
   });

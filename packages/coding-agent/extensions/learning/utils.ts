@@ -27,6 +27,24 @@ export const MAX_MEMORY_BYTES_PER_FILE = 8000;
 export const DREAM_MIN_HOURS = 24;
 export const DREAM_MIN_SESSIONS = 5;
 
+
+
+/**
+ * Slugify a string into a safe filename stem (lowercase, [a-z0-9._-] only).
+ * Used for memory/skill filenames to avoid cross-platform path issues.
+ */
+export function slugifyFilename(input: string, fallback = "memory"): string {
+	const base = input
+		.trim()
+		.toLowerCase()
+		.replace(/\.md$/i, "")
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.replace(/--+/g, "-")
+		.slice(0, 64);
+	return `${base || fallback}.md`;
+}
+
 export type MemoryType = "user" | "feedback" | "project" | "reference" | "bookmark";
 
 export interface MemoryHeader {
