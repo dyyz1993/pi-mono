@@ -543,13 +543,9 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             return;
         }
         if (schedulerInstance.isExhausted()) {
-            log(`agent_end: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`);
-            appendForensic({
-                ts: forensicTs(),
-                type: "scheduler_exhausted",
-                continueCount: schedulerInstance.getContinueCount(),
-                maxContinueCount: config.maxContinueCount,
-            });
+            const reason = `Auto-continue exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}); stopping supervisor until the user intervenes.`;
+            log(`agent_end: ${reason}`);
+            handleSchedulerExhausted(reason);
             return;
         }
 
@@ -1085,18 +1081,68 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         }
 
         if (!result.scheduled) {
-            log(`scheduleContinue: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}), not scheduling`);
-            appendForensic({
-                ts: forensicTs(),
-                type: "continue_skipped",
-                reason: `scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`,
-            });
-            appendForensic({
-                ts: forensicTs(),
-                type: "scheduler_exhausted",
-                continueCount: schedulerInstance.getContinueCount(),
-                maxContinueCount: config.maxContinueCount,
-            });
+            const reason = `Auto-continue exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}); stopping supervisor until the user intervenes.`;
+            log(`scheduleContinue: ${reason}`);
+            handleSchedulerExhausted(reason);
+        }
+    }
+
+    function handleSchedulerExhausted(reason: string): void {
+        const startedAt = Date.now();
+        currentState = "idle";
+
+        appendForensic({
+            ts: forensicTs(),
+            type: "continue_skipped",
+            reason,
+        });
+        appendForensic({
+            ts: forensicTs(),
+            type: "scheduler_exhausted",
+            continueCount: schedulerInstance.getContinueCount(),
+            maxContinueCount: config.maxContinueCount,
+        });
+
+        recordGoldResult({
+            verdict: "blocked",
+            confidence: 0,
+            reason,
+            evidence: [{ kind: "runtime", summary: reason, passed: false }],
+            durationMs: 0,
+        });
+        setGoalStatus("blocked", {
+            kind: "runtime",
+            summary: reason,
+        });
+
+        const record = buildTriggerRecord(
+            startedAt,
+            0,
+            "blocked",
+            0,
+            [],
+            [],
+            undefined,
+            "paused",
+            reason,
+        );
+        appendTriggerRecord(record);
+        emitStatusChanged();
+
+        try {
+            pi.sendMessage(
+                {
+                    customType: "supervisor_exhausted",
+                    content: reason,
+                    display: true,
+                },
+                { triggerTurn: false },
+            );
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!/stale|abort/i.test(msg)) {
+                log(`handleSchedulerExhausted sendMessage failed: ${msg}`);
+            }
         }
     }
 

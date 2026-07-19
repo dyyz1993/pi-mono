@@ -3498,9 +3498,11 @@ export class AgentSession {
 				},
 				deleteEntries: (targetIds) => {
 					this.sessionManager.appendDeletion(targetIds);
+					this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 				},
 				summarizeEntries: (targetIds, summary) => {
 					this.sessionManager.appendSegmentSummary(targetIds, summary);
+					this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 				},
 				setSessionName: (name) => {
 					this.setSessionName(name);

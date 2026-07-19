@@ -2,7 +2,7 @@ import { fauxAssistantMessage } from "@dyyz1993/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import multiCompaction from "../../extensions/_multi-compaction/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 // Test that contextFold:
 // 1. Creates a compaction_fold custom entry (for UI display)
@@ -44,6 +44,9 @@ describe("contextFold LLM injection", () => {
 
 		// At this point, the fold summary should be queued but not yet in LLM context.
 		// The messages were deleted from context. A compaction_fold custom entry exists.
+		const inMemoryContextText = harness.session.agent.state.messages.map(getMessageText).join("\n");
+		expect(inMemoryContextText).not.toContain("old message 0");
+		expect(inMemoryContextText).toContain("recent work");
 
 		// Second prompt: the nextTurn message (fold summary) gets prepended
 		harness.setResponses([fauxAssistantMessage("second response")]);
