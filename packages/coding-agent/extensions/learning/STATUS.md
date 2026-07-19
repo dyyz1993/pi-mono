@@ -1,13 +1,13 @@
 # Learning Extension — Status Report
 
-> Latest commit: `60f60aeaf` refactor(learning): consolidate slugify + add skill LLM distillation
+> Latest commit: `422bafe74` feat(extensions): add pi.callLLMSafe for stale-safe background LLM work
 > Previous: `de03b58f0` refactor + `f3755601b` docs
 > Date: 2026-07-19
 
 ## Summary
 
 Production-grade state after audit + tests + performance + dry-run curator rework.
-All 195 tests pass across 15 files (182 learning + 13 harness) (101 unit + 43 integration + 29 e2e + 13 harness).
+All 202 tests pass across 15 files (189 learning + 13 harness) + 113 framework tests (101 unit + 43 integration + 29 e2e + 13 harness).
 getSnapshot cached path measured 9667x faster than cold path.
 Real e2e with live LLM (zhipuai/glm-4.5-air) verified — 2 production bugs found and fixed.
 
@@ -142,10 +142,56 @@ Previously `maybeDistillSkill` built candidate payloads directly from raw workfl
 - `{skipped: false, name, description, body}` — valid distilled result
 - `null` — invalid response (triggers fallback)
 
-### #1 Stale ctx Investigation (No Fix — Framework Limitation)
-Investigated capturing `pi.callLLM` reference before fire-and-forget. **Finding**: `pi.callLLM` is implemented in `loader.ts:523-526` as `runtime.assertActive(); return runtime.callLLM(options)`. The stale check is **inside** the method, not on the property accessor. So capturing the reference doesn't bypass it.
+### #1 Stale ctx — FIXED via pi.callLLMSafe (Framework Change)
+Investigated the root cause: `pi.callLLM` is implemented in `loader.ts:523-526` as `runtime.assertActive(); return runtime.callLLM(options)`. The stale check is **inside** the method. However, the underlying `runtime.callLLM` uses AgentSession-level state (model, streamFn) that survives ctx invalidation — so the check is overly conservative for legitimate background work.
 
-**Conclusion**: The current graceful degradation (catch stale error, fall back to raw payload, candidate still generated) is the **correct fix at the extension layer**. A real fix requires a pi framework change: either a stale-safe `callLLM` variant, or moving LLM work into a synchronous phase before fire-and-forget. Out of scope for learning extension.
+**Fix**: Added `pi.callLLMSafe(options)` to the framework API (commits `422bafe74`). Same signature as `callLLM`, but skips the `assertActive` guard. Documented as the escape hatch for `pi.background` tasks and fire-and-forget post-processing.
+
+- `types.ts`: declare `callLLMSafe` on `ExtensionAPI` with usage guidance
+- `loader.ts`: implement `callLLMSafe` (delegates to `runtime.callLLM` directly)
+- `learning/index.ts`: `callLLMWithRetry` now uses `pi.callLLMSafe`
+
+**E2E verification (DeepSeek V4 Flash)**:
+
+Before (`60f60aeaf`):
+- Log: `skill.distill llm failed, falling back to raw payload`
+- Body: raw conversation concatenation (verbose thinking, raw tool output)
+
+After (`422bafe74`):
+- Log: `skill.distill candidate created` (no fallback)
+- Body: LLM-distilled structured skill doc:
+  ```
+  # Skill: create-file
+  ## When to use
+  Use this skill when you need to create a new file with specific content...
+  ## Procedure
+  1. Identify the full path and the desired content for the file.
+  2. Use the write tool to write the content to the specified path.
+  ```
+- Description also upgraded from hardcoded `"create file skill"` to LLM-generated `"Creates a file with specified content at a given path"`.
+
+## Skill Prompt Injection (New Feature)
+
+### Problem: Skills Were Dead Data
+Previously skills were extracted, approved, and written to `skillsDir/SKILL.md` — but never read back during agent execution. The AI had no idea skills existed. This was a functional gap, not an optimization item.
+
+### Fix: SKILL_SYSTEM_PROMPT + listActiveSkillBodies (commit `c27c7d718`)
+
+- `prompts.ts`: `SKILL_SYSTEM_PROMPT(skills, maxBodyChars=1500, maxSkills=8)`
+  - Frames skills as suggestions: "if user request matches description, consider following this procedure"
+  - Truncates long bodies to control token cost
+  - Caps at `maxSkills` (most-used first) to bound prompt size
+  - Returns empty string for empty list (no-op when no skills)
+- `store.ts`: `listActiveSkillBodies()`
+  - Returns active skills with full body content
+  - Reads each `SKILL.md` frontmatter + body
+  - Skips disabled/archived skills (don't waste prompt tokens)
+  - Sorts by `usageCount` DESC so most-relevant survive truncation
+- `index.ts`: `before_agent_start` now appends both `memoryPrompt` and `skillPrompt` to `systemPrompt` (was `memoryPrompt` only)
+
+This closes the skill extraction→injection loop. Skills now actually affect agent behavior instead of sitting on disk unused.
+
+7 new tests: 4 for `SKILL_SYSTEM_PROMPT` (empty, fields, truncation, maxSkills) + 3 for `listActiveSkillBodies` (empty, fields, sort by usage).
 
 ### Test Growth
 - Before: 186 tests (15 files)
