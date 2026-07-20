@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
+import type { ExtensionContext } from "@dyyz1993/pi-coding-agent";
 import {
 	createTestRuntime,
 	createFakeContext,
@@ -309,6 +310,290 @@ describe("message-bridge extension", () => {
 			expect(fetchMock).toHaveBeenCalled();
 			const calledUrl = fetchMock.mock.calls[0]?.[0] as string;
 			expect(calledUrl).toContain("custom-bridge:9000");
+		});
+	});
+
+	describe("error handling and reliability (P1)", async () => {
+		it("logs push failure when fetch rejects (network down)", async () => {
+			const runtime = await setup();
+			fetchMock.mockRejectedValueOnce(new Error("network down"));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] push failed"),
+				expect.anything(),
+			);
+			expect(runtime.sendUserMessage).not.toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+
+		it("logs push failure when push response is not ok", async () => {
+			const runtime = await setup();
+			fetchMock.mockResolvedValueOnce(mockResponse({ id: "x" }, false));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] push failed"),
+				expect.anything(),
+			);
+			errorSpy.mockRestore();
+		});
+
+		it("logs failure when pull rejects after a successful push", async () => {
+			const runtime = await setup();
+			fetchMock
+				.mockResolvedValueOnce(mockResponse({ id: "x", status: "ok" })) // push ok
+				.mockRejectedValueOnce(new Error("pull network error")); // pull fails
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			await new Promise((r) => setTimeout(r, 20));
+
+			// Current implementation funnels pull errors through the "push" stage
+			// label because the agent_end handler chains .catch at the end.
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] push failed"),
+				expect.anything(),
+			);
+			expect(runtime.sendUserMessage).not.toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+
+		it("does not log when sendUserMessage throws a stale error synchronously", async () => {
+			const runtime = await setup();
+			runtime.sendUserMessage.mockImplementation(() => {
+				throw new Error("stale request: session already advanced");
+			});
+			fetchMock
+				.mockResolvedValueOnce(mockResponse({ id: "x", status: "ok" }))
+				.mockResolvedValueOnce(mockResponse({ id: "x", answer: "reply" }));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(runtime.sendUserMessage).toHaveBeenCalledWith("reply");
+			expect(errorSpy).not.toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+
+		it("logs sendUserMessage failure when it throws a non-stale error synchronously", async () => {
+			const runtime = await setup();
+			runtime.sendUserMessage.mockImplementation(() => {
+				throw new Error("boom: agent unavailable");
+			});
+			fetchMock
+				.mockResolvedValueOnce(mockResponse({ id: "x", status: "ok" }))
+				.mockResolvedValueOnce(mockResponse({ id: "x", answer: "reply" }));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] sendUserMessage failed"),
+				expect.anything(),
+			);
+			errorSpy.mockRestore();
+		});
+
+		it("does not log when sendUserMessage returns a rejected Promise with a stale error", async () => {
+			const runtime = await setup();
+			runtime.sendUserMessage.mockImplementation(() =>
+				Promise.reject(new Error("stale turn: cannot send")),
+			);
+			fetchMock
+				.mockResolvedValueOnce(mockResponse({ id: "x", status: "ok" }))
+				.mockResolvedValueOnce(mockResponse({ id: "x", answer: "reply" }));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			// Wait extra ticks for the Promise.reject to propagate through .catch
+			await new Promise((r) => setTimeout(r, 30));
+
+			expect(runtime.sendUserMessage).toHaveBeenCalledWith("reply");
+			expect(errorSpy).not.toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+
+		it("logs sendUserMessage failure when it returns a rejected Promise with a non-stale error", async () => {
+			const runtime = await setup();
+			runtime.sendUserMessage.mockImplementation(() =>
+				Promise.reject(new Error("agent crashed")),
+			);
+			fetchMock
+				.mockResolvedValueOnce(mockResponse({ id: "x", status: "ok" }))
+				.mockResolvedValueOnce(mockResponse({ id: "x", answer: "reply" }));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			await new Promise((r) => setTimeout(r, 30));
+
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] sendUserMessage failed"),
+				expect.anything(),
+			);
+			errorSpy.mockRestore();
+		});
+
+		it("does not log when respondUI throws a stale error", async () => {
+			const runtime = await setup();
+			const ctx = createFakeContext({
+				respondUI: vi.fn(() => {
+					throw new Error("stale UI event");
+				}) as unknown as ExtensionContext["respondUI"],
+			});
+			const fakeAnswer = { action: "responded", answers: { q1: { selected: ["a"] } } };
+			fetchMock
+				.mockResolvedValueOnce(mockResponse({ id: "msg-2", status: "ok" }))
+				.mockResolvedValueOnce(mockResponse({ id: "msg-2", answer: fakeAnswer }));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "ui", {
+				id: "ui-stale",
+				method: "askUserQuestion",
+				questions: [{ id: "q1", header: "Q1", question: "Which?", options: [{ label: "a" }] }],
+			}, ctx);
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(ctx.respondUI).toHaveBeenCalledWith("ui-stale", fakeAnswer);
+			expect(errorSpy).not.toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+
+		it("logs respondUI failure when it throws a non-stale error", async () => {
+			const runtime = await setup();
+			const ctx = createFakeContext({
+				respondUI: vi.fn(() => {
+					throw new Error("respondUI internal error");
+				}) as unknown as ExtensionContext["respondUI"],
+			});
+			const fakeAnswer = { action: "responded", answers: { q1: { selected: ["a"] } } };
+			fetchMock
+				.mockResolvedValueOnce(mockResponse({ id: "msg-2", status: "ok" }))
+				.mockResolvedValueOnce(mockResponse({ id: "msg-2", answer: fakeAnswer }));
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "ui", {
+				id: "ui-bad",
+				method: "askUserQuestion",
+				questions: [{ id: "q1", header: "Q1", question: "Which?", options: [{ label: "a" }] }],
+			}, ctx);
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] respondUI failed"),
+				expect.anything(),
+			);
+			errorSpy.mockRestore();
+		});
+
+		it("concurrent agent_end events do not interfere with each other", async () => {
+			const runtime = await setup();
+			runtime.sendUserMessage.mockImplementation(() => undefined);
+			// Route by URL + body so concurrent fetch ordering doesn't matter
+			fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+				if (url.endsWith("/push")) {
+					const body = JSON.parse((init?.body as string) ?? "{}");
+					const q = body.question as string;
+					if (q === "A") return mockResponse({ id: "a1", status: "ok" });
+					if (q === "B") return mockResponse({ id: "b2", status: "ok" });
+					return mockResponse({ id: "unknown", status: "ok" });
+				}
+				if (url.includes("/pull/")) {
+					const id = url.split("/pull/")[1];
+					if (id === "a1") return mockResponse({ id, answer: "answer-a" });
+					if (id === "b2") return mockResponse({ id, answer: "answer-b" });
+					return mockResponse({ id, answer: "" });
+				}
+				return mockResponse({}, false);
+			});
+
+			// Fire both events back-to-back without awaiting in between
+			await Promise.all([
+				emit(runtime, "agent_end", {
+					messages: [{ role: "assistant", content: "A" }],
+				}),
+				emit(runtime, "agent_end", {
+					messages: [{ role: "assistant", content: "B" }],
+				}),
+			]);
+			await new Promise((r) => setTimeout(r, 30));
+
+			// Both round-trips should complete and sendUserMessage should have
+			// been called with each answer exactly once.
+			expect(runtime.sendUserMessage).toHaveBeenCalledTimes(2);
+			expect(runtime.sendUserMessage).toHaveBeenCalledWith("answer-a");
+			expect(runtime.sendUserMessage).toHaveBeenCalledWith("answer-b");
+
+			// Verify each push carried the correct payload
+			const pushBodies = fetchMock.mock.calls
+				.filter((c) => (c[0] as string).includes("/push"))
+				.map((c) => JSON.parse((c[1] as RequestInit).body as string).question);
+			expect(pushBodies).toEqual(expect.arrayContaining(["A", "B"]));
+		});
+
+		it("handles mixed fetch outcomes across concurrent events", async () => {
+			const runtime = await setup();
+			runtime.sendUserMessage.mockImplementation(() => undefined);
+			// Event A: push ok, pull ok -> sendUserMessage called
+			// Event B: push rejects -> logged, no sendUserMessage
+			// Event C: push ok, pull ok, empty answer -> no sendUserMessage
+			fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+				if (url.endsWith("/push")) {
+					const body = JSON.parse((init?.body as string) ?? "{}");
+					const q = body.question as string;
+					if (q === "B") throw new Error("network down");
+					if (q === "A") return mockResponse({ id: "a", status: "ok" });
+					if (q === "C") return mockResponse({ id: "c", status: "ok" });
+					return mockResponse({ id: "unknown", status: "ok" });
+				}
+				if (url.includes("/pull/")) {
+					const id = url.split("/pull/")[1];
+					if (id === "a") return mockResponse({ id, answer: "ok-a" });
+					if (id === "c") return mockResponse({ id, answer: "" });
+					return mockResponse({ id, answer: "" });
+				}
+				return mockResponse({}, false);
+			});
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await Promise.all([
+				emit(runtime, "agent_end", { messages: [{ role: "assistant", content: "A" }] }),
+				emit(runtime, "agent_end", { messages: [{ role: "assistant", content: "B" }] }),
+				emit(runtime, "agent_end", { messages: [{ role: "assistant", content: "C" }] }),
+			]);
+			await new Promise((r) => setTimeout(r, 30));
+
+			// Only event A produced a sendUserMessage call
+			expect(runtime.sendUserMessage).toHaveBeenCalledTimes(1);
+			expect(runtime.sendUserMessage).toHaveBeenCalledWith("ok-a");
+			// Event B's push failure was logged
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] push failed"),
+				expect.anything(),
+			);
+			errorSpy.mockRestore();
 		});
 	});
 });
