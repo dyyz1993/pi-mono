@@ -506,8 +506,8 @@ export class RpcClient {
 	/**
 	 * Compact session context.
 	 */
-	async compact(customInstructions?: string): Promise<CompactionResult> {
-		const response = await this.send({ type: "compact", customInstructions });
+	async compact(customInstructions?: string, timeoutMs?: number): Promise<CompactionResult> {
+		const response = await this.send({ type: "compact", customInstructions }, timeoutMs);
 		return this.getData(response);
 	}
 
@@ -1155,7 +1155,7 @@ export class RpcClient {
 		this.pendingRequests.clear();
 	}
 
-	private async send(command: RpcCommandBody): Promise<RpcResponse> {
+	private async send(command: RpcCommandBody, timeoutMs = 30000): Promise<RpcResponse> {
 		const childProcess = this.process;
 		const stdin = childProcess?.stdin;
 		if (!childProcess || !stdin) {
@@ -1182,7 +1182,7 @@ export class RpcClient {
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
 				reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
-			}, 30000);
+			}, timeoutMs);
 
 			this.pendingRequests.set(id, {
 				resolve: (response) => {
