@@ -681,7 +681,7 @@ const zhipuaiModel = {
 	id: "glm-4.7",
 	name: "GLM-4.7",
 	api: "openai-completions" as const,
-	provider: "zhipuai",
+	provider: "zai-coding-cn",
 	baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
 	reasoning: true,
 	input: ["text" as const],

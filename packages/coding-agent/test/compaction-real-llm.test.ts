@@ -27,7 +27,7 @@ const zhipuaiModel = {
 	id: "glm-4.7",
 	name: "GLM-4.7",
 	api: "openai-completions" as const,
-	provider: "zhipuai",
+	provider: "zai-coding-cn",
 	baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
 	reasoning: true,
 	input: ["text" as const],
@@ -66,11 +66,16 @@ describe.skipIf(!API_KEY)("Real LLM compaction with _multi-compaction extension"
 		});
 
 		const sessionManager = SessionManager.create(tempDir);
+		// Lower compaction threshold so short test sessions qualify for compaction.
+		writeFileSync(
+			join(tempDir, "settings.json"),
+			JSON.stringify({ compaction: { enabled: true, keepRecentTokens: 10, reserveTokens: 10 } }),
+		);
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		authStorage.setRuntimeApiKey("zhipuai", API_KEY!);
+		authStorage.setRuntimeApiKey("zai-coding-cn", API_KEY!);
 		const modelRegistry = ModelRegistry.create(authStorage);
-		modelRegistry.registerProvider("zhipuai", {
+		modelRegistry.registerProvider("zai-coding-cn", {
 			baseUrl: zhipuaiModel.baseUrl,
 			apiKey: API_KEY!,
 			api: zhipuaiModel.api,

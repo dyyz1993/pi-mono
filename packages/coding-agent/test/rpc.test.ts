@@ -23,7 +23,7 @@ describe.skipIf(!process.env.ZHIPUAI_API_KEY && !process.env.ANTHROPIC_API_KEY &
 				cliPath: join(__dirname, "..", "dist", "cli.js"),
 				cwd: join(__dirname, ".."),
 				env: { PI_CODING_AGENT_DIR: sessionDir },
-				provider: "zhipuai",
+				provider: "zai-coding-cn",
 				model: "glm-4.7",
 			});
 		});
@@ -40,7 +40,7 @@ describe.skipIf(!process.env.ZHIPUAI_API_KEY && !process.env.ANTHROPIC_API_KEY &
 			const state = await client.getState();
 
 			expect(state.model).toBeDefined();
-			expect(state.model?.provider).toBe("zhipuai");
+			expect(state.model?.provider).toBe("zai-coding-cn");
 			expect(state.model?.id).toBe("glm-4.7");
 			expect(state.isStreaming).toBe(false);
 			expect(state.messageCount).toBe(0);
