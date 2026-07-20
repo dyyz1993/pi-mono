@@ -15,8 +15,14 @@ import { complete } from "../../ai/src/stream.ts";
 import { COMPLETION_CHECK_SYSTEM_PROMPT } from "../extensions/session-supervisor/prompts.ts";
 import { CompletionCheckSchema } from "../extensions/session-supervisor/types.ts";
 
-const model = MODELS["opencode-go"]["deepseek-v4-flash"];
-const hasKey = !!process.env.OPENCODE_API_KEY;
+// Prefer opencode-go/deepseek-v4-flash when OPENCODE_API_KEY is set
+// (original test target), but fall back to zai-coding-cn/glm-4.7 when
+// only a ZhipuAI key is available so the test still exercises the real
+// completion-check flow in environments without opencode access.
+const OPENCODE_KEY = process.env.OPENCODE_API_KEY;
+const ZAI_KEY = process.env.ZAI_CODING_CN_API_KEY || process.env.ZHIPUAI_API_KEY;
+const model = OPENCODE_KEY ? MODELS["opencode-go"]["deepseek-v4-flash"] : MODELS["zai-coding-cn"]["glm-4.7"];
+const hasKey = !!(OPENCODE_KEY || ZAI_KEY);
 
 describe.skipIf(!hasKey)("session-supervisor: real LLM completion check", () => {
 	it("detects completed task", async () => {
