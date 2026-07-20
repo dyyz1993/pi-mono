@@ -46,7 +46,11 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 	});
 
 	function createSession(inMemory = false) {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		// Pick provider based on which API key is available — tests
+		// historically assumed anthropic, but the open-source default is
+		// ZhipuAI (zai-coding-cn).
+		const useZai = !!process.env.ZHIPUAI_API_KEY || !!process.env.ZAI_CODING_CN_API_KEY;
+		const model = useZai ? getModel("zai-coding-cn", "glm-4.7")! : getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => API_KEY,
 			initialState: {
@@ -61,6 +65,11 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 		// Use minimal keepRecentTokens so small test conversations have something to summarize
 		settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		// Register the provider so AgentSession's preflight hasConfiguredAuth
+		// check passes (otherwise prompt() throws "No API key found for <provider>").
+		if (API_KEY) {
+			authStorage.setRuntimeApiKey(model.provider, API_KEY);
+		}
 		const modelRegistry = ModelRegistry.create(authStorage);
 
 		session = new AgentSession({
