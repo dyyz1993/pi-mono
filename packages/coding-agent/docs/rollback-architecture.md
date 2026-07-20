@@ -43,14 +43,14 @@ file-snapshot extension (extensions/file-snapshot/index.ts)
   - Creates step-snapshot custom entries per turn
   - Restores files on session_tree event
   - Creates unrevert-point entries before restoration
-  - BUG: preview mode discards result via `void { ... }`
+  - Returns { restored, deleted, skipped } from restoreFiles (preview mode included)
 
 AgentSession.navigateTree() (src/core/agent-session.ts)
   - Moves leaf pointer via sessionManager.branch()
   - Emits session_before_tree → session_tree events
   - skipFiles option passes through to session_tree event
   - previewRollback() emits session_tree with preview: true
-  - BUG: previewRollback() doesn't get result back from extension
+  - previewRollback() reads { restored, deleted, skipped } from extension result
 
 SessionTreeEvent (src/core/extensions/types.ts)
   - { type, newLeafId, oldLeafId, summaryEntry?, skipFiles?, preview? }
@@ -79,20 +79,20 @@ navigateTree (user triggers /tree)
 
 previewRollback
   → emit session_tree with preview: true
-  → extension: void { restored, deleted } ← BUG: discards result
+  → extension: returns { restored, deleted, skipped }
+  → AgentSession.previewRollback() reads result
 ```
 
 ### 2.3 Known Issues
 
 | Issue | Location | Description |
 |---|---|---|
-| Duplicate storage logic | `extensions/file-snapshot/index.ts:101-234` | `ObjectStore` duplicates `InternalGit` with simpler ignore patterns (no `ignore` package, custom `matchGlob`). |
-| Preview bug | `extensions/file-snapshot/index.ts:356-359` | `void { restored, deleted }` discards result instead of returning it. |
-| No selective restore | `extensions/file-snapshot/index.ts:309-372` | `session_tree` handler restores ALL files or none (via `skipFiles`). No partial restore. |
+| Duplicate storage logic | `extensions/file-snapshot/index.ts` | `ObjectStore` duplicates `InternalGit` with simpler ignore patterns (no `ignore` package, custom `matchGlob`). |
+| No selective restore | `extensions/file-snapshot/index.ts` | `session_tree` handler restores ALL files or none (via `skipFiles`). No partial restore. |
 | skipFiles not user-facing | `src/core/agent-session.ts:3178` | `skipFiles` exists but is not exposed via RPC or TUI. |
 | No modified-files query | — | No API to list files changed between any two points. |
 | No per-file diff | — | No API to get unified diff for a specific file between snapshots. |
-| 1MB file limit only in extension | `extensions/file-snapshot/index.ts:163` | Extension skips files > 1MB but `InternalGit` has no such limit. Inconsistent behavior. |
+| 1MB file limit only in extension | `extensions/file-snapshot/index.ts` | Extension skips files > 1MB but `InternalGit` has no such limit. Inconsistent behavior. |
 
 ---
 
