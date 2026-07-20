@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import messageBridgeExtension from "../index.ts";
+
 import {
 	createTestRuntime,
 	createFakeContext,
@@ -10,19 +10,23 @@ import {
 // Mock global fetch — re-stubbed in beforeEach so every test gets a fresh mock
 const fetchMock = vi.fn();
 
-function setup(): ExtensionTestRuntime {
+async function setup(): Promise<ExtensionTestRuntime> {
 	const runtime = createTestRuntime();
-	// Clear env vars to ensure deterministic test behavior
-	delete process.env.MESSAGE_BRIDGE_URL;
+	// Set a test bridge URL (no default URL is baked into the extension anymore).
+	// BRIDGE_URL is computed at module load, so we must resetModules + re-import
+	// to pick up the env var.
+	process.env.MESSAGE_BRIDGE_URL = "http://test-bridge:8080";
 	delete process.env.MESSAGE_BRIDGE_SESSION_ID;
-	messageBridgeExtension(runtime.pi);
+	vi.resetModules();
+	const mod = await import("../index.ts");
+	mod.default(runtime.pi);
 	return runtime;
 }
 
 beforeEach(() => {
 	fetchMock.mockReset();
 	vi.stubGlobal("fetch", fetchMock);
-	delete process.env.MESSAGE_BRIDGE_URL;
+	process.env.MESSAGE_BRIDGE_URL = "http://test-bridge:8080";
 	delete process.env.MESSAGE_BRIDGE_SESSION_ID;
 });
 
@@ -43,15 +47,15 @@ function mockResponse(body: unknown, ok = true): Response {
 }
 
 describe("message-bridge extension", () => {
-	it("registers ui and agent_end event handlers", () => {
-		const runtime = setup();
+	it("registers ui and agent_end event handlers", async () => {
+		const runtime = await setup();
 		expect(runtime.handlers["ui"]).toBeDefined();
 		expect(runtime.handlers["agent_end"]).toBeDefined();
 	});
 
 	describe("ui handler — notify method", () => {
 		it("pushes notify messages to bridge (fire-and-forget)", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 			fetchMock
 				.mockResolvedValueOnce(mockResponse({ id: "msg-1", status: "ok" })) // push
 				.mockResolvedValueOnce(mockResponse({ id: "msg-1", answer: "ack" })); // pull
@@ -72,7 +76,7 @@ describe("message-bridge extension", () => {
 		});
 
 		it("skips notify when message is null", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 
 			await emit(runtime, "ui", {
 				id: "ui-1",
@@ -87,9 +91,9 @@ describe("message-bridge extension", () => {
 		});
 	});
 
-	describe("ui handler — askUserQuestion method", () => {
+	describe("ui handler — askUserQuestion method", async () => {
 		it("pushes question and pulls answer, then responds via ctx.respondUI", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 			const ctx = createFakeContext();
 			const fakeAnswer = { action: "responded", answers: { q1: { selected: ["a"] } } };
 
@@ -118,14 +122,16 @@ describe("message-bridge extension", () => {
 				}),
 			);
 
-			// Verify pull was called (source calls fetch(url) with no options arg)
+			// Verify pull was called (pullAnswer now passes { signal } for timeout)
 			expect(fetchMock).toHaveBeenCalledWith(
 				expect.stringContaining("/pull/"),
+				expect.objectContaining({ signal: expect.any(AbortSignal) }),
 			);
 		});
 
+
 		it("returns undefined for unknown ui methods", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 
 			const results = await emit(runtime, "ui", {
 				id: "ui-3",
@@ -136,9 +142,9 @@ describe("message-bridge extension", () => {
 		});
 	});
 
-	describe("agent_end handler", () => {
+	describe("agent_end handler", async () => {
 		it("pushes assistant messages to bridge and injects user reply", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 			fetchMock
 				.mockResolvedValueOnce(mockResponse({ id: "msg-3", status: "ok" })) // push
 				.mockResolvedValueOnce(mockResponse({ id: "msg-3", answer: "continue please" })); // pull
@@ -167,7 +173,7 @@ describe("message-bridge extension", () => {
 		});
 
 		it("skips when no messages in event", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 
 			await emit(runtime, "agent_end", {});
 
@@ -175,7 +181,7 @@ describe("message-bridge extension", () => {
 		});
 
 		it("skips when no assistant messages", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 
 			await emit(runtime, "agent_end", {
 				messages: [
@@ -190,7 +196,7 @@ describe("message-bridge extension", () => {
 		});
 
 		it("skips when assistant message has empty text", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 
 			await emit(runtime, "agent_end", {
 				messages: [
@@ -204,7 +210,7 @@ describe("message-bridge extension", () => {
 		});
 
 		it("skips sendUserMessage when pulled answer is empty", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 			fetchMock
 				.mockResolvedValueOnce(mockResponse({ id: "msg-4", status: "ok" }))
 				.mockResolvedValueOnce(mockResponse({ id: "msg-4", answer: "" }));
@@ -221,7 +227,7 @@ describe("message-bridge extension", () => {
 		});
 
 		it("handles string content in assistant messages", async () => {
-			const runtime = setup();
+			const runtime = await setup();
 			fetchMock
 				.mockResolvedValueOnce(mockResponse({ id: "msg-5", status: "ok" }))
 				.mockResolvedValueOnce(mockResponse({ id: "msg-5", answer: "" }));
@@ -243,9 +249,9 @@ describe("message-bridge extension", () => {
 		});
 	});
 
-	describe("BRIDGE_URL configuration", () => {
-		it("uses default URL when env var not set", async () => {
-			const runtime = setup();
+	describe("BRIDGE_URL configuration", async () => {
+		it("uses configured MESSAGE_BRIDGE_URL for requests", async () => {
+			const runtime = await setup();
 			fetchMock
 				.mockResolvedValueOnce(mockResponse({ id: "x", status: "ok" }))
 				.mockResolvedValueOnce(mockResponse({ id: "x", answer: "" }));
@@ -257,7 +263,30 @@ describe("message-bridge extension", () => {
 
 			expect(fetchMock).toHaveBeenCalled();
 			const calledUrl = fetchMock.mock.calls[0]?.[0] as string;
-			expect(calledUrl).toContain("message-bridge.docker.19930810.xyz");
+			expect(calledUrl).toContain("test-bridge:8080");
+		});
+
+		it("skips fetch and logs error when MESSAGE_BRIDGE_URL is not set", async () => {
+			// Force unset URL — extension should throw at push time, error is
+			// logged via logError, fetch never called.
+			delete process.env.MESSAGE_BRIDGE_URL;
+			vi.resetModules();
+			const mod = await import("../index.ts");
+			const runtime = createTestRuntime();
+			mod.default(runtime.pi);
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await emit(runtime, "agent_end", {
+				messages: [{ role: "assistant", content: "text" }],
+			});
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("[message-bridge] push failed"),
+				expect.anything(),
+			);
+			errorSpy.mockRestore();
 		});
 
 		it("uses MESSAGE_BRIDGE_URL env var when set", async () => {
