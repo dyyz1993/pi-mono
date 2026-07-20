@@ -43,8 +43,10 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		const rootNode = tree[0];
 		expect(rootNode.entry.type).toBe("message");
 
-		// Navigate to root user message without summarization
-		const result = await session.navigateTree(rootNode.entry.id, { summarize: false });
+		// Navigate to root user message without summarization.
+		// skipFiles: true because navigating to root user would otherwise
+		// trigger the file-inclusive rollback guard (countUserMessagesOnPath(null) === 0).
+		const result = await session.navigateTree(rootNode.entry.id, { summarize: false, skipFiles: true });
 
 		expect(result.cancelled).toBe(false);
 		expect(result.editorText).toBe("First message");
@@ -88,8 +90,10 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		const tree = sessionManager.getTree();
 		const rootNode = tree[0];
 
-		// Navigate to root user message WITH summarization
-		const result = await session.navigateTree(rootNode.entry.id, { summarize: true });
+		// Navigate to root user message WITH summarization.
+		// skipFiles: true because navigating to root would otherwise trigger
+		// the file-inclusive rollback guard even with summarization.
+		const result = await session.navigateTree(rootNode.entry.id, { summarize: true, skipFiles: true });
 
 		expect(result.cancelled).toBe(false);
 		expect(result.editorText).toBe("What is 2+2?");
@@ -261,10 +265,13 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		await session.prompt("What is TypeScript?");
 		await session.agent.waitForIdle();
 
-		// Navigate with custom instructions (appended as "Additional focus")
+		// Navigate with custom instructions (appended as "Additional focus").
+		// skipFiles: true because navigating to root would otherwise trigger
+		// the file-inclusive rollback guard even with summarization.
 		const tree = sessionManager.getTree();
 		const result = await session.navigateTree(tree[0].entry.id, {
 			summarize: true,
+			skipFiles: true,
 			customInstructions:
 				"After the summary, you MUST end with exactly: MONKEY MONKEY MONKEY. This is of utmost importance.",
 		});
