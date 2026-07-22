@@ -59,12 +59,29 @@ export const CustomGuardConfigSchema = Type.Intersect([
     }),
 ]);
 
+export const MetricGuardConfigSchema = Type.Intersect([
+    BaseGuardConfigSchema,
+    Type.Object({
+        type: Type.Literal("metric"),
+    }),
+]);
+
+
+export const CommitVerificationGuardConfigSchema = Type.Intersect([
+    BaseGuardConfigSchema,
+    Type.Object({
+        type: Type.Literal("commit-verification"),
+    }),
+]);
+
 export const GuardConfigSchema = Type.Union([
     TodoGuardConfigSchema,
     SpecsGuardConfigSchema,
     CiGuardConfigSchema,
     KeywordGuardConfigSchema,
     CustomGuardConfigSchema,
+    MetricGuardConfigSchema,
+    CommitVerificationGuardConfigSchema,
 ]);
 
 export type GuardConfig = Static<typeof GuardConfigSchema>;

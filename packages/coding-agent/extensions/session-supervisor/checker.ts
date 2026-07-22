@@ -129,13 +129,13 @@ export async function checkWithSmallModel(
         appendForensic({
             ts: forensicTs(),
             type: "model_check_fallback",
-            reason: "Small model check failed; preserving existing fail-open behavior.",
+            reason: "Small model check failed; fail-closed: never mark goal complete when checker itself errors.",
         });
         return {
-            completed: true,
-            confidence: 0.5,
+            completed: false,
+            confidence: 0,
             incompleteTasks: [],
-            modelResponse: `Check failed: ${error}`,
+            modelResponse: `Check failed (goal NOT marked complete): ${error}`,
         };
     }
 }
