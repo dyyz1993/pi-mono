@@ -260,15 +260,20 @@ describe("LearningStore.listActiveSkillBodies", () => {
 
 describe("LearningStore global memory scope", () => {
   let tempProject: string;
+  let tempAgentDir: string;
   let store: LearningStore;
 
   beforeEach(() => {
     tempProject = mkdtempSync(join(tmpdir(), "store-global-mem-"));
-    store = new LearningStore(tempProject);
+    // Isolate agentDir so global-scope writes do NOT pollute ~/.pi/agent/learning/memory.
+    // Regression guard: previously this test group wrote 99 garbage files into production.
+    tempAgentDir = mkdtempSync(join(tmpdir(), "store-global-agent-"));
+    store = new LearningStore(tempProject, { agentDir: tempAgentDir });
   });
 
   afterEach(() => {
     if (existsSync(tempProject)) rmSync(tempProject, { recursive: true, force: true });
+    if (existsSync(tempAgentDir)) rmSync(tempAgentDir, { recursive: true, force: true });
   });
 
   function approvedMemoryCandidate(id: string, payload: { filename: string; description: string; memoryType: "user" | "project"; content: string; scope?: "project" | "global" }) {

@@ -213,6 +213,12 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/**
+	 * 触发压缩的 context 使用百分比 (0~1)。
+	 * 例如 0.8 表示 context tokens 达到 contextWindow 的 80% 时触发压缩。
+	 * 如果设置了此值，优先按百分比判断；否则回退到 reserveTokens 逻辑。
+	 */
+	thresholdPercent?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -328,6 +334,10 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
+	if (contextWindow <= 0) return false;
+	if (settings.thresholdPercent !== undefined) {
+		return contextTokens > contextWindow * settings.thresholdPercent;
+	}
 	return contextTokens > contextWindow - settings.reserveTokens;
 }
 

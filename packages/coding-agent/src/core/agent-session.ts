@@ -51,17 +51,11 @@ import {
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
-	} from "./compaction/index.ts";
+} from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import type { Channel } from "./extensions/channel-types.ts";
-import {
-	estimateContentTokens,
-	estimateContentTokensFromChars,
-	estimateCharsAsTokens as tokenizerEstimateCharsAsTokens,
-	identifyProvider,
-} from "./tokenizer/index.ts";
 import {
 	type CallLLMOptions,
 	type ContextUsage,
@@ -147,6 +141,12 @@ import {
 	type SystemPromptBreakdown,
 } from "./system-prompt.ts";
 import { normalizeTierModelsForAvailableModels } from "./tier-models.ts";
+import {
+	estimateContentTokens,
+	estimateContentTokensFromChars,
+	identifyProvider,
+	estimateCharsAsTokens as tokenizerEstimateCharsAsTokens,
+} from "./tokenizer/index.ts";
 import {
 	checkToolEnd,
 	createLoopDetectionState,
@@ -514,63 +514,63 @@ function classifyContextMessage(message: AgentMessage): "conversation" | "memory
 	return "conversation";
 }
 
-		function estimateAssistantMessageParts(
-			message: AssistantMessage,
-			model?: { provider?: string; id?: string } | null,
-		): {
-			conversation: number;
-			thinking: number;
-			toolInputs: number;
-		} {
-			let conversationChars = 0;
-			let thinkingChars = 0;
-			let toolInputChars = 0;
-			const provider = identifyProvider(model);
+function estimateAssistantMessageParts(
+	message: AssistantMessage,
+	model?: { provider?: string; id?: string } | null,
+): {
+	conversation: number;
+	thinking: number;
+	toolInputs: number;
+} {
+	let conversationChars = 0;
+	let thinkingChars = 0;
+	let toolInputChars = 0;
+	const provider = identifyProvider(model);
 
-			for (const block of message.content) {
-				if (block.type === "thinking") {
-					thinkingChars += block.thinking.length;
-					thinkingChars += (block.thinkingSignature ?? "").length;
-				} else if (block.type === "text") {
-					conversationChars += block.text.length;
-				} else if (block.type === "toolCall") {
-					toolInputChars += block.name.length + JSON.stringify(block.arguments).length;
-					// OpenAI tool_call format serialization overhead (measured):
-					// {"id":"...","type":"function","function":{"name":"...","arguments":"..."}}
-					// = ~65 chars of structure, plus the id content (NOT counted above)
-					// Structure uses chars/4 (same as provider side), content uses provider factor
-					toolInputChars += (block.id ?? "").length + 65;
-				}
-			}
-
-			// Content tokens use provider-specific factor (accurate for Chinese/code mix)
-			// Structure tokens use chars/4 (matches provider snapshot measurement)
-
-			// Compute per-message JSON structure overhead based on actual content blocks.
-			// Measured overhead for each element (OpenAI completions format):
-			//   text content:  33 chars — {"role":"assistant","content":""}
-			//   null content:  35 chars — {"role":"assistant","content":null}
-			//   reasoning:     23 chars — ,"reasoning_content":""
-			//   tool_calls:    16 chars — ,"tool_calls":[]
-			const hasTextContent = message.content.some((b) => b.type === "text" && (b.text?.length ?? 0) > 0);
-			const hasThinking = message.content.some((b) => b.type === "thinking");
-			const hasToolCalls = message.content.some((b) => b.type === "toolCall");
-
-			// Base envelope (structure → chars/4)
-			conversationChars += hasTextContent ? 33 : 35;
-
-			// reasoning_content field wrapper (structure → chars/4)
-			if (hasThinking) conversationChars += 23;
-
-			// tool_calls array wrapper (structure → chars/4)
-			if (hasToolCalls) conversationChars += 16;
-
-			return {
-				conversation: estimateContentTokensFromChars(conversationChars, provider),
-				thinking: estimateContentTokensFromChars(thinkingChars, provider),
-				toolInputs: estimateContentTokensFromChars(toolInputChars, provider),
-			};
+	for (const block of message.content) {
+		if (block.type === "thinking") {
+			thinkingChars += block.thinking.length;
+			thinkingChars += (block.thinkingSignature ?? "").length;
+		} else if (block.type === "text") {
+			conversationChars += block.text.length;
+		} else if (block.type === "toolCall") {
+			toolInputChars += block.name.length + JSON.stringify(block.arguments).length;
+			// OpenAI tool_call format serialization overhead (measured):
+			// {"id":"...","type":"function","function":{"name":"...","arguments":"..."}}
+			// = ~65 chars of structure, plus the id content (NOT counted above)
+			// Structure uses chars/4 (same as provider side), content uses provider factor
+			toolInputChars += (block.id ?? "").length + 65;
 		}
+	}
+
+	// Content tokens use provider-specific factor (accurate for Chinese/code mix)
+	// Structure tokens use chars/4 (matches provider snapshot measurement)
+
+	// Compute per-message JSON structure overhead based on actual content blocks.
+	// Measured overhead for each element (OpenAI completions format):
+	//   text content:  33 chars — {"role":"assistant","content":""}
+	//   null content:  35 chars — {"role":"assistant","content":null}
+	//   reasoning:     23 chars — ,"reasoning_content":""
+	//   tool_calls:    16 chars — ,"tool_calls":[]
+	const hasTextContent = message.content.some((b) => b.type === "text" && (b.text?.length ?? 0) > 0);
+	const hasThinking = message.content.some((b) => b.type === "thinking");
+	const hasToolCalls = message.content.some((b) => b.type === "toolCall");
+
+	// Base envelope (structure → chars/4)
+	conversationChars += hasTextContent ? 33 : 35;
+
+	// reasoning_content field wrapper (structure → chars/4)
+	if (hasThinking) conversationChars += 23;
+
+	// tool_calls array wrapper (structure → chars/4)
+	if (hasToolCalls) conversationChars += 16;
+
+	return {
+		conversation: estimateContentTokensFromChars(conversationChars, provider),
+		thinking: estimateContentTokensFromChars(thinkingChars, provider),
+		toolInputs: estimateContentTokensFromChars(toolInputChars, provider),
+	};
+}
 
 function providerSectionTokens(
 	providerRequest: ProviderRequestContextUsage | undefined,
@@ -4493,55 +4493,61 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
-		const breakdown = this._buildContextUsageBreakdown();
+		const materializedMessages = this.sessionManager.buildSessionContext().messages;
+		const contextMessages = materializedMessages.length > 0 ? materializedMessages : this.messages;
+		const breakdown = this._buildContextUsageBreakdown(contextMessages);
 		const breakdownTokens = this._sumContextUsageBreakdownTokens(breakdown);
-		const branchEntries = this.sessionManager.getBranch();
-		const latestCompaction = getLatestCompactionEntry(branchEntries);
+		// Always read from the session branch — this.agent.state.messages may
+		// be empty right after process startup (before the first prompt()),
+		// which would cause context usage to report near-zero tokens even
+		// for sessions with thousands of messages on disk.
 		const providerRequest = this._getLatestProviderRequestContextUsage();
 
-		if (latestCompaction) {
-			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
-			for (let i = branchEntries.length - 1; i > compactionIndex; i--) {
-				const entry = branchEntries[i];
-				if (entry.type === "message" && entry.message.role === "assistant") {
-					const assistant = entry.message;
-					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
-						// Use input-only tokens (excludes output) for context usage display.
-						// calculateContextTokens includes output which inflates context occupancy.
-						const contextTokens = calculateInputContextTokens(assistant.usage);
-						if (contextTokens > 0) {
-							const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, contextTokens, {
-								usage: assistant.usage,
-								trailingTokens: 0,
-							});
-							return {
-								tokens: contextTokens,
-								contextWindow,
-								percent: (contextTokens / contextWindow) * 100,
-								breakdown: reconciledBreakdown,
-								...(providerRequest ? { providerRequest } : {}),
-							};
-						}
-					}
-					break;
-				}
-			}
+		// Find the last assistant message with valid usage from the materialized
+		// context. Matching inside one message array avoids relying on Usage object
+		// identity, which can change after restart or JSONL re-materialization.
+		// This is authoritative — the provider tells us exactly how many
+		// input tokens the model consumed.
+		let lastUsage: Usage | undefined;
+		let lastUsageMessageIndex = -1;
+		for (let i = contextMessages.length - 1; i >= 0; i--) {
+			const message = contextMessages[i];
+			if (message.role !== "assistant") continue;
+			const assistant = message;
+			if (assistant.stopReason === "aborted" || assistant.stopReason === "error") continue;
+			if (!assistant.usage) continue;
+			lastUsage = assistant.usage;
+			lastUsageMessageIndex = i;
+			break;
 		}
 
-		const estimate = estimateContextTokens(this.messages);
-		// For the fallback path, strip output from usage-based estimate to get input-only tokens.
-		const lastUsage = getLastAssistantUsage(this.messages);
-		const tokens = lastUsage
-			? calculateInputContextTokens(lastUsage) + estimate.trailingTokens
-			: estimate.usageTokens > 0
-				? estimate.tokens
-				: breakdownTokens;
-		const percent = (tokens / contextWindow) * 100;
-		const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, {
-			usage: lastUsage,
-			trailingTokens: estimate.trailingTokens,
-		});
+		if (lastUsage) {
+			// Count trailing messages (after the last assistant with usage)
+			// to estimate tokens added since that response.
+			let trailingTokens = 0;
+			for (let i = lastUsageMessageIndex + 1; i < contextMessages.length; i++) {
+				trailingTokens += estimateTokens(contextMessages[i]);
+			}
+			const contextTokens = calculateInputContextTokens(lastUsage) + trailingTokens;
+			const tokens = Math.max(contextTokens, breakdownTokens > 0 ? 1 : 0);
+			const percent = (tokens / contextWindow) * 100;
+			const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, {
+				usage: lastUsage,
+				trailingTokens,
+			});
+			return {
+				tokens,
+				contextWindow,
+				percent,
+				breakdown: reconciledBreakdown,
+				...(providerRequest ? { providerRequest } : {}),
+			};
+		}
 
+		// No usage data at all — use breakdown estimate
+		const tokens = breakdownTokens;
+		const percent = (tokens / contextWindow) * 100;
+		const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, undefined);
 		return {
 			tokens,
 			contextWindow,
@@ -4613,7 +4619,7 @@ export class AgentSession {
 		];
 	}
 
-	private _buildContextUsageBreakdown(): ContextUsageBreakdownItem[] {
+	private _buildContextUsageBreakdown(messages: AgentMessage[] = this.messages): ContextUsageBreakdownItem[] {
 		const systemBreakdown = { ...this._baseSystemPromptBreakdown };
 		const currentSystemPrompt = this.agent.state.systemPrompt || this._baseSystemPrompt;
 		const extraSystemChars = Math.max(0, currentSystemPrompt.length - this._baseSystemPrompt.length);
@@ -4631,7 +4637,7 @@ export class AgentSession {
 			lsp: 0,
 		};
 
-		for (const message of this.messages) {
+		for (const message of messages) {
 			if (message.role === "assistant") {
 				const assistantTokens = estimateAssistantMessageParts(message, this.model);
 				messageTokens.conversation += assistantTokens.conversation;

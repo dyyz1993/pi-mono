@@ -167,9 +167,11 @@ function mergeConfig(base: LearningConfig, patch: Partial<LearningConfig>): Lear
 	};
 }
 
-export function getLearningPaths(projectRoot: string): LearningPaths {
+export function getLearningPaths(projectRoot: string, options?: { agentDir?: string }): LearningPaths {
 	const resolvedProjectRoot = resolveProjectIdentity(projectRoot);
-	const agentDir = getAgentDir();
+	// agentDir can be overridden for tests to avoid polluting ~/.pi/agent.
+	// Production callers leave this undefined, falling back to getAgentDir() (~/.pi/agent).
+	const agentDir = options?.agentDir ?? getAgentDir();
 	const projectUserStateDir = join(agentDir, "projects", encodeProjectPath(resolvedProjectRoot));
 	const learningDir = join(projectUserStateDir, "learning");
 	const memoryDir = join(projectUserStateDir, "memory");
@@ -204,8 +206,8 @@ export class LearningStore {
 	private snapshotCache: { value: LearningSnapshot; ts: number } | null = null;
 	private static readonly SNAPSHOT_TTL_MS = 5_000;
 
-	constructor(projectRoot: string) {
-		this.paths = getLearningPaths(projectRoot);
+	constructor(projectRoot: string, options?: { agentDir?: string }) {
+		this.paths = getLearningPaths(projectRoot, options);
 		this.ensureBaseDirs();
 	}
 

@@ -817,86 +817,95 @@ ${memoryText}
     }
 
     void (async () => {
-      try {
-        const hasFailed = hasFailedToolResult(messages);
-        logger.info("agent_end processing", { sessionId, messagesCount: messages.length, hasFailed });
-        if (!hasFailed) {
-          await maybeExtractMemory({
-            store: activeStore,
-            messages,
-            sourceSessionId: sessionId,
-            sourceMessageIds: sourceMessageIds(messages),
-            callLLM: callLLMWithRetry,
-          });
-          await maybeDistillSkill({
-            store: activeStore,
-            messages,
-            sourceSessionId: sessionId,
-            sourceMessageIds: sourceMessageIds(messages),
-            callLLM: callLLMWithRetry,
-          });
-        }
+      const hasFailed = hasFailedToolResult(messages);
+      logger.info("agent_end processing", { sessionId, messagesCount: messages.length, hasFailed });
 
-        // Dream consolidation — dry-run only, plan 不直接执行
-        // 架构变更：之前 maybeRun 会直接修改 memory 文件绕过审批，
-        // 现在改为只生成 plan，写入 run 历史供用户查看。
-        // 用户想执行时通过 learning.runCurator({ domain: "memory", mode: "apply" }) 手动触发。
+      // Each LLM operation runs independently — a failure in one must NOT
+      // block the others. Previously all four were in a single try block,
+      // so a maybeDistillSkill throw would skip maybeRun (dream consolidation),
+      // causing .session-count to never increment.
+      const runIndependent = async (label: string, fn: () => Promise<void>) => {
+        try {
+          await fn();
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`agent_end ${label} failed`, { error: message });
+        }
+      };
+
+      if (!hasFailed) {
+        await runIndependent("memory.extract", () =>
+          maybeExtractMemory({
+            store: activeStore,
+            messages,
+            sourceSessionId: sessionId,
+            sourceMessageIds: sourceMessageIds(messages),
+            callLLM: callLLMWithRetry,
+          }),
+        );
+        await runIndependent("skill.distill", () =>
+          maybeDistillSkill({
+            store: activeStore,
+            messages,
+            sourceSessionId: sessionId,
+            sourceMessageIds: sourceMessageIds(messages),
+            callLLM: callLLMWithRetry,
+          }),
+        );
+      }
+
+      // Dream consolidation — dry-run only, plan 不直接执行
+      await runIndependent("dream.consolidate", async () => {
         const dreamPlan = await memoryCurator.maybeRun(memoryDir, callLLMWithRetry);
-        if (dreamPlan) {
-          markMemorySelectionDirty();
-          const mergeCount = dreamPlan.merges?.length ?? 0;
-          const deletionCount = dreamPlan.deletions?.length ?? 0;
-          const updateCount = dreamPlan.updates?.length ?? 0;
-          logger.info("dream plan generated (dry-run)", { merges: mergeCount, deletions: deletionCount, updates: updateCount });
-          // 写入 run 历史供用户查看 dream 建议
-          await activeStore.recordRun({
-            version: 1,
-            id: `dream-plan-${Date.now()}`,
-            domain: "memory",
-            type: "memory-curator",
-            mode: "dry-run",
-            status: "completed",
-            startedAt: Date.now(),
-            completedAt: Date.now(),
-            summary: `Dream plan: ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates (not applied)`,
-            actions: [
-              {
-                action: "none",
-                summary: `Proposed ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates. Run learning.runCurator with mode=apply to execute.`,
-                fileRefs: [],
-              },
-            ],
-          });
-          pi.appendEntry("memory_dream_result", {
-            status: "plan-generated",
-            merges: mergeCount,
-            deletions: deletionCount,
-            updates: updateCount,
-            applied: false,
-            source: "learning",
-          });
-        }
+        if (!dreamPlan) return;
+        markMemorySelectionDirty();
+        const mergeCount = dreamPlan.merges?.length ?? 0;
+        const deletionCount = dreamPlan.deletions?.length ?? 0;
+        const updateCount = dreamPlan.updates?.length ?? 0;
+        logger.info("dream plan generated (dry-run)", { merges: mergeCount, deletions: deletionCount, updates: updateCount });
+        await activeStore.recordRun({
+          version: 1,
+          id: `dream-plan-${Date.now()}`,
+          domain: "memory",
+          type: "memory-curator",
+          mode: "dry-run",
+          status: "completed",
+          startedAt: Date.now(),
+          completedAt: Date.now(),
+          summary: `Dream plan: ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates (not applied)`,
+          actions: [
+            {
+              action: "none",
+              summary: `Proposed ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates. Run learning.runCurator with mode=apply to execute.`,
+              fileRefs: [],
+            },
+          ],
+        });
+        pi.appendEntry("memory_dream_result", {
+          status: "plan-generated",
+          merges: mergeCount,
+          deletions: deletionCount,
+          updates: updateCount,
+          applied: false,
+          source: "learning",
+        });
+      });
 
-        // Purification
+      // Purification
+      await runIndependent("memory.purify", async () => {
         const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
-        if (purifyResult) {
-          markMemorySelectionDirty();
-          pi.appendEntry("memory_dream_result", { status: "purified", keywords: purifyResult, source: "learning" });
-        }
+        if (!purifyResult) return;
+        markMemorySelectionDirty();
+        pi.appendEntry("memory_dream_result", { status: "purified", keywords: purifyResult, source: "learning" });
+      });
 
+      // Snapshot emit — also independent so a snapshot failure doesn't mask errors above
+      await runIndependent("snapshot.emit", async () => {
         const snapshot = await activeStore.getSnapshot();
         channel?.emit("learning.snapshot", snapshot);
-        capturedUi?.setStatus("learning", "learning idle");
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error("agent_end processing failed", { error: message });
-        try {
-          capturedUi?.setStatus("learning", "learning error");
-          capturedUi?.notify(`Learning error: ${message}`, "warning");
-        } catch {
-          // ui reference may also be stale; swallow to avoid unhandled throw
-        }
-      }
+      });
+
+      capturedUi?.setStatus("learning", "learning idle");
     })();
   });
 

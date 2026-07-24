@@ -436,7 +436,7 @@ export class ExtensionRunner {
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
-		this.getSettingsFn = contextActions.getSettings;
+		this.getSettingsFn = contextActions.getSettings ?? (() => ({}) as Settings);
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
 
 		// Flush provider registrations queued during extension loading

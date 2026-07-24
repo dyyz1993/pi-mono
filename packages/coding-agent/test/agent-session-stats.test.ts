@@ -147,6 +147,25 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
+	it("counts trailing messages after rematerialized assistant usage", () => {
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("hello", 1));
+			sessionManager.appendMessage(createAssistantMessage("hi", 1_000, 2));
+			sessionManager.appendMessage(createUserMessage("follow up ".repeat(200), 3));
+			syncAgentMessages(session, sessionManager);
+			// Simulate process restart / JSONL rematerialization where Usage objects
+			// have the same values but are no longer the same object references.
+			session.agent.state.messages = JSON.parse(JSON.stringify(session.agent.state.messages));
+
+			const usage = session.getContextUsage();
+			expect(usage?.tokens).toBeGreaterThan(1_000);
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("falls back to estimated context usage immediately after compaction", () => {
 		const { session, sessionManager } = createSession();
 

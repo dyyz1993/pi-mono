@@ -290,6 +290,18 @@ describe("shouldCompact", () => {
 		expect(shouldCompact(89000, 100000, settings)).toBe(false);
 	});
 
+	it("should use thresholdPercent when explicitly configured", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 10000,
+			keepRecentTokens: 20000,
+			thresholdPercent: 0.8,
+		};
+
+		expect(shouldCompact(81000, 100000, settings)).toBe(true);
+		expect(shouldCompact(79000, 100000, settings)).toBe(false);
+	});
+
 	it("should return false when disabled", () => {
 		const settings: CompactionSettings = {
 			enabled: false,

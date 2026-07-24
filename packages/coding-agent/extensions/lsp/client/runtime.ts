@@ -83,6 +83,8 @@ export interface LspClientRuntimeOptions {
 	requestTimeoutMs?: number;
 	lspmuxPath?: string;
 	spawn?: LspSpawn;
+	initializationOptions?: unknown;
+	configuration?: Record<string, unknown>;
 }
 
 export interface LspClientRuntime {
@@ -106,6 +108,8 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 	const env = options.env ?? process.env;
 	const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 	const spawnProcess: LspSpawn = options.spawn ?? createDefaultSpawn();
+	const initializationOptions = options.initializationOptions;
+	const configuration = options.configuration;
 
 	let currentProcess: LspSubprocess | undefined;
 	let isStopping = false;
@@ -288,6 +292,7 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 		await sendRequest("initialize", {
 			processId: process.pid,
 			rootUri: pathToFileURL(cwd).href,
+			initializationOptions,
 			capabilities: {
 				textDocument: {
 					publishDiagnostics: {
@@ -502,9 +507,25 @@ export function createLspClientRuntime(options: LspClientRuntimeOptions = {}): L
 			items = [];
 		}
 		if (items.length === 0) {
-			return [buildEslintSettings()];
+			return configuration ? [configuration] : [buildEslintSettings()];
 		}
-		return items.map(() => buildEslintSettings());
+		return items.map((item) => {
+			// Per-server configuration takes priority: if the caller asks for a
+			// specific section (e.g. "rust-analyzer") and we have that key in our
+			// `configuration` map, return it directly. Otherwise fall back to the
+			// whole configuration object or the legacy ESLint shape.
+			const section =
+				item && typeof item === "object" && typeof (item as { section?: unknown }).section === "string"
+					? (item as { section: string }).section
+					: undefined;
+			if (configuration) {
+				if (section && Object.prototype.hasOwnProperty.call(configuration, section)) {
+					return configuration[section];
+				}
+				return configuration;
+			}
+			return buildEslintSettings();
+		});
 	}
 
 	function buildEslintSettings(): Record<string, unknown> {

@@ -4,8 +4,9 @@ import type {
     CheckResult,
     GoalState,
 } from "./types.ts";
-import { CompletionCheckSchema } from "./types.ts";
-import { INTENT_CHECK_SYSTEM_PROMPT } from "./prompts.ts";
+import { CompletionCheckSchema, GoalProgressSchema } from "./types.ts";
+import type { GoalProgressResult } from "./types.ts";
+import { INTENT_CHECK_SYSTEM_PROMPT, GOAL_PROGRESS_REASSESSMENT_PROMPT } from "./prompts.ts";
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { appendForensic, forensicTs } from "./forensic.ts";
@@ -232,4 +233,130 @@ async function callLLMStructured<T>(
     }
 
     throw new Error("Failed to get structured response after max retries");
+}
+
+
+// ============================================================================
+// Goal Progress Reassessment (new goal-driven loop)
+// ============================================================================
+
+export interface ReassessmentContext {
+    goal: GoalState;
+    fileDiffs: FileDiffSummary[];
+    conversationSummary: string;
+    continueCount: number;
+    previousActionPlans: string[];
+}
+
+function buildReassessmentUserContent(ctx: ReassessmentContext): string {
+    const goal = ctx.goal;
+
+    const checklistSection = goal.checklist && goal.checklist.length > 0
+        ? goal.checklist.map((item, i) =>
+            `[${i}] [${item.status}] ${item.text}${item.evidence ? ` → ${item.evidence}` : ""}`
+          ).join("\n")
+        : "(no checklist items)";
+
+    const diffSection = ctx.fileDiffs.length > 0
+        ? ctx.fileDiffs
+            .map((d) => `--- ${d.path} (${d.status}) ---\n${truncateText(d.unifiedDiff, 2000)}`)
+            .join("\n\n")
+        : "(no file changes this turn)";
+
+    const previousPlansSection = ctx.previousActionPlans.length > 0
+        ? ctx.previousActionPlans
+            .map((plan, i) => `[${i + 1}] ${truncateText(plan, 300)}`)
+            .join("\n")
+        : "(no previous action plans)";
+
+    return `## User Goal
+${goal.objective}
+
+## Checklist Progress
+${checklistSection}
+
+## File Changes This Turn
+${diffSection}
+
+## Recent Conversation
+${ctx.conversationSummary}
+
+## Execution History
+- Continue count: ${ctx.continueCount}
+
+## Previous Action Plans (avoid repeating these)
+${previousPlansSection}`;
+}
+
+export async function reassessGoalProgress(
+    ctx: ReassessmentContext,
+    config: SupervisorConfig,
+    callLLM: ExtensionAPI["callLLM"],
+    signal?: AbortSignal,
+): Promise<GoalProgressResult> {
+    const checkStartedAt = Date.now();
+    const systemPrompt = GOAL_PROGRESS_REASSESSMENT_PROMPT;
+    const userContent = buildReassessmentUserContent(ctx);
+
+    appendForensic({
+        ts: forensicTs(),
+        type: "goal_reassessment_start",
+        continueCount: ctx.continueCount,
+        previousPlansCount: ctx.previousActionPlans.length,
+        fileDiffsCount: ctx.fileDiffs.length,
+        smallModel: config.smallModel,
+    });
+
+    try {
+        const response = await callLLMStructured<GoalProgressResult>(
+            callLLM,
+            {
+                systemPrompt,
+                messages: [{ role: "user" as const, content: userContent }],
+                model: config.smallModel,
+                maxTokens: 2048,
+                signal,
+            },
+            GoalProgressSchema,
+        );
+
+        appendForensic({
+            ts: forensicTs(),
+            type: "goal_reassessment_parsed",
+            overallProgress: response.overallProgress,
+            isComplete: response.isComplete,
+            confidence: response.confidence,
+            completedCount: response.completedItems.length,
+            remainingCount: response.remainingItems.length,
+            newDiscoveriesCount: response.newDiscoveries.length,
+            checklistUpdatesCount: response.checklistUpdates.length,
+            newChecklistItemsCount: response.newChecklistItems.length,
+            nextActionPlanLength: response.nextActionPlan.length,
+            durationMs: Date.now() - checkStartedAt,
+        });
+
+        return response;
+    } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        appendForensic({
+            ts: forensicTs(),
+            type: "goal_reassessment_error",
+            error,
+            durationMs: Date.now() - checkStartedAt,
+        });
+
+        // Fail-closed: return a conservative result that continues but doesn't complete
+        return {
+            overallProgress: 0,
+            completedItems: [],
+            remainingItems: ["Reassessment failed, agent should continue working"],
+            newDiscoveries: [],
+            checklistUpdates: [],
+            newChecklistItems: [],
+            nextActionPlan: "Continue working on the current task. Previous assessment failed, but the goal is not yet complete.",
+            isComplete: false,
+            confidence: 0,
+            reasoning: `Reassessment failed: ${error}`,
+        };
+    }
 }

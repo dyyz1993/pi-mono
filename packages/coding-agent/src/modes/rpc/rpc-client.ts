@@ -507,7 +507,8 @@ export class RpcClient {
 	 * Compact session context.
 	 */
 	async compact(customInstructions?: string, timeoutMs?: number): Promise<CompactionResult> {
-		const response = await this.send({ type: "compact", customInstructions }, timeoutMs);
+		// compact 需要调用 LLM 生成摘要，大上下文可能需要数分钟，默认 5 分钟超时
+		const response = await this.send({ type: "compact", customInstructions }, timeoutMs ?? 300_000);
 		return this.getData(response);
 	}
 
