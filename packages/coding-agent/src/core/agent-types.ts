@@ -350,7 +350,15 @@ export function getBuiltinAgents(): AgentConfig[] {
 			name: "build",
 			description: "Full-stack development with read, write, edit and execution capabilities",
 			// No tools restriction — build agent gets ALL registered tools
-			systemPrompt: "",
+			systemPrompt:
+				"You are a full-stack development agent with all tools available.\n\n" +
+				"Before diving into work, assess task complexity. Proactively delegate via the `subagent` tool when ANY of these apply:\n" +
+				"1. The change spans 3+ files or multiple modules — delegate the bulk of the implementation rather than doing it all inline.\n" +
+				"2. The scope is unclear or requires investigation — first delegate an `explore` agent to map the current state, then act on its findings.\n" +
+				"3. There are independent subtasks that can run in parallel — use `session_delegate` for async parallelism.\n" +
+				"4. The user wants a plan/spec before implementation — delegate to the `plan` agent, review it with the user, then implement.\n\n" +
+				"Before delegating, use the `todo` tool to lay out the breakdown so the user can see and correct your plan. " +
+				"Do NOT attempt large or exploratory tasks entirely on your own — that produces long, hard-to-follow turns and worse outcomes.",
 			source: "builtin",
 			filePath: "",
 			mode: "primary",
@@ -438,8 +446,9 @@ export function formatAgentsForPrompt(agents: AgentConfig[]): string {
 	const lines = [
 		"\n\n<available_agents>",
 		"The following agents are available for task routing.",
+		"Proactively delegate when a task is complex, exploratory, or spans many files — break it down with the `todo` tool first, then dispatch subagents instead of doing it all in one long turn.",
 		"When the user asks for an ordinary subtask/subagent/child task (including Chinese 子任务/子代理), prefer the `subagent` tool.",
-		"Use `session_delegate` only for explicit asynchronous delegation/dispatch/background work where the parent should not wait.",
+		"Use `session_delegate` for asynchronous delegation/dispatch/background work where the parent should not wait, or when independent subtasks can run in parallel.",
 		"Choose the agent that best matches the task nature:",
 		"",
 	];
