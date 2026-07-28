@@ -121,9 +121,8 @@ export type RpcCommand =
 			id?: string;
 			type: "get_file_diff";
 			filePath: string;
-			fromEntryId?: string;
-			toEntryId?: string;
-			useBaselineHash?: boolean;
+			fromHash?: string;
+			toHash?: string;
 	  }
 	| { id?: string; type: "get_batch_diffs"; fromEntryId?: string; toEntryId?: string }
 	| { id?: string; type: "get_file_history"; filePath: string }
@@ -541,7 +540,7 @@ export type RpcResponse =
 			type: "response";
 			command: "get_modified_files";
 			success: true;
-			data: { files: ModifiedFileInfo[]; resolvedFromEntryId: string | null };
+			data: { files: ModifiedFileInfo[]; resolvedFromEntryId: string | null; targetTreeHash?: string | null };
 	  }
 	| {
 			id?: string;

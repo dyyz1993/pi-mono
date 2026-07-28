@@ -71,6 +71,7 @@ export function applyChecklistProgress(goal: GoalState): GoalState {
 export function advanceChecklistAfterPassedCheck(
     goal: GoalState,
     evidence?: string,
+    options?: { completeAll?: boolean },
 ): ChecklistAdvanceResult {
     const checklist = goal.checklist;
     if (!checklist || checklist.length === 0) {
@@ -78,6 +79,46 @@ export function advanceChecklistAfterPassedCheck(
     }
 
     const now = Date.now();
+
+    // When the model check explicitly declares the whole goal complete
+    // (high confidence), advance ALL open items at once instead of one-by-one.
+    // This prevents the supervisor from burning through the auto-continue quota
+    // when the agent has demonstrably finished every remaining checklist item
+    // in a single turn (see ef10ddea case: 6-item checklist but only 5 quota).
+    if (options?.completeAll) {
+        const completedItems: GoalChecklistItem[] = [];
+        const completedChecklist = checklist.map((item) => {
+            if (item.status === "done" || item.status === "blocked") return item;
+            // Preserve per-item audit value: prefix the shared evidence with
+            // the item's own text so each item's evidence is distinguishable
+            // instead of all being the identical shared string.
+            const perItemEvidence = evidence
+                ? `[${item.text}] ${evidence}`
+                : item.evidence;
+            const done = {
+                ...item,
+                status: "done" as const,
+                evidence: perItemEvidence,
+                updatedAt: now,
+            };
+            completedItems.push(done);
+            return done;
+        });
+        const nextItem = firstOpenItem(completedChecklist);
+        return {
+            completedItem: completedItems[0],
+            nextItem,
+            hasRemaining: Boolean(nextItem),
+            goal: {
+                ...goal,
+                status: nextItem ? "running" : goal.status,
+                updatedAt: now,
+                currentMilestone: nextItem?.text,
+                checklist: completedChecklist,
+            },
+        };
+    }
+
     const { checklist: advancedChecklist, completedItem } = completeCurrentChecklistItem(
         checklist,
         now,

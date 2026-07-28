@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEndEvent, ExtensionAPI, UIEvent } from "../src/core/extensions/types.ts";
 
 const assistantDefaults = {
@@ -123,9 +123,15 @@ describe("message-bridge extension", () => {
 		respondUIMock.mockClear();
 		sendUserMessageMock.mockClear();
 		mockPi.on.mockClear();
+		// Extension now requires MESSAGE_BRIDGE_URL (no default URL baked in)
+		process.env.MESSAGE_BRIDGE_URL = "http://test-bridge:8080";
 
 		const { default: factory } = await import("../extensions/message-bridge/index.ts");
 		factory(mockPi as unknown as ExtensionAPI);
+	});
+
+	afterEach(() => {
+		delete process.env.MESSAGE_BRIDGE_URL;
 	});
 
 	it("registers ui and agent_end handlers", () => {

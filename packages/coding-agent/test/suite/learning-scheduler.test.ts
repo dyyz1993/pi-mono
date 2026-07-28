@@ -1,10 +1,32 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LearningRun, LearningSnapshot } from "../../extensions/learning/contract.ts";
 import { LearningCuratorScheduler } from "../../extensions/learning/scheduler.ts";
 import { LearningStore } from "../../extensions/learning/store.ts";
+
+/**
+ * Mark a generated skill as stale by overwriting its usage entry with a
+ * lastUsedAt timestamp older than the curator's 30-day STALE_THRESHOLD_MS.
+ */
+async function markSkillStale(store: LearningStore, skillName: string): Promise<void> {
+	const snapshot = await store.getSnapshot();
+	const usagePath = join(snapshot.dirs.skillsDir, ".usage.json");
+	const usage = JSON.parse(readFileSync(usagePath, "utf-8"));
+	if (usage.skills?.[skillName]) {
+		usage.skills[skillName].lastUsedAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
+	} else {
+		usage.skills[skillName] = {
+			state: "active",
+			usageCount: 1,
+			lastUsedAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
+			pinned: false,
+			patchCount: 0,
+		};
+	}
+	writeFileSync(usagePath, JSON.stringify(usage, null, 2), "utf-8");
+}
 
 describe("learning curator scheduler", () => {
 	let tempDir: string;
@@ -50,6 +72,7 @@ describe("learning curator scheduler", () => {
 	it("runs scheduled skill curator ticks with fake timers", async () => {
 		const store = new LearningStore(projectDir);
 		await createGeneratedSkill(store, "scheduled-archive");
+		await markSkillStale(store, "scheduled-archive");
 		await store.setConfig({
 			skills: {
 				distillMode: "pending",

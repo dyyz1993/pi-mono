@@ -59,12 +59,29 @@ export const CustomGuardConfigSchema = Type.Intersect([
     }),
 ]);
 
+export const MetricGuardConfigSchema = Type.Intersect([
+    BaseGuardConfigSchema,
+    Type.Object({
+        type: Type.Literal("metric"),
+    }),
+]);
+
+
+export const CommitVerificationGuardConfigSchema = Type.Intersect([
+    BaseGuardConfigSchema,
+    Type.Object({
+        type: Type.Literal("commit-verification"),
+    }),
+]);
+
 export const GuardConfigSchema = Type.Union([
     TodoGuardConfigSchema,
     SpecsGuardConfigSchema,
     CiGuardConfigSchema,
     KeywordGuardConfigSchema,
     CustomGuardConfigSchema,
+    MetricGuardConfigSchema,
+    CommitVerificationGuardConfigSchema,
 ]);
 
 export type GuardConfig = Static<typeof GuardConfigSchema>;
@@ -280,6 +297,19 @@ export interface CheckResult {
     incompleteTasks: IncompleteTask[];
     modelResponse?: string;
     guardResults?: GuardCheckResult[];
+    /** 意图对照检查发现的语义问题（按严重程度排序） */
+    findings?: CheckFinding[];
+    /** 下一步具体调整方向（替代笼统的"请继续"） */
+    adjustmentSuggestion?: string;
+}
+
+export interface CheckFinding {
+    /** 问题维度 */
+    dimension: "coverage" | "actual_change" | "quality" | "scope_overflow" | "verification";
+    /** 问题描述 */
+    description: string;
+    /** 严重程度 */
+    severity: "high" | "medium" | "low";
 }
 
 export interface IncompleteTask {
@@ -313,7 +343,67 @@ export const CompletionCheckSchema = Type.Object({
             ]),
         }),
     ),
+    findings: Type.Array(
+        Type.Object({
+            dimension: Type.Union([
+                Type.Literal("coverage"),
+                Type.Literal("actual_change"),
+                Type.Literal("quality"),
+                Type.Literal("scope_overflow"),
+                Type.Literal("verification"),
+            ]),
+            description: Type.String(),
+            severity: Type.Union([
+                Type.Literal("high"),
+                Type.Literal("medium"),
+                Type.Literal("low"),
+            ]),
+        }),
+    ),
+    adjustmentSuggestion: Type.String({ description: "下一步具体调整方向；如果 completed 为 true 可留空" }),
     reasoning: Type.String({ description: "判断理由" }),
 });
 
 export type CompletionCheckResult = Static<typeof CompletionCheckSchema>;
+
+// ── Goal Progress Reassessment Schema ──
+// 新的 goal 驱动循环用的结构化输出 schema
+
+export const ChecklistUpdateItemSchema = Type.Object({
+    index: Type.Number({ description: "checklist item 的索引（0-based）" }),
+    status: Type.Union([
+        Type.Literal("done"),
+        Type.Literal("in_progress"),
+        Type.Literal("pending"),
+        Type.Literal("blocked"),
+    ]),
+    text: Type.Optional(Type.String({ description: "如果需要修改 item 文本" })),
+    evidence: Type.Optional(Type.String({ description: "完成证据" })),
+});
+
+export const NewChecklistItemSchema = Type.Object({
+    text: Type.String({ description: "新增的 checklist item 文本" }),
+    kind: Type.Optional(Type.Union([
+        Type.Literal("scope"),
+        Type.Literal("implementation"),
+        Type.Literal("verification"),
+        Type.Literal("report"),
+    ])),
+});
+
+export const GoalProgressSchema = Type.Object({
+    overallProgress: Type.Number({ description: "整体进度 0-100", minimum: 0, maximum: 100 }),
+    completedItems: Type.Array(Type.String(), { description: "已经真正完成的事项（带证据）" }),
+    remainingItems: Type.Array(Type.String(), { description: "还需要完成的具体事项" }),
+    newDiscoveries: Type.Array(Type.String(), { description: "执行中发现的新问题，没有则为空" }),
+    checklistUpdates: Type.Array(ChecklistUpdateItemSchema, { description: "对现有 checklist 的状态更新" }),
+    newChecklistItems: Type.Array(NewChecklistItemSchema, { description: "需要新增的 checklist items" }),
+    nextActionPlan: Type.String({ description: "下一步具体行动方案：文件、函数、测试、验证标准、新角度" }),
+    isComplete: Type.Boolean({ description: "goal 是否真正完成" }),
+    confidence: Type.Number({ description: "置信度 0-1", minimum: 0, maximum: 1 }),
+    reasoning: Type.String({ description: "判断理由" }),
+});
+
+export type GoalProgressResult = Static<typeof GoalProgressSchema>;
+export type ChecklistUpdateItem = Static<typeof ChecklistUpdateItemSchema>;
+export type NewChecklistItem = Static<typeof NewChecklistItemSchema>;

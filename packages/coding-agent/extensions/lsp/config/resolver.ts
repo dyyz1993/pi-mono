@@ -20,6 +20,8 @@ interface LspConfigServerFile {
 	args?: string[];
 	fileTypes?: string[];
 	disabled?: boolean;
+	initializationOptions?: Record<string, unknown>;
+	configuration?: Record<string, unknown>;
 }
 
 interface LspConfigFile {
@@ -36,6 +38,8 @@ interface NormalizedLspServerConfig {
 	command?: string[];
 	fileTypes?: string[];
 	disabled?: boolean;
+	initializationOptions?: Record<string, unknown>;
+	configuration?: Record<string, unknown>;
 }
 
 interface NormalizedLspConfig {
@@ -49,6 +53,8 @@ export interface ResolvedLspServerConfig {
 	name: string;
 	command: string[];
 	fileTypes?: string[];
+	initializationOptions?: Record<string, unknown>;
+	configuration?: Record<string, unknown>;
 }
 
 export interface ResolvedLspConfig {
@@ -411,6 +417,8 @@ function normalizeServerEntry(
 		command,
 		fileTypes,
 		disabled: typeof server.disabled === "boolean" ? server.disabled : undefined,
+		initializationOptions: server.initializationOptions,
+		configuration: server.configuration,
 	};
 }
 
@@ -463,6 +471,8 @@ function mergeServers(
 			command: entry.command ?? previous.command,
 			fileTypes: entry.fileTypes ?? previous.fileTypes,
 			disabled: entry.disabled ?? previous.disabled,
+			initializationOptions: entry.initializationOptions ?? previous.initializationOptions,
+			configuration: entry.configuration ?? previous.configuration,
 		};
 	}
 
@@ -500,6 +510,8 @@ function resolveServers(
 			name: server.name,
 			command,
 			fileTypes: server.fileTypes,
+			initializationOptions: server.initializationOptions,
+			configuration: server.configuration,
 		});
 	}
 
@@ -745,6 +757,8 @@ async function resolveServersAsync(
 			name: server.name,
 			command,
 			fileTypes: server.fileTypes,
+			initializationOptions: server.initializationOptions,
+			configuration: server.configuration,
 		});
 	}
 

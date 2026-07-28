@@ -776,17 +776,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 				if (command.toUserMsgEntryId) {
 					const entries = session.sessionManager.getEntries();
+					// 回滚预览 = target→current 的累积文件差异（回滚会影响的所有文件）
 					const files = fileSnapshotManager.getRollbackPreviewFiles({
 						targetEntryId: command.toUserMsgEntryId,
 						entries,
 					});
-					const resolvedSnapshotEntryId = fileSnapshotManager.resolveSnapshotEntryIdForTarget(
-						command.toUserMsgEntryId,
-						entries,
-					);
+					const targetTreeHash = fileSnapshotManager.resolveTargetTreeHash(command.toUserMsgEntryId, entries);
 					return success(id, "get_modified_files", {
 						files,
-						resolvedFromEntryId: resolvedSnapshotEntryId ?? command.toUserMsgEntryId,
+						resolvedFromEntryId: null,
+						targetTreeHash,
 					});
 				}
 
@@ -802,9 +801,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 				const diff = fileSnapshotManager.getFileDiff({
 					filePath: command.filePath,
-					fromEntryId: command.fromEntryId,
-					toEntryId: command.toEntryId,
-					useBaselineHash: command.useBaselineHash ?? false,
+					fromHash: command.fromHash,
+					toHash: command.toHash,
 				});
 
 				return success(

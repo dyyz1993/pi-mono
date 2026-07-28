@@ -1,8 +1,36 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LearningStore } from "../../extensions/learning/store.ts";
+
+/**
+ * Mark a generated skill as stale by overwriting its usage entry with a
+ * lastUsedAt timestamp older than the curator's 30-day STALE_THRESHOLD_MS.
+ *
+ * Newly approved skills get lastUsedAt=Date.now(), so the curator correctly
+ * treats them as "recently used" and skips archival. Tests that verify the
+ * archival path must simulate a skill that has not been touched for >30 days.
+ */
+async function markSkillStale(store: LearningStore, skillName: string): Promise<void> {
+	const snapshot = await store.getSnapshot();
+	const usagePath = join(snapshot.dirs.skillsDir, ".usage.json");
+	// eslint-disable-next-line @typescript-eslint/no-require-imports
+	const usage = JSON.parse(readFileSync(usagePath, "utf-8"));
+	const slugName = skillName;
+	if (usage.skills?.[slugName]) {
+		usage.skills[slugName].lastUsedAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
+	} else {
+		usage.skills[slugName] = {
+			state: "active",
+			usageCount: 1,
+			lastUsedAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
+			pinned: false,
+			patchCount: 0,
+		};
+	}
+	writeFileSync(usagePath, JSON.stringify(usage, null, 2), "utf-8");
+}
 
 describe("learning skill curator", () => {
 	let tempDir: string;
@@ -53,6 +81,7 @@ describe("learning skill curator", () => {
 	it("dry-run reports stale generated skills without modifying files", async () => {
 		const store = new LearningStore(projectDir);
 		await createGeneratedSkill(store, "unused-workflow");
+		await markSkillStale(store, "unused-workflow");
 		const before = await store.getSnapshot();
 
 		const run = await store.runCurator({ domain: "skill", mode: "dry-run" });
@@ -66,6 +95,7 @@ describe("learning skill curator", () => {
 	it("pending mode creates curator candidates instead of modifying skill packages", async () => {
 		const store = new LearningStore(projectDir);
 		await createGeneratedSkill(store, "pending-archive");
+		await markSkillStale(store, "pending-archive");
 
 		await store.runCurator({ domain: "skill", mode: "pending" });
 		const snapshot = await store.getSnapshot();
@@ -78,6 +108,7 @@ describe("learning skill curator", () => {
 	it("archive moves the whole generated skill package", async () => {
 		const store = new LearningStore(projectDir);
 		await createGeneratedSkill(store, "archive-me");
+		await markSkillStale(store, "archive-me");
 		const [candidate] = await store.listCandidates(true);
 		expect(candidate?.status).toBe("approved");
 

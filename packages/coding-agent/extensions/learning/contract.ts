@@ -4,18 +4,13 @@ export const LEARNING_CHANNEL_NAME = "learning";
 
 export type LearningMode = "off" | "pending" | "auto";
 export type LearningCuratorMode = "dry-run" | "pending" | "auto";
-export type LearningDomain = "memory" | "skill" | "curator";
+export type LearningDomain = "memory" | "skill";
 export type LearningCandidateStatus = "pending" | "approved" | "rejected";
 export type LearningCandidateAction =
 	| "create-memory"
-	| "update-memory"
 	| "create-skill"
 	| "merge-skill"
-	| "archive-skill"
-	| "restore-skill"
-	| "disable-skill"
-	| "promote-skill"
-	| "curator-report";
+	| "archive-skill";
 export type LearningFileKind =
 	| "memory"
 	| "memory-index"
@@ -89,6 +84,13 @@ export interface LearningMemoryCandidatePayload {
 	description: string;
 	memoryType: "user" | "feedback" | "project" | "reference" | "bookmark";
 	content: string;
+	/**
+	 * Storage scope. "project" (default) writes to project-scoped memory dir;
+	 * "global" writes to ~/.pi/agent/learning/memory (shared across projects).
+	 * Use "global" for memories that should follow the user everywhere
+	 * (e.g. role, preferences, expertise).
+	 */
+	scope?: "project" | "global";
 }
 
 export interface LearningSkillCandidatePayload {

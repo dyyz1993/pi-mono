@@ -235,6 +235,11 @@ export interface SessionContext {
 	model: { provider: string; modelId: string } | null;
 }
 
+export interface MaterializeSessionContextEntriesOptions {
+	/** Strip assistant thinking blocks before downstream model payload preparation. */
+	stripThinking?: boolean;
+}
+
 export interface SessionInfo {
 	path: string;
 	id: string;
@@ -263,6 +268,162 @@ function createSystemEventMessage(entry: SystemEventEntry): CustomMessage {
 		},
 		entry.timestamp,
 	);
+}
+
+function getAssistantToolCallIds(message: AgentMessage): string[] {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return [];
+	return message.content.flatMap((part) => (part.type === "toolCall" && typeof part.id === "string" ? [part.id] : []));
+}
+
+function stripAssistantToolCalls(entry: SessionMessageEntry, validToolCallIds: Set<string>): SessionEntry[] {
+	if (entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) return [entry];
+	const filteredContent = entry.message.content.filter((part: { type: string; id?: string }) => {
+		return !(part.type === "toolCall" && part.id !== undefined && !validToolCallIds.has(part.id));
+	});
+	if (filteredContent.length === entry.message.content.length) return [entry];
+	if (filteredContent.length === 0) return [];
+	return [{ ...entry, message: { ...entry.message, content: filteredContent as typeof entry.message.content } }];
+}
+
+function sanitizeToolProtocolEntries(entries: SessionEntry[]): SessionEntry[] {
+	const validToolCallIdsByAssistantEntry = new Map<string, Set<string>>();
+	const validToolResultEntryIds = new Set<string>();
+
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i];
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+
+		const toolCallIds = getAssistantToolCallIds(entry.message);
+		if (toolCallIds.length === 0) continue;
+
+		const toolCallIdSet = new Set(toolCallIds);
+		const matchedToolCallIds = new Set<string>();
+		for (let j = i + 1; j < entries.length; j++) {
+			const nextEntry = entries[j];
+			if (nextEntry.type !== "message" || nextEntry.message.role !== "toolResult") break;
+			if (!toolCallIdSet.has(nextEntry.message.toolCallId)) continue;
+			matchedToolCallIds.add(nextEntry.message.toolCallId);
+			validToolResultEntryIds.add(nextEntry.id);
+		}
+
+		if (matchedToolCallIds.size !== toolCallIds.length) {
+			validToolCallIdsByAssistantEntry.set(entry.id, matchedToolCallIds);
+		}
+	}
+
+	return entries.flatMap((entry): SessionEntry[] => {
+		if (entry.type !== "message") return [entry];
+		if (entry.message.role === "toolResult") {
+			return validToolResultEntryIds.has(entry.id) ? [entry] : [];
+		}
+		if (entry.message.role !== "assistant") return [entry];
+
+		const validToolCallIds = validToolCallIdsByAssistantEntry.get(entry.id);
+		if (!validToolCallIds) return [entry];
+		return stripAssistantToolCalls(entry, validToolCallIds);
+	});
+}
+
+/**
+ * Apply session-visible entry semantics to a branch/path before it is converted
+ * into model messages. This is the shared boundary for rollback/delete/summary
+ * behavior: deleted messages are removed, segment summaries replace their
+ * targets, tool results for deleted tool calls are removed, and assistant
+ * tool-call blocks that no longer have a result are stripped.
+ */
+export function materializeSessionContextEntries(
+	entries: SessionEntry[],
+	options: MaterializeSessionContextEntriesOptions = {},
+): SessionEntry[] {
+	const deletedIds = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type === "deletion") {
+			for (const targetId of entry.targetIds) {
+				deletedIds.add(targetId);
+			}
+		}
+	}
+
+	const deletedToolCallIds = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type !== "message" || !deletedIds.has(entry.id)) continue;
+		const message = entry.message;
+		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const part of message.content as Array<{ type: string; id?: string }>) {
+			if (part.type === "toolCall" && part.id) {
+				deletedToolCallIds.add(part.id);
+			}
+		}
+	}
+
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+		if (deletedToolCallIds.has(entry.message.toolCallId)) {
+			deletedIds.add(entry.id);
+		}
+	}
+
+	const strippedToolCallIds = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type === "message" && deletedIds.has(entry.id) && entry.message.role === "toolResult") {
+			strippedToolCallIds.add(entry.message.toolCallId);
+		}
+	}
+
+	const segmentTargets = new Set<string>();
+	const segmentReplacements = new Map<string, BranchSummaryEntry>();
+	for (const entry of entries) {
+		if (entry.type !== "segment_summary") continue;
+		const firstVisibleTargetId = entry.targetIds.find((targetId) => !deletedIds.has(targetId));
+		const firstVisibleTarget = firstVisibleTargetId
+			? entries.find((target) => target.id === firstVisibleTargetId)
+			: undefined;
+		if (firstVisibleTargetId && firstVisibleTarget) {
+			segmentReplacements.set(entry.id, {
+				type: "branch_summary",
+				id: entry.id,
+				parentId: firstVisibleTarget.parentId,
+				timestamp: entry.timestamp,
+				fromId: firstVisibleTargetId,
+				summary: entry.summary,
+				fromHook: true,
+			});
+		}
+		for (const targetId of entry.targetIds) {
+			if (deletedIds.has(targetId)) continue;
+			segmentTargets.add(targetId);
+		}
+	}
+
+	const materializedEntries = entries.flatMap((entry): SessionEntry[] => {
+		if (entry.type === "deletion" || deletedIds.has(entry.id)) {
+			return [];
+		}
+		if (entry.type === "segment_summary") {
+			const replacement = segmentReplacements.get(entry.id);
+			return replacement ? [replacement] : [];
+		}
+
+		if (segmentTargets.has(entry.id)) {
+			return [];
+		}
+
+		if (entry.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)) {
+			const filteredContent = entry.message.content.filter((part: { type: string; id?: string }) => {
+				if (options.stripThinking && part.type === "thinking") return false;
+				return !(part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id));
+			});
+			if (filteredContent.length !== entry.message.content.length) {
+				return [
+					{ ...entry, message: { ...entry.message, content: filteredContent as typeof entry.message.content } },
+				];
+			}
+		}
+
+		return [entry];
+	});
+
+	return sanitizeToolProtocolEntries(materializedEntries);
 }
 
 export type ReadonlySessionManager = Pick<
@@ -443,13 +604,14 @@ export function buildSessionContext(
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
 	path.reverse();
+	const contextPath = materializeSessionContextEntries(path);
 
 	// Extract settings and find compaction
 	let thinkingLevel = "off";
 	let model: { provider: string; modelId: string } | null = null;
 	let compaction: CompactionEntry | null = null;
 
-	for (const entry of path) {
+	for (const entry of contextPath) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel;
 		} else if (entry.type === "model_change") {
@@ -467,49 +629,13 @@ export function buildSessionContext(
 	// 2. Emit kept messages (from firstKeptEntryId up to compaction)
 	// 3. Emit messages after compaction
 	const messages: AgentMessage[] = [];
-	const deletedIds = new Set<string>();
-	for (const entry of path) {
-		if (entry.type === "deletion") {
-			for (const targetId of entry.targetIds) {
-				deletedIds.add(targetId);
-			}
-		}
-	}
-
-	const deletedToolCallIds = new Set<string>();
-	for (const entry of path) {
-		if (entry.type === "message" && deletedIds.has(entry.id)) {
-			const message = entry.message;
-			if (message.role === "assistant" && Array.isArray(message.content)) {
-				for (const part of message.content as Array<{ type: string; id?: string }>) {
-					if (part.type === "toolCall" && part.id) {
-						deletedToolCallIds.add(part.id);
-					}
-				}
-			}
-		}
-	}
-	for (const entry of path) {
-		if (entry.type === "message" && entry.message.role === "toolResult") {
-			if (deletedToolCallIds.has(entry.message.toolCallId)) {
-				deletedIds.add(entry.id);
-			}
-		}
-	}
-
-	const strippedToolCallIds = new Set<string>();
-	for (const entry of path) {
-		if (entry.type === "message" && deletedIds.has(entry.id) && entry.message.role === "toolResult") {
-			strippedToolCallIds.add(entry.message.toolCallId);
-		}
-	}
 
 	const segmentTargets = new Map<string, { summary: string; isFirst: boolean; timestamp: string }>();
-	for (const entry of path) {
+	for (const entry of contextPath) {
 		if (entry.type === "segment_summary") {
 			for (let i = 0; i < entry.targetIds.length; i++) {
 				const targetId = entry.targetIds[i];
-				if (deletedIds.has(targetId) || segmentTargets.has(targetId)) continue;
+				if (segmentTargets.has(targetId)) continue;
 				segmentTargets.set(targetId, {
 					summary: entry.summary,
 					isFirst: i === 0,
@@ -521,8 +647,6 @@ export function buildSessionContext(
 
 	const appendMessage = (entry: SessionEntry) => {
 		if (entry.type === "message") {
-			if (deletedIds.has(entry.id)) return;
-
 			const segment = segmentTargets.get(entry.id);
 			if (segment) {
 				if (segment.isFirst) {
@@ -531,29 +655,12 @@ export function buildSessionContext(
 				return;
 			}
 
-			if (
-				entry.message.role === "assistant" &&
-				Array.isArray(entry.message.content) &&
-				strippedToolCallIds.size > 0
-			) {
-				const filteredContent = entry.message.content.filter(
-					(part: { type: string; id?: string }) =>
-						!(part.type === "toolCall" && part.id !== undefined && strippedToolCallIds.has(part.id)),
-				);
-				if (filteredContent.length !== entry.message.content.length) {
-					messages.push({ ...entry.message, content: filteredContent as typeof entry.message.content });
-					return;
-				}
-			}
-
 			messages.push(entry.message);
 		} else if (entry.type === "custom_message") {
-			if (deletedIds.has(entry.id)) return;
 			messages.push(
 				createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp),
 			);
 		} else if (entry.type === "system_event") {
-			if (deletedIds.has(entry.id)) return;
 			messages.push(createSystemEventMessage(entry));
 		} else if (entry.type === "branch_summary" && entry.summary) {
 			messages.push(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp));
@@ -565,12 +672,12 @@ export function buildSessionContext(
 		messages.push(createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp));
 
 		// Find compaction index in path
-		const compactionIdx = path.findIndex((e) => e.type === "compaction" && e.id === compaction.id);
+		const compactionIdx = contextPath.findIndex((e) => e.type === "compaction" && e.id === compaction.id);
 
 		// Emit kept messages (before compaction, starting from firstKeptEntryId)
 		let foundFirstKept = false;
 		for (let i = 0; i < compactionIdx; i++) {
-			const entry = path[i];
+			const entry = contextPath[i];
 			if (entry.id === compaction.firstKeptEntryId) {
 				foundFirstKept = true;
 			}
@@ -580,13 +687,13 @@ export function buildSessionContext(
 		}
 
 		// Emit messages after compaction
-		for (let i = compactionIdx + 1; i < path.length; i++) {
-			const entry = path[i];
+		for (let i = compactionIdx + 1; i < contextPath.length; i++) {
+			const entry = contextPath[i];
 			appendMessage(entry);
 		}
 	} else {
 		// No compaction - emit all messages, handle branch summaries and custom messages
-		for (const entry of path) {
+		for (const entry of contextPath) {
 			appendMessage(entry);
 		}
 	}

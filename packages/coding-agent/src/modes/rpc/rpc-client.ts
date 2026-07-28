@@ -42,7 +42,7 @@ import type {
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
 /** RpcCommand without the id field (for internal send) */
-type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
+export type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 export interface RpcClientOptions {
 	/** Path to the CLI entry point (default: searches for dist/cli.js) */
@@ -137,6 +137,7 @@ export interface RollbackPreviewResult {
 export interface ModifiedFilesResult {
 	files: Array<{ path: string; status: "added" | "modified" | "deleted"; turnIndex: number; entryId: string }>;
 	resolvedFromEntryId: string | null;
+	targetTreeHash?: string | null;
 }
 
 export interface FileDiffResult {
@@ -505,8 +506,9 @@ export class RpcClient {
 	/**
 	 * Compact session context.
 	 */
-	async compact(customInstructions?: string): Promise<CompactionResult> {
-		const response = await this.send({ type: "compact", customInstructions });
+	async compact(customInstructions?: string, timeoutMs?: number): Promise<CompactionResult> {
+		// compact 需要调用 LLM 生成摘要，大上下文可能需要数分钟，默认 5 分钟超时
+		const response = await this.send({ type: "compact", customInstructions }, timeoutMs ?? 300_000);
 		return this.getData(response);
 	}
 
@@ -744,16 +746,14 @@ export class RpcClient {
 
 	async getFileDiff(options: {
 		filePath: string;
-		fromEntryId?: string;
-		toEntryId?: string;
-		useBaselineHash?: boolean;
+		fromHash?: string;
+		toHash?: string;
 	}): Promise<FileDiffResult | null> {
 		const response = await this.send({
 			type: "get_file_diff",
 			filePath: options.filePath,
-			fromEntryId: options.fromEntryId,
-			toEntryId: options.toEntryId,
-			useBaselineHash: options.useBaselineHash,
+			fromHash: options.fromHash,
+			toHash: options.toHash,
 		});
 		return this.getData(response);
 	}
@@ -1156,7 +1156,7 @@ export class RpcClient {
 		this.pendingRequests.clear();
 	}
 
-	private async send(command: RpcCommandBody): Promise<RpcResponse> {
+	private async send(command: RpcCommandBody, timeoutMs = 30000): Promise<RpcResponse> {
 		const childProcess = this.process;
 		const stdin = childProcess?.stdin;
 		if (!childProcess || !stdin) {
@@ -1183,7 +1183,7 @@ export class RpcClient {
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
 				reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
-			}, 30000);
+			}, timeoutMs);
 
 			this.pendingRequests.set(id, {
 				resolve: (response) => {
@@ -1205,6 +1205,19 @@ export class RpcClient {
 				pending?.reject(writeError);
 			}
 		});
+	}
+
+	/**
+	 * Send an arbitrary RPC command and await its response.
+	 *
+	 * The typed wrappers above (`getState`, `prompt`, …) all delegate to the
+	 * private {@link send}; this method exposes the same channel so CLI tools
+	 * (e.g. `pi rpc --method <name>`) can invoke any command without a
+	 * dedicated wrapper. The full {@link RpcResponse} is returned — callers
+	 * decide whether to unwrap `.data`.
+	 */
+	async rawSend(command: RpcCommandBody): Promise<RpcResponse> {
+		return this.send(command);
 	}
 
 	private writeLine(obj: object): void {

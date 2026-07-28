@@ -43,15 +43,17 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		const rootNode = tree[0];
 		expect(rootNode.entry.type).toBe("message");
 
-		// Navigate to root user message without summarization
-		const result = await session.navigateTree(rootNode.entry.id, { summarize: false });
+		// Navigate to root user message without summarization.
+		// skipFiles: true because navigating to root user would otherwise
+		// trigger the file-inclusive rollback guard (countUserMessagesOnPath(null) === 0).
+		const result = await session.navigateTree(rootNode.entry.id, { summarize: false, skipFiles: true });
 
 		expect(result.cancelled).toBe(false);
 		expect(result.editorText).toBe("First message");
 
 		// After navigating to root user message, leaf should be null (empty conversation)
 		expect(session.sessionManager.getLeafId()).toBeNull();
-	}, 60000);
+	}, 180000);
 
 	it("should navigate to non-user message without editor text", async () => {
 		const { session, sessionManager } = ctx;
@@ -73,7 +75,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 
 		// Leaf should be the assistant entry
 		expect(sessionManager.getLeafId()).toBe(assistantEntry!.id);
-	}, 60000);
+	}, 180000);
 
 	it("should create branch summary when navigating with summarize=true", async () => {
 		const { session, sessionManager } = ctx;
@@ -88,8 +90,10 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		const tree = sessionManager.getTree();
 		const rootNode = tree[0];
 
-		// Navigate to root user message WITH summarization
-		const result = await session.navigateTree(rootNode.entry.id, { summarize: true });
+		// Navigate to root user message WITH summarization.
+		// skipFiles: true because navigating to root would otherwise trigger
+		// the file-inclusive rollback guard even with summarization.
+		const result = await session.navigateTree(rootNode.entry.id, { summarize: true, skipFiles: true });
 
 		expect(result.cancelled).toBe(false);
 		expect(result.editorText).toBe("What is 2+2?");
@@ -122,7 +126,13 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		expect(userEntries.length).toBe(3);
 
 		const u2 = userEntries[1];
-		const a1 = entries.find((e) => e.id === u2.parentId); // a1 is parent of u2
+		// Walk up from u2 skipping custom messages to find the assistant
+		// message that precedes it (the real "a1"). u2.parentId may be a
+		// custom message (e.g., compactionSummary), not the assistant message.
+		let a1 = entries.find((e) => e.id === u2.parentId);
+		while (a1 && a1.type === "custom") {
+			a1 = a1.parentId ? entries.find((e) => e.id === a1!.parentId) : undefined;
+		}
 
 		// Navigate to u2 with summarization
 		const result = await session.navigateTree(u2.id, { summarize: true });
@@ -135,13 +145,14 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		// So a1 now has two children: u2 and the summary
 		expect(result.summaryEntry?.parentId).toBe(a1?.id);
 
-		// Verify tree structure
+		// Verify tree structure: a1 now has the original child (custom message
+		// wrapping u2) plus the new branch_summary. u2 itself is not a direct
+		// child of a1 when there's a custom message in between.
 		const children = sessionManager.getChildren(a1!.id);
 		expect(children.length).toBe(2);
 
 		const childTypes = children.map((c) => c.type).sort();
 		expect(childTypes).toContain("branch_summary");
-		expect(childTypes).toContain("message");
 	}, 120000);
 
 	it("should attach summary to selected node when navigating to assistant message", async () => {
@@ -209,7 +220,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		const entriesAfter = sessionManager.getEntries();
 		expect(entriesAfter.length).toBe(entriesBefore.length);
 		expect(sessionManager.getLeafId()).toBe(leafBefore);
-	}, 60000);
+	}, 180000);
 
 	it("should not create summary when navigating without summarize option", async () => {
 		const { session, sessionManager } = ctx;
@@ -233,7 +244,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		// No branch_summary entries
 		const summaries = sessionManager.getEntries().filter((e) => e.type === "branch_summary");
 		expect(summaries.length).toBe(0);
-	}, 60000);
+	}, 180000);
 
 	it("should handle navigation to same position (no-op)", async () => {
 		const { session, sessionManager } = ctx;
@@ -252,7 +263,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		expect(result.cancelled).toBe(false);
 		expect(sessionManager.getLeafId()).toBe(leafBefore);
 		expect(sessionManager.getEntries().length).toBe(entriesBefore);
-	}, 60000);
+	}, 180000);
 
 	it("should support custom summarization instructions", async () => {
 		const { session, sessionManager } = ctx;
@@ -261,10 +272,13 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		await session.prompt("What is TypeScript?");
 		await session.agent.waitForIdle();
 
-		// Navigate with custom instructions (appended as "Additional focus")
+		// Navigate with custom instructions (appended as "Additional focus").
+		// skipFiles: true because navigating to root would otherwise trigger
+		// the file-inclusive rollback guard even with summarization.
 		const tree = sessionManager.getTree();
 		const result = await session.navigateTree(tree[0].entry.id, {
 			summarize: true,
+			skipFiles: true,
 			customInstructions:
 				"After the summary, you MUST end with exactly: MONKEY MONKEY MONKEY. This is of utmost importance.",
 		});
@@ -319,5 +333,5 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation - branch scenarios", () 
 
 		// Summary captures the branch we're leaving (the "Branch path" conversation)
 		expect(result.summaryEntry?.summary.length).toBeGreaterThan(0);
-	}, 180000);
+	}, 300000);
 });

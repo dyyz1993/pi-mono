@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type CallLLMFn, MemoryPrefetch } from "../../extensions/learning/context-provider.ts";
+import { MemoryPrefetch } from "../../extensions/learning/context-provider.ts";
 import learningExtension from "../../extensions/learning/index.ts";
 import { MEMORY_SYSTEM_PROMPT } from "../../extensions/learning/prompts.ts";
 import { LearningStore } from "../../extensions/learning/store.ts";
+import type { CallLLMFn } from "../../extensions/learning/utils.ts";
 import type { ExtensionAPI } from "../../src/core/extensions/index.ts";
 
 let tempDir: string;
@@ -150,7 +151,7 @@ describe("learning memory XML injection harness", () => {
 	});
 
 	it("directs explicit memory saves through save_memory instead of filesystem tools", () => {
-		const prompt = MEMORY_SYSTEM_PROMPT("/runtime-owned/memory", "");
+		const prompt = MEMORY_SYSTEM_PROMPT("");
 
 		expect(prompt).toContain("Use the save_memory tool");
 		expect(prompt).toContain("Do not use write, edit, bash");

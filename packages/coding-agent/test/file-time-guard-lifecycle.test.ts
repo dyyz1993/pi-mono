@@ -63,6 +63,7 @@ const extensionContextActions: ExtensionContextActions = {
 	getContextUsage: () => undefined,
 	compact: () => {},
 	getSystemPrompt: () => "",
+	getSettings: () => ({}),
 };
 
 async function loadRunner(tempDir: string, sessionManager: SessionManager): Promise<ExtensionRunner> {

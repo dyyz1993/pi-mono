@@ -15,6 +15,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	thresholdPercent?: number; // optional - context 使用达到此百分比时触发压缩，未设置时使用 reserveTokens
 }
 
 export interface BranchSummarySettings {
@@ -32,6 +33,7 @@ export interface RetrySettings {
 	enabled?: boolean; // default: true
 	maxRetries?: number; // default: 20
 	baseDelayMs?: number; // default: 5000 (exponential backoff: 5s, 10s, 20s)
+	maxDelayMs?: number; // default: 60000 (max single retry delay, caps exponential backoff)
 	provider?: ProviderRetrySettings;
 }
 
@@ -447,6 +449,17 @@ export class SettingsManager {
 		return structuredClone(this.projectSettings);
 	}
 
+	/**
+	 * Get the effective merged settings (global deep-merged with project).
+	 *
+	 * Returns a structuredClone so callers can freely mutate without affecting
+	 * the internal state. This is what extensions should use to read user
+	 * configuration via ctx.getSettings().
+	 */
+	getSettings(): Settings {
+		return structuredClone(this.settings);
+	}
+
 	isProjectTrusted(): boolean {
 		return this.projectTrusted;
 	}
@@ -794,11 +807,21 @@ export class SettingsManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	getCompactionThresholdPercent(): number | undefined {
+		return this.settings.compaction?.thresholdPercent;
+	}
+
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		keepRecentTokens: number;
+		thresholdPercent?: number;
+	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
+			thresholdPercent: this.getCompactionThresholdPercent(),
 		};
 	}
 
@@ -826,11 +849,12 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number } {
+	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number; maxDelayMs: number } {
 		return {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? 20,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 5000,
+			maxDelayMs: this.settings.retry?.provider?.maxRetryDelayMs ?? this.settings.retry?.maxDelayMs ?? 60000,
 		};
 	}
 

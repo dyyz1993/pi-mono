@@ -73,11 +73,12 @@ async function waitForResponse(
 	outputs: ChannelDataMessage[],
 	channelName: string,
 	invokeId: string,
+	maxAttempts = 200,
 ): Promise<Record<string, unknown> | undefined> {
-	for (let i = 0; i < 20; i++) {
+	for (let i = 0; i < maxAttempts; i++) {
 		const response = findResponse(outputs, channelName, invokeId);
 		if (response) return response;
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	return undefined;
 }
@@ -129,6 +130,7 @@ describe("Extension Channel Integration", () => {
 		getContextUsage: () => undefined,
 		compact: () => {},
 		getSystemPrompt: () => "",
+		getSettings: () => ({}),
 	};
 
 	beforeEach(() => {
@@ -426,8 +428,7 @@ describe("Extension Channel Integration", () => {
 				name: "file-review",
 				data: { __call: "review.reject", path: "add.txt", invokeId: "rr-1" },
 			});
-			await new Promise((r) => setTimeout(r, 50));
-			const rejectData = findResponse(outputs, "file-review", "rr-1");
+			const rejectData = await waitForResponse(outputs, "file-review", "rr-1");
 			expect(rejectData).toBeDefined();
 			expect(rejectData!.ok).toBe(true);
 			expect(existsSync(path.join(tempDir, "add.txt"))).toBe(false);
@@ -446,8 +447,7 @@ describe("Extension Channel Integration", () => {
 				name: "file-review",
 				data: { __call: "review.reject", path: "again.txt", invokeId: "rr-2" },
 			});
-			await new Promise((r) => setTimeout(r, 50));
-			const rejectData = findResponse(outputs, "file-review", "rr-2");
+			const rejectData = await waitForResponse(outputs, "file-review", "rr-2");
 			expect(rejectData).toBeDefined();
 			expect(rejectData!.ok).toBe(true);
 			expect(existsSync(path.join(tempDir, "again.txt"))).toBe(false);
@@ -475,10 +475,12 @@ describe("Extension Channel Integration", () => {
 			snapshotManager.onTurnEnd(tempDir, 1, appendEntry);
 			await runner.emit({ type: "turn_end", turnIndex: 1, message: {} as never, toolResults: [] });
 
-			// Verify getFileDiff with the file's entryId returns correct old/new content
+			// Verify getFileDiff with fromHash returns correct old/new content
 			const approveFile = snapshotManager.getModifiedFiles().find((f) => f.path === "approve.txt");
 			expect(approveFile).toBeDefined();
-			const diff = snapshotManager.getFileDiff({ filePath: "approve.txt", fromEntryId: approveFile!.entryId });
+			const fromHash = snapshotManager.resolveTargetTreeHash(approveFile!.entryId, []);
+			expect(fromHash).not.toBeNull();
+			const diff = snapshotManager.getFileDiff({ filePath: "approve.txt", fromHash: fromHash ?? undefined });
 			expect(diff).not.toBeNull();
 			expect(diff!.oldContent).toBe("v1\n");
 			expect(diff!.newContent).toBe("v2\n");

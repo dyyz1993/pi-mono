@@ -525,6 +525,14 @@ function createExtensionAPI(
 			return runtime.callLLM(options);
 		},
 
+		callLLMSafe(options) {
+			// Intentionally skip runtime.assertActive(): this is the stale-safe
+			// variant for background work (pi.background tasks, fire-and-forget
+			// post-processing). runtime.callLLM uses AgentSession-level state
+			// (model, streamFn) that survives ctx invalidation, so this is safe.
+			return runtime.callLLM(options);
+		},
+
 		registerProvider(name: string, config: ProviderConfig) {
 			runtime.assertActive();
 			runtime.registerProvider(name, config, extension.path);

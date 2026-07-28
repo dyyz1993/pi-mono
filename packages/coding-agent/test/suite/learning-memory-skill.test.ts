@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
-import { fauxAssistantMessage } from "@dyyz1993/pi-ai";
+import { type AssistantMessage, fauxAssistantMessage, type ToolResultMessage } from "@dyyz1993/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import learningExtension from "../../extensions/learning/index.ts";
 import { maybeExtractMemory } from "../../extensions/learning/memory-provider.ts";
@@ -38,6 +38,74 @@ function assistantMessage(text: string): AgentMessage {
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
+}
+
+/**
+ * Build a conversation that satisfies shouldExtract (>=4 messages, >=300 chars,
+ * technical content). Memory extraction is meant for multi-turn technical
+ * conversations, not single greetings.
+ */
+function memoryConversation(topic: string): AgentMessage[] {
+	const longTechnicalText =
+		`Project config requires ${topic}. ` +
+		`The api deployment uses database migrations tested via harness. ` +
+		`Implement the fix and deploy after tests pass. ` +
+		`Refactor the error handling to match the architecture. ` +
+		`Config: api port 3100, database url, test timeout 5000ms. ` +
+		`This documents the deploy workflow with config and database details.`;
+	return [
+		userMessage(`Please help me ${topic}. I need to fix the config and deploy.`),
+		assistantMessage(`I will help you ${topic}. Let me check the config and database setup first.`),
+		userMessage(longTechnicalText),
+		assistantMessage(`Done. The ${topic} is fixed, config updated, tests pass, and deploy is complete.`),
+	];
+}
+
+/**
+ * Build a conversation that satisfies shouldDistill (write toolCall + toolResult
+ * + assistant reply). Skill distillation requires actual write operations.
+ */
+function skillConversation(taskDescription: string): AgentMessage[] {
+	const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
+	const assistantWithWrite: AssistantMessage = {
+		role: "assistant",
+		content: [
+			{ type: "text", text: `I will ${taskDescription} by writing the config file.` },
+			{
+				type: "toolCall",
+				id: toolCallId,
+				name: "write",
+				arguments: { path: "config.json", content: '{"name":"test"}' },
+			},
+		],
+		api: "anthropic-messages",
+		provider: "faux",
+		model: "faux",
+		usage: {
+			input: 10,
+			output: 10,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 20,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	} as AssistantMessage;
+	const toolResult: ToolResultMessage = {
+		role: "toolResult",
+		toolCallId,
+		toolName: "write",
+		content: [{ type: "text", text: "File written successfully." }],
+		isError: false,
+		timestamp: Date.now(),
+	};
+	return [
+		userMessage(`Please ${taskDescription}.`),
+		assistantWithWrite,
+		toolResult,
+		assistantMessage(`Completed: ${taskDescription}. The config file is written.`),
+	];
 }
 
 describe("learning memory and skill project store", () => {
@@ -112,7 +180,7 @@ describe("learning memory and skill project store", () => {
 
 		await maybeExtractMemory({
 			store,
-			messages: [userMessage("The memory panel should become Learning with separate Memory and Skills tabs.")],
+			messages: memoryConversation("set up project-scoped learning with separate Memory and Skills tabs"),
 			sourceSessionId: "session-1",
 			sourceMessageIds: ["message-1"],
 		});
@@ -127,7 +195,7 @@ describe("learning memory and skill project store", () => {
 		const store = new LearningStore(projectDir);
 		await maybeExtractMemory({
 			store,
-			messages: [userMessage("All Learning files should open through Explorer/FileOverlay.")],
+			messages: memoryConversation("make all Learning files open through Explorer/FileOverlay"),
 			sourceSessionId: "session-1",
 		});
 		const [candidate] = await store.listCandidates(false);
@@ -148,7 +216,7 @@ describe("learning memory and skill project store", () => {
 
 		await maybeDistillSkill({
 			store,
-			messages: [assistantMessage("Step 1: run harness tests. Step 2: run RPC JSONL. Step 3: run UI screenshots.")],
+			messages: skillConversation("run harness tests then RPC JSONL and UI screenshots"),
 			sourceSessionId: "session-1",
 		});
 
@@ -162,7 +230,7 @@ describe("learning memory and skill project store", () => {
 		const store = new LearningStore(projectDir);
 		await maybeDistillSkill({
 			store,
-			messages: [assistantMessage("Use rg to inspect files, add focused tests, then run harness before UI.")],
+			messages: skillConversation("inspect files with rg, add focused tests, run harness before UI"),
 			sourceSessionId: "session-1",
 		});
 		const [candidate] = await store.listCandidates(false);
@@ -192,8 +260,27 @@ describe("learning memory and skill project store", () => {
 		harnesses.push(harness);
 		await harness.session.bindExtensions({});
 
-		harness.setResponses([fauxAssistantMessage("Done with the reusable Learning workflow.")]);
-		await harness.session.prompt("Learning should keep candidates refresh-safe.");
+		// Use a conversation with technical content so shouldExtract/shouldDistill
+		// filters do not skip the turn.
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					{
+						type: "text",
+						text: "I will write the config file to set up the Learning workflow with database and api config.",
+					},
+					{
+						type: "toolCall",
+						id: "call-ext-load",
+						name: "write",
+						arguments: { path: "learning-config.json", content: '{"scope":"project","api":"config"}' },
+					},
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Done with the reusable Learning workflow. Config and database are set up."),
+		]);
+		await harness.session.prompt("Set up Learning with project-scoped config and database deployment.");
 		await harness.session.agent.waitForIdle();
 		await new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -206,7 +293,7 @@ describe("learning memory and skill project store", () => {
 		const store = new LearningStore(projectDir);
 		await maybeExtractMemory({
 			store,
-			messages: [userMessage("Candidate state must survive restart.")],
+			messages: memoryConversation("ensure candidate state survives session restart with config persistence"),
 		});
 
 		const restartedStore = new LearningStore(projectDir);

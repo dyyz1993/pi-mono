@@ -19,6 +19,7 @@
 				"cross-spawn": "7.0.6",
 				"diff": "8.0.4",
 				"glob": "13.0.6",
+				"gpt-tokenizer": "3.4.0",
 				"highlight.js": "10.7.3",
 				"hosted-git-info": "9.0.3",
 				"ignore": "7.0.5",
@@ -1799,6 +1800,12 @@
 			"funding": {
 				"url": "https://github.com/sponsors/ljharb"
 			}
+		},
+		"node_modules/gpt-tokenizer": {
+			"version": "3.4.0",
+			"resolved": "https://registry.npmjs.org/gpt-tokenizer/-/gpt-tokenizer-3.4.0.tgz",
+			"integrity": "sha512-wxFLnhIXTDjYebd9A9pGl3e31ZpSypbpIJSOswbgop5jLte/AsZVDvjlbEuVFlsqZixVKqbcoNmRlFDf6pz/UQ==",
+			"license": "MIT"
 		},
 		"node_modules/graceful-fs": {
 			"version": "4.2.11",

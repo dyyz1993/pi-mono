@@ -600,7 +600,8 @@ todo           ← Todo 扩展
 lsp            ← LSP 扩展
 learning       ← Learning 扩展
 rules-engine   ← Rules 扩展
-supervisor     ← Session Supervisor
+supervisor     ← Session Supervisor（旧 goal 扩展，将被 goal-vendor 替代）
+goal           ← Goal Vendor（misunders2d/pi-goal 移植，合同制 + 机器验证）
 remote-ssh     ← Remote SSH 扩展
 ```
 

@@ -572,12 +572,11 @@ describe("snapshot/rollback harness integration", () => {
 
 	// ─── skipFiles rollback ────────────────────────────────────────────
 
-	it("navigateTree with skipFiles: session_tree event does not propagate skipFiles flag", async () => {
-		// NOTE: There is a known issue where navigateTree does not include `skipFiles`
-		// in the session_tree event it emits. The file-snapshot extension's
-		// session_tree handler checks `e.skipFiles`, but since the event lacks
-		// this field, the extension performs restoreFiles even when skipFiles was true.
-		// This test documents the current (buggy) behavior.
+	it("navigateTree with skipFiles: skips file restoration and propagates skipFiles flag", async () => {
+		// navigateTree propagates `skipFiles` through the session_tree event and
+		// skips restoreFiles when skipFiles is true. This keeps "message-only"
+		// rollback semantics: conversation tree navigates to the target entry,
+		// but on-disk files remain at their current (modified) state.
 		const cwd = makeTempDir();
 		writeFileSync(join(cwd, "file.txt"), "original");
 		const editTool = makeRealEditTool(cwd);
@@ -593,8 +592,9 @@ describe("snapshot/rollback harness integration", () => {
 		await harness.session.prompt("modify");
 		await harness.session.agent.waitForIdle();
 
-		// Navigate with skipFiles — navigateTree itself skips restoreFiles (line 3900),
-		// but the session_tree event lacks skipFiles so the extension still restores.
+		// Navigate with skipFiles — both navigateTree and the file-snapshot
+		// extension's session_tree handler must honor skipFiles, leaving the
+		// on-disk file at its current (modified) state.
 		const firstUserEntry = harness.sessionManager
 			.getEntries()
 			.find((e) => e.type === "message" && (e as { message?: { role?: string } }).message?.role === "user");
@@ -603,7 +603,7 @@ describe("snapshot/rollback harness integration", () => {
 			await harness.session.navigateTree(firstUserEntry.id, { skipFiles: true });
 		}
 
-		// Due to the bug: file IS restored (extension handler doesn't see skipFiles)
-		expect(readFileSync(join(cwd, "file.txt"), "utf-8")).toBe("original");
+		// File remains modified — skipFiles correctly prevented restoration.
+		expect(readFileSync(join(cwd, "file.txt"), "utf-8")).toBe("modified");
 	});
 });

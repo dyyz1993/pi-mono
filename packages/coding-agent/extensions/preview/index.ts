@@ -159,145 +159,23 @@ export default function (pi: ExtensionAPI) {
 			previewId++;
 
 			if (!params.source?.trim()) {
-				console.debug(`[preview] #${previewId} error: source is required`);
-				pi.appendEntry("preview", { id: previewId, status: "error", error: "source required" });
-				return {
-					content: [{ type: "text", text: "Error: source is required" }],
-					details: { source: "", resourceType: "text", status: "error", error: "source required" },
-				};
+				emit(pi, previewId, { status: "error", error: "source required" }, `error: source is required`);
+				return buildResult("", "text", "error", "Error: source is required", {
+					error: "source required",
+				});
 			}
 
 			const { resourceType, mimeType, absolutePath } = detectResource(params.source, cwd);
 
 			if (resourceType === "url") {
-				// 对本地/LAN 地址做 TCP 可达性检测 + HTTP 内容类型探测
-				if (/^https?:\/\//i.test(params.source)) {
-					try {
-						const parsed = new URL(params.source);
-						if (isLocalAddress(parsed.hostname)) {
-							const port = parseInt(parsed.port || (parsed.protocol === "https:" ? "443" : "80"), 10);
-							const reachable = await checkReachable(parsed.hostname, port);
-							if (!reachable) {
-								const msg = `Preview 失败：${parsed.host} 未在局域网开放，服务可能只监听 127.0.0.1。请将服务绑定到 0.0.0.0 后重试。`;
-								console.debug(`[preview] #${previewId} error: local address "${parsed.host}:${parsed.port || (parsed.protocol === "https:" ? "443" : "80")}" not reachable`);
-								pi.appendEntry("preview", { id: previewId, source: params.source, status: "error", error: "local address not reachable", host: parsed.host, port });
-								return {
-									content: [{ type: "text", text: msg }],
-									details: {
-										source: params.source,
-										absolutePath: params.source,
-										resourceType: "url",
-										status: "error",
-										title: params.title,
-										error: `${parsed.host} 未在局域网开放，可能只监听 127.0.0.1`,
-									},
-								};
-							}
-
-							// 服务可达 → 探测实际内容类型
-							const detected = await detectUrlContentType(params.source);
-							if (detected) {
-								console.debug(`[preview] #${previewId} local url detected as ${detected.resourceType}: ${params.source} (${detected.mimeType})`);
-								pi.appendEntry("preview", { id: previewId, source: params.source, type: detected.resourceType, mimeType: detected.mimeType, status: "ok", title: params.title });
-								return {
-									content: [{ type: "text", text: `Preview: ${params.source} (${detected.resourceType}, ${detected.mimeType})` }],
-									details: {
-										source: params.source,
-										absolutePath: params.source,
-										resourceType: detected.resourceType,
-										mimeType: detected.mimeType,
-										status: "ok",
-										title: params.title,
-									},
-								};
-							}
-						}
-					} catch {
-						// URL parse 失败，继续正常流程
-					}
-				}
-
-				console.debug(`[preview] #${previewId} url: ${params.source}`);
-				pi.appendEntry("preview", { id: previewId, source: params.source, type: "url", status: "ok", title: params.title });
-				return {
-					content: [{ type: "text", text: `Preview: ${params.source} (url)` }],
-					details: {
-						source: params.source,
-						absolutePath: params.source,
-						resourceType: "url",
-						status: "ok",
-						title: params.title,
-					},
-				};
+				return handleUrlPreview(pi, previewId, params.source, params.title);
 			}
 
-			if (!absolutePath || !existsSync(absolutePath)) {
-				console.debug(`[preview] #${previewId} not_found: ${params.source}`);
-				pi.appendEntry("preview", { id: previewId, source: params.source, type: resourceType, status: "not_found" });
-				return {
-					content: [{ type: "text", text: `Preview: ${params.source} not found` }],
-					details: {
-						source: params.source,
-						absolutePath,
-						resourceType,
-						status: "not_found",
-						title: params.title,
-						error: "file not found",
-					},
-				};
-			}
-
-			const stat = statSync(absolutePath);
-			if (stat.isDirectory()) {
-				console.debug(`[preview] #${previewId} error: ${params.source} is a directory`);
-				pi.appendEntry("preview", { id: previewId, source: params.source, type: resourceType, status: "error", error: "is a directory" });
-				return {
-					content: [{ type: "text", text: `Preview: ${params.source} is a directory` }],
-					details: {
-						source: params.source,
-						absolutePath,
-						resourceType,
-						status: "error",
-						title: params.title,
-						error: "is a directory",
-					},
-				};
-			}
-
-			const sizeStr =
-				stat.size > 1024 * 1024
-					? `${(stat.size / (1024 * 1024)).toFixed(1)}MB`
-					: stat.size > 1024
-						? `${(stat.size / 1024).toFixed(1)}KB`
-						: `${stat.size}B`;
-
-			console.debug(`[preview] #${previewId} ok: ${params.source} (${resourceType}, ${sizeStr})`);
-			pi.appendEntry("preview", {
-				id: previewId,
-				source: params.source,
-				type: resourceType,
+			return handleFilePreview(pi, previewId, params.source, params.title, {
+				resourceType,
 				mimeType,
-				size: stat.size,
-				status: "ok",
-				title: params.title,
+				absolutePath,
 			});
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Preview: ${params.source} (${resourceType}${mimeType ? `, ${mimeType}` : ""}, ${sizeStr})`,
-					},
-				],
-				details: {
-					source: params.source,
-					absolutePath,
-					resourceType,
-					mimeType,
-					status: "ok",
-					size: stat.size,
-					title: params.title,
-				},
-			};
 		},
 
 		renderCall(args, theme) {
@@ -352,4 +230,153 @@ function formatSize(bytes: number): string {
 	if (bytes > 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 	if (bytes > 1024) return `${(bytes / 1024).toFixed(1)}KB`;
 	return `${bytes}B`;
+}
+
+/**
+ * Emit a preview event: write a debug log line and forward the payload to
+ * appendEntry("preview", ...). Centralizing this avoids the 7 places where
+ * the original execute() called console.debug + pi.appendEntry in tandem.
+ */
+function emit(
+	pi: ExtensionAPI,
+	previewId: number,
+	payload: Record<string, unknown>,
+	debugMsg: string,
+): void {
+	console.debug(`[preview] #${previewId} ${debugMsg}`);
+	pi.appendEntry("preview", { id: previewId, ...payload });
+}
+
+/**
+ * Build a uniform AgentToolResult<PreviewDetails>. `extra` carries only the
+ * optional fields (absolutePath, mimeType, size, title, error) — source,
+ * resourceType, and status are always set explicitly to avoid drift.
+ */
+function buildResult(
+	source: string,
+	resourceType: ResourceType,
+	status: PreviewDetails["status"],
+	text: string,
+	extra: Partial<Omit<PreviewDetails, "source" | "resourceType" | "status">> = {},
+): AgentToolResult<PreviewDetails> {
+	return {
+		content: [{ type: "text", text }],
+		details: { source, resourceType, status, ...extra },
+	};
+}
+
+/**
+ * Handle URL preview: for local/LAN addresses, do TCP reachability check +
+ * HTTP content-type detection; otherwise treat as a generic URL.
+ */
+async function handleUrlPreview(
+	pi: ExtensionAPI,
+	previewId: number,
+	source: string,
+	title: string | undefined,
+): Promise<AgentToolResult<PreviewDetails>> {
+	if (/^https?:\/\//i.test(source)) {
+		try {
+			const parsed = new URL(source);
+			if (isLocalAddress(parsed.hostname)) {
+				const port = parseInt(parsed.port || (parsed.protocol === "https:" ? "443" : "80"), 10);
+				const reachable = await checkReachable(parsed.hostname, port);
+				if (!reachable) {
+					const msg = `Preview 失败：${parsed.host} 未在局域网开放，服务可能只监听 127.0.0.1。请将服务绑定到 0.0.0.0 后重试。`;
+					emit(pi, previewId, {
+						source,
+						status: "error",
+						error: "local address not reachable",
+						host: parsed.host,
+						port,
+					}, `error: local address "${parsed.host}:${parsed.port || (parsed.protocol === "https:" ? "443" : "80")}" not reachable`);
+					return buildResult(source, "url", "error", msg, {
+						absolutePath: source,
+						title,
+						error: `${parsed.host} 未在局域网开放，可能只监听 127.0.0.1`,
+					});
+				}
+
+				// 服务可达 → 探测实际内容类型
+				const detected = await detectUrlContentType(source);
+				if (detected) {
+					emit(pi, previewId, {
+						source,
+						type: detected.resourceType,
+						mimeType: detected.mimeType,
+						status: "ok",
+						title,
+					}, `local url detected as ${detected.resourceType}: ${source} (${detected.mimeType})`);
+					return buildResult(source, detected.resourceType, "ok", `Preview: ${source} (${detected.resourceType}, ${detected.mimeType})`, {
+						absolutePath: source,
+						mimeType: detected.mimeType,
+						title,
+					});
+				}
+			}
+		} catch {
+			// URL parse 失败，继续正常流程
+		}
+	}
+
+	emit(pi, previewId, { source, type: "url", status: "ok", title }, `url: ${source}`);
+	return buildResult(source, "url", "ok", `Preview: ${source} (url)`, {
+		absolutePath: source,
+		title,
+	});
+}
+
+interface DetectedFile {
+	resourceType: ResourceType;
+	mimeType?: string;
+	absolutePath?: string;
+}
+
+/**
+ * Handle file preview: resolve path, check existence, stat for size/directory.
+ * Reuses formatSize() instead of duplicating the size formatting inline.
+ */
+function handleFilePreview(
+	pi: ExtensionAPI,
+	previewId: number,
+	source: string,
+	title: string | undefined,
+	detected: DetectedFile,
+): AgentToolResult<PreviewDetails> {
+	const { resourceType, mimeType, absolutePath } = detected;
+
+	if (!absolutePath || !existsSync(absolutePath)) {
+		emit(pi, previewId, { source, type: resourceType, status: "not_found" }, `not_found: ${source}`);
+		return buildResult(source, resourceType, "not_found", `Preview: ${source} not found`, {
+			absolutePath,
+			title,
+			error: "file not found",
+		});
+	}
+
+	const stat = statSync(absolutePath);
+	if (stat.isDirectory()) {
+		emit(pi, previewId, { source, type: resourceType, status: "error", error: "is a directory" }, `error: ${source} is a directory`);
+		return buildResult(source, resourceType, "error", `Preview: ${source} is a directory`, {
+			absolutePath,
+			title,
+			error: "is a directory",
+		});
+	}
+
+	const sizeStr = formatSize(stat.size);
+	emit(pi, previewId, {
+		source,
+		type: resourceType,
+		mimeType,
+		size: stat.size,
+		status: "ok",
+		title,
+	}, `ok: ${source} (${resourceType}, ${sizeStr})`);
+	return buildResult(source, resourceType, "ok", `Preview: ${source} (${resourceType}${mimeType ? `, ${mimeType}` : ""}, ${sizeStr})`, {
+		absolutePath,
+		mimeType,
+		size: stat.size,
+		title,
+	});
 }

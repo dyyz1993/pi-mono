@@ -5,22 +5,11 @@
  */
 
 import { writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { scanMemoryFiles, isBookmarkType, buildBookmarkFrontmatter, formatManifest, updateMemoryIndex } from "./utils.ts";
+import { scanMemoryFiles, isBookmarkType, buildBookmarkFrontmatter, formatManifest, updateMemoryIndex, stripMarkdownCodeBlock, logger } from "./utils.ts";
 import { BOOKMARK_SUMMARY_PROMPT } from "./prompts.ts";
 import type { CallLLMOptions } from "@dyyz1993/pi-coding-agent";
-
-function stripMarkdownCodeBlock(text: string): string {
-  let cleaned = text.trim();
-  if (cleaned.startsWith("```")) {
-    const firstNewline = cleaned.indexOf("\n");
-    if (firstNewline !== -1) cleaned = cleaned.slice(firstNewline + 1);
-    const lastBacktick = cleaned.lastIndexOf("```");
-    if (lastBacktick !== -1) cleaned = cleaned.slice(0, lastBacktick);
-    cleaned = cleaned.trim();
-  }
-  return cleaned;
-}
 
 export class BookmarkCreator {
   async create(
@@ -42,7 +31,7 @@ export class BookmarkCreator {
       try {
         parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
       } catch (err) {
-        console.debug("[learning] bookmark LLM parse failed:", err instanceof Error ? err.message : err);
+        logger.warn("bookmark LLM parse failed", { error: err instanceof Error ? err.message : err });
         return null;
       }
 
@@ -50,8 +39,15 @@ export class BookmarkCreator {
 
       const safeTitle = parsed.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_").slice(0, 50);
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const filename = `${timestamp}_${safeTitle}.md`;
-      const filePath = join(memoryDir, filename);
+      const baseName = `${timestamp}_${safeTitle}`;
+      let filename = `${baseName}.md`;
+      let filePath = join(memoryDir, filename);
+      let suffix = 2;
+      while (existsSync(filePath)) {
+        filename = `${baseName}-${suffix}.md`;
+        filePath = join(memoryDir, filename);
+        suffix += 1;
+      }
 
       const fm = buildBookmarkFrontmatter({
         name: parsed.title,
@@ -69,7 +65,7 @@ export class BookmarkCreator {
 
       return { filename, filePath };
     } catch (err) {
-      console.debug("[learning] bookmark creation failed:", err instanceof Error ? err.message : err);
+      logger.warn("bookmark creation failed", { error: err instanceof Error ? err.message : err });
       return null;
     }
   }

@@ -96,6 +96,59 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
+	it("retries exactly maxRetries times before succeeding", async () => {
+		const MAX = 8;
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: MAX, baseDelayMs: 1, maxDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		const retryEvents: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") retryEvents.push(`start:${event.attempt}/${event.maxAttempts}`);
+			if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success}`);
+		});
+
+		const errors = Array.from({ length: MAX }, () =>
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+		);
+		harness.setResponses([...errors, fauxAssistantMessage("success")]);
+
+		await harness.session.prompt("test");
+
+		expect(retryEvents).toEqual([...Array.from({ length: MAX }, (_, i) => `start:${i + 1}/${MAX}`), "end:true"]);
+		expect(harness.faux.state.callCount).toBe(MAX + 1);
+		expect(harness.session.isRetrying).toBe(false);
+	});
+
+	it("caps retries at the post-run iteration limit even when maxRetries is larger", async () => {
+		// MAX_POST_RUN_ITERATIONS = 10 (internal circuit-breaker in _runPostAgentLoop)
+		// So maxRetries=24 yields at most 11 retries before the loop breaks
+		// (11 iterations of _handlePostAgentRun, no auto_retry_end on break)
+		const MAX_STARTS = 11;
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 24, baseDelayMs: 1, maxDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		const retryEvents: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") retryEvents.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success}`);
+		});
+
+		const errors = Array.from({ length: 25 }, () =>
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+		);
+		harness.setResponses(errors);
+
+		await harness.session.prompt("test");
+
+		// Stops at the loop cap (11 starts), no end event because loop breaks
+		expect(retryEvents).toHaveLength(MAX_STARTS);
+		expect(retryEvents[0]).toBe("start:1");
+		expect(retryEvents[MAX_STARTS - 1]).toBe("start:11");
+		expect(harness.session.isRetrying).toBe(false);
+	});
+
 	it("prompt waits for retry completion even when assistant message_end handling is delayed", async () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },

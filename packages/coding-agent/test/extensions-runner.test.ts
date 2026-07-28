@@ -96,6 +96,7 @@ describe("ExtensionRunner", () => {
 		getContextUsage: () => undefined,
 		compact: () => {},
 		getSystemPrompt: () => "",
+		getSettings: () => ({}),
 	};
 
 	describe("deferred channel registration", () => {

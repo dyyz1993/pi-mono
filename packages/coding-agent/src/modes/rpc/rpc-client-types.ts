@@ -175,12 +175,7 @@ export interface RpcClientSurface {
 		fromTurnIndex?: number;
 		toUserMsgEntryId?: string;
 	}): Promise<ModifiedFilesResult>;
-	getFileDiff(options: {
-		filePath: string;
-		fromEntryId?: string;
-		toEntryId?: string;
-		useBaselineHash?: boolean;
-	}): Promise<FileDiffResult | null>;
+	getFileDiff(options: { filePath: string; fromHash?: string; toHash?: string }): Promise<FileDiffResult | null>;
 	getBatchDiffs(options?: { fromEntryId?: string; toEntryId?: string }): Promise<BatchDiffResult>;
 	getFileHistory(options: { filePath: string }): Promise<FileHistoryResult>;
 

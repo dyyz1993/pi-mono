@@ -76,6 +76,45 @@ function createToolResult(
 	};
 }
 
+/**
+ * Append a valid (assistant toolCall + toolResult) pair to the session.
+ * Without the assistant toolCall, sanitizeToolProtocolEntries would strip
+ * the toolResult as an orphan, breaking microcompact tests.
+ */
+function appendToolResultPair(
+	harness: Harness,
+	options: {
+		toolName: string;
+		content: string;
+		timestamp: number;
+		isError?: boolean;
+	},
+): void {
+	const model = harness.getModel();
+	const toolCallId = `call-${Math.random().toString(36).slice(2)}`;
+	harness.sessionManager.appendMessage({
+		role: "assistant",
+		content: [
+			{ type: "text", text: `Calling ${options.toolName}` },
+			{ type: "toolCall", id: toolCallId, name: options.toolName, arguments: {} },
+		],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: createUsage(10),
+		stopReason: "toolUse",
+		timestamp: options.timestamp - 1,
+	} as AssistantMessage);
+	harness.sessionManager.appendMessage({
+		role: "toolResult",
+		toolCallId,
+		toolName: options.toolName,
+		content: [{ type: "text", text: options.content }],
+		isError: options.isError ?? false,
+		timestamp: options.timestamp,
+	});
+}
+
 function useSummaryStreamFn(harness: Harness, summary: string): () => number {
 	let callCount = 0;
 	harness.session.agent.streamFn = (model) => {
@@ -163,13 +202,11 @@ describe("Multi-compaction extension harness", () => {
 				content: [{ type: "text", text: `prompt ${i}` }],
 				timestamp: now - 10_000 + i * 100,
 			});
-			harness.sessionManager.appendMessage(
-				createToolResult(harness, {
-					toolName: "read",
-					content: `File content for result ${i} - this is a long enough result to not be considered already compacted because it exceeds the placeholder length threshold`,
-					timestamp: now - 9_000 + i * 100,
-				}),
-			);
+			appendToolResultPair(harness, {
+				toolName: "read",
+				content: `File content for result ${i} - this is a long enough result to not be considered already compacted because it exceeds the placeholder length threshold`,
+				timestamp: now - 9_000 + i * 100,
+			});
 		}
 
 		const context = harness.sessionManager.buildSessionContext();
@@ -209,13 +246,11 @@ describe("Multi-compaction extension harness", () => {
 				content: [{ type: "text", text: `prompt ${i}` }],
 				timestamp: Date.now() - (8 - i) * 1000,
 			});
-			harness.sessionManager.appendMessage(
-				createToolResult(harness, {
-					toolName: "read",
-					content: `Result content ${i} that is long enough to not look already compacted`,
-					timestamp: Date.now() - (8 - i) * 1000 + 100,
-				}),
-			);
+			appendToolResultPair(harness, {
+				toolName: "read",
+				content: `Result content ${i} that is long enough to not look already compacted`,
+				timestamp: Date.now() - (8 - i) * 1000 + 100,
+			});
 		}
 
 		const context = harness.sessionManager.buildSessionContext();
@@ -662,13 +697,11 @@ describe("Multi-compaction extension harness", () => {
 
 		// Add tool results to trigger L2 microcompact
 		for (let i = 0; i < 8; i++) {
-			harness.sessionManager.appendMessage(
-				createToolResult(harness, {
-					toolName: "read",
-					content: `Tool result ${i} with substantial content that exceeds the placeholder length threshold to be considered for compaction`,
-					timestamp: now - 5_000 + i * 100,
-				}),
-			);
+			appendToolResultPair(harness, {
+				toolName: "read",
+				content: `Tool result ${i} with substantial content that exceeds the placeholder length threshold to be considered for compaction`,
+				timestamp: now - 5_000 + i * 100,
+			});
 		}
 
 		const context = harness.sessionManager.buildSessionContext();
@@ -1107,13 +1140,11 @@ describe("Multi-compaction extension harness", () => {
 				content: [{ type: "text", text: `Prompt ${i}` }],
 				timestamp: now - 10_000 + i * 100,
 			});
-			harness.sessionManager.appendMessage(
-				createToolResult(harness, {
-					toolName: "read",
-					content: `Initial tool result ${i} that is long enough to not be considered already compacted by the placeholder check`,
-					timestamp: now - 9_000 + i * 100,
-				}),
-			);
+			appendToolResultPair(harness, {
+				toolName: "read",
+				content: `Initial tool result ${i} that is long enough to not be considered already compacted by the placeholder check`,
+				timestamp: now - 9_000 + i * 100,
+			});
 		}
 
 		const context = harness.sessionManager.buildSessionContext();
@@ -1128,13 +1159,11 @@ describe("Multi-compaction extension harness", () => {
 
 		// Now add more tool results
 		for (let i = 5; i < 10; i++) {
-			harness.sessionManager.appendMessage(
-				createToolResult(harness, {
-					toolName: "read",
-					content: `Additional tool result ${i} that is long enough to not be considered already compacted by the placeholder check`,
-					timestamp: now - 4_000 + (i - 5) * 100,
-				}),
-			);
+			appendToolResultPair(harness, {
+				toolName: "read",
+				content: `Additional tool result ${i} that is long enough to not be considered already compacted by the placeholder check`,
+				timestamp: now - 4_000 + (i - 5) * 100,
+			});
 		}
 
 		const context2 = harness.sessionManager.buildSessionContext();

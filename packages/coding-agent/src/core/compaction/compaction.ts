@@ -14,7 +14,12 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.ts";
-import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.ts";
+import {
+	buildSessionContext,
+	type CompactionEntry,
+	materializeSessionContextEntries,
+	type SessionEntry,
+} from "../session-manager.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -181,6 +186,16 @@ function buildCompactionMessageResolver(pathEntries: SessionEntry[]) {
 	};
 }
 
+function stripThinkingFromMessages(messages: AgentMessage[]): AgentMessage[] {
+	return messages.map((message) => {
+		if (message.role !== "assistant") return message;
+		const assistant = message as AssistantMessage;
+		const content = assistant.content.filter((block) => block.type !== "thinking");
+		if (content.length === assistant.content.length) return message;
+		return { ...assistant, content };
+	});
+}
+
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
 export interface CompactionResult<T = unknown> {
 	summary: string;
@@ -198,6 +213,12 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/**
+	 * 触发压缩的 context 使用百分比 (0~1)。
+	 * 例如 0.8 表示 context tokens 达到 contextWindow 的 80% 时触发压缩。
+	 * 如果设置了此值，优先按百分比判断；否则回退到 reserveTokens 逻辑。
+	 */
+	thresholdPercent?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -205,6 +226,10 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
 };
+
+const DEFAULT_SUMMARIZATION_INPUT_TOKEN_LIMIT = 120_000;
+const MIN_SUMMARIZATION_INPUT_TOKEN_LIMIT = 8_000;
+const SUMMARIZATION_PROMPT_RESERVE_TOKENS = 4_096;
 
 // ============================================================================
 // Token calculation
@@ -216,6 +241,15 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
  */
 export function calculateContextTokens(usage: Usage): number {
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+}
+
+/**
+ * Calculate input-only context tokens from usage (excludes output).
+ * This is the true "context occupancy" — what the model actually consumed as input.
+ * Used for accurate context usage display.
+ */
+export function calculateInputContextTokens(usage: Usage): number {
+	return usage.input + usage.cacheRead + usage.cacheWrite;
 }
 
 /**
@@ -300,6 +334,10 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
+	if (contextWindow <= 0) return false;
+	if (settings.thresholdPercent !== undefined) {
+		return contextTokens > contextWindow * settings.thresholdPercent;
+	}
 	return contextTokens > contextWindow - settings.reserveTokens;
 }
 
@@ -747,6 +785,128 @@ export async function generateSummary(
 	return textContent;
 }
 
+function getSummarizationOutputTokens(model: Model<any>, reserveTokens: number): number {
+	return Math.min(Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+}
+
+function getSummarizationInputBudget(model: Model<any>, reserveTokens: number): number {
+	const outputTokens = getSummarizationOutputTokens(model, reserveTokens);
+	const modelWindow =
+		typeof model.contextWindow === "number" && model.contextWindow > 0
+			? model.contextWindow
+			: Number.POSITIVE_INFINITY;
+	const windowBudget = Number.isFinite(modelWindow)
+		? modelWindow - outputTokens - SUMMARIZATION_PROMPT_RESERVE_TOKENS
+		: DEFAULT_SUMMARIZATION_INPUT_TOKEN_LIMIT;
+	return Math.max(
+		MIN_SUMMARIZATION_INPUT_TOKEN_LIMIT,
+		Math.min(DEFAULT_SUMMARIZATION_INPUT_TOKEN_LIMIT, windowBudget),
+	);
+}
+
+function splitMessagesByTokenBudget(messages: AgentMessage[], budgetTokens: number): AgentMessage[][] {
+	const chunks: AgentMessage[][] = [];
+	let current: AgentMessage[] = [];
+	let currentTokens = 0;
+
+	for (const message of messages) {
+		const messageTokens = Math.max(1, estimateTokens(message));
+		if (current.length > 0 && currentTokens + messageTokens > budgetTokens) {
+			chunks.push(current);
+			current = [];
+			currentTokens = 0;
+		}
+		current.push(message);
+		currentTokens += messageTokens;
+	}
+
+	if (current.length > 0) {
+		chunks.push(current);
+	}
+
+	return chunks;
+}
+
+function createSummaryMessage(summary: string, index: number, total: number): AgentMessage {
+	return {
+		role: "user",
+		content: `Summary chunk ${index + 1}/${total}:\n\n${summary}`,
+		timestamp: Date.now(),
+	};
+}
+
+async function generateBudgetedSummary(
+	messages: AgentMessage[],
+	model: Model<any>,
+	reserveTokens: number,
+	apiKey: string | undefined,
+	headers?: Record<string, string>,
+	signal?: AbortSignal,
+	customInstructions?: string,
+	previousSummary?: string,
+	thinkingLevel?: ThinkingLevel,
+	streamFn?: StreamFn,
+): Promise<string> {
+	const budgetTokens = getSummarizationInputBudget(model, reserveTokens);
+	const totalTokens = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+	if (totalTokens <= budgetTokens) {
+		return generateSummary(
+			messages,
+			model,
+			reserveTokens,
+			apiKey,
+			headers,
+			signal,
+			customInstructions,
+			previousSummary,
+			thinkingLevel,
+			streamFn,
+		);
+	}
+
+	const chunks = splitMessagesByTokenBudget(messages, budgetTokens);
+	const chunkSummaries: string[] = [];
+	for (let i = 0; i < chunks.length; i++) {
+		if (signal?.aborted) throw new Error("Compaction cancelled");
+		const chunkFocus = [
+			customInstructions,
+			`This is chunk ${i + 1}/${chunks.length} from a very large compaction input. Preserve concrete tasks, decisions, file paths, errors, and outcomes from this chunk.`,
+		]
+			.filter(Boolean)
+			.join("\n\n");
+		chunkSummaries.push(
+			await generateSummary(
+				chunks[i],
+				model,
+				reserveTokens,
+				apiKey,
+				headers,
+				signal,
+				chunkFocus,
+				undefined,
+				thinkingLevel,
+				streamFn,
+			),
+		);
+	}
+
+	const summaryMessages = chunkSummaries.map((summary, index) =>
+		createSummaryMessage(summary, index, chunkSummaries.length),
+	);
+	return generateBudgetedSummary(
+		summaryMessages,
+		model,
+		reserveTokens,
+		apiKey,
+		headers,
+		signal,
+		customInstructions,
+		previousSummary,
+		thinkingLevel,
+		streamFn,
+	);
+}
+
 // ============================================================================
 // Compaction Preparation (for extensions)
 // ============================================================================
@@ -773,13 +933,14 @@ export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
 ): CompactionPreparation | undefined {
-	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
+	const effectiveEntries = materializeSessionContextEntries(pathEntries, { stripThinking: true });
+	if (effectiveEntries.length > 0 && effectiveEntries[effectiveEntries.length - 1].type === "compaction") {
 		return undefined;
 	}
 
 	let prevCompactionIndex = -1;
-	for (let i = pathEntries.length - 1; i >= 0; i--) {
-		if (pathEntries[i].type === "compaction") {
+	for (let i = effectiveEntries.length - 1; i >= 0; i--) {
+		if (effectiveEntries[i].type === "compaction") {
 			prevCompactionIndex = i;
 			break;
 		}
@@ -788,19 +949,21 @@ export function prepareCompaction(
 	let previousSummary: string | undefined;
 	let boundaryStart = 0;
 	if (prevCompactionIndex >= 0) {
-		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
+		const prevCompaction = effectiveEntries[prevCompactionIndex] as CompactionEntry;
 		previousSummary = prevCompaction.summary;
-		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
+		const firstKeptEntryIndex = effectiveEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
 	}
-	const boundaryEnd = pathEntries.length;
+	const boundaryEnd = effectiveEntries.length;
 
-	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
+	const tokensBefore = estimateContextTokens(
+		stripThinkingFromMessages(buildSessionContext(pathEntries).messages),
+	).tokens;
 
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+	const cutPoint = findCutPoint(effectiveEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
 
 	// Get UUID of first kept entry
-	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
+	const firstKeptEntry = effectiveEntries[cutPoint.firstKeptEntryIndex];
 	if (!firstKeptEntry?.id) {
 		return undefined; // Session needs migration
 	}
@@ -810,9 +973,11 @@ export function prepareCompaction(
 	const resolveCompactionMessage = buildCompactionMessageResolver(pathEntries);
 
 	// Messages to summarize (will be discarded after summary)
+	// Use effectiveEntries (which already has deletions, segments, and thinking stripped)
+	// instead of pathEntries, since the indices come from effectiveEntries-based cut points.
 	const messagesToSummarize: AgentMessage[] = [];
 	for (let i = boundaryStart; i < historyEnd; i++) {
-		const msg = resolveCompactionMessage(pathEntries[i]);
+		const msg = getMessageFromEntryForCompaction(effectiveEntries[i]);
 		if (msg) messagesToSummarize.push(msg);
 	}
 
@@ -820,7 +985,7 @@ export function prepareCompaction(
 	const turnPrefixMessages: AgentMessage[] = [];
 	if (cutPoint.isSplitTurn) {
 		for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-			const msg = resolveCompactionMessage(pathEntries[i]);
+			const msg = getMessageFromEntryForCompaction(effectiveEntries[i]);
 			if (msg) turnPrefixMessages.push(msg);
 		}
 	}
@@ -832,7 +997,7 @@ export function prepareCompaction(
 	}
 
 	// Extract file operations from messages and previous compaction
-	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);
+	const fileOps = extractFileOperations(messagesToSummarize, effectiveEntries, prevCompactionIndex);
 
 	// Also extract file ops from turn prefix if splitting
 	if (cutPoint.isSplitTurn) {
@@ -907,7 +1072,7 @@ export async function compact(
 		// Generate both summaries in parallel
 		const [historyResult, turnPrefixResult] = await Promise.all([
 			messagesToSummarize.length > 0
-				? generateSummary(
+				? generateBudgetedSummary(
 						messagesToSummarize,
 						model,
 						settings.reserveTokens,
@@ -935,7 +1100,7 @@ export async function compact(
 		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
 	} else {
 		// Just generate history summary
-		summary = await generateSummary(
+		summary = await generateBudgetedSummary(
 			messagesToSummarize,
 			model,
 			settings.reserveTokens,
@@ -978,6 +1143,22 @@ async function generateTurnPrefixSummary(
 	thinkingLevel?: ThinkingLevel,
 	streamFn?: StreamFn,
 ): Promise<string> {
+	const totalTokens = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+	if (totalTokens > getSummarizationInputBudget(model, reserveTokens)) {
+		return generateBudgetedSummary(
+			messages,
+			model,
+			reserveTokens,
+			apiKey,
+			headers,
+			signal,
+			TURN_PREFIX_SUMMARIZATION_PROMPT,
+			undefined,
+			thinkingLevel,
+			streamFn,
+		);
+	}
+
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,

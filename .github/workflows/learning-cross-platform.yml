@@ -1,0 +1,56 @@
+name: Learning Extension Cross-Platform
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "packages/coding-agent/extensions/learning/**"
+      - ".github/workflows/learning-cross-platform.yml"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - "packages/coding-agent/extensions/learning/**"
+      - ".github/workflows/learning-cross-platform.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Configure npm cache (Windows)
+        if: runner.os == 'Windows'
+        run: npm config set cache "$RUNNER_TEMP/npm-cache" --global
+
+      - name: Install dependencies
+        working-directory: packages/coding-agent
+        shell: bash
+        run: |
+          # Hydrate yalc packages first (same as main CI)
+          node ../../scripts/ci-hydrate-yalc.mjs || true
+          npm install --no-audit --no-fund
+          node ../../scripts/ci-hydrate-yalc.mjs || true
+
+      - name: Run learning extension tests
+        working-directory: packages/coding-agent
+        shell: bash
+        run: npx vitest run extensions/learning test/learning-memory-ext
+
+      - name: Typecheck learning extension
+        working-directory: packages/coding-agent
+        shell: bash
+        run: npx tsgo --noEmit

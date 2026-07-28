@@ -3,10 +3,9 @@
  *
  * Copied from legacy memory/prompts.ts with minimal changes:
  * - "legacy memory" → "learning" in system prompt
- * - save_memory / create_bookmark tool references preserved as-is (tools are shared)
  */
 
-export const MEMORY_SYSTEM_PROMPT = (_memoryDir: string, memoryContent: string): string => `# learning memory
+export const MEMORY_SYSTEM_PROMPT = (memoryContent: string): string => `# learning memory
 
 You have a persistent memory system managed by the learning extension.
 Its physical storage path is runtime-owned and may be on a different filesystem
@@ -183,7 +182,6 @@ Respond with JSON only:
 export const DREAM_PROMPT = (
   allContent: string,
   indexContent: string,
-  _memoryDir: string,
 ): string => `You are performing a dream — a reflective pass over memory files.
 Analyze all memories and determine what to consolidate.
 
@@ -271,3 +269,90 @@ Respond with JSON only:
 {
   "keywords": ["keyword1", "keyword2", ...]
 }`;
+
+
+export const DISTILL_PROMPT = (
+  workflow: string,
+): string => `You are the skill distillation subagent. Analyze the completed workflow
+below and distill it into a reusable skill.
+
+## Raw workflow (user request, thinking, tool calls, results, response)
+${workflow}
+
+## Your task
+Extract the essential, reusable procedure from this workflow. Strip:
+- Verbose thinking that explored dead-ends
+- Redundant tool result output (keep only signal, not raw dumps)
+- Task-specific details that won't generalize (specific file names, hardcoded values)
+
+Preserve:
+- The core sequence of operations (what was done in what order)
+- Key parameters and decision points (why this approach was chosen)
+- Preconditions (what must be true before running this skill)
+- Verification steps (how to confirm the task succeeded)
+
+## Output format
+Respond with JSON only:
+{
+  "name": "kebab-case-skill-name (e.g. create-file, deploy-app, fix-tests)",
+  "description": "One sentence describing when to use this skill (≤100 chars)",
+  "body": "# Skill: <name>\n\n## When to use\n...\n\n## Procedure\n1. ...\n2. ...\n\n## Verification\n...",
+  "shouldSkip": false
+}
+
+If the workflow is too task-specific to generalize (e.g. one-off debugging, exploratory
+back-and-forth with no clear procedure), set shouldSkip=true and leave other fields empty.`;
+
+export interface SkillPromptEntry {
+	name: string;
+	description: string;
+	body: string;
+}
+
+/**
+ * Build the skill injection section for the system prompt.
+ *
+ * Unlike memory (passive facts), skills are reusable workflow templates. The
+ * prompt frames them as suggestions: "if the user's request matches one of
+ * these, consider following this procedure."
+ *
+ * Bodies are truncated to control token cost; descriptions are kept verbatim
+ * because they are the primary matching signal.
+ */
+export const SKILL_SYSTEM_PROMPT = (
+	skills: SkillPromptEntry[],
+	maxBodyCharsPerSkill = 1500,
+	maxSkills = 8,
+): string => {
+	if (skills.length === 0) return "";
+	const selected = skills.slice(0, maxSkills);
+	const items = selected
+		.map((skill, index) => {
+			const truncated =
+				skill.body.length > maxBodyCharsPerSkill
+					? `${skill.body.slice(0, maxBodyCharsPerSkill)}...`
+					: skill.body;
+			return `### Skill ${index + 1}: ${skill.name}\n\n**When to use:** ${skill.description}\n\n\`\`\`markdown\n${truncated}\n\`\`\``;
+		})
+		.join("\n\n---\n\n");
+	return `# learning skills
+
+You have a library of reusable skill templates curated from past sessions. Each
+skill captures a proven workflow (procedure + verification steps) that worked
+well in a previous task.
+
+## Available skills
+
+${items}
+
+## How to use skills
+
+- **Match by description.** When the user's request matches a skill's "When to
+  use" description, consider following that skill's procedure.
+- **Adapt, don't copy.** Skills are templates. Adjust parameters, file paths,
+  and specifics to the current task. Do not blindly replay hardcoded values.
+- **Skip when not relevant.** If no skill matches, proceed normally. Do not
+  force-fit a skill to an unrelated request.
+- **Verify after applying.** Each skill lists verification steps — run them to
+  confirm the task succeeded before declaring completion.`;
+};

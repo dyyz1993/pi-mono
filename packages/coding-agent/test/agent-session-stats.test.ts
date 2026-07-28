@@ -147,6 +147,25 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
+	it("counts trailing messages after rematerialized assistant usage", () => {
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("hello", 1));
+			sessionManager.appendMessage(createAssistantMessage("hi", 1_000, 2));
+			sessionManager.appendMessage(createUserMessage("follow up ".repeat(200), 3));
+			syncAgentMessages(session, sessionManager);
+			// Simulate process restart / JSONL rematerialization where Usage objects
+			// have the same values but are no longer the same object references.
+			session.agent.state.messages = JSON.parse(JSON.stringify(session.agent.state.messages));
+
+			const usage = session.getContextUsage();
+			expect(usage?.tokens).toBeGreaterThan(1_000);
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("falls back to estimated context usage immediately after compaction", () => {
 		const { session, sessionManager } = createSession();
 
@@ -156,7 +175,7 @@ describe("AgentSession.getSessionStats", () => {
 			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
 			sessionManager.appendCompaction("summary", keptUserId, 195_000);
-			sessionManager.appendMessage(createUserMessage("third", 5));
+			sessionManager.appendMessage(createUserMessage("third", Date.now() + 1_000));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -164,6 +183,44 @@ describe("AgentSession.getSessionStats", () => {
 			expect(stats.contextUsage).toBeDefined();
 			expect(typeof stats.contextUsage?.tokens).toBe("number");
 			expect(typeof stats.contextUsage?.percent).toBe("number");
+			expect(stats.contextUsage?.tokens).toBeLessThan(195_000);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("ignores stale pre-compaction provider request context usage", () => {
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
+			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
+			sessionManager.appendCustomEntry("provider_request_context_usage", {
+				version: 1,
+				provider: model.provider,
+				modelId: model.id,
+				api: model.api,
+				timestamp: new Date(Date.now() - 1_000).toISOString(),
+				payloadChars: 800_000,
+				payloadTokens: 200_000,
+				topLevelKeys: ["messages"],
+				sections: [
+					{ id: "system", label: "Provider system/instructions", chars: 0, tokens: 0 },
+					{ id: "messages", label: "Provider messages/input", chars: 800_000, tokens: 200_000, count: 4 },
+					{ id: "tools", label: "Provider tools", chars: 0, tokens: 0, count: 0 },
+					{ id: "options", label: "Provider options/metadata", chars: 0, tokens: 0 },
+				],
+			});
+			sessionManager.appendCompaction("summary", keptUserId, 195_000);
+			sessionManager.appendMessage(createUserMessage("third", Date.now() + 1_000));
+			syncAgentMessages(session, sessionManager);
+
+			const usage = session.getContextUsage();
+			expect(usage?.providerRequest).toBeUndefined();
+			expect(usage?.breakdown?.find((item) => item.id === "provider_messages")?.tokens).toBe(0);
+			expect(usage?.tokens).toBeLessThan(195_000);
 		} finally {
 			session.dispose();
 		}
@@ -178,8 +235,9 @@ describe("AgentSession.getSessionStats", () => {
 			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
 			sessionManager.appendCompaction("summary", keptUserId, 195_000);
-			sessionManager.appendMessage(createUserMessage("third", 5));
-			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, 6));
+			const postCompactionTimestamp = Date.now() + 1_000;
+			sessionManager.appendMessage(createUserMessage("third", postCompactionTimestamp));
+			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, postCompactionTimestamp + 1));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -386,11 +444,72 @@ describe("AgentSession.getSessionStats", () => {
 			const usage = session.getContextUsage();
 			const byId = new Map(usage?.breakdown?.map((item) => [item.id, item]));
 
-			expect(byId.get("tool_inputs")?.tokens).toBe(50);
-			expect(byId.get("tool_outputs")?.tokens).toBe(300);
+			// tool_inputs/outputs now include JSON structure overhead for tool_call/tool_result wrappers
+			expect(byId.get("tool_inputs")?.tokens).toBeGreaterThanOrEqual(50);
+			expect(byId.get("tool_outputs")?.tokens).toBeGreaterThanOrEqual(300);
 			expect(byId.get("provider_messages")?.tokens).toBeGreaterThan(0);
 			expect(byId.get("provider_tools")?.tokens).toBeGreaterThan(0);
 			expect(byId.get("provider_options")?.tokens).toBe(200);
+			expect(usage?.tokens).toBe(usage?.breakdown?.reduce((sum, item) => sum + item.tokens, 0));
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("does not double-count system prompt in provider_messages for openai-completions format", () => {
+		// openai-completions (DeepSeek/OpenAI) puts the system prompt into messages[0]
+		// (role: "system") instead of a top-level "system" key. The provider snapshot
+		// captures system section = null (4 chars), and messages section includes the
+		// system prompt. _buildContextUsageBreakdown already attributes system prompt
+		// to system_base/skills/agents. Without correction, the messages delta would
+		// double-count system prompt tokens, inflating provider_messages.
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("real user request", 1));
+			sessionManager.appendMessage(createAssistantMessage("visible answer", 10_000, 2));
+			sessionManager.appendCustomEntry("provider_request_context_usage", {
+				version: 1,
+				provider: "opencode-go",
+				modelId: "deepseek-v4-flash",
+				api: "openai-completions",
+				timestamp: new Date().toISOString(),
+				payloadChars: 80_000,
+				payloadTokens: 20_000,
+				// openai-completions: NO top-level "system" key
+				topLevelKeys: ["messages", "model", "tools"],
+				sections: [
+					// system section is null → tokens = 1 (from JSON.stringify(null) = 4 chars / 4)
+					{ id: "system", label: "Provider system/instructions", chars: 4, tokens: 1 },
+					// messages section INCLUDES system prompt (role:"system" at messages[0])
+					// Total: 20K chars = system prompt + conversation
+					{ id: "messages", label: "Provider messages/input", chars: 80_000, tokens: 20_000, count: 5 },
+					{ id: "tools", label: "Provider tools", chars: 0, tokens: 0, count: 0 },
+					{ id: "options", label: "Provider options/metadata", chars: 0, tokens: 0 },
+				],
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const usage = session.getContextUsage();
+			const byId = new Map(usage?.breakdown?.map((item) => [item.id, item]));
+
+			// The system prompt is attributed to system_base (not provider_messages)
+			const systemBase = byId.get("system_base")?.tokens ?? 0;
+			const providerSystem = byId.get("provider_system")?.tokens ?? 0;
+			const providerMessages = byId.get("provider_messages")?.tokens ?? 0;
+
+			// provider_system should be 0 because the system section is null
+			expect(providerSystem).toBe(0);
+
+			// provider_messages should NOT include the system prompt tokens.
+			// Without the fix, it would be ~20K - localMessageTokens ≈ 19K+.
+			// With the fix, it should be much smaller: messages_delta = (20K - systemBase) - localMessageTokens.
+			// The localMessageTokens for "real user request" + "visible answer" ≈ a few hundred tokens.
+			// So provider_messages should be at most ~20K - systemBase - localMessageTokens,
+			// NOT the full 20K - localMessageTokens.
+			expect(providerMessages).toBeLessThan(20_000 - systemBase);
+
+			// The total should still balance
 			expect(usage?.tokens).toBe(usage?.breakdown?.reduce((sum, item) => sum + item.tokens, 0));
 		} finally {
 			session.dispose();

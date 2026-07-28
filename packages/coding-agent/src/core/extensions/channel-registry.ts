@@ -11,6 +11,7 @@
 
 import type { BashChannelContract } from "../../../extensions/bash-ext/contract.ts";
 import type { CoordinatorChannelContract } from "../../../extensions/coordinator/types.ts";
+import type { GoalChannelContract } from "../../../extensions/goal-vendor/channel-contract.ts";
 import type { LearningChannelContract } from "../../../extensions/learning/contract.ts";
 import type { LspChannelContract } from "../../../extensions/lsp/contract.ts";
 import type { RemoteSshChannelContract } from "../../../extensions/remote-ssh/contract.ts";
@@ -28,5 +29,6 @@ export interface ChannelTypeRegistry {
 	coordinator: CoordinatorChannelContract;
 	"rules-engine": RulesChannelContract;
 	supervisor: SupervisorChannelContract;
+	goal: GoalChannelContract;
 	"remote-ssh": RemoteSshChannelContract;
 }

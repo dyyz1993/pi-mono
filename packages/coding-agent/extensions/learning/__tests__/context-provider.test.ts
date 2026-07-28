@@ -17,6 +17,11 @@ vi.mock("../utils.ts", () => ({
   MAX_MEMORY_BYTES_PER_FILE: 8000,
   ENTRYPOINT_NAME: "MEMORY.md",
   isBookmarkType: vi.fn(() => false),
+  messageText: vi.fn((m: any) => (typeof m?.content === "string" ? m.content : "")),
+  findExistingMemoryContext: vi.fn(() => null),
+  stripMarkdownCodeBlock: vi.fn((s: string) => s),
+  truncateEntrypoint: vi.fn((s: string) => ({ content: s, wasTruncated: false })),
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 // Mock node:fs/promises for readFile

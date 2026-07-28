@@ -37,10 +37,11 @@ import {
   scanMemoryFiles,
   MAX_RELEVANT_MEMORIES,
   truncateEntrypoint,
-  type CallLLMFn,
+  stripMarkdownCodeBlock,
+  messageText,
+  findExistingMemoryContext,
+  type CallLLMFn, logger
 } from "./utils.ts";
-
-export type { CallLLMFn };
 
 // ============================================================================
 // Prefetch Debug Info
@@ -49,7 +50,7 @@ export type { CallLLMFn };
 interface PrefetchDebugInfo {
   selectedFiles: string[];
   durationMs: number;
-  layer: "skip" | "llm" | "none" | "auto";
+  layer: "skip" | "llm" | "none" | "auto" | "unknown";
   skipHits: Array<{ pattern: string; mode: string }>;
   guardHits: Array<{ pattern: string; mode: string }>;
   availableFiles: number;
@@ -63,49 +64,6 @@ interface PrefetchDebugInfo {
 
 const PREFETCH_MIN_INTERVAL_MS = 30_000;
 const PREFETCH_REPEAT_THRESHOLD = 3;
-
-// ============================================================================
-// Helper: strip markdown code fence from LLM output
-// ============================================================================
-
-function stripMarkdownCodeBlock(text: string): string {
-  let cleaned = text.trim();
-  if (cleaned.startsWith("```")) {
-    const firstNewline = cleaned.indexOf("\n");
-    if (firstNewline !== -1) cleaned = cleaned.slice(firstNewline + 1);
-    const lastBacktick = cleaned.lastIndexOf("```");
-    if (lastBacktick !== -1) cleaned = cleaned.slice(0, lastBacktick);
-    cleaned = cleaned.trim();
-  }
-  return cleaned;
-}
-
-// ============================================================================
-// Helper: extract text from AgentMessage
-// ============================================================================
-
-function extractMessageText(msg: AgentMessage): string {
-  if ("content" in msg) {
-    const content = (msg as { content: unknown }).content;
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      return content
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
-        .join("");
-    }
-  }
-  return "";
-}
-
-function findExistingMemoryContext(messages: AgentMessage[]): string | null {
-  for (const msg of messages) {
-    const text = extractMessageText(msg);
-    const match = text.match(/<memory_context\s+fingerprint="([^"]+)"/);
-    if (match) return match[1]!;
-  }
-  return null;
-}
 
 // ============================================================================
 // buildPrefetchUserMessage
@@ -182,8 +140,8 @@ export class MemoryPrefetch {
     const now = Date.now();
     const elapsed = now - this.lastPrefetchTime;
 
-    // Layer 0: 30s 内复用上次结果
-    if (this.lastPrefetchTime > 0 && elapsed < PREFETCH_MIN_INTERVAL_MS) {
+    // Layer 0: 30s 内复用上次结果（必须是已 settle 的结果，避免覆盖进行中的 LLM 调用）
+    if (this.settled && this.lastPrefetchTime > 0 && elapsed < PREFETCH_MIN_INTERVAL_MS) {
       this._debugInfo = {
         selectedFiles: this.lastSelected,
         durationMs: 0,
@@ -397,7 +355,7 @@ export class MemoryPrefetch {
       try {
         parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
       } catch (err) {
-        console.debug("[learning] prefetch LLM parse failed:", err instanceof Error ? err.message : err);
+        logger.warn("prefetch LLM parse failed", { error: err instanceof Error ? err.message : err });
         this._debugInfo = {
           selectedFiles: [],
           durationMs: Date.now() - startTime,
@@ -423,7 +381,7 @@ export class MemoryPrefetch {
         try {
           store = applyPurification(store, parsed.purification);
         } catch (err) {
-          console.debug("[learning] purification failed:", err instanceof Error ? err.message : err);
+          logger.warn("purification failed", { error: err instanceof Error ? err.message : err });
         }
       }
 
@@ -452,7 +410,7 @@ export class MemoryPrefetch {
 
       return await this.readFiles(selected, memoryDir);
     } catch (err) {
-      console.debug("[learning] prefetch failed:", err instanceof Error ? err.message : err);
+      logger.warn("prefetch failed", { error: err instanceof Error ? err.message : err });
       this._debugInfo = {
         selectedFiles: [],
         durationMs: 0,
@@ -473,7 +431,7 @@ export class MemoryPrefetch {
         const content = await readFile(join(memoryDir, name), "utf-8");
         parts.push(`### ${name}\n${content}`);
       } catch (err) {
-        console.debug("[learning] memory file read failed:", err instanceof Error ? err.message : err);
+        logger.warn("memory file read failed", { error: err instanceof Error ? err.message : err });
       }
     }
     return parts.join("\n\n");
@@ -538,7 +496,7 @@ export async function maybePurify(memoryDir: string, callLLM: CallLLMFn): Promis
   try {
     parsed = JSON.parse(stripMarkdownCodeBlock(llmResult));
   } catch (err) {
-    console.debug("[learning] purification LLM parse failed:", err instanceof Error ? err.message : err);
+    logger.warn("purification LLM parse failed", { error: err instanceof Error ? err.message : err });
     return null;
   }
 

@@ -15,9 +15,10 @@ import type {
     GoalState,
     GoalChecklistItem,
     GoldResult,
+    GoalProgressResult,
 } from "./types.ts";
 import { loadConfig, DEFAULT_CONFIG } from "./config.ts";
-import { checkWithSmallModel } from "./checker.ts";
+import { checkWithSmallModel, reassessGoalProgress } from "./checker.ts";
 import { Scheduler } from "./scheduler.ts";
 import {
     buildIncompleteSignature,
@@ -43,8 +44,13 @@ import {
     GOAL_CHECKLIST_USER_PROMPT,
 } from "./prompts.ts";
 import { advanceChecklistAfterPassedCheck, applyChecklistProgress } from "./checklist.ts";
+import {
+    applyGoalProgressReassessment,
+    shouldSendTerminalAbort,
+} from "./goal-reassessment.ts";
 import { setForensicDir, appendForensic, forensicTs } from "./forensic.ts";
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { join } from "node:path";
 
 const LOG_DIR = "/tmp/supervisor-debug";
@@ -57,6 +63,8 @@ function log(msg: string) {
 
 const DEFAULT_GUARDS: GuardConfig[] = [
     { name: "incomplete-keywords", type: "keyword", enable: true, keywords: ["TODO", "FIXME", "WIP", "HACK"] },
+    { name: "metric-mismatch", type: "metric", enable: true },
+    { name: "commit-verification", type: "commit-verification", enable: true },
 ];
 
 const GOAL_RUNTIME_STATE_FILE = "supervisor-goal-runtime.json";
@@ -92,7 +100,13 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     let triggerSeq = 0;
     let stagnationCount = 0;
     let lastIncompleteSignature = "";
+    // 新 goal 驱动循环：追踪最近的 action plans，让 LLM 避免重复
+    let previousActionPlans: string[] = [];
     let pendingPause: PendingPauseState | undefined;
+    // Guard against repeated pi.abort() calls after goal reaches terminal status.
+    // Reset to false whenever a new goal is set. Fire-and-forget (not awaited)
+    // to avoid waitForIdle() blocking the channel handler.
+    let terminalAbortSent = false;
 
     // ── Flags ──
 
@@ -105,7 +119,7 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     pi.registerFlag("supervisor-max-continues", {
         description: "Max auto-continue count",
         type: "string",
-        default: "5",
+        default: "20",
     });
 
     pi.registerFlag("supervisor-model", {
@@ -213,6 +227,10 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
         lastGoldResult = undefined;
         stagnationCount = 0;
         lastIncompleteSignature = "";
+        previousActionPlans = [];
+        // New goal set — allow abort to be sent again if this goal also
+        // reaches terminal status.
+        terminalAbortSent = false;
         syncSupervisorToolVisibility();
         persistGoalRuntimeState();
         emitStatusChanged();
@@ -352,6 +370,44 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 };
             }
 
+            // Checklist 完成度校验：如果 goal 有 checklist 且存在未完成项（pending/in_progress/blocked），
+            // 拒绝 supervisor_complete。防止 agent 在 checklist 没做完时提前声明完成。
+            if (activeGoal && activeGoal.checklist && activeGoal.checklist.length > 0) {
+                const incompleteItems = activeGoal.checklist.filter(
+                    (item) => item.status !== "done",
+                );
+                if (incompleteItems.length > 0) {
+                    const itemSummary = incompleteItems
+                        .slice(0, 5)
+                        .map((item) => `  [${item.status}] ${item.text}`)
+                        .join("\n");
+                    const moreCount = incompleteItems.length > 5 ? `\n  ...and ${incompleteItems.length - 5} more` : "";
+                    const blockText = [
+                        `Supervisor complete REJECTED: ${incompleteItems.length} checklist item(s) are not done.`,
+                        ``,
+                        `You must complete ALL checklist items before declaring completion. Current incomplete items:`,
+                        itemSummary + moreCount,
+                        ``,
+                        `Continue working on the next incomplete checklist item. Do NOT call supervisor_complete again until every checklist item is marked done.`,
+                    ].join("\n");
+                    appendForensic({
+                        ts: forensicTs(),
+                        type: "supervisor_complete_checklist_blocked",
+                        incompleteCount: incompleteItems.length,
+                        incompleteItems: incompleteItems.map((i) => ({ id: i.id, text: i.text, status: i.status })),
+                    });
+                    return {
+                        content: [{ type: "text" as const, text: blockText }],
+                        details: {
+                            approved: false,
+                            blockedBy: "checklist-completeness",
+                            incompleteCount: incompleteItems.length,
+                        },
+                        terminate: false,
+                    };
+                }
+            }
+
             const activeGuards = getActiveGuards();
             if (activeGuards.length === 0) {
                 appendForensic({
@@ -359,10 +415,47 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                     type: "supervisor_complete_approved",
                     guardsPassed: 0,
                 });
+                // Same finalization as the all-guards-passed branch below.
+                if (activeGoal && activeGoal.status !== "complete") {
+                    const previousStatus = activeGoal.status;
+                    schedulerInstance?.resetCount();
+                    const advance = advanceChecklistAfterPassedCheck(activeGoal, summary, {
+                        completeAll: true,
+                    });
+                    activeGoal = {
+                        ...advance.goal,
+                        status: "complete",
+                        blockers: [],
+                        continuationCount: 0,
+                        updatedAt: Date.now(),
+                    };
+                    // Clear stale gold result: the goal is now complete, so any prior
+                    // "incomplete" verdict from Phase 3 model check is no longer accurate.
+                    // Without this, the frontend shows "complete" goal card but "incomplete"
+                    // check history — a state-inconsistency bug.
+                    lastGoldResult = undefined;
+                    persistGoalRuntimeState();
+                    channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+                    channel.emit("supervisor.goldResult", { type: "goldResult" as const, verdict: "complete" as const, confidence: 1, reason: "Goal finalized via supervisor_complete", evidence: [], checkedAt: Date.now() });
+                    currentState = "idle";
+                    appendForensic({
+                        ts: forensicTs(),
+                        type: "goal_status_changed",
+                        goalId: activeGoal.id,
+                        oldStatus: previousStatus,
+                        newStatus: "complete",
+                        reason: "supervisor_complete approved (no active guards) — goal finalized, stale gold result cleared",
+                    });
+                    emitStatusChanged();
+                }
                 return {
-                    content: [{ type: "text" as const, text: "Supervisor complete: approved (no active guards)" }],
+                    content: [{ type: "text" as const, text: "Supervisor complete: approved (no active guards). Goal is now marked complete. Do NOT do any more work — output a final summary to the user now with the key results and measured numbers from your `summary` parameter." }],
                     details: { approved: true, reason: "No active guards" },
-                    terminate: true,
+                    // terminate: false — let the agent produce one final user-facing
+                    // report message. The goal is complete so agent_end will skip
+                    // auto-continue (no loop risk). terminate:true was trapping the
+                    // detailed summary inside the tool-call params, never shown to user.
+                    terminate: false,
                 };
             }
 
@@ -395,10 +488,57 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
                 type: "supervisor_complete_approved",
                 guardsPassed: activeGuards.length,
             });
+
+            // Bug fix: agent explicitly declared completion and all guards
+            // passed → finalize the goal state machine. Previously the tool
+            // returned "approved" but left the goal status untouched, so a
+            // previously-blocked goal (e.g. auto-continue quota exhausted)
+            // stayed blocked forever even after repeated approved calls.
+            // This is the "approved but still shows blocked" bug.
+            if (activeGoal && activeGoal.status !== "complete") {
+                const previousStatus = activeGoal.status;
+                // Reset scheduler quota so a new turn can restart the loop
+                // if the agent (or user) continues working afterwards.
+                schedulerInstance?.resetCount();
+                // Batch-advance every remaining checklist item: the agent has
+                // just sworn completion and every guard agreed.
+                const advance = advanceChecklistAfterPassedCheck(activeGoal, summary, {
+                    completeAll: true,
+                });
+                activeGoal = {
+                    ...advance.goal,
+                    status: "complete",
+                    blockers: [],
+                    continuationCount: 0,
+                    updatedAt: Date.now(),
+                };
+                // Clear stale gold result: the goal is now complete, so any prior
+                // "incomplete" verdict from Phase 3 model check is no longer accurate.
+                // Without this, the frontend shows "complete" goal card but "incomplete"
+                // check history — a state-inconsistency bug.
+                lastGoldResult = undefined;
+                persistGoalRuntimeState();
+                channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+                channel.emit("supervisor.goldResult", { type: "goldResult" as const, verdict: "complete" as const, confidence: 1, reason: "Goal finalized via supervisor_complete", evidence: [], checkedAt: Date.now() });
+                currentState = "idle";
+                appendForensic({
+                    ts: forensicTs(),
+                    type: "goal_status_changed",
+                    goalId: activeGoal.id,
+                    oldStatus: previousStatus,
+                    newStatus: "complete",
+                    reason: "supervisor_complete approved — goal finalized, blockers cleared, scheduler reset, stale gold result cleared",
+                });
+                emitStatusChanged();
+            }
+
             return {
-                content: [{ type: "text" as const, text: "Supervisor complete: approved — all guards passed." }],
+                content: [{ type: "text" as const, text: "Supervisor complete: approved — all guards passed. Goal is now marked complete. Do NOT do any more work — output a final summary to the user now with the key results and measured numbers from your `summary` parameter." }],
                 details: { approved: true, reason: "All guards passed" },
-                terminate: true,
+                // terminate: false — let the agent produce one final user-facing
+                // report message. The goal is complete so agent_end will skip
+                // auto-continue (no loop risk).
+                terminate: false,
             };
         },
     });
@@ -406,6 +546,12 @@ export default function sessionSupervisorExtension(pi: ExtensionAPI) {
     // ── Session lifecycle ──
 
     // ── Inject active goal into system prompt ──
+
+    interface TurnFileDiff {
+        path: string;
+        status: "added" | "modified" | "deleted";
+        unifiedDiff: string;
+    }
 
     pi.on("before_agent_start", async (event) => {
         if (!activeGoal || activeGoal.status === "cancelled" || activeGoal.status === "complete") {
@@ -447,6 +593,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         specsIterationCount = 0;
         stagnationCount = 0;
         lastIncompleteSignature = "";
+        previousActionPlans = [];
         // Per-session log file to avoid concurrent write conflicts
         const sessionId = ctx.sessionDataDir.split("/").pop() || "unknown";
         try { mkdirSync(LOG_DIR, { recursive: true }); } catch { /* ignore */ }
@@ -467,6 +614,26 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         const modelFlag = pi.getFlag("supervisor-model");
         if (typeof modelFlag === "string" && modelFlag) {
             config.smallModel = modelFlag;
+        }
+
+        // Bug fix: ensure the auto-continue quota scales with the goal's
+        // checklist length. Previously it was a fixed 5, which meant any
+        // goal with >5 checklist items would always hit "exhausted (5/5)"
+        // before finishing — even if every individual check passed.
+        // The +2 buffer covers the first verify pass + a re-check margin.
+        // (Bug 1 + Bug 2 above also prevent the quota from being burned
+        // one item at a time, but this is the systemic backstop.)
+        const checklistLength = activeGoal?.checklist?.length ?? 0;
+        if (checklistLength > 0) {
+            const required = checklistLength + 2;
+            if (required > config.maxContinueCount) {
+                log(`session_start: raising maxContinueCount from ${config.maxContinueCount} to ${required} (checklist length=${checklistLength})`);
+                config.maxContinueCount = required;
+            }
+            // 确保 auto-continue 上限至少为 20，给 agent 足够时间完成复杂目标
+            if (config.maxContinueCount < 20) {
+                config.maxContinueCount = 20;
+            }
         }
 
         appendForensic({
@@ -517,7 +684,22 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             });
             return;
         }
-        if (activeGoal && ["complete", "cancelled", "blocked"].includes(activeGoal.status)) {
+        if (!activeGoal) {
+            // Goal was cleared (user_cancelled) or never set — supervisor has
+            // nothing to check and must NOT schedule auto-continue. Without this
+            // guard, agent_end falls through to model_check + scheduler, causing
+            // a death loop: agent_end → continue → agent_end → ... even though
+            // there is no active goal.
+            currentState = "idle";
+            emitStatusChanged();
+            appendForensic({
+                ts: forensicTs(),
+                type: "agent_end_skipped",
+                reason: "no active goal (cleared or never set)",
+            });
+            return;
+        }
+        if (["complete", "cancelled", "blocked"].includes(activeGoal.status)) {
             currentState = "idle";
             log(`agent_end: skipping supervisor check for terminal goal status=${activeGoal.status}`);
             appendForensic({
@@ -525,6 +707,16 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 type: "agent_end_skipped",
                 reason: `terminal goal status=${activeGoal.status}`,
             });
+            // Terminate the agent loop after goal reaches terminal status.
+            // Fire-and-forget: not awaiting pi.abort() because waitForIdle()
+            // can block the event loop and make the supervisor channel
+            // unresponsive to subsequent setGoal calls (5s timeout → blocked).
+            if (shouldSendTerminalAbort(activeGoal, terminalAbortSent)) {
+                terminalAbortSent = true;
+                void pi.abort().catch((err) => {
+                    log(`terminal abort failed: ${err instanceof Error ? err.message : String(err)}`);
+                });
+            }
             emitStatusChanged();
             return;
         }
@@ -537,13 +729,9 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             return;
         }
         if (schedulerInstance.isExhausted()) {
-            log(`agent_end: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`);
-            appendForensic({
-                ts: forensicTs(),
-                type: "scheduler_exhausted",
-                continueCount: schedulerInstance.getContinueCount(),
-                maxContinueCount: config.maxContinueCount,
-            });
+            const reason = `Auto-continue exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}); stopping supervisor until the user intervenes.`;
+            log(`agent_end: ${reason}`);
+            handleSchedulerExhausted(reason);
             return;
         }
 
@@ -695,101 +883,73 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 return;
             }
 
-            // Phase 3: All guards passed → run fallback model check
-            const modelCheckStart = Date.now();
-            const modelCheck = await checkWithSmallModel(
-                event.messages as Array<{ role: string; content: unknown }>,
+            // Phase 3: Goal-driven reassessment (new architecture)
+            // 不再用静态 checklist 逐项推进，而是让 LLM 从全局角度重新评估 goal 进展，
+            // 动态调整 checklist，生成从新角度出发的具体行动方案。
+            const reassessmentStart = Date.now();
+
+            const turnFileDiffs = await collectTurnFileDiffs(pi).catch((err) => {
+                log(`collectTurnFileDiffs failed: ${err instanceof Error ? err.message : String(err)}`);
+                return [] as TurnFileDiff[];
+            });
+
+            const conversationSummary = (event.messages as Array<{ role: string; content: unknown }>)
+                .slice(-10)
+                .map((m) => {
+                    const content = typeof m.content === "string"
+                        ? m.content
+                        : JSON.stringify(m.content);
+                    return `[${m.role}]: ${(content ?? "").slice(0, 500)}`;
+                })
+                .join("\n\n");
+
+            const reassessment = await reassessGoalProgress(
+                {
+                    goal: activeGoal!,
+                    fileDiffs: turnFileDiffs,
+                    conversationSummary,
+                    continueCount: schedulerInstance?.getContinueCount() ?? 0,
+                    previousActionPlans,
+                },
                 config,
                 pi.callLLM.bind(pi),
                 ctx.sessionSignal,
             );
-            const modelCheckDurationMs = Date.now() - modelCheckStart;
+            const reassessmentDurationMs = Date.now() - reassessmentStart;
 
-            const hasModelIncomplete = modelCheck.completed === false || modelCheck.incompleteTasks.length > 0;
+            log(`Goal reassessment: progress=${reassessment.overallProgress}%, complete=${reassessment.isComplete}, confidence=${reassessment.confidence}, remaining=${reassessment.remainingItems.length}`);
 
-            if (!hasModelIncomplete) {
-                log(`All guards passed + model check passed`);
-                const checkDurationMs = Date.now() - checkStartedAt;
+            const reassessmentDecision = applyGoalProgressReassessment({
+                goal: activeGoal!,
+                reassessment,
+                previousActionPlans,
+                minContinueConfidence: config.minContinueConfidence,
+            });
+            activeGoal = reassessmentDecision.goal;
+            previousActionPlans = reassessmentDecision.previousActionPlans;
+
+            if (reassessmentDecision.checklistChanged) {
+                persistGoalRuntimeState();
+                channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
+            }
+
+            const checkDurationMs = Date.now() - checkStartedAt;
+
+            // 决策：goal 完成？
+            if (reassessmentDecision.decision === "complete") {
+                log(`Goal declared complete with high confidence`);
                 currentState = "idle";
-                lastCheckResult = { ...modelCheck, guardResults };
-
-                const passedEvidenceSummary = modelCheck.modelResponse ?? "Guards and model check passed.";
-                const checklistAdvance = activeGoal
-                    ? advanceChecklistAfterPassedCheck(activeGoal, passedEvidenceSummary)
-                    : undefined;
-
-                if (checklistAdvance?.hasRemaining) {
-                    activeGoal = {
-                        ...checklistAdvance.goal,
-                        continuationCount: schedulerInstance?.getContinueCount() ?? checklistAdvance.goal.continuationCount,
-                    };
-                    persistGoalRuntimeState();
-                    channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
-
-                    const continueMessage = [
-                        "The current checklist item passed supervisor verification.",
-                        checklistAdvance.completedItem
-                            ? `Completed checklist item: ${checklistAdvance.completedItem.text}`
-                            : undefined,
-                        checklistAdvance.nextItem
-                            ? `Continue with the next checklist item: ${checklistAdvance.nextItem.text}`
-                            : undefined,
-                        "Do not call supervisor_complete until every checklist item has been individually completed and verified.",
-                    ].filter(Boolean).join("\n");
-
-                    recordGoldResult({
-                        verdict: "incomplete",
-                        confidence: modelCheck.confidence,
-                        reason: "Current checklist item passed, but later checklist items remain.",
-                        evidence: [
-                            ...guardResults.map((r) => ({
-                                kind: "guard" as const,
-                                summary: `${r.guardName}: ${r.detail ?? "completed"}`,
-                                passed: true,
-                            })),
-                            {
-                                kind: "model" as const,
-                                summary: passedEvidenceSummary,
-                                passed: true,
-                            },
-                            {
-                                kind: "assistant_claim" as const,
-                                summary: `Checklist advanced to: ${checklistAdvance.nextItem?.text ?? "next item"}`,
-                                passed: false,
-                            },
-                        ],
-                        continueMessage,
-                        durationMs: checkDurationMs,
-                    });
-
-                    const record = buildTriggerRecord(
-                        checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
-                        guardResults, guardTimings,
-                        {
-                            passed: true,
-                            confidence: modelCheck.confidence,
-                            response: modelCheck.modelResponse,
-                            durationMs: modelCheckDurationMs,
-                            model: config.smallModel,
-                        },
-                        "continue", "Checklist has remaining items",
-                    );
-                    appendTriggerRecord(record);
-                    emitStatusChanged();
-                    scheduleContinue(continueMessage);
-                    return;
-                }
-
-                if (checklistAdvance) {
-                    activeGoal = checklistAdvance.goal;
-                    persistGoalRuntimeState();
-                    channel.emit("supervisor.goalChanged", { type: "goalChanged" as const, goal: activeGoal });
-                }
+                lastCheckResult = {
+                    completed: true,
+                    confidence: reassessment.confidence,
+                    incompleteTasks: [],
+                    guardResults,
+                };
 
                 recordGoldResult({
                     verdict: "complete",
-                    confidence: modelCheck.confidence,
-                    reason: passedEvidenceSummary,
+                    confidence: reassessment.confidence,
+                    reason: reassessment.reasoning,
                     evidence: [
                         ...guardResults.map((r) => ({
                             kind: "guard" as const,
@@ -798,7 +958,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                         })),
                         {
                             kind: "model" as const,
-                            summary: modelCheck.modelResponse ?? "Model check passed.",
+                            summary: `Progress: ${reassessment.overallProgress}%. Completed: ${reassessment.completedItems.join(", ")}`,
                             passed: true,
                         },
                     ],
@@ -806,23 +966,22 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 });
 
                 const record = buildTriggerRecord(
-                    checkStartedAt, checkDurationMs, "complete", modelCheck.confidence,
+                    checkStartedAt, checkDurationMs, "complete", reassessment.confidence,
                     guardResults, guardTimings,
                     {
                         passed: true,
-                        confidence: modelCheck.confidence,
-                        response: modelCheck.modelResponse,
-                        durationMs: modelCheckDurationMs,
+                        confidence: reassessment.confidence,
+                        response: reassessment.reasoning,
+                        durationMs: reassessmentDurationMs,
                         model: config.smallModel,
                     },
-                    "complete", "All guards and model check passed",
+                    "complete", `Goal complete at ${reassessment.overallProgress}%`,
                 );
                 appendTriggerRecord(record);
 
                 setGoalStatus("complete");
                 emitStatusChanged();
 
-                // Send a completion summary entry into the chat stream
                 if (activeGoal) {
                     const durationMs = Date.now() - activeGoal.startedAt;
                     pi.sendMessage(
@@ -836,7 +995,7 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                                 verdict: "complete",
                                 continuationCount: activeGoal.continuationCount,
                                 durationMs,
-                                evidence: lastGoldResult?.evidence?.map((e) => e.summary) ?? [],
+                                evidence: reassessment.completedItems,
                             },
                         },
                         { triggerTurn: false },
@@ -846,97 +1005,91 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                 return;
             }
 
-            // Phase 4: Model detected incompleteness → continue with model's assessment
-            if (!shouldAutoContinueFromModelCheck(modelCheck, config.minContinueConfidence)) {
-                log(`Model incomplete below confidence threshold (${modelCheck.confidence} < ${config.minContinueConfidence}); skipping auto-continue`);
-                const checkDurationMs = Date.now() - checkStartedAt;
+            // 决策：置信度太低，不继续
+            if (reassessmentDecision.decision === "idle") {
+                log(`Reassessment confidence too low (${reassessment.confidence} < ${config.minContinueConfidence}); skipping auto-continue`);
                 currentState = "idle";
-                lastCheckResult = { ...modelCheck, guardResults };
-                recordGoldResult({
-                    verdict: "incomplete",
-                    confidence: modelCheck.confidence,
-                    reason: modelCheck.modelResponse ?? "Low-confidence incomplete model result; auto-continue skipped.",
-                    evidence: [
-                        ...guardResults.map((r) => ({
-                            kind: "guard" as const,
-                            summary: `${r.guardName}: ${r.detail ?? (r.completed ? "completed" : r.remainingItems.join(", "))}`,
-                            passed: r.completed,
-                        })),
-                        ...modelCheck.incompleteTasks.map((t) => ({
-                            kind: "model" as const,
-                            summary: `[${t.severity}] ${t.description}`,
-                            passed: false,
-                        })),
-                    ],
-                    durationMs: checkDurationMs,
-                });
+                lastCheckResult = {
+                    completed: false,
+                    confidence: reassessment.confidence,
+                    incompleteTasks: reassessment.remainingItems.map((item, i) => ({
+                        ruleName: `remaining-${i}`,
+                        description: item,
+                        severity: "medium" as const,
+                    })),
+                    guardResults,
+                };
 
                 const record = buildTriggerRecord(
-                    checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
+                    checkStartedAt, checkDurationMs, "incomplete", reassessment.confidence,
                     guardResults, guardTimings,
                     {
                         passed: false,
-                        confidence: modelCheck.confidence,
-                        response: modelCheck.modelResponse,
-                        durationMs: modelCheckDurationMs,
+                        confidence: reassessment.confidence,
+                        response: reassessment.reasoning,
+                        durationMs: reassessmentDurationMs,
                         model: config.smallModel,
                     },
-                    "idle", "Low-confidence incomplete result; auto-continue skipped",
+                    "idle", "Low-confidence reassessment; auto-continue skipped",
                 );
                 appendTriggerRecord(record);
-                appendForensic({
-                    ts: forensicTs(),
-                    type: "continue_skipped",
-                    reason: `low confidence incomplete (${modelCheck.confidence} < ${config.minContinueConfidence})`,
-                });
                 emitStatusChanged();
                 return;
             }
 
-            log(`Model detected incomplete tasks`);
-            const checkDurationMs = Date.now() - checkStartedAt;
-            const continueMessage = generateContinueMessage(
-                activeGuards,
-                guardResults,
-                modelCheck,
-            );
+            // 决策：用 nextActionPlan 驱动 agent 继续
+            log(`Continuing with action plan: ${reassessment.nextActionPlan.slice(0, 200)}`);
+            if (reassessmentDecision.isRepetitive) {
+                log(`Action plan seems repetitive; injecting strategy change directive`);
+            }
+            const finalContinueMessage = reassessmentDecision.continueMessage ?? `[Supervisor/GoalReassessment] ${reassessment.nextActionPlan}`;
 
-            lastCheckResult = { ...modelCheck, guardResults };
+            lastCheckResult = {
+                completed: false,
+                confidence: reassessment.confidence,
+                incompleteTasks: reassessment.remainingItems.map((item, i) => ({
+                    ruleName: `remaining-${i}`,
+                    description: item,
+                    severity: "medium" as const,
+                })),
+                guardResults,
+            };
+
             recordGoldResult({
                 verdict: "incomplete",
-                confidence: modelCheck.confidence,
-                reason: modelCheck.modelResponse ?? "Model detected incomplete tasks.",
+                confidence: reassessment.confidence,
+                reason: reassessment.reasoning,
                 evidence: [
                     ...guardResults.map((r) => ({
                         kind: "guard" as const,
-                        summary: `${r.guardName}: ${r.detail ?? (r.completed ? "completed" : r.remainingItems.join(", "))}`,
-                        passed: r.completed,
+                        summary: `${r.guardName}: ${r.detail ?? "completed"}`,
+                        passed: true,
                     })),
-                    ...modelCheck.incompleteTasks.map((t) => ({
+                    {
                         kind: "model" as const,
-                        summary: `[${t.severity}] ${t.description}`,
+                        summary: `Progress: ${reassessment.overallProgress}%. Remaining: ${reassessment.remainingItems.slice(0, 3).join("; ")}`,
                         passed: false,
-                    })),
+                    },
                 ],
-                continueMessage,
+                continueMessage: finalContinueMessage,
                 durationMs: checkDurationMs,
             });
 
             const record = buildTriggerRecord(
-                checkStartedAt, checkDurationMs, "incomplete", modelCheck.confidence,
+                checkStartedAt, checkDurationMs, "incomplete", reassessment.confidence,
                 guardResults, guardTimings,
                 {
                     passed: false,
-                    confidence: modelCheck.confidence,
-                    response: modelCheck.modelResponse,
-                    durationMs: modelCheckDurationMs,
+                    confidence: reassessment.confidence,
+                    response: reassessment.reasoning,
+                    durationMs: reassessmentDurationMs,
                     model: config.smallModel,
                 },
-                "continue", modelCheck.modelResponse ?? "Model detected incomplete tasks",
+                "continue", `Action plan: ${reassessment.nextActionPlan.slice(0, 200)}`,
             );
             appendTriggerRecord(record);
 
-            scheduleContinue(continueMessage);
+            scheduleContinue(finalContinueMessage);
         } catch (err) {
             log(`agent_end error: ${err instanceof Error ? err.message : String(err)}`);
             const checkDurationMs = Date.now() - checkStartedAt;
@@ -963,6 +1116,41 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             emitStatusChanged();
         }
     });
+
+    async function collectTurnFileDiffs(pi: ExtensionAPI): Promise<TurnFileDiff[]> {
+        try {
+            const statResult = await pi.exec("git", ["diff", "--name-status", "HEAD"], {
+                cwd: projectRoot || undefined,
+                timeout: 10_000,
+            });
+            if (statResult.exitCode !== 0 || !statResult.stdout.trim()) {
+                return [];
+            }
+            const entries = statResult.stdout.trim().split("\n");
+            const diffs: TurnFileDiff[] = [];
+            for (const line of entries) {
+                const parts = line.split("\t");
+                if (parts.length < 2) continue;
+                const status = parts[0]!;
+                const filePath = parts[1]!;
+                const mappedStatus: TurnFileDiff["status"] =
+                    status.startsWith("A") ? "added" :
+                    status.startsWith("D") ? "deleted" : "modified";
+                const diffResult = await pi.exec("git", ["diff", "HEAD", "--", filePath], {
+                    cwd: projectRoot || undefined,
+                    timeout: 10_000,
+                });
+                diffs.push({
+                    path: filePath,
+                    status: mappedStatus,
+                    unifiedDiff: diffResult.stdout || "(empty diff)",
+                });
+            }
+            return diffs.slice(0, 10);
+        } catch {
+            return [];
+        }
+    }
 
     pi.on("session_shutdown", async () => {
         schedulerInstance?.cancelAll();
@@ -1031,18 +1219,68 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         }
 
         if (!result.scheduled) {
-            log(`scheduleContinue: scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}), not scheduling`);
-            appendForensic({
-                ts: forensicTs(),
-                type: "continue_skipped",
-                reason: `scheduler exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount})`,
-            });
-            appendForensic({
-                ts: forensicTs(),
-                type: "scheduler_exhausted",
-                continueCount: schedulerInstance.getContinueCount(),
-                maxContinueCount: config.maxContinueCount,
-            });
+            const reason = `Auto-continue exhausted (${schedulerInstance.getContinueCount()}/${config.maxContinueCount}); stopping supervisor until the user intervenes.`;
+            log(`scheduleContinue: ${reason}`);
+            handleSchedulerExhausted(reason);
+        }
+    }
+
+    function handleSchedulerExhausted(reason: string): void {
+        const startedAt = Date.now();
+        currentState = "idle";
+
+        appendForensic({
+            ts: forensicTs(),
+            type: "continue_skipped",
+            reason,
+        });
+        appendForensic({
+            ts: forensicTs(),
+            type: "scheduler_exhausted",
+            continueCount: schedulerInstance.getContinueCount(),
+            maxContinueCount: config.maxContinueCount,
+        });
+
+        recordGoldResult({
+            verdict: "blocked",
+            confidence: 0,
+            reason,
+            evidence: [{ kind: "runtime", summary: reason, passed: false }],
+            durationMs: 0,
+        });
+        setGoalStatus("blocked", {
+            kind: "runtime",
+            summary: reason,
+        });
+
+        const record = buildTriggerRecord(
+            startedAt,
+            0,
+            "blocked",
+            0,
+            [],
+            [],
+            undefined,
+            "paused",
+            reason,
+        );
+        appendTriggerRecord(record);
+        emitStatusChanged();
+
+        try {
+            pi.sendMessage(
+                {
+                    customType: "supervisor_exhausted",
+                    content: reason,
+                    display: true,
+                },
+                { triggerTurn: false },
+            );
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!/stale|abort/i.test(msg)) {
+                log(`handleSchedulerExhausted sendMessage failed: ${msg}`);
+            }
         }
     }
 
@@ -1088,6 +1326,12 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
                     break;
                 case "custom":
                     result = await checkCustomGuard(guard, context);
+                    break;
+                case "metric":
+                    result = checkMetricGuard(guard, context);
+                    break;
+                case "commit-verification":
+                    result = checkCommitVerificationGuard(guard, context);
                     break;
                 default:
                     result = base;
@@ -1264,6 +1508,246 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
         context: string,
     ): GuardCheckResult {
         return checkKeywordGuardAgainstCode(guard, context);
+    }
+
+    /**
+     * Metric guard: pure-rule check that the agent's supervisor_complete summary
+     * actually delivers the metrics declared in the goal objective. Prevents
+     * "silent downgrade" — e.g. goal says 1080p but agent reports 640x360.
+     *
+     * Parses resolution / fps / latency from the goal objective, then scans the
+     * summary for the same dimensions. If the summary reports a LOWER resolution
+     * than the objective declares, the guard blocks completion.
+     *
+     * No LLM call — pure regex, fast and deterministic.
+     */
+    function checkMetricGuard(
+        _guard: Extract<GuardConfig, { type: "metric" }>,
+        summary: string,
+    ): GuardCheckResult {
+        const base: GuardCheckResult = {
+            guardName: "metric-mismatch",
+            completed: true,
+            confidence: 1,
+            remainingItems: [],
+        };
+
+        if (!activeGoal?.objective) {
+            return base; // no goal → nothing to check
+        }
+
+        const objective = activeGoal.objective;
+        const mismatches: string[] = [];
+
+        // --- Resolution ---
+        // Objective patterns: "1080p", "720p", "1920x1080", "640×360", "1280x720"
+        const objResPatterns: Array<{ regex: RegExp; label: string; pixels: number }> = [
+            { regex: /(\d{3,4})\s*[pP](?:\s|\b)/g, label: "vertical-lines", pixels: 0 }, // 1080p, 720p
+            { regex: /(\d{3,4})\s*[xX×]\s*(\d{3,4})/g, label: "WxH", pixels: 0 }, // 1920x1080
+        ];
+
+        interface DeclaredMetric {
+            kind: "resolution";
+            raw: string;       // "1080p" or "1920x1080"
+            width: number;     // 1920
+            height: number;    // 1080
+            pixels: number;    // 1920*1080
+        }
+        const declared: DeclaredMetric[] = [];
+
+        // Parse "1080p" / "720p" — height only, infer width from 16:9
+        const pPattern = /(\d{3,4})\s*p(?:\s|\b)/g;
+        let m: RegExpExecArray | null;
+        while ((m = pPattern.exec(objective)) !== null) {
+            const h = parseInt(m[1], 10);
+            if (h >= 480 && h <= 2160) {
+                const w = Math.round(h * 16 / 9);
+                declared.push({ kind: "resolution", raw: m[0].trim(), width: w, height: h, pixels: w * h });
+            }
+        }
+
+        // Parse "1920x1080" / "640×360" — explicit WxH
+        const wxhPattern = /(\d{3,4})\s*[xX×]\s*(\d{3,4})/g;
+        while ((m = wxhPattern.exec(objective)) !== null) {
+            const w = parseInt(m[1], 10);
+            const h = parseInt(m[2], 10);
+            if (w >= 320 && w <= 3840 && h >= 240 && h <= 2160) {
+                declared.push({ kind: "resolution", raw: m[0].trim(), width: w, height: h, pixels: w * h });
+            }
+        }
+
+        if (declared.length === 0) {
+            return base; // no resolution declared → nothing to enforce
+        }
+
+        // Find the HIGHEST declared resolution (the "must meet" bar)
+        const target = declared.reduce((a, b) => (a.pixels > b.pixels ? a : b));
+
+        // Parse resolution from summary
+        const summaryRes: Array<{ raw: string; width: number; height: number; pixels: number }> = [];
+        // 1080p style
+        const sP = /(\d{3,4})\s*p(?:\s|\b)/g;
+        while ((m = sP.exec(summary)) !== null) {
+            const h = parseInt(m[1], 10);
+            if (h >= 480 && h <= 2160) {
+                const w = Math.round(h * 16 / 9);
+                summaryRes.push({ raw: m[0].trim(), width: w, height: h, pixels: w * h });
+            }
+        }
+        // WxH style
+        const sWxH = /(\d{3,4})\s*[xX×]\s*(\d{3,4})/g;
+        while ((m = sWxH.exec(summary)) !== null) {
+            const w = parseInt(m[1], 10);
+            const h = parseInt(m[2], 10);
+            if (w >= 320 && w <= 3840 && h >= 240 && h <= 2160) {
+                summaryRes.push({ raw: m[0].trim(), width: w, height: h, pixels: w * h });
+            }
+        }
+
+        // If summary mentions ANY resolution, check if the highest one meets target
+        if (summaryRes.length > 0) {
+            const bestSummary = summaryRes.reduce((a, b) => (a.pixels > b.pixels ? a : b));
+            // Allow 5% tolerance (e.g. 1920x1080 vs 1900x1080)
+            if (bestSummary.pixels < target.pixels * 0.95) {
+                mismatches.push(
+                    `Resolution downgrade: goal declares "${target.raw}" (${target.width}x${target.height}), ` +
+                    `but summary reports "${bestSummary.raw}" (${bestSummary.width}x${bestSummary.height}). ` +
+                    `The agent silently downgraded resolution to meet other metrics. Re-run at the declared resolution, ` +
+                    `or explicitly explain in the summary why the downgrade is acceptable and re-call supervisor_complete.`,
+                );
+            }
+        }
+
+        // --- FPS ---
+        // Objective: "30fps", "60fps"; Summary must report >= declared fps
+        const fpsPattern = /(\d{1,3})\s*fps/gi;
+        const objFps: number[] = [];
+        while ((m = fpsPattern.exec(objective)) !== null) {
+            objFps.push(parseInt(m[1], 10));
+        }
+        if (objFps.length > 0) {
+            const targetFps = Math.max(...objFps);
+            const sumFps: number[] = [];
+            const sFps = /(\d{1,3}(?:\.\d+)?)\s*fps/gi;
+            while ((m = sFps.exec(summary)) !== null) {
+                sumFps.push(parseFloat(m[1]));
+            }
+            if (sumFps.length > 0) {
+                const bestFps = Math.max(...sumFps);
+                if (bestFps < targetFps * 0.9) {
+                    mismatches.push(
+                        `FPS below target: goal declares ${targetFps}fps, but summary reports ${bestFps}fps. ` +
+                        `Must meet at least ${Math.round(targetFps * 0.9)}fps (90% tolerance).`,
+                    );
+                }
+            }
+        }
+
+        if (mismatches.length > 0) {
+            return {
+                ...base,
+                completed: false,
+                confidence: 0.95,
+                remainingItems: mismatches,
+                detail: `Metric mismatch detected between goal objective and completion summary`,
+            };
+        }
+        return base;
+    }
+
+    /**
+     * Commit Verification Guard
+     *
+     * Prevents agents from declaring completion without producing any actual
+     * work artifacts (commits or file changes) since the goal was set.
+     *
+     * Checks:
+     * 1. New git commits since goal was set (goal.startedAt)
+     * 2. If no commits, check for uncommitted file changes
+     * 3. If neither → block: agent must actually do the work
+     *
+     * No LLM call — pure git inspection.
+     */
+    function checkCommitVerificationGuard(
+        _guard: Extract<GuardConfig, { type: "commit-verification" }>,
+        _summary: string,
+    ): GuardCheckResult {
+        const base: GuardCheckResult = {
+            guardName: "commit-verification",
+            completed: true,
+            confidence: 1,
+            remainingItems: [],
+        };
+
+        if (!activeGoal) {
+            return base;
+        }
+
+        const goalStartTs = activeGoal.startedAt;
+        const repoDir = projectRoot || process.cwd();
+
+        try {
+            // 1. Check for new commits since goal was set
+            // git log --since=<unix-timestamp> --oneline
+            const sinceDate = new Date(goalStartTs).toISOString();
+            const logResult = execSync(
+                `git log --since="${sinceDate}" --oneline --no-decorate 2>/dev/null || echo ""`,
+                { cwd: repoDir, encoding: "utf-8", timeout: 5000 },
+            ).trim();
+
+            const commits = logResult
+                .split("\n")
+                .filter((line) => line.trim().length > 0 && !line.includes("fatal:"));
+
+            if (commits.length > 0) {
+                // Has new commits → passed
+                return {
+                    ...base,
+                    detail: `${commits.length} commit(s) since goal was set: ${commits[0].slice(0, 60)}`,
+                };
+            }
+
+            // 2. No commits — check for uncommitted changes
+            const statusResult = execSync(
+                `git status --porcelain 2>/dev/null || echo ""`,
+                { cwd: repoDir, encoding: "utf-8", timeout: 5000 },
+            ).trim();
+
+            const changes = statusResult
+                .split("\n")
+                .filter((line) => line.trim().length > 0);
+
+            if (changes.length > 0) {
+                // Has uncommitted changes → still counts as work done, but warn
+                return {
+                    ...base,
+                    confidence: 0.8,
+                    detail: `No new commits, but ${changes.length} uncommitted file change(s) detected. Consider committing before declaring complete.`,
+                };
+            }
+
+            // 3. No commits AND no changes → agent did nothing
+            return {
+                ...base,
+                completed: false,
+                confidence: 0.95,
+                remainingItems: [
+                    `No work artifacts detected: zero new git commits and zero file changes since the goal was set (${new Date(goalStartTs).toISOString()}). ` +
+                    `The agent declared completion via supervisor_complete without producing any actual work. ` +
+                    `You MUST actually implement the goal: write code, run tests, and commit your changes. ` +
+                    `Re-do the work from scratch, then call supervisor_complete again.`,
+                ],
+                detail: `commit-verification: 0 commits, 0 file changes since goal_set`,
+            };
+        } catch (err) {
+            // Git not available or not a git repo — fail-open (don't block on git errors)
+            const error = err instanceof Error ? err.message : String(err);
+            return {
+                ...base,
+                confidence: 0.5,
+                detail: `commit-verification skipped (git error): ${error.slice(0, 100)}`,
+            };
+        }
     }
 
     async function checkCustomGuard(
@@ -1443,6 +1927,21 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
 
     function createFallbackGoalChecklist(objective: string): GoalChecklistItem[] {
         const now = Date.now();
+
+        // Try to extract a numbered/bulleted checklist directly from the
+        // user's goal text. Many users write explicit "1. ... 2. ..." or
+        // "- ..." lists in their goal — these should be honored as-is
+        // instead of being replaced by the generic 4-item fallback.
+        //
+        // This prevents the "checklist_length always 4" bug where a user's
+        // 5-6 item checklist was silently truncated to 4 generic items.
+        const userItems = parseUserChecklistFromText(objective);
+        if (userItems.length > 0) {
+            return userItems.map((text, index) =>
+                makeChecklistItem(index + 1, text, inferChecklistKind(text, index), now),
+            );
+        }
+
         const mentionedPaths = extractMentionedPaths(objective);
         const scopeText = mentionedPaths.length > 0
             ? `确认目标范围和涉及路径：${mentionedPaths.slice(0, 3).join(", ")}`
@@ -1454,6 +1953,37 @@ Use the checklist as your working contract. Do not call \`supervisor_complete\` 
             makeChecklistItem(4, "总结完成结果、验证证据和剩余风险", "report", now),
         ];
     }
+
+    function parseUserChecklistFromText(text: string): string[] {
+        const lines = text.split("\n");
+        const items: string[] = [];
+        // Match: "1. text", "1) text", "- text", "* text", "• text"
+        // Also handle Chinese fullwidth: "１．" "（１）"
+        const checklistPattern = /^\s*(?:\d+[.)\u3001]|[-*•]|\(\d+\)|\uff10?\uff0e)\s*(.+)/;
+        for (const line of lines) {
+            const match = line.match(checklistPattern);
+            if (match && match[1] && match[1].trim().length > 2) {
+                items.push(match[1].trim());
+            }
+        }
+        // Only use user's checklist if at least 2 items found (avoid false positives)
+        return items.length >= 2 ? items.slice(0, 10) : [];
+    }
+
+    function inferChecklistKind(text: string, index: number): GoalChecklistItem["kind"] {
+        const lower = text.toLowerCase();
+        if (/verify|test|check|验证|测试|检查|bench|benchmark|measure/.test(lower)) {
+            return "verification";
+        }
+        if (/report|summary|document|总结|报告|记录/.test(lower)) {
+            return "report";
+        }
+        if (index === 0 && (/scope|confirm|define|范围|确认|目标/.test(lower))) {
+            return "scope";
+        }
+        return "implementation";
+    }
+
 
     function parseGoalChecklist(raw: string): GoalChecklistItem[] {
         if (!raw.trim()) return [];

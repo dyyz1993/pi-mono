@@ -16,6 +16,7 @@ import type { ModelRegistry } from "../model-registry.ts";
 import type { PermissionProvider } from "../permissions/provider.ts";
 import type { PermissionDecision, PermissionRequest } from "../permissions/types.ts";
 import type { SessionManager } from "../session-manager.ts";
+import type { Settings } from "../settings-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { Channel } from "./channel-types.ts";
 import type {
@@ -302,6 +303,7 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private getSettingsFn: () => Settings = () => ({}) as Settings;
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
 	private getPermissionModeFn: () => string = () => "normal";
 	private permissionAskFn: (
@@ -434,6 +436,7 @@ export class ExtensionRunner {
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
+		this.getSettingsFn = contextActions.getSettings ?? (() => ({}) as Settings);
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
 
 		// Flush provider registrations queued during extension loading
@@ -1054,6 +1057,10 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			getSettings: () => {
+				runner.assertActive();
+				return runner.getSettingsFn();
 			},
 			get extensionName() {
 				runner.assertActive();

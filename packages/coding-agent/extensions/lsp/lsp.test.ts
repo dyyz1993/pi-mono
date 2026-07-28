@@ -8,6 +8,47 @@ import { createDiagnosticsMode, type DiagnosticsModeName } from "./hooks/diagnos
 import { createDependencyResolver } from "./utils/dependency-resolver.ts";
 import lspExtensionDefault, { type LspChannelEvent } from "./index.ts";
 
+function encodeLspFrame(message: unknown): Uint8Array {
+	const json = JSON.stringify(message);
+	return new TextEncoder().encode(`Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`);
+}
+
+function parseLspFrames(buffer: { value: string }, data: string | Uint8Array): Array<Record<string, unknown>> {
+	buffer.value += typeof data === "string" ? data : Buffer.from(data).toString("utf8");
+	const frames: Array<Record<string, unknown>> = [];
+
+	while (true) {
+		const headerEnd = buffer.value.indexOf("\r\n\r\n");
+		if (headerEnd === -1) {
+			return frames;
+		}
+		const lengthMatch = /Content-Length:\s*(\d+)/i.exec(buffer.value.slice(0, headerEnd));
+		if (!lengthMatch) {
+			buffer.value = buffer.value.slice(headerEnd + 4);
+			continue;
+		}
+		const contentLength = Number.parseInt(lengthMatch[1], 10);
+		const frameEnd = headerEnd + 4 + contentLength;
+		if (buffer.value.length < frameEnd) {
+			return frames;
+		}
+		const payload = buffer.value.slice(headerEnd + 4, frameEnd);
+		buffer.value = buffer.value.slice(frameEnd);
+		frames.push(JSON.parse(payload) as Record<string, unknown>);
+	}
+}
+
+async function waitForValue<T>(read: () => T | undefined, description: string): Promise<T> {
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		const value = read();
+		if (value !== undefined) {
+			return value;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error(`Timed out waiting for ${description}`);
+}
+
 	function createMockPi() {
 	const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
 	const registeredTools = new Map<string, any>();
@@ -685,5 +726,193 @@ describe("config maxOpenFiles", () => {
 		const config = resolver.resolve();
 
 		expect(config.maxOpenFiles).toBe(30);
+	});
+
+	it("resolves per-server initializationOptions and configuration from lsp.json", async () => {
+		const tmpDir = join(tmpdir(), `lsp-cfg-server-options-${Date.now()}`);
+		const initializationOptions = { cargo: { features: "all" }, check: { command: "clippy" } };
+		const configuration = { "rust-analyzer": { diagnostics: { enable: true } } };
+		await mkdir(join(tmpDir, ".pi"), { recursive: true });
+		await writeFile(
+			join(tmpDir, ".pi", "lsp.json"),
+			JSON.stringify({
+				servers: {
+					rust: {
+						server: process.execPath,
+						args: ["--version"],
+						fileTypes: [".rs"],
+						initializationOptions,
+						configuration,
+					},
+				},
+			}),
+		);
+
+		const { createLspConfigResolver } = await import("./config/resolver.ts");
+		const resolver = createLspConfigResolver({ cwd: tmpDir, homeDir: tmpDir });
+		const config = resolver.resolve();
+
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0].name).toBe("rust");
+		expect(config.servers[0].command).toEqual([process.execPath, "--version"]);
+		expect(config.servers[0].fileTypes).toEqual([".rs"]);
+		expect(config.servers[0].initializationOptions).toEqual(initializationOptions);
+		expect(config.servers[0].configuration).toEqual(configuration);
+	});
+});
+
+describe("LSP per-server runtime options", () => {
+	it("passes initializationOptions and configuration when starting registry servers", async () => {
+		const initializationOptions = { gofumpt: true };
+		const configuration = { gopls: { analyses: { unusedparams: true } } };
+		const runtimeStart = vi.fn(async () => undefined);
+		const createRuntime = vi.fn(() => ({
+			start: runtimeStart,
+			stop: vi.fn(async () => undefined),
+			reload: vi.fn(async () => undefined),
+			request: vi.fn(async () => ({})),
+			notify: vi.fn(),
+			getPublishedDiagnostics: vi.fn(() => []),
+			clearPublishedDiagnostics: vi.fn(),
+			getStatus: vi.fn(() => ({
+				state: "ready",
+				reason: "ready",
+				configuredCommand: ["gopls"],
+				activeCommand: ["gopls"],
+				transport: "direct",
+				lspmuxAvailable: false,
+				fallbackReason: undefined,
+				pid: 1,
+				diagnosticsCount: 0,
+			})),
+		}));
+
+		const { createLspRuntimeRegistry } = await import("./client/registry.ts");
+		const registry = createLspRuntimeRegistry({ createRuntime });
+		await registry.start({
+			serverCommand: undefined,
+			maxOpenFiles: 30,
+			servers: [
+				{
+					name: "go",
+					command: ["gopls"],
+					fileTypes: [".go"],
+					initializationOptions,
+					configuration,
+				},
+			],
+		});
+
+		expect(createRuntime).toHaveBeenCalledWith({ initializationOptions, configuration });
+		expect(runtimeStart).toHaveBeenCalledWith(["gopls"]);
+	});
+
+	it("passes initializationOptions and configuration through lazy activation", async () => {
+		const initializationOptions = { cargo: { allTargets: true } };
+		const configuration = { "rust-analyzer": { checkOnSave: true } };
+		const runtime = {
+			startSingle: vi.fn(async () => undefined),
+			setPrimary: vi.fn(),
+			getEntryMeta: vi.fn(() => undefined),
+			touchAccess: vi.fn(),
+		};
+
+		const { createLazyActivator } = await import("./utils/lazy-activator.ts");
+		const activator = createLazyActivator(runtime as any);
+		activator.buildIndex([
+			{
+				name: "rust",
+				command: ["rust-analyzer"],
+				fileTypes: [".rs"],
+				initializationOptions,
+				configuration,
+			},
+		]);
+
+		const result = await activator.ensureServerForFile("src/main.rs");
+
+		expect(result).toEqual([{ name: "rust", started: true }]);
+		expect(runtime.startSingle).toHaveBeenCalledWith("rust", ["rust-analyzer"], [".rs"], {
+			initializationOptions,
+			configuration,
+		});
+	});
+
+	it("sends initializationOptions in initialize and answers workspace/configuration", async () => {
+		const tmpDir = join(tmpdir(), `lsp-runtime-config-${Date.now()}`);
+		await mkdir(tmpDir, { recursive: true });
+		const initializationOptions = { cargo: { features: "all" } };
+		const configuration = {
+			"rust-analyzer": { diagnostics: { disabled: ["inactive-code"] } },
+			unrelated: true,
+		};
+		const clientMessages: Array<Record<string, unknown>> = [];
+		const stdinBuffer = { value: "" };
+		let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+		const stdout = new ReadableStream<Uint8Array>({
+			start(controller) {
+				stdoutController = controller;
+			},
+		});
+		const stderr = new ReadableStream<Uint8Array>();
+
+		const sendServerMessage = (message: unknown) => {
+			stdoutController.enqueue(encodeLspFrame(message));
+		};
+		const spawn = vi.fn(() => ({
+			pid: 456,
+			stdout,
+			stderr,
+			exited: new Promise<number | null>(() => undefined),
+			kill: vi.fn(),
+			stdin: {
+				write(data: string | Uint8Array) {
+					for (const message of parseLspFrames(stdinBuffer, data)) {
+						clientMessages.push(message);
+						if (message.method === "initialize") {
+							sendServerMessage({
+								jsonrpc: "2.0",
+								id: message.id,
+								result: { capabilities: {} },
+							});
+						}
+					}
+				},
+				end: vi.fn(),
+			},
+		}));
+
+		const { createLspClientRuntime } = await import("./client/runtime.ts");
+		const runtime = createLspClientRuntime({
+			cwd: tmpDir,
+			env: { PATH: "" },
+			spawn,
+			initializationOptions,
+			configuration,
+		});
+		await runtime.start(["mock-lsp"]);
+
+		const initializeRequest = clientMessages.find((message) => message.method === "initialize");
+		expect(initializeRequest?.params).toMatchObject({
+			initializationOptions,
+			capabilities: {
+				workspace: { configuration: true },
+			},
+		});
+
+		sendServerMessage({
+			jsonrpc: "2.0",
+			id: 99,
+			method: "workspace/configuration",
+			params: {
+				items: [{ section: "rust-analyzer" }, { section: "unknown" }],
+			},
+		});
+		const configurationResponse = await waitForValue(
+			() => clientMessages.find((message) => message.id === 99 && "result" in message),
+			"workspace/configuration response",
+		);
+
+		expect(configurationResponse.result).toEqual([configuration["rust-analyzer"], configuration]);
 	});
 });

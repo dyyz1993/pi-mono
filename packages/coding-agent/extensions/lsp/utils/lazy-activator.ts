@@ -74,7 +74,10 @@ export function createLazyActivator(
 				const config = serverConfigMap.get(name);
 				if (!config) continue;
 				try {
-					await runtime.startSingle(name, config.command, config.fileTypes);
+					await runtime.startSingle(name, config.command, config.fileTypes, {
+						initializationOptions: config.initializationOptions,
+						configuration: config.configuration,
+					});
 					runtime.setPrimary(name);
 					started.push(name);
 				} catch (err) {
@@ -102,7 +105,10 @@ export function createLazyActivator(
 						runtime.touchAccess(name);
 						results.push({ name, started: false });
 					} else {
-						await runtime.startSingle(name, config.command, config.fileTypes);
+						await runtime.startSingle(name, config.command, config.fileTypes, {
+							initializationOptions: config.initializationOptions,
+							configuration: config.configuration,
+						});
 						results.push({ name, started: true });
 					}
 				} catch (err) {

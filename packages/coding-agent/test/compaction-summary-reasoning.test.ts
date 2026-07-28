@@ -131,4 +131,42 @@ describe("generateSummary reasoning options", () => {
 
 		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
 	});
+
+	it("splits oversized compaction input before summarizing", async () => {
+		let callCount = 0;
+		completeSimpleMock.mockImplementation(async () => ({
+			...mockSummaryResponse,
+			content: [{ type: "text", text: `summary-${++callCount}` }],
+		}));
+
+		const largeMessages = Array.from(
+			{ length: 12 },
+			(_, index): AgentMessage => ({
+				role: "user",
+				content: `chunk-marker-${index}\n${"x".repeat(32_000)}`,
+				timestamp: Date.now() + index,
+			}),
+		);
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: largeMessages,
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 200000,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 500000, keepRecentTokens: 20000 },
+		};
+
+		const result = await compact(preparation, createModel(false, 128000), "test-key");
+
+		expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+		expect(result.summary).toBe("summary-3");
+		const promptTexts = completeSimpleMock.mock.calls.map((call) => call[1].messages[0]?.content[0]?.text ?? "");
+		expect(promptTexts[0]).toContain("chunk-marker-0");
+		expect(promptTexts[0]).not.toContain("chunk-marker-11");
+		expect(promptTexts[1]).not.toContain("chunk-marker-0");
+		expect(promptTexts[1]).toContain("chunk-marker-11");
+		expect(promptTexts[2]).toContain("summary-1");
+		expect(promptTexts[2]).toContain("summary-2");
+	});
 });

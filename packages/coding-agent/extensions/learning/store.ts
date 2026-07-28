@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
 import { encodeProjectPath, getAgentDir, resolveProjectIdentity } from "@dyyz1993/pi-coding-agent";
 import {
@@ -17,6 +17,7 @@ import {
 	type LearningSkillSummary,
 	type LearningSnapshot,
 } from "./contract.ts";
+import { parseFrontmatter, slugifyStem } from "./utils.ts";
 
 const CONFIG_FILE = "config.json";
 const EVENTS_FILE = "events.jsonl";
@@ -28,12 +29,18 @@ export interface LearningPaths {
 	projectUserStateDir: string;
 	learningDir: string;
 	memoryDir: string;
+	/** Global memory dir shared across all projects (~/.pi/agent/learning/memory). */
+	globalMemoryDir: string;
+	/** Global learning dir (~/.pi/agent/learning). */
+	globalLearningDir: string;
 	skillsDir: string;
 	candidatesDir: string;
 	runsDir: string;
 	snapshotsDir: string;
 	archiveMemoryDir: string;
 	archiveSkillsDir: string;
+	/** Archive dir for global memory (~/.pi/agent/learning/memory/.archive). */
+	archiveGlobalMemoryDir: string;
 }
 
 export const DEFAULT_LEARNING_CONFIG: LearningConfig = {
@@ -76,31 +83,15 @@ function nowId(prefix: string): string {
 	return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function slugify(input: string, fallback: string): string {
-	const slug = input
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9._-]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.replace(/--+/g, "-")
-		.slice(0, 64);
-	return slug || fallback;
-}
-
 function ensureDir(path: string): void {
 	if (!existsSync(path)) {
 		mkdirSync(path, { recursive: true });
 	}
 }
 
-function isInsidePath(path: string, baseDir: string): boolean {
-	const resolvedPath = resolve(path);
-	const resolvedBase = resolve(baseDir);
-	return (
-		resolvedPath === resolvedBase ||
-		resolvedPath.startsWith(`${resolvedBase}/`) ||
-		resolvedPath.startsWith(`${resolvedBase}\\`)
-	);
+export function isInsidePath(path: string, baseDir: string): boolean {
+	const rel = relative(resolve(baseDir), resolve(path));
+	return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"));
 }
 
 function safeJoin(baseDir: string, ...parts: string[]): string {
@@ -132,36 +123,13 @@ function fileRef(path: string, label: string, kind: LearningFileKind): LearningF
 	}
 }
 
-function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
-	const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-	if (!normalized.startsWith("---")) {
-		return { frontmatter: {}, body: normalized };
-	}
-	const endIndex = normalized.indexOf("\n---", 3);
-	if (endIndex === -1) {
-		return { frontmatter: {}, body: normalized };
-	}
-	const frontmatterText = normalized.slice(4, endIndex);
-	const body = normalized.slice(endIndex + 4).trim();
-	const frontmatter: Record<string, string> = {};
-	for (const line of frontmatterText.split("\n")) {
-		const colonIndex = line.indexOf(":");
-		if (colonIndex === -1) continue;
-		const key = line.slice(0, colonIndex).trim();
-		const value = line.slice(colonIndex + 1).trim();
-		if (key) {
-			frontmatter[key] = value;
-		}
-	}
-	return { frontmatter, body };
-}
-
-function serializeMemory(payload: LearningMemoryCandidatePayload, metadata: { sourceSessionId?: string }): string {
+export function serializeMemory(payload: LearningMemoryCandidatePayload, metadata: { sourceSessionId?: string }): string {
 	const sourceSession = metadata.sourceSessionId ? `sourceSession: ${metadata.sourceSessionId}\n` : "";
-	return `---\nname: ${payload.description}\ndescription: ${payload.description}\ntype: ${payload.memoryType}\n${sourceSession}createdAt: ${new Date().toISOString()}\n---\n\n${payload.content.trim()}\n`;
+	const name = payload.filename.replace(/\.md$/i, "");
+	return `---\nname: ${name}\ndescription: ${payload.description}\ntype: ${payload.memoryType}\n${sourceSession}createdAt: ${new Date().toISOString()}\n---\n\n${payload.content.trim()}\n`;
 }
 
-function serializeSkill(payload: LearningSkillCandidatePayload): string {
+export function serializeSkill(payload: LearningSkillCandidatePayload): string {
 	return `---\nname: ${payload.name}\ndescription: ${payload.description}\n---\n\n${payload.body.trim()}\n`;
 }
 
@@ -199,23 +167,33 @@ function mergeConfig(base: LearningConfig, patch: Partial<LearningConfig>): Lear
 	};
 }
 
-export function getLearningPaths(projectRoot: string): LearningPaths {
+export function getLearningPaths(projectRoot: string, options?: { agentDir?: string }): LearningPaths {
 	const resolvedProjectRoot = resolveProjectIdentity(projectRoot);
-	const projectUserStateDir = join(getAgentDir(), "projects", encodeProjectPath(resolvedProjectRoot));
+	// agentDir can be overridden for tests to avoid polluting ~/.pi/agent.
+	// Production callers leave this undefined, falling back to getAgentDir() (~/.pi/agent).
+	const agentDir = options?.agentDir ?? getAgentDir();
+	const projectUserStateDir = join(agentDir, "projects", encodeProjectPath(resolvedProjectRoot));
 	const learningDir = join(projectUserStateDir, "learning");
 	const memoryDir = join(projectUserStateDir, "memory");
 	const skillsDir = join(projectUserStateDir, "skills");
+	// Global dir: ~/.pi/agent/learning (shared across all projects).
+	// Used for user-type memories that should follow the user everywhere.
+	const globalLearningDir = join(agentDir, "learning");
+	const globalMemoryDir = join(globalLearningDir, "memory");
 	return {
 		projectRoot: resolvedProjectRoot,
 		projectUserStateDir,
 		learningDir,
 		memoryDir,
+		globalMemoryDir,
+		globalLearningDir,
 		skillsDir,
 		candidatesDir: join(learningDir, "candidates"),
 		runsDir: join(learningDir, "runs"),
 		snapshotsDir: join(learningDir, "snapshots"),
 		archiveMemoryDir: join(memoryDir, ".archive"),
 		archiveSkillsDir: join(skillsDir, ".archive"),
+		archiveGlobalMemoryDir: join(globalMemoryDir, ".archive"),
 	};
 }
 
@@ -225,10 +203,29 @@ export function getProjectPrivateSkillsDir(projectRoot: string): string {
 
 export class LearningStore {
 	readonly paths: LearningPaths;
+	private snapshotCache: { value: LearningSnapshot; ts: number } | null = null;
+	private static readonly SNAPSHOT_TTL_MS = 5_000;
 
-	constructor(projectRoot: string) {
-		this.paths = getLearningPaths(projectRoot);
+	constructor(projectRoot: string, options?: { agentDir?: string }) {
+		this.paths = getLearningPaths(projectRoot, options);
 		this.ensureBaseDirs();
+	}
+
+	invalidateSnapshot(): void {
+		this.snapshotCache = null;
+	}
+
+	private getCachedSnapshot(): LearningSnapshot | null {
+		if (!this.snapshotCache) return null;
+		if (Date.now() - this.snapshotCache.ts > LearningStore.SNAPSHOT_TTL_MS) {
+			this.snapshotCache = null;
+			return null;
+		}
+		return this.snapshotCache.value;
+	}
+
+	private setCachedSnapshot(value: LearningSnapshot): void {
+		this.snapshotCache = { value, ts: Date.now() };
 	}
 
 	ensureBaseDirs(): void {
@@ -253,6 +250,7 @@ export class LearningStore {
 	}
 
 	async setConfig(patch: Partial<LearningConfig>): Promise<LearningConfig> {
+		this.invalidateSnapshot();
 		const next = mergeConfig(await this.getConfig(), patch);
 		await writeJson(join(this.paths.learningDir, CONFIG_FILE), next);
 		return next;
@@ -266,6 +264,7 @@ export class LearningStore {
 		sourceMessageIds?: string[];
 		confidence?: "low" | "medium" | "high";
 	}): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		return this.writeCandidate({
 			version: 1,
 			id: nowId("memory-candidate"),
@@ -295,6 +294,7 @@ export class LearningStore {
 		targetPath?: string;
 		fileRefs?: LearningFileRef[];
 	}): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		return this.writeCandidate({
 			version: 1,
 			id: nowId("skill-candidate"),
@@ -352,6 +352,7 @@ export class LearningStore {
 	}
 
 	async approveCandidate(candidateId: string, options?: { mergeTargetSkillName?: string }): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		const candidate = await this.getCandidate(candidateId);
 		if (candidate.status !== "pending") {
 			return candidate;
@@ -398,6 +399,7 @@ export class LearningStore {
 	}
 
 	async rejectCandidate(candidateId: string): Promise<LearningCandidate> {
+		this.invalidateSnapshot();
 		const candidate = await this.getCandidate(candidateId);
 		if (candidate.status !== "pending") {
 			return candidate;
@@ -452,6 +454,8 @@ export class LearningStore {
 	}
 
 	async getSnapshot(): Promise<LearningSnapshot> {
+		const cached = this.getCachedSnapshot();
+		if (cached) return cached;
 		const config = await this.getConfig();
 		await this.ensureMemoryEntrypoint();
 		const memoryFiles = await this.listMemoryFiles();
@@ -496,13 +500,18 @@ export class LearningStore {
 			runs,
 		};
 		await writeJson(join(this.paths.snapshotsDir, "latest.json"), snapshot);
+		this.setCachedSnapshot(snapshot);
 		return snapshot;
 	}
 
 	async listMemoryFiles(): Promise<LearningMemorySummary[]> {
 		const files: LearningMemorySummary[] = [];
+		// Project-scoped memories
 		this.collectMemoryFiles(this.paths.memoryDir, "active", files);
 		this.collectMemoryFiles(this.paths.archiveMemoryDir, "archived", files);
+		// Global (cross-project) memories — user-type memories live here
+		this.collectMemoryFiles(this.paths.globalMemoryDir, "active", files);
+		this.collectMemoryFiles(this.paths.archiveGlobalMemoryDir, "archived", files);
 		files.sort((a, b) => b.mtimeMs - a.mtimeMs);
 		return files;
 	}
@@ -516,28 +525,80 @@ export class LearningStore {
 		return skills;
 	}
 
-	private candidatePath(candidateId: string): string {
-		return safeJoin(this.paths.candidatesDir, `${slugify(candidateId, "candidate")}.json`);
+	/**
+	 * List active skills with their full body content, for prompt injection.
+	 *
+	 * Reads each skill's SKILL.md frontmatter (name + description) and the body
+	 * below the frontmatter. Only "active" skills are included; disabled and
+	 * archived skills are skipped so they don't consume prompt tokens.
+	 *
+	 * Results are sorted by usageCount DESC (most-used first) so that when the
+	 * prompt injector truncates to a max count, the most relevant skills survive.
+	 */
+	async listActiveSkillBodies(): Promise<{ name: string; description: string; body: string; usageCount: number }[]> {
+		const usage = await this.loadUsage();
+		const summaries: LearningSkillSummary[] = [];
+		this.collectSkillSummaries(this.paths.skillsDir, "active", usage, summaries);
+		const active = summaries.filter((skill) => skill.state === "active");
+		const enriched = await Promise.all(
+			active.map(async (skill) => {
+				let body = "";
+				try {
+					const raw = readFileSyncUtf8(skill.filePath);
+					const parsed = parseFrontmatter(raw);
+					body = parsed.body.trim();
+				} catch {
+					body = "";
+				}
+				return {
+					name: skill.name,
+					description: skill.description,
+					body,
+					usageCount: skill.usageCount,
+				};
+			}),
+		);
+		enriched.sort((a, b) => b.usageCount - a.usageCount);
+		return enriched;
 	}
 
-	private async applyMemoryCandidate(
+	private candidatePath(candidateId: string): string {
+		return safeJoin(this.paths.candidatesDir, `${slugifyStem(candidateId, "candidate")}.json`);
+	}
+
+	async applyMemoryCandidate(
 		payload: LearningMemoryCandidatePayload,
 		candidate: LearningCandidate,
 	): Promise<LearningFileRef[]> {
-		const filename = payload.filename.endsWith(".md")
-			? slugify(payload.filename.slice(0, -3), "memory") + ".md"
-			: `${slugify(payload.filename, "memory")}.md`;
-		const target = safeJoin(this.paths.memoryDir, filename);
+		this.invalidateSnapshot();
+		const baseName = payload.filename.endsWith(".md")
+			? slugifyStem(payload.filename.slice(0, -3), "memory")
+			: slugifyStem(payload.filename, "memory");
+		let filename = `${baseName}.md`;
+		// Scope: "global" writes to the cross-project memory dir (~/.pi/agent/learning/memory);
+		// default "project" writes to project-scoped dir. Backward compatible: omitting scope
+		// keeps the pre-existing project-scoped behavior.
+		const scope = payload.scope ?? "project";
+		const memoryDir = scope === "global" ? this.paths.globalMemoryDir : this.paths.memoryDir;
+		await mkdir(memoryDir, { recursive: true });
+		let target = safeJoin(memoryDir, filename);
+		let suffix = 2;
+		while (existsSync(target)) {
+			filename = `${baseName}-${suffix}.md`;
+			target = safeJoin(memoryDir, filename);
+			suffix += 1;
+		}
 		await writeFile(target, serializeMemory(payload, { sourceSessionId: candidate.sourceSessionId }), "utf-8");
 		await this.ensureMemoryEntrypoint();
-		return [fileRef(target, filename, "memory"), fileRef(join(this.paths.memoryDir, MEMORY_ENTRYPOINT), MEMORY_ENTRYPOINT, "memory-index")];
+		return [fileRef(target, filename, "memory"), fileRef(join(memoryDir, MEMORY_ENTRYPOINT), MEMORY_ENTRYPOINT, "memory-index")];
 	}
 
-	private async applySkillCandidate(
+	async applySkillCandidate(
 		payload: LearningSkillCandidatePayload,
 		candidate: LearningCandidate,
 		options?: { mergeTargetSkillName?: string },
 	): Promise<LearningFileRef[]> {
+		this.invalidateSnapshot();
 		if (candidate.action === "archive-skill") {
 			const targetName = candidate.targetId ?? payload.name;
 			return this.archiveSkill(targetName);
@@ -550,7 +611,7 @@ export class LearningStore {
 	}
 
 	private async createSkillPackage(payload: LearningSkillCandidatePayload): Promise<LearningFileRef[]> {
-		const skillName = slugify(payload.name, "generated-skill");
+		const skillName = slugifyStem(payload.name, "generated-skill");
 		const skillDir = safeJoin(this.paths.skillsDir, skillName);
 		await mkdir(skillDir, { recursive: true });
 		const skillPath = safeJoin(skillDir, SKILL_ENTRYPOINT);
@@ -564,17 +625,20 @@ export class LearningStore {
 			refs.push(fileRef(target, relativePath, this.kindForSkillFile(relativePath)));
 		}
 		const usage = await this.loadUsage();
+		const existing = usage.skills[skillName] ?? {};
 		usage.skills[skillName] = {
-			...(usage.skills[skillName] ?? {}),
+			...existing,
 			state: "active",
 			pinned: payload.pinned ?? false,
+			usageCount: (existing.usageCount ?? 0) + 1,
+			lastUsedAt: Date.now(),
 		};
 		await this.saveUsage(usage);
 		return refs;
 	}
 
 	private async mergeSkill(targetName: string, payload: LearningSkillCandidatePayload): Promise<LearningFileRef[]> {
-		const skillName = slugify(targetName, "generated-skill");
+		const skillName = slugifyStem(targetName, "generated-skill");
 		const skillDir = safeJoin(this.paths.skillsDir, skillName);
 		const skillPath = safeJoin(skillDir, SKILL_ENTRYPOINT);
 		if (!existsSync(skillPath)) {
@@ -604,7 +668,7 @@ export class LearningStore {
 	}
 
 	private async archiveSkill(skillName: string): Promise<LearningFileRef[]> {
-		const safeName = slugify(skillName, "generated-skill");
+		const safeName = slugifyStem(skillName, "generated-skill");
 		const source = safeJoin(this.paths.skillsDir, safeName);
 		const target = safeJoin(this.paths.archiveSkillsDir, safeName);
 		if (!existsSync(source)) {
@@ -622,16 +686,50 @@ export class LearningStore {
 	}
 
 	private async ensureMemoryEntrypoint(): Promise<void> {
-		const entrypoint = safeJoin(this.paths.memoryDir, MEMORY_ENTRYPOINT);
+		await this.ensureScopedMemoryEntrypoint(this.paths.memoryDir, "Project Memory", (f) =>
+			this.isGlobalMemoryFile(f) === false,
+		);
+		await this.ensureScopedMemoryEntrypoint(this.paths.globalMemoryDir, "Global Memory", (f) =>
+			this.isGlobalMemoryFile(f) === true,
+		);
+	}
+
+	/**
+	 * Returns true if the memory file lives under the global memory dir.
+	 * Used to split the combined listMemoryFiles() result by scope.
+	 */
+	private isGlobalMemoryFile(file: LearningMemorySummary): boolean {
+		const rel = file.filePath;
+		return rel.startsWith(this.paths.globalMemoryDir);
+	}
+
+	private async ensureScopedMemoryEntrypoint(
+		dir: string,
+		heading: string,
+		predicate: (file: LearningMemorySummary) => boolean,
+	): Promise<void> {
+		const entrypoint = safeJoin(dir, MEMORY_ENTRYPOINT);
 		const files = await this.listMemoryFiles();
+		const activeFiles = files.filter((file) => file.state === "active" && predicate(file));
+
+		// Skip rebuild if entrypoint is newer than all active memory files in this scope
+		try {
+			const entryStat = await stat(entrypoint);
+			const newestMemory = activeFiles.reduce<number>((max, f) => Math.max(max, f.mtimeMs ?? 0), 0);
+			if (entryStat.mtimeMs >= newestMemory) {
+				return;
+			}
+		} catch {
+			// entrypoint doesn't exist yet → fall through and create
+		}
+
 		const lines = [
-			"# Project Memory",
+			`# ${heading}`,
 			"",
-			...files
-				.filter((file) => file.state === "active")
-				.map((file) => `- [${file.description ?? file.filename}](${file.filename})`),
+			...activeFiles.map((file) => `- [${file.description ?? file.filename}](${file.filename})`),
 			"",
 		];
+		await mkdir(dir, { recursive: true });
 		await writeFile(entrypoint, lines.join("\n"), "utf-8");
 	}
 
@@ -786,7 +884,13 @@ export class LearningStore {
 
 	private async runSkillCurator(mode: LearningCuratorMode): Promise<LearningRun> {
 		const skills = await this.listSkills();
-		const stale = skills.filter((skill) => !skill.pinned && skill.state === "active" && skill.usageCount === 0);
+		const STALE_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+		const now = Date.now();
+		const stale = skills.filter((skill) => {
+			if (skill.pinned || skill.state !== "active") return false;
+			const lastUsed = skill.lastUsedAt ?? 0;
+			return now - lastUsed > STALE_THRESHOLD_MS;
+		});
 		const actions = stale.map((skill) => ({
 			action: "archive-skill" as const,
 			targetId: skill.name,

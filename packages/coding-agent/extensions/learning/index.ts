@@ -31,9 +31,14 @@ import {
   ENTRYPOINT_NAME,
   MAX_MEMORY_BYTES_PER_FILE,
   MAX_RELEVANT_MEMORIES,
+  messageText,
+  truncateEntrypoint,
+  findExistingMemoryContext,
+  slugifyFilename,
+  logger,
 } from "./utils.ts";
 import { loadSkipWordStore, addHistoryEntry, saveSkipWordStore, getGlobalLearningDir, getDefaultRules } from "./skip-rules.ts";
-import { MEMORY_SYSTEM_PROMPT } from "./prompts.ts";
+import { MEMORY_SYSTEM_PROMPT, SKILL_SYSTEM_PROMPT } from "./prompts.ts";
 import { getExtensionRuntimeResourcePolicy } from "../runtime-policy.ts";
 
 function sourceMessageIds(messages: AgentMessage[]): string[] {
@@ -100,7 +105,7 @@ function disabledRun(domain: LearningRunCuratorParams["domain"]): LearningRun {
   return {
     version: 1,
     id: `learning-disabled-${now}`,
-    domain: "curator",
+    domain,
     type: domain === "memory" ? "memory-curator" : "skill-curator",
     mode: "manual",
     status: "failed",
@@ -112,16 +117,16 @@ function disabledRun(domain: LearningRunCuratorParams["domain"]): LearningRun {
   };
 }
 
-function slugifyMemoryFilename(input: string, fallback = "memory"): string {
-  const base = input
-    .trim()
-    .toLowerCase()
-    .replace(/\.md$/i, "")
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/--+/g, "-")
-    .slice(0, 64);
-  return `${base || fallback}.md`;
+/**
+ * Read a memory entrypoint file if it exists, returning empty string otherwise.
+ * Centralizes the try/catch so callers stay linear.
+ */
+async function readMemoryEntrypoint(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf-8");
+  } catch {
+    return "";
+  }
 }
 
 async function uniqueMemoryFilePath(memoryDir: string, filename: string): Promise<{ filename: string; filePath: string }> {
@@ -135,46 +140,6 @@ async function uniqueMemoryFilePath(memoryDir: string, filename: string): Promis
     suffix += 1;
   }
   return { filename: candidate, filePath };
-}
-
-function buildMemoryFrontmatter(fields: { name: string; description: string; type: string }): string {
-  return `---\nname: ${fields.name}\ndescription: ${fields.description}\ntype: ${fields.type}\n---`;
-}
-
-function stripMarkdownCodeBlock(text: string): string {
-  let cleaned = text.trim();
-  if (cleaned.startsWith("```")) {
-    const firstNewline = cleaned.indexOf("\n");
-    if (firstNewline !== -1) cleaned = cleaned.slice(firstNewline + 1);
-    const lastBacktick = cleaned.lastIndexOf("```");
-    if (lastBacktick !== -1) cleaned = cleaned.slice(0, lastBacktick);
-    cleaned = cleaned.trim();
-  }
-  return cleaned;
-}
-
-function extractMessageText(message: AgentMessage): string {
-  if (!("content" in message)) return "";
-  const content = (message as { content: unknown }).content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((part): part is { type: "text"; text: string } => {
-        const record = part as Record<string, unknown>;
-        return record.type === "text" && typeof record.text === "string";
-      })
-      .map((part) => part.text)
-      .join("");
-  }
-  return "";
-}
-
-function findExistingMemoryContext(messages: AgentMessage[]): string | null {
-  for (const msg of messages) {
-    const match = extractMessageText(msg).match(/<memory_context\s+fingerprint="([^"]+)"/);
-    if (match) return match[1]!;
-  }
-  return null;
 }
 
 export default function learningExtension(pi: ExtensionAPI) {
@@ -233,7 +198,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         "utf-8",
       );
     } catch (error) {
-      console.debug("[learning] persist injected memory fingerprints failed:", error instanceof Error ? error.message : error);
+      logger.warn("persist injected memory fingerprints failed", { error: error instanceof Error ? error.message : error });
     }
   }
 
@@ -250,7 +215,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         markActiveInjectedMemoryFingerprint(fingerprint, { persist: false });
       }
     } catch (error) {
-      console.debug("[learning] restore injected memory fingerprints failed:", error instanceof Error ? error.message : error);
+      logger.warn("restore injected memory fingerprints failed", { error: error instanceof Error ? error.message : error });
     }
   }
 
@@ -371,11 +336,13 @@ export default function learningExtension(pi: ExtensionAPI) {
 
   const callLLMWithRetry = async (opts: Parameters<ExtensionAPI["callLLM"]>[0]): Promise<string> => {
     try {
-      return await pi.callLLM(opts);
+      // Use callLLMSafe so background LLM work (memory extract, skill distill)
+      // survives session replacement / reload. The stale check in callLLM
+      // would otherwise force graceful fallback to raw payload every time.
+      return await pi.callLLMSafe(opts);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (/stale/i.test(msg)) throw err;
-      console.debug("[learning] LLM call failed:", msg);
+      logger.warn("LLM call failed", { error: msg });
       throw err;
     }
   };
@@ -434,7 +401,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         try {
           entrypointContent = await readFile(join(memoryDir, ENTRYPOINT_NAME), "utf-8");
         } catch (error) {
-          console.debug("[learning] entrypoint read failed:", error instanceof Error ? error.message : error);
+          logger.warn("entrypoint read failed", { error: error instanceof Error ? error.message : error });
         }
         return {
           type: "list_result" as const,
@@ -443,7 +410,7 @@ export default function learningExtension(pi: ExtensionAPI) {
           memoryDir,
         };
       } catch (error) {
-        console.debug("[learning] memory list failed:", error instanceof Error ? error.message : error);
+        logger.warn("memory list failed", { error: error instanceof Error ? error.message : error });
         return { type: "list_result" as const, files: [], entrypointContent: null, memoryDir };
       }
     });
@@ -502,6 +469,7 @@ export default function learningExtension(pi: ExtensionAPI) {
         irrelevantFiles: selectedFiles,
       });
       await saveSkipWordStore(getGlobalLearningDir(), skipStore);
+      markMemorySelectionDirty();
 
       pi.appendEntry("memory_irrelevant_marked", { query, selectedFiles, source: "learning" });
       memoryChannelEmit("memory_irrelevant_marked", {
@@ -712,7 +680,7 @@ export default function learningExtension(pi: ExtensionAPI) {
       _ctx?: ExtensionContext,
     ): Promise<AgentToolResult<{ filename: string }>> => {
       await mkdir(memoryDir, { recursive: true });
-      const requestedFilename = slugifyMemoryFilename(params.filename ?? params.name, "memory");
+      const requestedFilename = slugifyFilename(params.filename ?? params.name, "memory");
       const { filename, filePath } = await uniqueMemoryFilePath(memoryDir, requestedFilename);
       const fm = buildFrontmatter({
         name: params.name,
@@ -736,25 +704,28 @@ export default function learningExtension(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event) => {
     if (!learningAvailable || !memoryDir) return;
-    let memoryContent = "";
-    try {
-      memoryContent = await readFile(join(memoryDir, "MEMORY.md"), "utf-8");
-    } catch {
-      // No MEMORY.md yet, that's fine
-    }
-    const truncated = (() => {
-      const lines = memoryContent.split("\n");
-      const sliced = lines.slice(0, 200);
-      let c = sliced.join("\n");
-      if (Buffer.byteLength(c, "utf-8") > 25000) {
-        const bytes = Buffer.from(c, "utf-8");
-        c = bytes.slice(0, 25000).toString("utf-8");
-        const lastNewline = c.lastIndexOf("\n");
-        if (lastNewline !== -1) c = c.slice(0, lastNewline);
-      }
-      return { content: c, wasTruncated: lines.length > 200 || Buffer.byteLength(memoryContent, "utf-8") > 25000 };
-    })();
-    const memoryPrompt = MEMORY_SYSTEM_PROMPT(memoryDir, truncated.content);
+    // Read project + global memory entrypoints; merge into one prompt.
+    // Global memory holds user-type memories that follow the user across projects;
+    // project memory holds project/feedback/reference/bookmark types.
+    const storeForMemory = getStore();
+    const globalMemoryDir = storeForMemory?.paths.globalMemoryDir ?? "";
+    const projectMemoryContent = await readMemoryEntrypoint(join(memoryDir, ENTRYPOINT_NAME));
+    const globalMemoryContent = globalMemoryDir
+      ? await readMemoryEntrypoint(join(globalMemoryDir, ENTRYPOINT_NAME))
+      : "";
+    // Compose: global section + project section (each truncated individually
+    // to bound size, then combined; truncateEntrypoint is applied to the merged
+    // result below to enforce the overall cap).
+    const mergedRaw = [globalMemoryContent, projectMemoryContent]
+      .filter(Boolean)
+      .map((section, index) =>
+        index === 0 && globalMemoryContent && projectMemoryContent
+          ? `## Global memory (cross-project)\n\n${globalMemoryContent}\n\n## Project memory\n\n${projectMemoryContent}`
+          : section,
+      )
+      .join("\n\n");
+    const truncated = truncateEntrypoint(mergedRaw);
+    const memoryPrompt = MEMORY_SYSTEM_PROMPT(truncated.content);
 
     const lastUserText = event.prompt ?? "";
     const shouldPrefetch =
@@ -776,7 +747,16 @@ export default function learningExtension(pi: ExtensionAPI) {
       });
     }
 
-    return { systemPrompt: `${event.systemPrompt}\n\n${memoryPrompt}` };
+    const currentStore = getStore();
+    const skillBodies = currentStore ? await currentStore.listActiveSkillBodies() : [];
+    const skillPrompt = SKILL_SYSTEM_PROMPT(
+      skillBodies.map((skill) => ({ name: skill.name, description: skill.description, body: skill.body })),
+    );
+    const sections = [memoryPrompt, skillPrompt].filter(Boolean);
+    const appendedSystemPrompt = sections.length > 0
+      ? `${event.systemPrompt}\n\n${sections.join("\n\n")}`
+      : event.systemPrompt;
+    return { systemPrompt: appendedSystemPrompt };
   });
 
   // --- Context: non-blocking memory injection ---
@@ -815,56 +795,118 @@ ${memoryText}
   });
 
   // --- Agent end: memory extraction, dream, purification + skill distill ---
+  // NOTE: These LLM-backed operations can take tens of seconds. Running them
+  // synchronously (via await) blocks the agent_end event from reaching the
+  // RPC client, which keeps the agent status as "streaming" and causes
+  // subsequent user messages to be force-converted to "steer". We run them
+  // in the background (fire-and-forget) so agent_end resolves immediately.
 
   pi.on("agent_end", async (event) => {
     if (!learningAvailable) return;
     const activeStore = getStore();
     const messages = event.messages as AgentMessage[];
     const sessionId = ctx?.sessionManager?.getSessionId();
+    // Capture ui reference before fire-and-forget — ctx may become stale
+    // (session replacement/reload) during async LLM work, and ctx?.ui getter
+    // throws stale errors instead of returning undefined.
+    let capturedUi: ExtensionContext["ui"] | undefined;
     try {
-      if (!hasFailedToolResult(messages)) {
-        await maybeExtractMemory({
-          store: activeStore,
-          messages,
-          sourceSessionId: sessionId,
-          sourceMessageIds: sourceMessageIds(messages),
-        });
-        await maybeDistillSkill({
-          store: activeStore,
-          messages,
-          sourceSessionId: sessionId,
-          sourceMessageIds: sourceMessageIds(messages),
-        });
+      capturedUi = ctx?.ui;
+    } catch {
+      // ctx already stale — skip UI updates
+    }
+
+    void (async () => {
+      const hasFailed = hasFailedToolResult(messages);
+      logger.info("agent_end processing", { sessionId, messagesCount: messages.length, hasFailed });
+
+      // Each LLM operation runs independently — a failure in one must NOT
+      // block the others. Previously all four were in a single try block,
+      // so a maybeDistillSkill throw would skip maybeRun (dream consolidation),
+      // causing .session-count to never increment.
+      const runIndependent = async (label: string, fn: () => Promise<void>) => {
+        try {
+          await fn();
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`agent_end ${label} failed`, { error: message });
+        }
+      };
+
+      if (!hasFailed) {
+        await runIndependent("memory.extract", () =>
+          maybeExtractMemory({
+            store: activeStore,
+            messages,
+            sourceSessionId: sessionId,
+            sourceMessageIds: sourceMessageIds(messages),
+            callLLM: callLLMWithRetry,
+          }),
+        );
+        await runIndependent("skill.distill", () =>
+          maybeDistillSkill({
+            store: activeStore,
+            messages,
+            sourceSessionId: sessionId,
+            sourceMessageIds: sourceMessageIds(messages),
+            callLLM: callLLMWithRetry,
+          }),
+        );
       }
 
-      // Dream consolidation
-      const dreamResult = await memoryCurator.maybeRun(memoryDir, callLLMWithRetry);
-      if (dreamResult) {
+      // Dream consolidation — dry-run only, plan 不直接执行
+      await runIndependent("dream.consolidate", async () => {
+        const dreamPlan = await memoryCurator.maybeRun(memoryDir, callLLMWithRetry);
+        if (!dreamPlan) return;
         markMemorySelectionDirty();
-        pi.appendEntry("memory_dream_result", {
+        const mergeCount = dreamPlan.merges?.length ?? 0;
+        const deletionCount = dreamPlan.deletions?.length ?? 0;
+        const updateCount = dreamPlan.updates?.length ?? 0;
+        logger.info("dream plan generated (dry-run)", { merges: mergeCount, deletions: deletionCount, updates: updateCount });
+        await activeStore.recordRun({
+          version: 1,
+          id: `dream-plan-${Date.now()}`,
+          domain: "memory",
+          type: "memory-curator",
+          mode: "dry-run",
           status: "completed",
-          merges: dreamResult.merges,
-          deletions: dreamResult.deletions,
-          updates: dreamResult.updates,
+          startedAt: Date.now(),
+          completedAt: Date.now(),
+          summary: `Dream plan: ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates (not applied)`,
+          actions: [
+            {
+              action: "none",
+              summary: `Proposed ${mergeCount} merges, ${deletionCount} deletions, ${updateCount} updates. Run learning.runCurator with mode=apply to execute.`,
+              fileRefs: [],
+            },
+          ],
+        });
+        pi.appendEntry("memory_dream_result", {
+          status: "plan-generated",
+          merges: mergeCount,
+          deletions: deletionCount,
+          updates: updateCount,
+          applied: false,
           source: "learning",
         });
-      }
+      });
 
       // Purification
-      const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
-      if (purifyResult) {
+      await runIndependent("memory.purify", async () => {
+        const purifyResult = await maybePurify(memoryDir, callLLMWithRetry);
+        if (!purifyResult) return;
         markMemorySelectionDirty();
         pi.appendEntry("memory_dream_result", { status: "purified", keywords: purifyResult, source: "learning" });
-      }
+      });
 
-      const snapshot = await activeStore.getSnapshot();
-      channel?.emit("learning.snapshot", snapshot);
-      ctx?.ui.setStatus("learning", "learning idle");
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      ctx?.ui.setStatus("learning", "learning error");
-      ctx?.ui.notify(`Learning error: ${message}`, "warning");
-    }
+      // Snapshot emit — also independent so a snapshot failure doesn't mask errors above
+      await runIndependent("snapshot.emit", async () => {
+        const snapshot = await activeStore.getSnapshot();
+        channel?.emit("learning.snapshot", snapshot);
+      });
+
+      capturedUi?.setStatus("learning", "learning idle");
+    })();
   });
 
   // --- Channel handlers ---
@@ -912,5 +954,101 @@ ${memoryText}
     const run = await getStore().runCurator(params);
     channel?.emit("learning.run", run);
     return run;
+  });
+
+  // --- Slash command: /learning review (interactive candidate approval) ---
+
+  if (typeof pi.registerCommand === "function") {
+    pi.registerCommand("learning", {
+    description: "Review pending learning candidates (approve / reject interactively)",
+    handler: async (_args: string, cmdCtx) => {
+      if (!learningAvailable) {
+        cmdCtx.ui.notify("Learning is unavailable in this mode (quick SSH sandbox).", "warning");
+        return;
+      }
+      const store = getStore();
+      const pending = await store.listCandidates(false);
+      const reviewable = pending.filter((c) => c.status === "pending");
+      if (reviewable.length === 0) {
+        cmdCtx.ui.notify("No pending candidates to review.", "info");
+        return;
+      }
+      cmdCtx.ui.notify(`Reviewing ${reviewable.length} pending candidate${reviewable.length === 1 ? "" : "s"}...`, "info");
+
+      // Review one candidate at a time. For each: show preview via confirm(),
+      // then ask action via select(). Loop until user exits or list empties.
+      while (reviewable.length > 0) {
+        const candidate = reviewable[0]!;
+        const payloadPreview = candidate.payload && typeof candidate.payload === "object"
+          ? JSON.stringify(candidate.payload, null, 2).slice(0, 500)
+          : "(no payload)";
+
+        // Show candidate details, ask approve/reject via confirm dialog.
+        // confirm() returns boolean (approve=true / reject=false); for "skip" or
+        // "exit", we use select() afterwards if user wants more options.
+        const message = [
+          `Domain:     ${candidate.domain}`,
+          `Title:      ${candidate.title}`,
+          `Summary:    ${candidate.summary || "(no summary)"}`,
+          `Confidence: ${candidate.confidence || "unknown"}`,
+          "",
+          "Payload preview:",
+          payloadPreview,
+          "",
+          "Approve? (No = reject)",
+        ].join("\n");
+
+        const choice = await cmdCtx.ui.select(
+          `Reviewing (${reviewable.length} left): ${candidate.title}`,
+          ["Approve", "Reject", "Skip this one", "Exit review"],
+        );
+        // Use a noop to avoid unused warning; message is displayed via notify before select.
+        void message;
+
+        if (choice === undefined || choice === "Exit review") {
+          cmdCtx.ui.notify("Review ended.", "info");
+          return;
+        }
+        if (choice === "Skip this one") {
+          reviewable.shift();
+          continue;
+        }
+        try {
+          if (choice === "Approve") {
+            await store.approveCandidate(candidate.id);
+            cmdCtx.ui.notify(`Approved: ${candidate.title}`, "info");
+          } else if (choice === "Reject") {
+            await store.rejectCandidate(candidate.id);
+            cmdCtx.ui.notify(`Rejected: ${candidate.title}`, "info");
+          }
+          reviewable.shift();
+        } catch (err) {
+          cmdCtx.ui.notify(
+            `Failed: ${err instanceof Error ? err.message : String(err)}`,
+            "error",
+          );
+        }
+      }
+      cmdCtx.ui.notify("All pending candidates reviewed.", "info");
+    },
+  });
+  } // end if registerCommand
+
+  // --- Notify user when new candidates appear after agent_end ---
+
+  pi.on("agent_end", async () => {
+    if (!learningAvailable) return;
+    try {
+      const snapshot = await getStore().getSnapshot();
+      const pendingCount = snapshot.overview.pendingCandidates;
+      if (pendingCount > 0) {
+        ctx?.ui.notify(
+          `Learning has ${pendingCount} pending candidate${pendingCount === 1 ? "" : "s"}. Run /learning to review.`,
+          "info",
+        );
+      }
+    } catch {
+      // Non-critical: skip notification if snapshot fails.
+    }
   });
 }

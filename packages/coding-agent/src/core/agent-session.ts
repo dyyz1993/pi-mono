@@ -41,6 +41,7 @@ import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
 	calculateContextTokens,
+	calculateInputContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
 	computeFileLists,
@@ -140,6 +141,12 @@ import {
 	type SystemPromptBreakdown,
 } from "./system-prompt.ts";
 import { normalizeTierModelsForAvailableModels } from "./tier-models.ts";
+import {
+	estimateContentTokens,
+	estimateContentTokensFromChars,
+	identifyProvider,
+	estimateCharsAsTokens as tokenizerEstimateCharsAsTokens,
+} from "./tokenizer/index.ts";
 import {
 	checkToolEnd,
 	createLoopDetectionState,
@@ -507,7 +514,10 @@ function classifyContextMessage(message: AgentMessage): "conversation" | "memory
 	return "conversation";
 }
 
-function estimateAssistantMessageParts(message: AssistantMessage): {
+function estimateAssistantMessageParts(
+	message: AssistantMessage,
+	model?: { provider?: string; id?: string } | null,
+): {
 	conversation: number;
 	thinking: number;
 	toolInputs: number;
@@ -515,21 +525,50 @@ function estimateAssistantMessageParts(message: AssistantMessage): {
 	let conversationChars = 0;
 	let thinkingChars = 0;
 	let toolInputChars = 0;
+	const provider = identifyProvider(model);
 
 	for (const block of message.content) {
 		if (block.type === "thinking") {
 			thinkingChars += block.thinking.length;
+			thinkingChars += (block.thinkingSignature ?? "").length;
 		} else if (block.type === "text") {
 			conversationChars += block.text.length;
 		} else if (block.type === "toolCall") {
 			toolInputChars += block.name.length + JSON.stringify(block.arguments).length;
+			// OpenAI tool_call format serialization overhead (measured):
+			// {"id":"...","type":"function","function":{"name":"...","arguments":"..."}}
+			// = ~65 chars of structure, plus the id content (NOT counted above)
+			// Structure uses chars/4 (same as provider side), content uses provider factor
+			toolInputChars += (block.id ?? "").length + 65;
 		}
 	}
 
+	// Content tokens use provider-specific factor (accurate for Chinese/code mix)
+	// Structure tokens use chars/4 (matches provider snapshot measurement)
+
+	// Compute per-message JSON structure overhead based on actual content blocks.
+	// Measured overhead for each element (OpenAI completions format):
+	//   text content:  33 chars — {"role":"assistant","content":""}
+	//   null content:  35 chars — {"role":"assistant","content":null}
+	//   reasoning:     23 chars — ,"reasoning_content":""
+	//   tool_calls:    16 chars — ,"tool_calls":[]
+	const hasTextContent = message.content.some((b) => b.type === "text" && (b.text?.length ?? 0) > 0);
+	const hasThinking = message.content.some((b) => b.type === "thinking");
+	const hasToolCalls = message.content.some((b) => b.type === "toolCall");
+
+	// Base envelope (structure → chars/4)
+	conversationChars += hasTextContent ? 33 : 35;
+
+	// reasoning_content field wrapper (structure → chars/4)
+	if (hasThinking) conversationChars += 23;
+
+	// tool_calls array wrapper (structure → chars/4)
+	if (hasToolCalls) conversationChars += 16;
+
 	return {
-		conversation: estimateCharsAsTokens(conversationChars),
-		thinking: estimateCharsAsTokens(thinkingChars),
-		toolInputs: estimateCharsAsTokens(toolInputChars),
+		conversation: estimateContentTokensFromChars(conversationChars, provider),
+		thinking: estimateContentTokensFromChars(thinkingChars, provider),
+		toolInputs: estimateContentTokensFromChars(toolInputChars, provider),
 	};
 }
 
@@ -1690,9 +1729,7 @@ export class AgentSession {
 		const model = this.model;
 		const modelKey = model ? `${model.provider}/${model.id}` : undefined;
 		const normalizedTierModels = this.getTierModels();
-		const tier = modelKey
-			? ["fast", "pro", "max"].find((key) => normalizedTierModels[key] === modelKey)
-			: undefined;
+		const tier = modelKey ? ["fast", "pro", "max"].find((key) => normalizedTierModels[key] === modelKey) : undefined;
 
 		if (!model && !tier && !this.thinkingLevel) {
 			return undefined;
@@ -3500,9 +3537,11 @@ export class AgentSession {
 				},
 				deleteEntries: (targetIds) => {
 					this.sessionManager.appendDeletion(targetIds);
+					this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 				},
 				summarizeEntries: (targetIds, summary) => {
 					this.sessionManager.appendSegmentSummary(targetIds, summary);
+					this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 				},
 				setSessionName: (name) => {
 					this.setSessionName(name);
@@ -3566,6 +3605,7 @@ export class AgentSession {
 				},
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getSettings: () => this.settingsManager.getSettings(),
 			},
 			{
 				registerProvider: (name, config) => {
@@ -3952,7 +3992,7 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = Math.min(settings.baseDelayMs * 2 ** (this._retryAttempt - 1), settings.maxDelayMs);
 
 		this._emit({
 			type: "auto_retry_start",
@@ -4355,6 +4395,7 @@ export class AgentSession {
 				oldLeafId,
 				summaryEntry,
 				fromExtension: summaryText ? fromExtension : undefined,
+				skipFiles: options.skipFiles === true,
 			});
 
 			// Emit to custom tools
@@ -4452,47 +4493,63 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
-		const breakdown = this._buildContextUsageBreakdown();
+		const materializedMessages = this.sessionManager.buildSessionContext().messages;
+		const contextMessages = materializedMessages.length > 0 ? materializedMessages : this.messages;
+		const latestCompactionTimestamp = this._getLatestCompactionTimestamp();
+		const breakdown = this._buildContextUsageBreakdown(contextMessages, latestCompactionTimestamp);
 		const breakdownTokens = this._sumContextUsageBreakdownTokens(breakdown);
-		const branchEntries = this.sessionManager.getBranch();
-		const latestCompaction = getLatestCompactionEntry(branchEntries);
-		const providerRequest = this._getLatestProviderRequestContextUsage();
+		// Always read from the session branch — this.agent.state.messages may
+		// be empty right after process startup (before the first prompt()),
+		// which would cause context usage to report near-zero tokens even
+		// for sessions with thousands of messages on disk.
+		const providerRequest = this._getLatestProviderRequestContextUsage(latestCompactionTimestamp);
 
-		if (latestCompaction) {
-			const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
-			for (let i = branchEntries.length - 1; i > compactionIndex; i--) {
-				const entry = branchEntries[i];
-				if (entry.type === "message" && entry.message.role === "assistant") {
-					const assistant = entry.message;
-					if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
-						const contextTokens = calculateContextTokens(assistant.usage);
-						if (contextTokens > 0) {
-							const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, contextTokens, {
-								usage: assistant.usage,
-								trailingTokens: 0,
-							});
-							return {
-								tokens: contextTokens,
-								contextWindow,
-								percent: (contextTokens / contextWindow) * 100,
-								breakdown: reconciledBreakdown,
-								...(providerRequest ? { providerRequest } : {}),
-							};
-						}
-					}
-					break;
-				}
-			}
+		// Find the last assistant message with valid usage from the materialized
+		// context. Matching inside one message array avoids relying on Usage object
+		// identity, which can change after restart or JSONL re-materialization.
+		// This is authoritative — the provider tells us exactly how many
+		// input tokens the model consumed.
+		let lastUsage: Usage | undefined;
+		let lastUsageMessageIndex = -1;
+		for (let i = contextMessages.length - 1; i >= 0; i--) {
+			const message = contextMessages[i];
+			if (message.role !== "assistant") continue;
+			const assistant = message;
+			if (assistant.stopReason === "aborted" || assistant.stopReason === "error") continue;
+			if (!assistant.usage) continue;
+			if (!this._isTimestampAfterLatestCompaction(assistant.timestamp, latestCompactionTimestamp)) continue;
+			lastUsage = assistant.usage;
+			lastUsageMessageIndex = i;
+			break;
 		}
 
-		const estimate = estimateContextTokens(this.messages);
-		const tokens = estimate.usageTokens > 0 ? estimate.tokens : breakdownTokens;
-		const percent = (tokens / contextWindow) * 100;
-		const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, {
-			usage: getLastAssistantUsage(this.messages),
-			trailingTokens: estimate.trailingTokens,
-		});
+		if (lastUsage) {
+			// Count trailing messages (after the last assistant with usage)
+			// to estimate tokens added since that response.
+			let trailingTokens = 0;
+			for (let i = lastUsageMessageIndex + 1; i < contextMessages.length; i++) {
+				trailingTokens += estimateTokens(contextMessages[i]);
+			}
+			const contextTokens = calculateInputContextTokens(lastUsage) + trailingTokens;
+			const tokens = Math.max(contextTokens, breakdownTokens > 0 ? 1 : 0);
+			const percent = (tokens / contextWindow) * 100;
+			const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, {
+				usage: lastUsage,
+				trailingTokens,
+			});
+			return {
+				tokens,
+				contextWindow,
+				percent,
+				breakdown: reconciledBreakdown,
+				...(providerRequest ? { providerRequest } : {}),
+			};
+		}
 
+		// No usage data at all — use breakdown estimate
+		const tokens = breakdownTokens;
+		const percent = (tokens / contextWindow) * 100;
+		const reconciledBreakdown = this._reconcileContextUsageBreakdown(breakdown, tokens, undefined);
 		return {
 			tokens,
 			contextWindow,
@@ -4502,13 +4559,33 @@ export class AgentSession {
 		};
 	}
 
-	private _getLatestProviderRequestContextUsage(): ProviderRequestContextUsage | undefined {
+	private _getLatestCompactionTimestamp(): number | null {
+		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (!compactionEntry) return null;
+		const timestamp = new Date(compactionEntry.timestamp).getTime();
+		return Number.isFinite(timestamp) ? timestamp : null;
+	}
+
+	private _isTimestampAfterLatestCompaction(
+		timestamp: number | string | undefined,
+		latestCompactionTimestamp: number | null,
+	): boolean {
+		if (latestCompactionTimestamp === null) return true;
+		const value = typeof timestamp === "number" ? timestamp : timestamp ? new Date(timestamp).getTime() : NaN;
+		return Number.isFinite(value) && value > latestCompactionTimestamp;
+	}
+
+	private _getLatestProviderRequestContextUsage(
+		latestCompactionTimestamp: number | null = this._getLatestCompactionTimestamp(),
+	): ProviderRequestContextUsage | undefined {
 		const branchEntries = this.sessionManager.getBranch();
 		for (let i = branchEntries.length - 1; i >= 0; i--) {
 			const entry = branchEntries[i];
 			if (entry.type !== "custom" || entry.customType !== "provider_request_context_usage") continue;
 			const data = (entry as CustomEntry).data as ProviderRequestContextUsage | undefined;
 			if (data?.version === 1 && typeof data.payloadChars === "number") {
+				const timestamp = data.timestamp ?? (entry as CustomEntry).timestamp;
+				if (!this._isTimestampAfterLatestCompaction(timestamp, latestCompactionTimestamp)) continue;
 				return data;
 			}
 		}
@@ -4564,13 +4641,16 @@ export class AgentSession {
 		];
 	}
 
-	private _buildContextUsageBreakdown(): ContextUsageBreakdownItem[] {
+	private _buildContextUsageBreakdown(
+		messages: AgentMessage[] = this.messages,
+		latestCompactionTimestamp: number | null = this._getLatestCompactionTimestamp(),
+	): ContextUsageBreakdownItem[] {
 		const systemBreakdown = { ...this._baseSystemPromptBreakdown };
 		const currentSystemPrompt = this.agent.state.systemPrompt || this._baseSystemPrompt;
 		const extraSystemChars = Math.max(0, currentSystemPrompt.length - this._baseSystemPrompt.length);
 		systemBreakdown.systemBaseChars += extraSystemChars;
 		const toolDefinitionChars = this._estimateActiveToolDefinitionChars();
-		const providerRequest = this._getLatestProviderRequestContextUsage();
+		const providerRequest = this._getLatestProviderRequestContextUsage(latestCompactionTimestamp);
 
 		const messageTokens = {
 			conversation: 0,
@@ -4582,20 +4662,31 @@ export class AgentSession {
 			lsp: 0,
 		};
 
-		for (const message of this.messages) {
+		for (const message of messages) {
 			if (message.role === "assistant") {
-				const assistantTokens = estimateAssistantMessageParts(message);
+				const assistantTokens = estimateAssistantMessageParts(message, this.model);
 				messageTokens.conversation += assistantTokens.conversation;
 				messageTokens.thinking += assistantTokens.thinking;
 				messageTokens.toolInputs += assistantTokens.toolInputs;
 				continue;
 			}
 			if (message.role === "toolResult") {
-				messageTokens.toolOutputs += estimateTokens(message);
+				// Provider serializes as: {"role":"tool","content":"...","tool_call_id":"..."}
+				// Measured structure overhead: ~46 chars (role, content wrapper, tool_call_id field)
+				// plus tool_call_id content (not counted by content chars).
+				const contentChars = getMessageText(message).length;
+				const toolCallIdChars = (message.toolCallId ?? "").length;
+				const provider = identifyProvider(this.model);
+				messageTokens.toolOutputs +=
+					estimateContentTokensFromChars(contentChars, provider) + estimateCharsAsTokens(46 + toolCallIdChars);
 				continue;
 			}
+			// Provider serializes as: {"role":"user","content":"..."} or {"role":"user","content":[...]}
+			// Measured structure overhead: ~28 chars (role label, content wrapper).
 			const category = classifyContextMessage(message);
-			messageTokens[category] += estimateTokens(message);
+			const contentChars = getMessageText(message).length;
+			const provider = identifyProvider(this.model);
+			messageTokens[category] += estimateContentTokensFromChars(contentChars, provider) + estimateCharsAsTokens(28);
 		}
 
 		const compaction = this._getContextUsageCompactionInfo();
@@ -4607,8 +4698,21 @@ export class AgentSession {
 		const mcpToolTokens = estimateCharsAsTokens(toolDefinitionChars.mcpChars);
 		const providerToolInputTokens = providerToolInteractionTokens(providerRequest, "input");
 		const providerToolOutputTokens = providerToolInteractionTokens(providerRequest, "output");
-		const toolInputTokens = providerToolInputTokens > 0 ? providerToolInputTokens : messageTokens.toolInputs;
-		const toolOutputTokens = providerToolOutputTokens > 0 ? providerToolOutputTokens : messageTokens.toolOutputs;
+		// When provider tool interaction data is available, it gives content-only tokens.
+		// Add per-interaction JSON structure overhead (tool_call wrapper / tool_result wrapper)
+		// that the provider's content-only estimate misses.
+		const toolInteractionInputCount =
+			providerRequest?.toolInteractions?.reduce((sum, t) => sum + t.inputCount, 0) ?? 0;
+		const toolInteractionOutputCount =
+			providerRequest?.toolInteractions?.reduce((sum, t) => sum + t.outputCount, 0) ?? 0;
+		const toolInputTokens =
+			providerToolInputTokens > 0
+				? providerToolInputTokens + estimateCharsAsTokens(toolInteractionInputCount * 65)
+				: messageTokens.toolInputs;
+		const toolOutputTokens =
+			providerToolOutputTokens > 0
+				? providerToolOutputTokens + estimateCharsAsTokens(toolInteractionOutputCount * 46)
+				: messageTokens.toolOutputs;
 		const localMessageTokens =
 			messageTokens.conversation +
 			messageTokens.thinking +
@@ -4619,9 +4723,21 @@ export class AgentSession {
 			messageTokens.lsp;
 		const localSystemTokens = systemTokens + contextFileTokens + skillTokens + agentTokens;
 		const localToolTokens = builtinAndExtensionToolTokens + mcpToolTokens;
+		// openai-completions 系（DeepSeek/OpenAI 等）把 system prompt 放在 messages[0]
+		// (role:"system")，而不是顶层 system key。此时 provider 快照的 system section 为空
+		// （JSON.stringify(null) = 4 chars → 1 token），但 messages section 包含了 system
+		// prompt 内容。而 localSystemTokens 已经被归入 system_base/skills/agents breakdown 项，
+		// 如果不对 messages section 做修正，system prompt 会被 messages delta 双重归因（虚高）。
+		// 判定依据：当 provider system section tokens ≤ 1（只有 null/空值）时，说明 system
+		// prompt 不在独立 system key 里，而是混在了 messages 中。
+		const providerSystemSectionTokens = providerSectionTokens(providerRequest, "system");
+		const systemPromptInMessages = providerSystemSectionTokens <= 1;
 		const providerDeltas = {
-			system: positiveDeltaTokens(providerSectionTokens(providerRequest, "system"), localSystemTokens),
-			messages: positiveDeltaTokens(providerSectionTokens(providerRequest, "messages"), localMessageTokens),
+			system: positiveDeltaTokens(providerSystemSectionTokens, localSystemTokens),
+			messages: positiveDeltaTokens(
+				providerSectionTokens(providerRequest, "messages") - (systemPromptInMessages ? localSystemTokens : 0),
+				localMessageTokens,
+			),
 			tools: positiveDeltaTokens(providerSectionTokens(providerRequest, "tools"), localToolTokens),
 			options: providerSectionTokens(providerRequest, "options"),
 		};

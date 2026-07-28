@@ -60,6 +60,7 @@ import type {
 	SessionEntry,
 	SessionManager,
 } from "../session-manager.ts";
+import type { Settings } from "../settings-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -502,6 +503,14 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Get the effective merged settings (global deep-merged with project).
+	 *
+	 * Returns a fresh structuredClone on each call; callers can freely mutate.
+	 * Use this to read user configuration from .pi/settings.json — including
+	 * custom keys that aren't part of the typed Settings schema (cast as needed).
+	 */
+	getSettings(): Readonly<Settings>;
 	/** The name of the current extension. */
 	extensionName: string;
 	/** Canonical git root (worktree-aware). Falls back to cwd if not a git repo. */
@@ -1606,6 +1615,23 @@ export interface ExtensionAPI {
 	 */
 	callLLM(options: CallLLMOptions): Promise<string>;
 
+	/**
+	 * Stale-safe variant of callLLM for background work.
+	 *
+	 * Unlike callLLM, this does NOT throw when the extension ctx is stale
+	 * (after session replacement / reload). It calls the underlying LLM
+	 * directly, which is safe because the LLM provider settings live on the
+	 * AgentSession instance and survive ctx invalidation.
+	 *
+	 * Use this ONLY inside pi.background tasks or async fire-and-forget work
+	 * that legitimately needs to outlive the original session. For normal
+	 * request-scoped LLM calls, prefer callLLM — the stale check is a useful
+	 * guard against subtle bugs.
+	 *
+	 * Behavior parity with callLLM otherwise (same options, same return shape).
+	 */
+	callLLMSafe(options: CallLLMOptions): Promise<string>;
+
 	// =========================================================================
 	// Provider Registration
 	// =========================================================================
@@ -1931,6 +1957,7 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	getSettings: () => Settings;
 }
 
 /**

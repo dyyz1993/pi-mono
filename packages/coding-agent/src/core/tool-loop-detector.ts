@@ -42,10 +42,50 @@ const MAX_IDENTICAL_ERROR_CALLS = 2;
  * - read: path + offset (reading different parts of a large file is legitimate)
  * - edit/write: path only (editing the same file repeatedly with different
  *   content is still suspicious — but errors are tracked separately)
- * - bash: command (truncated to 200 chars)
+ * - bash: command normalized via normalizeBashCommand (no-op/echo collapsed)
  * - grep/glob: pattern
  * - others: full JSON
  */
+
+/**
+ * Normalize a bash command for loop-detection signatures.
+ *
+ * No-op / output-only commands are collapsed to a fixed signature so that
+ * LLM loops varying the echo text (a common degradation pattern under
+ * context pressure) are detected:
+ *   echo "submitting"       → bash:cmd=echo
+ *   echo 'done'             → bash:cmd=echo
+ *   echo submitting now     → bash:cmd=echo
+ *   true                    → bash:cmd=noop
+ *   :                       → bash:cmd=noop
+ *   # comment               → bash:cmd=noop
+ *   printf "..."            → bash:cmd=printf
+ *
+ * Any command with side effects (cd, git, cargo, grep, etc.) keeps its
+ * truncated full-text signature.
+ */
+function normalizeBashCommand(cmd: string): string {
+	const trimmed = cmd.trim();
+	if (trimmed === "") return "";
+
+	// Strip leading env-var assignments (FOO=bar baz=qux <real command>)
+	const withoutEnv = trimmed.replace(/^(?:\w+=\S+\s+)+/, "");
+	const firstToken = withoutEnv.split(/\s+/)[0] ?? "";
+
+	// Pure no-op commands — always collapse regardless of arguments
+	if (firstToken === "true" || firstToken === ":" || firstToken === "#") {
+		return "noop";
+	}
+
+	// echo / printf — output-only, collapse to tool name
+	if (firstToken === "echo" || firstToken === "printf") {
+		return firstToken;
+	}
+
+	// Fall back to truncated full command for everything else
+	return cmd.slice(0, 200);
+}
+
 export function computeToolSignature(toolName: string, args: Record<string, unknown> | undefined): string {
 	if (!args || Object.keys(args).length === 0) {
 		return `${toolName}:{}`;
@@ -64,10 +104,14 @@ export function computeToolSignature(toolName: string, args: Record<string, unkn
 		return `${toolName}:path=${path}`;
 	}
 
-	// Bash: signature on command (truncated)
+	// Bash: signature on command (truncated).
+	// No-op commands (echo / true / : / printf to stdout / comment) are
+	// normalized to a single signature so that LLM loops like
+	//   echo "submitting" → echo "done" → echo "final submit" → ...
+	// are caught regardless of the varying text content.
 	if (toolName === "bash") {
-		const cmd = String(args.command ?? "");
-		return `${toolName}:cmd=${cmd.slice(0, 200)}`;
+		const rawCmd = String(args.command ?? "");
+		return `${toolName}:cmd=${normalizeBashCommand(rawCmd)}`;
 	}
 
 	// Search tools: signature on pattern

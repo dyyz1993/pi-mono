@@ -555,7 +555,7 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			const diff = mgr.getFileDiff({ filePath: "a.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			const diff = mgr.getFileDiff({ filePath: "a.txt", fromHash: tree1.treeHash, toHash: tree2.treeHash });
 			expect(diff).not.toBeNull();
 			expect(diff!.oldContent).toBe("line1\n");
 			expect(diff!.newContent).toBe("line1\nline2\n");
@@ -580,7 +580,7 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			const diff = mgr.getFileDiff({ filePath: "new.txt", toEntryId: "snap-1" });
+			const diff = mgr.getFileDiff({ filePath: "new.txt", toHash: tree.treeHash });
 			expect(diff).not.toBeNull();
 			expect(diff!.oldContent).toBeNull();
 			expect(diff!.newContent).toBe("new content\n");
@@ -609,7 +609,7 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			const diff = mgr.getFileDiff({ filePath: "rm.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			const diff = mgr.getFileDiff({ filePath: "rm.txt", fromHash: tree1.treeHash, toHash: tree2.treeHash });
 			expect(diff).not.toBeNull();
 			expect(diff!.oldContent).toBe("to be deleted\n");
 			expect(diff!.newContent).toBeNull();
@@ -666,7 +666,7 @@ describe("FileSnapshotManager", () => {
 			expect(diff!.newContent).toBe("v2\n");
 
 			// With explicit fromEntryId, oldContent IS found
-			const diffWithId = mgr.getFileDiff({ filePath: "f.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			const diffWithId = mgr.getFileDiff({ filePath: "f.txt", fromHash: tree1.treeHash, toHash: tree2.treeHash });
 			expect(diffWithId).not.toBeNull();
 			expect(diffWithId!.oldContent).toBe("v1\n");
 		});
@@ -1121,8 +1121,8 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			// getFileDiff with explicit fromEntryId should give proper diff
-			const diff = mgr.getFileDiff({ filePath: "config.yaml", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			// getFileDiff with explicit fromHash should give proper diff
+			const diff = mgr.getFileDiff({ filePath: "config.yaml", fromHash: tree1.treeHash, toHash: tree2.treeHash });
 			expect(diff).not.toBeNull();
 			expect(diff!.oldContent).toBe("key: old\nother: value\n");
 			expect(diff!.newContent).toBe("key: new\n");
@@ -1132,10 +1132,10 @@ describe("FileSnapshotManager", () => {
 		});
 	});
 
-	describe("getFileDiff with explicit fromEntryId", () => {
-		it("returns correct oldContent when fromEntryId is provided", () => {
+	describe("getFileDiff with explicit fromHash", () => {
+		it("returns correct oldContent when fromHash is provided", () => {
 			// Session starts empty, file created in turn 0, modified in turn 1.
-			// with explicit fromEntryId, oldContent comes from that snapshot's tree.
+			// with explicit fromHash, oldContent comes from that snapshot's tree.
 			const git = new InternalGit(storeDir);
 			const tree1 = git.writeTree(new Map([["file.txt", "V1 content\n"]]));
 			const tree2 = git.writeTree(new Map([["file.txt", "V2 content\n"]]));
@@ -1158,8 +1158,8 @@ describe("FileSnapshotManager", () => {
 			const mgr = new FileSnapshotManager(git);
 			mgr.rebuildIndex(entries);
 
-			// With explicit fromEntryId, oldContent comes from snap-1's tree
-			const diff = mgr.getFileDiff({ filePath: "file.txt", fromEntryId: "snap-1", toEntryId: "snap-2" });
+			// With explicit fromHash, oldContent comes from snap-1's tree
+			const diff = mgr.getFileDiff({ filePath: "file.txt", fromHash: tree1.treeHash, toHash: tree2.treeHash });
 			expect(diff).not.toBeNull();
 			expect(diff!.oldContent).toBe("V1 content\n");
 			expect(diff!.newContent).toBe("V2 content\n");
@@ -1247,7 +1247,7 @@ describe("FileSnapshotManager", () => {
 			const largeContent = "x".repeat(1024 * 1024 + 100);
 			writeFileSync(join(testDir, "big.txt"), largeContent);
 
-			const result = mgr.getBatchFileContents([{ filePath: "big.txt", fromEntryId: "snap-1" }], testDir);
+			const result = mgr.getBatchFileContents([{ filePath: "big.txt", fromHash: tree1.treeHash }], testDir);
 			const content = result.get("big.txt");
 			expect(content).toBeDefined();
 			// oldContent from snapshot (small file in tree)

@@ -2,7 +2,7 @@
  * Tests for compaction extension events (before_compact / compact).
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@dyyz1993/pi-agent-core";
@@ -29,7 +29,7 @@ const zhipuaiModel = {
 	id: "glm-4.7",
 	name: "GLM-4.7",
 	api: "openai-completions" as const,
-	provider: "zhipuai",
+	provider: "zai-coding-cn",
 	baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
 	reasoning: true,
 	input: ["text" as const],
@@ -109,9 +109,30 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		});
 
 		const sessionManager = SessionManager.create(tempDir);
+		// Lower the compaction threshold so the tiny 2-turn test sessions
+		// (just a few dozen tokens) become eligible for compaction. The
+		// production default of 20000 keepRecentTokens means short sessions
+		// have nothing to summarize and prepareCompaction returns undefined.
+		writeFileSync(
+			join(tempDir, "settings.json"),
+			JSON.stringify({ compaction: { enabled: true, keepRecentTokens: 10, reserveTokens: 10 } }),
+		);
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		// Register the API key with the auth storage and model registry so
+		// AgentSession.prompt's preflight auth check (hasConfiguredAuth) passes.
+		// Without this, prompt() throws "No API key found for zai-coding-cn"
+		// because modelRegistry doesn't know the provider is configured.
+		if (API_KEY) {
+			authStorage.setRuntimeApiKey("zai-coding-cn", API_KEY);
+		}
 		const modelRegistry = ModelRegistry.create(authStorage);
+		modelRegistry.registerProvider("zai-coding-cn", {
+			baseUrl: zhipuaiModel.baseUrl,
+			apiKey: API_KEY,
+			api: zhipuaiModel.api,
+			models: [zhipuaiModel],
+		});
 
 		const runtime = createExtensionRuntime();
 		const resourceLoader = {
@@ -174,6 +195,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		await session.prompt("What is 2+2? Reply with just the number.");
 		await session.agent.waitForIdle();
 
+		await session.prompt("What is 3+3? Reply with just the number.");
+		await session.agent.waitForIdle();
+
 		await expect(session.compact()).rejects.toThrow("Compaction cancelled");
 
 		const compactEvents = capturedEvents.filter((e) => e.type === "session_compact");
@@ -222,6 +246,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		createSession([extension]);
 
 		await session.prompt("What is 2+2? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.prompt("What is 3+3? Reply with just the number.");
 		await session.agent.waitForIdle();
 
 		await session.compact();
@@ -273,6 +300,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		createSession([throwingExtension]);
 
 		await session.prompt("What is 2+2? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.prompt("What is 3+3? Reply with just the number.");
 		await session.agent.waitForIdle();
 
 		const result = await session.compact();
@@ -355,6 +385,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		await session.prompt("What is 2+2? Reply with just the number.");
 		await session.agent.waitForIdle();
 
+		await session.prompt("What is 3+3? Reply with just the number.");
+		await session.agent.waitForIdle();
+
 		await session.compact();
 
 		expect(callOrder).toEqual(["extension1-before", "extension2-before", "extension1-after", "extension2-after"]);
@@ -417,6 +450,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		createSession([extension]);
 
 		await session.prompt("What is 2+2? Reply with just the number.");
+		await session.agent.waitForIdle();
+
+		await session.prompt("What is 3+3? Reply with just the number.");
 		await session.agent.waitForIdle();
 
 		const result = await session.compact();

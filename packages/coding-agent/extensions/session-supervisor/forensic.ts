@@ -26,6 +26,7 @@ export type ForensicRecord =
   | { ts: string; type: "gold_result_emitted"; goldResult: Omit<GoldResult, "goalId" | "checkedAt"> & { goalId?: string; checkedAt: number } }
   | { ts: string; type: "supervisor_complete_called"; summary: string; enabled: boolean; activeGuardCount: number }
   | { ts: string; type: "supervisor_complete_guard_blocked"; guardName: string; remainingItems: string[] }
+  | { ts: string; type: "supervisor_complete_checklist_blocked"; incompleteCount: number; incompleteItems: { id: string; text: string; status: string }[] }
   | { ts: string; type: "supervisor_complete_approved"; guardsPassed: number }
   | { ts: string; type: "continue_scheduled"; reason: string; delayMs: number; continueCount: number; maxContinueCount: number; shouldPause: boolean }
   | { ts: string; type: "continue_skipped"; reason: string }

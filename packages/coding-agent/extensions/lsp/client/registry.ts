@@ -44,7 +44,12 @@ export interface LspRuntimeRegistry {
 	clearPublishedDiagnostics(filePath: string): void;
 	getStatus(): LspRuntimeRegistryStatus;
 	getStatusForPath(filePath: string): ReturnType<LspClientRuntime["getStatus"]> | undefined;
-	startSingle(name: string, command: string[], fileTypes?: string[]): Promise<void>;
+	startSingle(
+		name: string,
+		command: string[],
+		fileTypes?: string[],
+		overrides?: Pick<LspClientRuntimeOptions, "initializationOptions" | "configuration">,
+	): Promise<void>;
 	stopSingle(name: string): Promise<void>;
 	touchAccess(name: string): void;
 	getIdleServers(timeoutMs: number): string[];
@@ -53,7 +58,7 @@ export interface LspRuntimeRegistry {
 }
 
 export interface LspRuntimeRegistryOptions extends Omit<LspClientRuntimeOptions, "spawn"> {
-	createRuntime?: () => LspClientRuntime;
+	createRuntime?: (overrides?: Pick<LspClientRuntimeOptions, "initializationOptions" | "configuration">) => LspClientRuntime;
 	metrics?: ServerMetricsCollector;
 }
 
@@ -66,7 +71,10 @@ interface RuntimeEntry {
 }
 
 export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}): LspRuntimeRegistry {
-	const createRuntime = options.createRuntime ?? (() => createLspClientRuntime(options));
+	const createRuntime =
+		options.createRuntime ??
+		((overrides?: Pick<LspClientRuntimeOptions, "initializationOptions" | "configuration">) =>
+			createLspClientRuntime({ ...options, ...overrides }));
 	const metrics = options.metrics;
 	const entries = new Map<string, RuntimeEntry>();
 	const preservedAccessCounts = new Map<string, number>();
@@ -90,7 +98,10 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 
 			for (const server of servers) {
 				metrics?.onStarting(server.name, server.fileTypes ?? []);
-				const runtime = createRuntime();
+				const runtime = createRuntime({
+					initializationOptions: server.initializationOptions,
+					configuration: server.configuration,
+				});
 				entries.set(server.name, {
 					server,
 					runtime,
@@ -242,13 +253,27 @@ export function createLspRuntimeRegistry(options: LspRuntimeRegistryOptions = {}
 			return entry?.runtime.getStatus();
 		},
 
-		async startSingle(name: string, command: string[], fileTypes?: string[]): Promise<void> {
+		async startSingle(
+			name: string,
+			command: string[],
+			fileTypes?: string[],
+			overrides?: { initializationOptions?: unknown; configuration?: Record<string, unknown> },
+		): Promise<void> {
 			if (entries.has(name)) return;
 			metrics?.onStarting(name, fileTypes ?? []);
-			const runtime = createRuntime();
+			const runtime = createRuntime({
+				initializationOptions: overrides?.initializationOptions,
+				configuration: overrides?.configuration,
+			});
 			const preservedCount = preservedAccessCounts.get(name) ?? 0;
 			entries.set(name, {
-				server: { name, command, fileTypes },
+				server: {
+					name,
+					command,
+					fileTypes,
+					initializationOptions: overrides?.initializationOptions as Record<string, unknown> | undefined,
+					configuration: overrides?.configuration,
+				},
 				runtime,
 				isPrimary: false,
 				accessCount: preservedCount,

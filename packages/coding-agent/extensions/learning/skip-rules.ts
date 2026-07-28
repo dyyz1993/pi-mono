@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { logger } from "./utils.ts";
 
 export interface SkipRule {
   pattern: string;
@@ -164,7 +165,7 @@ export function matchRule(query: string, rule: SkipRule): boolean {
         const re = new RegExp(rule.pattern);
         return re.test(query);
       } catch (err) {
-        console.debug("[learning] regex evaluation failed:", err instanceof Error ? err.message : err);
+        logger.warn("regex evaluation failed", { error: err instanceof Error ? err.message : err });
         return false;
       }
     }
@@ -222,7 +223,7 @@ export function loadSkipWordStore(dir: string): SkipWordStore {
     }
     return parsed;
   } catch (err) {
-    console.debug("[learning] skip word store load failed:", err instanceof Error ? err.message : err);
+    logger.warn("skip word store load failed", { error: err instanceof Error ? err.message : err });
     return getDefaultStore();
   }
 }
