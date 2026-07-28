@@ -545,6 +545,34 @@ describe("session_delegate_status handler", () => {
 			error: "Delegate session not found",
 		});
 	});
+
+	it("returns a stopped task record after the delegate timeout fires (issue #151)", async () => {
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "not_found" as const }),
+		});
+		await ctx.client.call("session_delegate", {
+			task: "Do something slow",
+			projectPath: "/tmp/proj",
+			timeoutMs: 50,
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		// Timeout fires → process stopped + task marked stopped in store.
+		expect(ctx.pm.delegate_stop).toHaveBeenCalledWith("sess-1");
+		expect(ctx.store.get("sess-1")).toMatchObject({ status: "stopped" });
+
+		// Subsequent status check must still surface the stopped task (not null),
+		// and the remote not_found must NOT erase the local stopped record.
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-1",
+		});
+
+		expect(result.task).not.toBeNull();
+		expect(result.task!.status).toBe("stopped");
+		expect(result.task!.completedAt).toBeDefined();
+		expect(ctx.store.get("sess-1")!.status).toBe("stopped");
+	});
 });
 
 // ── session_delegate_list ──
