@@ -600,4 +600,22 @@ export class GoalStore {
 		mkdirSync(this.sessionDir(ctx), { recursive: true, mode: 0o700 });
 		appendFileSync(join(this.sessionDir(ctx), "events.jsonl"), `${JSON.stringify(event)}\n`, { mode: 0o600 });
 	}
+
+	/** Read the most recent events from events.jsonl (newest last). Returns [] if absent. */
+	readEventLog(ctx: ExtensionContext, limit = 200): GoalEventRecord[] {
+		const logPath = join(this.sessionDir(ctx), "events.jsonl");
+		if (!existsSync(logPath)) return [];
+		const text = readFileSync(logPath, "utf8");
+		const lines = text.split("\n").filter((line) => line.trim().length > 0);
+		const tail = lines.slice(-limit);
+		const records: GoalEventRecord[] = [];
+		for (const line of tail) {
+			try {
+				records.push(JSON.parse(line) as GoalEventRecord);
+			} catch {
+				// Skip malformed lines (partial writes etc).
+			}
+		}
+		return records;
+	}
 }

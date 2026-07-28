@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@dyyz1993/pi-ai";
 import {
+	createTypedChannel,
 	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -9,6 +10,12 @@ import {
 	type ToolResultEvent,
 } from "@dyyz1993/pi-coding-agent";
 import { Type } from "typebox";
+import type {
+	GoalChannelContract,
+	GoalVendorStatus,
+	GoalVendorTaskItem,
+	GoalVendorTriggerRecord,
+} from "./channel-contract.ts";
 import { validateCommandAuthorityDefinition, validateDraftCommandAuthorities } from "./authority.ts";
 import { IsolatedAuditError, IsolatedModelRunner, normalizeDraft } from "./evaluator.ts";
 import {
@@ -1318,6 +1325,237 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			triggerSetupConversation(state, "Discuss the goal using the existing conversation. Ask only necessary questions, then submit the complete contract.");
 			ctx.ui.notify("Goal setup started in this conversation.", "info");
 		},
+	});
+
+	// ── Channel adapter (slimmed "goal" channel) ───────────────────────────
+	// Exposes a supervisor-compatible control surface to external IDE clients.
+	// Mirrors session-supervisor's "supervisor" channel where semantics allow;
+	// drops methods that don't map to the contract-based kernel (setGoal ->
+	// startSetup, requestPause/cancelPause removed) and adds approveContract /
+	// rejectContract so headless clients can approve without ctx.ui.confirm.
+
+	let goalEnabled = true;
+
+	function projectState(state: GoalState | undefined, ctx?: ExtensionContext): GoalVendorStatus {
+		if (!state) {
+			return { enabled: goalEnabled, state: goalEnabled ? "idle" : "disabled", rawStatus: "none", rawPhase: "none", continuationSequence: 0, turnCount: 0 };
+		}
+		let flatState: GoalVendorStatus["state"];
+		switch (state.status) {
+			case "setting_up":
+			case "awaiting_approval":
+				flatState = "setup";
+				break;
+			case "running":
+				if (state.phase === "verifying" || state.phase === "auditing") flatState = "checking";
+				else flatState = "running";
+				break;
+			case "paused":
+				flatState = "paused";
+				break;
+			case "interrupted":
+				flatState = "blocked";
+				break;
+			case "completed":
+			case "cancelled":
+				flatState = "idle";
+				break;
+			default:
+				flatState = "idle";
+		}
+		if (!goalEnabled) flatState = "disabled";
+		return {
+			enabled: goalEnabled,
+			state: flatState,
+			rawStatus: state.status,
+			rawPhase: state.phase,
+			continuationSequence: state.continuationSequence,
+			turnCount: state.turnCount,
+			objective: redactText(state.outcome.current, 500).text,
+			goalId: state.goalId,
+			generation: state.generation,
+		};
+	}
+
+	function projectTaskReport(state: GoalState | undefined): { tasks: GoalVendorTaskItem[] } {
+		if (!state) return { tasks: [] };
+		const tasks: GoalVendorTaskItem[] = state.criteria.map((criterion) => ({
+			id: criterion.id,
+			label: redactText(criterion.text, 200).text,
+			status: criterion.status,
+			hasEvidence: criterion.evidenceIds.length > 0,
+		}));
+		return { tasks };
+	}
+
+	function projectTriggerHistory(ctx: ExtensionContext, limit?: number): { triggers: GoalVendorTriggerRecord[] } {
+		const records = store.readEventLog(ctx, limit ?? 200);
+		const triggers: GoalVendorTriggerRecord[] = records.map((record, index) => ({
+			goalId: record.goalId,
+			seq: index + 1,
+			eventType: record.type,
+			summary: record.summary,
+			revision: record.revision,
+			timestamp: typeof record.at === "number" ? new Date(record.at).toISOString() : String(record.at),
+		}));
+		return { triggers };
+	}
+
+	const rawGoalChannel = pi.registerChannel("goal");
+	const { server: goalChannel } = createTypedChannel<GoalChannelContract>(rawGoalChannel);
+
+	goalChannel.handle("getStatus", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return projectState(undefined);
+		return projectState(store.get(), ctx);
+	});
+
+	goalChannel.handle("startSetup", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { started: false, error: "no active session context" };
+		const outcome = params.objective?.trim();
+		if (!outcome) return { started: false, error: "objective is required" };
+		return await mutex.run(() => {
+			const existing = store.get();
+			if (existing && existing.status !== "completed" && existing.status !== "cancelled") {
+				return { started: false, error: `session already has an active goal (${existing.goalId}, status=${existing.status})` };
+			}
+			refreshToolInfo();
+			const state = createGoalSetupState(outcome, ctx);
+			state.continuationSequence += 1;
+			store.set(state);
+			persist(ctx, "setup_started", "goal setup started via channel");
+			triggerSetupConversation(state, "Discuss the goal using the existing conversation. Ask only necessary questions, then submit the complete contract.");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "setup_started" });
+			return { started: true, goalId: state.goalId };
+		});
+	});
+
+	goalChannel.handle("approveContract", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { approved: false, error: "no active session context" };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { approved: false, error: "no active goal" };
+			if (state.status !== "awaiting_approval") return { approved: false, error: `goal is not awaiting approval (status=${state.status})` };
+			state.status = "running";
+			state.phase = "executing";
+			state.approvedAt = now();
+			state.generation += 1;
+			state.continuationSequence += 1;
+			state.setupAwaitingUser = false;
+			const currentNodeRef = state.plan.find((node) => node.status === "in_progress") ?? state.plan.find((node) => node.status === "pending");
+			state.currentAction = currentNodeRef?.title ?? "Begin goal";
+			state.nextAction = state.plan.find((node) => node.status === "pending")?.title ?? "Collect evidence";
+			persist(ctx, "setup_approved", "contract approved via channel");
+			triggerContinuation(state, "The user approved the goal contract and declared authority envelope. Work autonomously until independently verified complete.");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "setup_approved" });
+			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "contract approved" });
+			return { approved: true };
+		});
+	});
+
+	goalChannel.handle("rejectContract", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { rejected: false };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state || state.status !== "awaiting_approval") return { rejected: false };
+			markGoalCancelled(ctx, state, "setup_cancelled", params.reason ?? "contract rejected via channel");
+			goalChannel.emit("goal.statusChanged", projectState(undefined, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: "cancelled", reason: params.reason ?? "rejected" });
+			return { rejected: true };
+		});
+	});
+
+	goalChannel.handle("clearGoal", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { cleared: false };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { cleared: false };
+			const setup = state.status === "setting_up" || state.status === "awaiting_approval";
+			markGoalCancelled(ctx, state, setup ? "setup_cancelled" : "goal_cancelled", params.reason ?? "cleared via channel");
+			goalChannel.emit("goal.statusChanged", projectState(undefined, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: "cancelled", reason: params.reason ?? "cleared" });
+			return { cleared: true };
+		});
+	});
+
+	goalChannel.handle("forceContinue", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { triggered: false };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state || !isActiveGoal(state)) return { triggered: false };
+			armFreshContinuation(state);
+			persist(ctx, "force_continue", params.reason ?? "forced via channel");
+			triggerContinuation(state, params.reason ?? "Continue goal after external force-continue.");
+			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: params.reason ?? "forced" });
+			return { triggered: true };
+		});
+	});
+
+	goalChannel.handle("disable", async () => {
+		goalEnabled = false;
+		const ctx = currentCtx;
+		if (ctx) {
+			const state = store.get();
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+		}
+		return { disabled: true };
+	});
+
+	goalChannel.handle("enable", async () => {
+		goalEnabled = true;
+		const ctx = currentCtx;
+		if (ctx) {
+			const state = store.get();
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+		}
+		return { enabled: true };
+	});
+
+	goalChannel.handle("getTaskReport", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { tasks: [] };
+		return projectTaskReport(store.get());
+	});
+
+	goalChannel.handle("getTriggerHistory", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { triggers: [] };
+		return projectTriggerHistory(ctx, params.limit);
+	});
+
+	goalChannel.handle("refineGoal", async (params) => {
+		// Self-contained LLM polish; does not depend on the goal state machine.
+		// Retained verbatim from session-supervisor semantics.
+		const objective = params.objective?.trim();
+		if (!objective) return { success: false, error: "objective is required" };
+		try {
+			const refined = await pi.callLLM({
+				systemPrompt: "You refine a user's goal objective into a clearer, more actionable version. Keep it concise. Output only the refined objective, nothing else.",
+				messages: [{ role: "user", content: objective }],
+			});
+			return { success: true, objective: typeof refined === "string" ? refined.trim() : objective };
+		} catch (error) {
+			return { success: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+
+	goalChannel.handle("checkToolStatus", async (params) => {
+		// Generic out-of-band channel probe; no state coupling. Forward as-is.
+		const targetChannel = params.channelName ?? params.toolName;
+		if (!targetChannel) return { reachable: false, error: "channelName or toolName is required" };
+		try {
+			const result = await rawGoalChannel.call(`${targetChannel}.${params.method ?? "getStatus"}`, {}, 5000);
+			return { reachable: true, status: JSON.stringify(result) };
+		} catch (error) {
+			return { reachable: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	});
 
 	const Expected = {
