@@ -361,6 +361,14 @@ When closing issues via commit:
 
 - Include `fixes #<number>` or `closes #<number>` in the message so merging auto-closes the issue. For multiple issues, repeat the keyword per issue (`closes #1, closes #2`); a shared keyword (`closes #1, #2`) only closes the first.
 
+When fixing bugs and verifying the fix:
+
+- **TDD order matters**. Write a test that reproduces the bug first (red), then implement the fix to turn it green. Tests written after the fix and "verified passing" only prove the new code is internally consistent — they do not prove the fix addresses the original bug.
+- **Run the full test file before committing**, not just `vitest -t "<single name>"`. A single-case run will silently miss unrelated `it`/`test` blocks that an in-progress edit (especially regex-based find-and-replace) may have corrupted.
+- **Never edit source or test code with `sed`/`awk`**. Use a precise editor with explicit old/new strings. Global substitutions have shot down unrelated test blocks before; the failure mode is "the touched case passes, other cases in the same file fail," which only a full-file run catches.
+- **`fixes #N` requires test evidence in the same change set**. If the regression test for the issue is not part of the PR, write `relates to #N` / `refs #N` instead. Auto-closing an issue that is not actually fixed is worse than leaving it open.
+- **Stale-base PRs need a dry-run, not just GitHub "Mergeable"**. If the feature branch is behind `main`, the PR diff will show thousands of "fake deletions" (actually main's later code). Run `git merge-tree $(git merge-base HEAD origin/main) HEAD origin/main` to verify the merge result, or rebase onto latest `main` so the diff is honest.
+
 ## Testing pi Interactive Mode with tmux
 
 Run the TUI in a controlled terminal (from the repo root):
