@@ -4495,13 +4495,14 @@ export class AgentSession {
 
 		const materializedMessages = this.sessionManager.buildSessionContext().messages;
 		const contextMessages = materializedMessages.length > 0 ? materializedMessages : this.messages;
-		const breakdown = this._buildContextUsageBreakdown(contextMessages);
+		const latestCompactionTimestamp = this._getLatestCompactionTimestamp();
+		const breakdown = this._buildContextUsageBreakdown(contextMessages, latestCompactionTimestamp);
 		const breakdownTokens = this._sumContextUsageBreakdownTokens(breakdown);
 		// Always read from the session branch — this.agent.state.messages may
 		// be empty right after process startup (before the first prompt()),
 		// which would cause context usage to report near-zero tokens even
 		// for sessions with thousands of messages on disk.
-		const providerRequest = this._getLatestProviderRequestContextUsage();
+		const providerRequest = this._getLatestProviderRequestContextUsage(latestCompactionTimestamp);
 
 		// Find the last assistant message with valid usage from the materialized
 		// context. Matching inside one message array avoids relying on Usage object
@@ -4516,6 +4517,7 @@ export class AgentSession {
 			const assistant = message;
 			if (assistant.stopReason === "aborted" || assistant.stopReason === "error") continue;
 			if (!assistant.usage) continue;
+			if (!this._isTimestampAfterLatestCompaction(assistant.timestamp, latestCompactionTimestamp)) continue;
 			lastUsage = assistant.usage;
 			lastUsageMessageIndex = i;
 			break;
@@ -4557,13 +4559,33 @@ export class AgentSession {
 		};
 	}
 
-	private _getLatestProviderRequestContextUsage(): ProviderRequestContextUsage | undefined {
+	private _getLatestCompactionTimestamp(): number | null {
+		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (!compactionEntry) return null;
+		const timestamp = new Date(compactionEntry.timestamp).getTime();
+		return Number.isFinite(timestamp) ? timestamp : null;
+	}
+
+	private _isTimestampAfterLatestCompaction(
+		timestamp: number | string | undefined,
+		latestCompactionTimestamp: number | null,
+	): boolean {
+		if (latestCompactionTimestamp === null) return true;
+		const value = typeof timestamp === "number" ? timestamp : timestamp ? new Date(timestamp).getTime() : NaN;
+		return Number.isFinite(value) && value > latestCompactionTimestamp;
+	}
+
+	private _getLatestProviderRequestContextUsage(
+		latestCompactionTimestamp: number | null = this._getLatestCompactionTimestamp(),
+	): ProviderRequestContextUsage | undefined {
 		const branchEntries = this.sessionManager.getBranch();
 		for (let i = branchEntries.length - 1; i >= 0; i--) {
 			const entry = branchEntries[i];
 			if (entry.type !== "custom" || entry.customType !== "provider_request_context_usage") continue;
 			const data = (entry as CustomEntry).data as ProviderRequestContextUsage | undefined;
 			if (data?.version === 1 && typeof data.payloadChars === "number") {
+				const timestamp = data.timestamp ?? (entry as CustomEntry).timestamp;
+				if (!this._isTimestampAfterLatestCompaction(timestamp, latestCompactionTimestamp)) continue;
 				return data;
 			}
 		}
@@ -4619,13 +4641,16 @@ export class AgentSession {
 		];
 	}
 
-	private _buildContextUsageBreakdown(messages: AgentMessage[] = this.messages): ContextUsageBreakdownItem[] {
+	private _buildContextUsageBreakdown(
+		messages: AgentMessage[] = this.messages,
+		latestCompactionTimestamp: number | null = this._getLatestCompactionTimestamp(),
+	): ContextUsageBreakdownItem[] {
 		const systemBreakdown = { ...this._baseSystemPromptBreakdown };
 		const currentSystemPrompt = this.agent.state.systemPrompt || this._baseSystemPrompt;
 		const extraSystemChars = Math.max(0, currentSystemPrompt.length - this._baseSystemPrompt.length);
 		systemBreakdown.systemBaseChars += extraSystemChars;
 		const toolDefinitionChars = this._estimateActiveToolDefinitionChars();
-		const providerRequest = this._getLatestProviderRequestContextUsage();
+		const providerRequest = this._getLatestProviderRequestContextUsage(latestCompactionTimestamp);
 
 		const messageTokens = {
 			conversation: 0,

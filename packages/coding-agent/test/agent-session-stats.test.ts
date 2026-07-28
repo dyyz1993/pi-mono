@@ -175,7 +175,7 @@ describe("AgentSession.getSessionStats", () => {
 			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
 			sessionManager.appendCompaction("summary", keptUserId, 195_000);
-			sessionManager.appendMessage(createUserMessage("third", 5));
+			sessionManager.appendMessage(createUserMessage("third", Date.now() + 1_000));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -183,6 +183,44 @@ describe("AgentSession.getSessionStats", () => {
 			expect(stats.contextUsage).toBeDefined();
 			expect(typeof stats.contextUsage?.tokens).toBe("number");
 			expect(typeof stats.contextUsage?.percent).toBe("number");
+			expect(stats.contextUsage?.tokens).toBeLessThan(195_000);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("ignores stale pre-compaction provider request context usage", () => {
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
+			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
+			sessionManager.appendCustomEntry("provider_request_context_usage", {
+				version: 1,
+				provider: model.provider,
+				modelId: model.id,
+				api: model.api,
+				timestamp: new Date(Date.now() - 1_000).toISOString(),
+				payloadChars: 800_000,
+				payloadTokens: 200_000,
+				topLevelKeys: ["messages"],
+				sections: [
+					{ id: "system", label: "Provider system/instructions", chars: 0, tokens: 0 },
+					{ id: "messages", label: "Provider messages/input", chars: 800_000, tokens: 200_000, count: 4 },
+					{ id: "tools", label: "Provider tools", chars: 0, tokens: 0, count: 0 },
+					{ id: "options", label: "Provider options/metadata", chars: 0, tokens: 0 },
+				],
+			});
+			sessionManager.appendCompaction("summary", keptUserId, 195_000);
+			sessionManager.appendMessage(createUserMessage("third", Date.now() + 1_000));
+			syncAgentMessages(session, sessionManager);
+
+			const usage = session.getContextUsage();
+			expect(usage?.providerRequest).toBeUndefined();
+			expect(usage?.breakdown?.find((item) => item.id === "provider_messages")?.tokens).toBe(0);
+			expect(usage?.tokens).toBeLessThan(195_000);
 		} finally {
 			session.dispose();
 		}
@@ -197,8 +235,9 @@ describe("AgentSession.getSessionStats", () => {
 			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
 			sessionManager.appendCompaction("summary", keptUserId, 195_000);
-			sessionManager.appendMessage(createUserMessage("third", 5));
-			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, 6));
+			const postCompactionTimestamp = Date.now() + 1_000;
+			sessionManager.appendMessage(createUserMessage("third", postCompactionTimestamp));
+			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, postCompactionTimestamp + 1));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
