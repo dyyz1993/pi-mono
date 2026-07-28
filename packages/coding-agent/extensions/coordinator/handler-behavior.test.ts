@@ -545,6 +545,34 @@ describe("session_delegate_status handler", () => {
 			error: "Delegate session not found",
 		});
 	});
+
+	it("returns a stopped task record after the delegate timeout fires (issue #151)", async () => {
+		const ctx = useCtx({
+			delegate_status: vi.fn().mockResolvedValue({ status: "not_found" as const }),
+		});
+		await ctx.client.call("session_delegate", {
+			task: "Do something slow",
+			projectPath: "/tmp/proj",
+			timeoutMs: 50,
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		// Timeout fires → process stopped + task marked stopped in store.
+		expect(ctx.pm.delegate_stop).toHaveBeenCalledWith("sess-1");
+		expect(ctx.store.get("sess-1")).toMatchObject({ status: "stopped" });
+
+		// Subsequent status check must still surface the stopped task (not null),
+		// and the remote not_found must NOT erase the local stopped record.
+		const result = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-1",
+		});
+
+		expect(result.task).not.toBeNull();
+		expect(result.task!.status).toBe("stopped");
+		expect(result.task!.completedAt).toBeDefined();
+		expect(ctx.store.get("sess-1")!.status).toBe("stopped");
+	});
 });
 
 // ── session_delegate_list ──
@@ -975,5 +1003,48 @@ describe("session_delegate_sync handler", () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.error).toBe("sync boom");
 		expect(result.sessionId).toBe("");
+	});
+});
+
+// ── Issue #151 reproduction: subagent sync session should remain queryable after error/timeout ──
+
+describe("session_delegate_sync error persistence (#151)", () => {
+	it("persists task to store when sync throws, so status remains queryable", async () => {
+		const ctx = useCtx({
+			delegate_sync: vi.fn().mockResolvedValue({
+				sessionId: "sess-sub-xyz",
+				status: "error" as const,
+				exitCode: 1,
+				finalText: "",
+				error: "subagent timeout after 8000ms",
+			}),
+			delegate_status: vi.fn().mockResolvedValue({ status: "not_found" as const }),
+		});
+
+		// Subagent-v2 always passes a title (e.g. "Resume: sess-xxx.jsonl"),
+		// so the user/parent expects to be able to query the task afterwards.
+		const result = await ctx.client.call("session_delegate_sync", {
+			task: "count 1-30 with 1s delay",
+			title: "Counter subagent",
+			projectPath: "/tmp/proj",
+			timeoutMs: 8_000,
+		});
+
+		// The sync call itself surfaces the error — that is expected.
+		expect(result.status).toBe("error");
+		expect(result.sessionId).toBe("sess-sub-xyz");
+		expect(result.error).toBe("subagent timeout after 8000ms");
+
+		// But the task SHOULD still be in the store so the parent can observe
+		// the failure and recover via session_delegate_send or session_delegate_status.
+		const status = await ctx.client.call("session_delegate_status", {
+			sessionId: "sess-sub-xyz",
+		});
+
+		// The task should be persisted with status "stopped" (exitCode !== 0)
+		// so the parent can observe the failure rather than seeing null.
+		expect(status.task).not.toBeNull();
+		expect(status.task!.status).toBe("stopped");
+		expect(status.task!.title).toBe("Counter subagent");
 	});
 });
