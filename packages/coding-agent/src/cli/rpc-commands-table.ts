@@ -153,5 +153,6 @@ export const STATIC_CHANNEL_NAMES: readonly string[] = [
 	"coordinator",
 	"rules-engine",
 	"supervisor",
+	"goal",
 	"remote-ssh",
 ];
