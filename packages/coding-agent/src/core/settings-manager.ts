@@ -531,6 +531,22 @@ export class SettingsManager {
 			if (overrides[key] === undefined) {
 				continue;
 			}
+			// For object-valued overrides, mark every nested key as modified so
+			// the next persistScopedSettings writes the full override (not just
+			// previously-tracked nested keys). Fixes issue #160 where
+			// retry.maxRetries/baseDelayMs/maxDelayMs were silently dropped
+			// after a prior setRetryEnabled() had only registered "enabled".
+			const overrideValue = overrides[key] as unknown;
+			if (overrideValue !== null && typeof overrideValue === "object" && !Array.isArray(overrideValue)) {
+				const nestedKeys = Object.keys(overrideValue as Record<string, unknown>);
+				for (const nestedKey of nestedKeys) {
+					if (scope === "global") {
+						this.markModified(key, nestedKey);
+					} else {
+						this.markProjectModified(key, nestedKey);
+					}
+				}
+			}
 			if (scope === "global") {
 				this.markModified(key);
 			} else {
