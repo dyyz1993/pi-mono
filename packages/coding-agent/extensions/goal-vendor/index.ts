@@ -63,6 +63,7 @@ import type {
 	RecoveryEvidence,
 	InterruptClass,
 	SetupSubmissionStage,
+	ToolObservation,
 	VerificationCheck,
 	VerificationResult,
 } from "./types.ts";
@@ -379,16 +380,27 @@ function findBackgroundMetadata(value: unknown): { id?: string; state?: string; 
 	let foundId: string | undefined;
 	let foundState: string | undefined;
 	let foundLabel: string | undefined;
+	const idKey = /^(?:background_?)?(?:job|task|report|workflow|execution)_?id$/i;
+	const scopedStateKey = /^(?:background_?)?(?:job|task|report|workflow|execution)_?(?:state|status)$|^processing_status$/i;
+	const genericStateKey = /^(?:state|status)$/i;
 	function walk(current: unknown, depth = 0): void {
 		if (!current || typeof current !== "object" || depth > 6 || seen.has(current as object)) return;
 		seen.add(current as object);
 		if (Array.isArray(current)) { current.forEach((item) => walk(item, depth + 1)); return; }
+		let localId: string | undefined;
+		let localState: string | undefined;
+		let localScopedState: string | undefined;
+		let localLabel: string | undefined;
 		for (const [key, item] of Object.entries(current as Record<string, unknown>)) {
-			if (!foundId && typeof item === "string" && /^(?:job|task|report|workflow|execution)_?id$/i.test(key)) foundId = item;
-			if (!foundState && typeof item === "string" && /^(?:state|status|processing_status)$/i.test(key)) foundState = item.toLowerCase();
-			if (!foundLabel && typeof item === "string" && /^(?:label|name|title)$/i.test(key)) foundLabel = item;
+			if (typeof item === "string" && idKey.test(key)) localId = item;
+			if (typeof item === "string" && genericStateKey.test(key)) localState = item.toLowerCase();
+			if (typeof item === "string" && scopedStateKey.test(key)) localScopedState = item.toLowerCase();
+			if (typeof item === "string" && /^(?:label|name|title)$/i.test(key)) localLabel = item;
 			walk(item, depth + 1);
 		}
+		if (!foundId && localId) foundId = localId;
+		if (!foundState && (localScopedState || (localId ? localState : undefined))) foundState = localScopedState || localState;
+		if (!foundLabel && (localId || localScopedState) && localLabel) foundLabel = localLabel;
 	}
 	walk(value);
 	return { id: foundId, state: foundState, label: foundLabel };
@@ -1336,6 +1348,41 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 
 	let goalEnabled = true;
 
+	function projectInterrupt(state: GoalState | undefined): GoalVendorStatus["interrupt"] {
+		const interrupt = state?.interrupt;
+		if (!interrupt) return undefined;
+		const pending = interrupt.pendingAuthorityAmendment;
+		return {
+			class: interrupt.class,
+			message: interrupt.message,
+			attempts: [...interrupt.attempts],
+			need: interrupt.need,
+			recommendation: interrupt.recommendation,
+			createdAt: interrupt.createdAt,
+			pendingAuthorityAmendment: pending
+				? {
+						rationale: pending.rationale,
+						requestedAt: pending.requestedAt,
+						authorities: pending.authorities.map((authority) => ({
+							id: authority.id,
+							label: authority.label,
+							actionClass: authority.actionClass,
+							toolName: authority.toolName,
+							command: authority.command
+								? {
+										executable: authority.command.executable,
+										argsPrefix: [...authority.command.argsPrefix],
+										trailingArgs: authority.command.trailingArgs,
+									}
+								: undefined,
+							maxUses: authority.maxUses,
+							expiresAt: authority.expiresAt,
+						})),
+					}
+				: undefined,
+		};
+	}
+
 	function projectState(state: GoalState | undefined, ctx?: ExtensionContext): GoalVendorStatus {
 		if (!state) {
 			return { enabled: goalEnabled, state: goalEnabled ? "idle" : "disabled", rawStatus: "none", rawPhase: "none", continuationSequence: 0, turnCount: 0 };
@@ -1374,6 +1421,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			objective: redactText(state.outcome.current, 500).text,
 			goalId: state.goalId,
 			generation: state.generation,
+			interrupt: projectInterrupt(state),
 		};
 	}
 
@@ -1386,6 +1434,29 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			hasEvidence: criterion.evidenceIds.length > 0,
 		}));
 		return { tasks };
+	}
+
+	function resolveEvidenceObservations(state: GoalState, refs: string[] | undefined, used: Set<string>): ToolObservation[] {
+		const successful = state.observations.filter((item) => !item.isError);
+		if (!refs?.length) return successful.filter((item) => !used.has(item.toolCallId)).slice(-5);
+
+		const selected: ToolObservation[] = [];
+		const selectedIds = new Set<string>();
+		for (const ref of refs) {
+			const exact = state.observations.find((item) => item.toolCallId === ref);
+			if (exact) {
+				selected.push(exact);
+				selectedIds.add(exact.toolCallId);
+				continue;
+			}
+
+			let byToolName = [...successful].reverse().find((item) => item.toolName === ref && !used.has(item.toolCallId) && !selectedIds.has(item.toolCallId));
+			byToolName ??= [...successful].reverse().find((item) => item.toolName === ref && !selectedIds.has(item.toolCallId));
+			if (!byToolName) throw new Error(`No successful tool observation found for evidence ref "${ref}". Use exact toolCallIds or omit toolCallIds to infer recent successful observations.`);
+			selected.push(byToolName);
+			selectedIds.add(byToolName.toolCallId);
+		}
+		return selected;
 	}
 
 	function projectTriggerHistory(ctx: ExtensionContext, limit?: number): { triggers: GoalVendorTriggerRecord[] } {
@@ -1407,7 +1478,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	goalChannel.handle("getStatus", async () => {
 		const ctx = currentCtx;
 		if (!ctx) return projectState(undefined);
-		return projectState(store.get(), ctx);
+		return projectState(load(ctx), ctx);
 	});
 
 	goalChannel.handle("startSetup", async (params) => {
@@ -1416,7 +1487,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const outcome = params.objective?.trim();
 		if (!outcome) return { started: false, error: "objective is required" };
 		return await mutex.run(() => {
-			const existing = store.get();
+			const existing = load(ctx);
 			if (existing && existing.status !== "completed" && existing.status !== "cancelled") {
 				return { started: false, error: `session already has an active goal (${existing.goalId}, status=${existing.status})` };
 			}
@@ -1429,6 +1500,53 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
 			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "setup_started" });
 			return { started: true, goalId: state.goalId };
+		});
+	});
+
+	goalChannel.handle("submitContract", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { submitted: false, error: "no active session context" };
+		return await mutex.run(() => {
+			try {
+				refreshToolInfo();
+				const existing = load(ctx);
+				if (existing && existing.status !== "setting_up" && existing.status !== "completed" && existing.status !== "cancelled") {
+					return { submitted: false, error: `session already has an active goal (${existing.goalId}, status=${existing.status})` };
+				}
+				const originalOutcome =
+					existing?.status === "setting_up"
+						? existing.outcome.original
+						: typeof params.outcome === "string" && params.outcome.trim()
+							? params.outcome.trim()
+							: "";
+				if (!originalOutcome) return { submitted: false, error: "outcome is required" };
+				const setupState = existing?.status === "setting_up" ? existing : createGoalSetupState(originalOutcome, ctx);
+				let draft = normalizeDraft(params, setupState.outcome.original, ctx.cwd);
+				draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
+				normalizeAuthorityToolNames(draft);
+				const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
+				if (commandAuthorityErrors.length) {
+					return {
+						submitted: false,
+						error: `Contract executable authority is incomplete: ${commandAuthorityErrors.join("; ")}`,
+					};
+				}
+				const replacement = createGoalState(draft, ctx, setupState.outcome.original);
+				replacement.goalId = setupState.goalId;
+				replacement.createdAt = setupState.createdAt;
+				replacement.generation = setupState.generation + 1;
+				replacement.revision = setupState.revision;
+				replacement.continuationSequence = setupState.continuationSequence + 1;
+				replacement.lastContinuationKey = undefined;
+				replacement.setupAwaitingUser = false;
+				store.set(replacement);
+				persist(ctx, "setup_contract_submitted", "channel submitted a validated contract for approval");
+				goalChannel.emit("goal.statusChanged", projectState(replacement, ctx));
+				goalChannel.emit("goal.goalChanged", { goalId: replacement.goalId, status: replacement.status, reason: "setup_contract_submitted" });
+				return { submitted: true, goalId: replacement.goalId, status: replacement.status };
+			} catch (error) {
+				return { submitted: false, error: error instanceof Error ? error.message : String(error) };
+			}
 		});
 	});
 
@@ -1454,6 +1572,26 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "setup_approved" });
 			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "contract approved" });
 			return { approved: true };
+		});
+	});
+
+	goalChannel.handle("approveAuthorityAmendment", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { approved: false, error: "no active session context" };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { approved: false, error: "no active goal" };
+			if (!state.interrupt?.pendingAuthorityAmendment) {
+				return { approved: false, error: "goal has no pending authority amendment" };
+			}
+			const count = applyPendingAuthorityAmendment(state);
+			if (!count) return { approved: false, error: "no authority amendment was applied" };
+			persist(ctx, "authority_amendment_approved", `${count} exact typed authorities approved via channel`);
+			triggerContinuation(state, "The user approved the displayed typed authority amendment. Continue the same current step without broadening it.");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "authority_amendment_approved" });
+			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "authority amendment approved" });
+			return { approved: true, count };
 		});
 	});
 
@@ -1502,7 +1640,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		goalEnabled = false;
 		const ctx = currentCtx;
 		if (ctx) {
-			const state = store.get();
+			const state = load(ctx);
 			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
 		}
 		return { disabled: true };
@@ -1512,7 +1650,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		goalEnabled = true;
 		const ctx = currentCtx;
 		if (ctx) {
-			const state = store.get();
+			const state = load(ctx);
 			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
 		}
 		return { enabled: true };
@@ -1521,7 +1659,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	goalChannel.handle("getTaskReport", async () => {
 		const ctx = currentCtx;
 		if (!ctx) return { tasks: [] };
-		return projectTaskReport(store.get());
+		return projectTaskReport(load(ctx));
 	});
 
 	goalChannel.handle("getTriggerHistory", async (params) => {
@@ -1727,12 +1865,10 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				if (pending.length) throw new Error(`Cannot complete ${node.id}; pending dependencies: ${pending.join(", ")}`);
 			}
 			const used = new Set(state.evidence.flatMap((item) => item.toolCallId?.split(",").filter(Boolean) ?? []));
-			const observations = params.toolCallIds?.length
-				? params.toolCallIds.map((id) => state.observations.find((item) => item.toolCallId === id))
-				: state.observations.filter((item) => !item.isError && !used.has(item.toolCallId)).slice(-5);
-			if (!observations.length || observations.some((item) => !item || item.isError)) throw new Error("No recent unused successful tool observations are available for evidence");
+			const observations = resolveEvidenceObservations(state, params.toolCallIds, used);
+			if (!observations.length || observations.some((item) => item.isError)) throw new Error("No recent unused successful tool observations are available for evidence");
 			const cleaned = redactText(params.summary, 500);
-			const evidence: EvidenceRecord = { id: makeId("evidence"), kind: params.kind === "test_result" ? "test_result" : "tool_result", summary: cleaned.text, criterionIds, nodeId: node?.id, toolCallId: observations.map((item) => item!.toolCallId).join(","), toolName: observations.map((item) => item!.toolName).join(","), paths: [...new Set(observations.flatMap((item) => item!.paths))], isError: false, redacted: cleaned.redacted, createdAt: now() };
+			const evidence: EvidenceRecord = { id: makeId("evidence"), kind: params.kind === "test_result" ? "test_result" : "tool_result", summary: cleaned.text, criterionIds, nodeId: node?.id, toolCallId: observations.map((item) => item.toolCallId).join(","), toolName: observations.map((item) => item.toolName).join(","), paths: [...new Set(observations.flatMap((item) => item.paths))], isError: false, redacted: cleaned.redacted, createdAt: now() };
 			state.evidence.push(evidence); reconcileCriterionEvidenceIds(state); state.repeatedToolCalls = {}; state.noProgressCount = 0; state.deferredRisk = undefined;
 			if (state.phase === "recovering" && !state.interrupt && !state.verificationFailureSignature) state.phase = "executing";
 			if (node) {
@@ -1945,7 +2081,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("session_start", (event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		shutdown = false;
 		refreshToolInfo();
 		const state = load(ctx);
@@ -1968,6 +2104,10 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			persist(ctx, "legacy_doom_loop_interrupt_recovered", `removed obsolete duplicate-call interruption during ${event.reason}`);
 			ctx.ui.notify("Recovered obsolete duplicate-call interruption; goal is resuming automatically.", "info");
 			queueFreshContinuation(ctx, state, "legacy_doom_loop_continued", "Resume automatically after removing obsolete duplicate-call interruption.");
+			return;
+		}
+		if (state?.status === "running" && state.completionCandidate && !state.interrupt && !Object.keys(state.backgroundWork).length) {
+			await finishAudit(ctx, state.goalId, state.generation, state.continuationSequence);
 			return;
 		}
 		if (state?.status === "running") {
@@ -2185,8 +2325,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	pi.on("tool_execution_end", async (event, ctx) => mutex.run(() => { const state = load(ctx); if (!isActiveGoal(state)) return; delete state.activeToolCalls[event.toolCallId]; }));
 
 	pi.on("tool_result", async (event, ctx) => mutex.run(() => {
-		const state = load(ctx); if (!isActiveGoal(state) || GOAL_TOOL_NAMES.has(event.toolName)) return;
+		const state = load(ctx); if (!isActiveGoal(state)) return;
 		delete state.activeToolCalls[event.toolCallId];
+		if (GOAL_TOOL_NAMES.has(event.toolName)) return;
 		const paths = extractPaths(event.input).map((path) => safeEvidencePath(state.cwd, path, state.workspaceRoots));
 		const observedHash = inputHash(event.toolName, event.input);
 		// A successful result proves the identical call completed; only unresolved
@@ -2205,7 +2346,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const declaresBackground = toolDeclaresBackground(toolInfo.get(event.toolName));
 		if (background.id && ((background.state && ACTIVE_STATES.has(background.state)) || (!background.state && declaresBackground))) state.backgroundWork[background.id] = { id: background.id, label: redactText(background.label ?? event.toolName, 200).text, toolName: event.toolName, startedAt: now(), updatedAt: now() };
 		else if (background.id && background.state && TERMINAL_STATES.has(background.state)) markBackgroundTerminal(ctx, state, background.id, background.state);
-		else if (declaresBackground && !event.isError && !background.id) openInterrupt(state, { class: "BLOCKER", message: `${event.toolName} declares background work but returned no trackable job identity.`, attempts: ["Inspected tool-result metadata"], need: "A tool result with a job ID and terminal completion signal.", recommendation: "Use a trackable synchronous path or fix the background tool contract." });
+		else if (declaresBackground && background.state && !event.isError && !background.id) openInterrupt(state, { class: "BLOCKER", message: `${event.toolName} declares background work but returned no trackable job identity.`, attempts: ["Inspected tool-result metadata"], need: "A tool result with a job ID and terminal completion signal.", recommendation: "Use a trackable synchronous path or fix the background tool contract." });
 		persist(ctx, "tool_observed", `${event.toolName} ${event.isError ? "failed" : "succeeded"}`);
 	}));
 

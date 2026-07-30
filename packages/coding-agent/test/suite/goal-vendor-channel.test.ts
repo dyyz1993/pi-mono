@@ -16,13 +16,20 @@ import { ChannelManager } from "../../src/core/extensions/channel-manager.ts";
 import type { ChannelDataMessage, ChannelOutputFn } from "../../src/core/extensions/channel-types.ts";
 import { discoverAndLoadExtensions } from "../../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../../src/core/extensions/runner.ts";
-import type { ExtensionActions, ExtensionContextActions } from "../../src/core/extensions/types.ts";
+import type { ExtensionActions, ExtensionContextActions, ToolInfo } from "../../src/core/extensions/types.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let mockTools: ToolInfo[] = [];
+const mockToolSourceInfo = {
+	path: "builtin:test",
+	source: "builtin",
+	scope: "temporary",
+	origin: "top-level",
+} satisfies ToolInfo["sourceInfo"];
 
 function goalVendorSourcePath(): string {
 	return path.resolve(__dirname, "../../extensions/goal-vendor/index.ts");
@@ -78,7 +85,7 @@ const extensionActions: ExtensionActions = {
 	getSessionName: () => undefined,
 	setLabel: () => {},
 	getActiveTools: () => [],
-	getAllTools: () => [],
+	getAllTools: () => mockTools,
 	setActiveTools: () => {},
 	refreshTools: () => {},
 	setToolOperationsProvider: () => {},
@@ -118,6 +125,7 @@ describe("goal-vendor channel", () => {
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-goal-vendor-channel-"));
+		mockTools = [];
 		sessionManager = SessionManager.inMemory();
 		const authStorage = AuthStorage.create(path.join(tempDir, "auth.json"));
 		modelRegistry = ModelRegistry.create(authStorage);
@@ -222,6 +230,299 @@ describe("goal-vendor channel", () => {
 		const { manager, outputs } = await loadGoalVendor();
 		const response = await invokeChannelMethod(manager, outputs, "goal", "approveContract");
 		expect(response.approved).toBe(false);
+	});
+
+	it("submitContract records a validated channel contract for approval", async () => {
+		const { manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		fs.writeFileSync(path.join(root, "README.md"), "# Tetris\n");
+		fs.writeFileSync(path.join(root, "QUICK_CREATE_DELIVERY.md"), "# Delivery\n");
+		const response = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: [
+				"Playable dependency-free Tetris page exists",
+				"Validation packet records automated and manual checks",
+			],
+			phases: [
+				{
+					id: "P1",
+					title: "Implement game",
+					criterionIds: ["AC1"],
+				},
+				{
+					id: "P2",
+					title: "Validate delivery",
+					dependsOn: ["P1"],
+					criterionIds: ["AC2"],
+				},
+			],
+			verificationChecks: [
+				{ id: "VC1", kind: "file_exists", label: "README exists", path: path.join(root, "README.md") },
+				{
+					id: "VC2",
+					kind: "file_exists",
+					label: "Quick-create delivery protocol exists",
+					path: path.join(root, "QUICK_CREATE_DELIVERY.md"),
+				},
+			],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: ["Publishing or deployment"],
+		});
+		expect(response).toMatchObject({ submitted: true });
+		expect(response.status).toBe("awaiting_approval");
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.rawStatus).toBe("awaiting_approval");
+
+		const approval = await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+		expect(approval.approved).toBe(true);
+
+		const running = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(running.state).toBe("running");
+	});
+
+	it("keeps running after a synchronous tool result from a background-capable tool", async () => {
+		mockTools = [
+			{
+				name: "bash",
+				description: "Run shell commands and optionally manage background jobs.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		fs.writeFileSync(path.join(root, "README.md"), "# Tetris\n");
+		fs.writeFileSync(path.join(root, "QUICK_CREATE_DELIVERY.md"), "# Delivery\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [
+				{ id: "VC1", kind: "file_exists", label: "README exists", path: path.join(root, "README.md") },
+			],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-bash-sync",
+			toolName: "bash",
+			input: { command: "ls -la" },
+			content: [{ type: "text", text: "total 0" }],
+			details: { exitCode: 0 },
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.state).toBe("running");
+		expect(status.rawStatus).toBe("running");
+	});
+
+	it("does not treat nested rule status metadata as background work", async () => {
+		mockTools = [
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		fs.writeFileSync(path.join(root, "README.md"), "# Tetris\n");
+		fs.writeFileSync(path.join(root, "QUICK_CREATE_DELIVERY.md"), "# Delivery\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [
+				{ id: "VC1", kind: "file_exists", label: "README exists", path: path.join(root, "README.md") },
+			],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-read-rules",
+			toolName: "read",
+			input: { path: path.join(root, "README.md") },
+			content: [{ type: "text", text: "# Tetris" }],
+			details: {
+				rulesMatched: [{ name: "documentation-standard", severity: "medium", status: "loaded" }],
+			},
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.state).toBe("running");
+		expect(status.rawStatus).toBe("running");
+	});
+
+	it("records evidence when toolCallIds contains a tool name alias", async () => {
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Tetris\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-read-latest",
+			toolName: "read",
+			input: { path: readmePath },
+			content: [{ type: "text", text: "# Tetris" }],
+			details: {},
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		const recordTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_record_evidence");
+		expect(recordTool).toBeDefined();
+		await recordTool!.definition.execute(
+			"call-record-evidence",
+			{
+				goalId: status.goalId,
+				generation: status.generation,
+				summary: "README was read successfully",
+				toolCallIds: ["read"],
+				criterionIds: ["AC1"],
+				nodeId: "P1",
+			} as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+
+		const report = await invokeChannelMethod(manager, outputs, "goal", "getTaskReport");
+		expect(report.tasks).toEqual([expect.objectContaining({ id: "AC1", hasEvidence: true })]);
+	});
+
+	it("settles after a goal tool result clears its active tool marker", async () => {
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Tetris\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emit({
+			type: "tool_execution_start",
+			toolCallId: "call-goal-status",
+			toolName: "pi_goal_status",
+			args: {},
+			timestamp: Date.now(),
+		});
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-goal-status",
+			toolName: "pi_goal_status",
+			input: {},
+			content: [{ type: "text", text: "status" }],
+			details: {},
+			isError: false,
+		});
+		await runner.emit({ type: "agent_end", messages: [] });
+
+		const history = await invokeChannelMethod(manager, outputs, "goal", "getTriggerHistory");
+		const eventTypes = (history.triggers as Array<{ eventType: string }>).map((trigger) => trigger.eventType);
+		expect(eventTypes).toContain("evaluation_started");
+	});
+
+	it("resumes a pending completion audit on session_start", async () => {
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Tetris\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-read-latest",
+			toolName: "read",
+			input: { path: readmePath },
+			content: [{ type: "text", text: "# Tetris" }],
+			details: {},
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		const recordTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_record_evidence");
+		const submitTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_submit_completion_candidate");
+		expect(recordTool).toBeDefined();
+		expect(submitTool).toBeDefined();
+		await recordTool!.definition.execute(
+			"call-record-evidence",
+			{
+				goalId: status.goalId,
+				generation: status.generation,
+				summary: "README proves the deliverable exists",
+				toolCallIds: ["read"],
+				criterionIds: ["AC1"],
+				nodeId: "P1",
+			} as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+		await submitTool!.definition.execute(
+			"call-submit-completion",
+			{ goalId: status.goalId, generation: status.generation, summary: "Ready for final audit" } as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+
+		await runner.emit({ type: "session_start", reason: "startup" });
+
+		const history = await invokeChannelMethod(manager, outputs, "goal", "getTriggerHistory");
+		const eventTypes = (history.triggers as Array<{ eventType: string }>).map((trigger) => trigger.eventType);
+		expect(eventTypes).toContain("audit_started");
+		expect(eventTypes).toContain("audit_error");
 	});
 
 	it("clearGoal returns cleared=false when no goal exists", async () => {

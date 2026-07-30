@@ -13,6 +13,7 @@
  */
 
 import type { ChannelContract } from "@dyyz1993/pi-coding-agent";
+import type { GoalDraft } from "./types.ts";
 
 /**
  * Flattened status projected from misunders2d's GoalStatus + GoalPhase.
@@ -45,6 +46,38 @@ export interface GoalVendorStatus {
 	goalId?: string;
 	/** Generation (contract rewrite counter), if a goal exists. */
 	generation?: number;
+	/** Current user-facing interruption, if the goal is waiting for a decision or approval. */
+	interrupt?: GoalVendorInterruptSummary;
+}
+
+export interface GoalVendorAuthoritySummary {
+	id: string;
+	label: string;
+	actionClass: string;
+	toolName: string;
+	command?: {
+		executable: string;
+		argsPrefix: string[];
+		trailingArgs: string;
+	};
+	maxUses: number;
+	expiresAt?: string;
+}
+
+export interface GoalVendorPendingAuthorityAmendmentSummary {
+	rationale: string;
+	requestedAt: string;
+	authorities: GoalVendorAuthoritySummary[];
+}
+
+export interface GoalVendorInterruptSummary {
+	class: string;
+	message: string;
+	attempts: string[];
+	need: string;
+	recommendation: string;
+	createdAt: string;
+	pendingAuthorityAmendment?: GoalVendorPendingAuthorityAmendmentSummary;
 }
 
 /** Per-criterion task report projected from misunders2d audit/evidence. */
@@ -83,9 +116,17 @@ export interface GoalChannelContract extends ChannelContract {
 			params: { objective: string };
 			return: { started: boolean; goalId?: string; error?: string };
 		};
+		submitContract: {
+			params: GoalDraft;
+			return: { submitted: boolean; goalId?: string; status?: string; error?: string };
+		};
 		approveContract: {
 			params: Record<string, never>;
 			return: { approved: boolean; error?: string };
+		};
+		approveAuthorityAmendment: {
+			params: Record<string, never>;
+			return: { approved: boolean; count?: number; error?: string };
 		};
 		rejectContract: {
 			params: { reason?: string };
