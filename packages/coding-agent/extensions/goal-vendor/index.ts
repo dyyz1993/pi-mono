@@ -938,6 +938,15 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			const state = load(ctx);
 			if (!state || state.goalId !== goalId || state.generation !== generation || state.continuationSequence !== sequence || shutdown) return;
 			if (Object.keys(state.backgroundWork).length || state.interrupt) return;
+			// Clear stale activeToolCalls. The tool_result handler normally removes
+			// these, but we've seen cases where tool_execution_end / tool_result
+			// events don't fire (model returns empty response right after a tool
+			// call) and the entry gets stuck, which then blocks evaluateSettled's
+			// idle check on subsequent turns. By the time we run the audit, every
+			// tool call must be settled anyway, so clearing here is safe.
+			if (Object.keys(state.activeToolCalls).length) {
+				state.activeToolCalls = {};
+			}
 			state.status = "auditing";
 			state.phase = "auditing";
 			state.currentAction = "Running approved verification checks";
@@ -1999,8 +2008,22 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				clearVerificationFailure(state);
 				state.deferredRisk = undefined;
 				state.completionCandidate = true; state.phase = "verifying"; state.currentAction = "Awaiting independent completion audit"; state.nextAction = "Run approved checks";
+				const auditGoalId = state.goalId;
+				const auditGeneration = state.generation;
+				const auditSequence = sequence;
 				persist(ctx, "completion_candidate", params.summary);
-				return toolResult("Approved checks passed. Completion candidate recorded; the isolated auditor runs after settlement.", { checks });
+				// Kick off the auditor asynchronously. Previously this waited for
+				// the next agent_end → evaluateSettled cycle, but when the model
+				// stalls after submitting (no further message, no agent_end),
+				// the audit never ran and the goal sat in "verifying" forever.
+				// finishAudit is mutex-guarded and idempotent against stale
+				// generation/sequence, so this is safe to schedule directly.
+				setTimeout(() => {
+					void finishAudit(ctx, auditGoalId, auditGeneration, auditSequence).catch((error) => {
+						persist(ctx, "completion_audit_dispatch_error", error instanceof Error ? error.message : String(error));
+					});
+				}, 0);
+				return toolResult("Approved checks passed. Completion candidate recorded; the isolated auditor has been dispatched.", { checks });
 			});
 		},
 	});
