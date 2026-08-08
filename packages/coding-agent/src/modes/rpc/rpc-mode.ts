@@ -910,6 +910,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					sourceInfo: extension.sourceInfo,
 					toolNames: Array.from(extension.tools.keys()),
 					commandNames: Array.from(extension.commands.keys()),
+					channelNames: Array.from(extension.channelNames),
+					eventNames: Array.from(extension.handlers.keys()),
 				}));
 				return success(id, "get_extensions", { extensions: rpcExtensions });
 			}
@@ -1141,8 +1143,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!manager) {
 					return success(id, "get_mcp_servers", { servers: [] });
 				}
-				const mcpSettings = session.settingsManager.getMcpSettings();
-				const serverConfigs = mcpSettings.servers ?? {};
+				// Determine scope from the ORIGINAL (un-merged) global/project settings.
+				// Reading the merged settings (getMcpSettings) here was a bug: a global
+				// server is always present in the merged result, so it was always
+				// labeled "project". Project scope takes precedence when a server is
+				// configured at both levels.
+				const globalServers = session.settingsManager.getGlobalSettings().mcp?.servers ?? {};
+				const projectServers = session.settingsManager.getProjectSettings().mcp?.servers ?? {};
 				const servers: RpcMcpServer[] = manager.getConnections().map((conn) => ({
 					name: conn.name,
 					status: conn.status,
@@ -1152,7 +1159,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						fullName: t.fullName,
 						description: t.description,
 					})),
-					scope: conn.name in (serverConfigs as Record<string, unknown>) ? "project" : "global",
+					scope: conn.name in (projectServers as Record<string, unknown>)
+						? "project"
+						: "global",
 					disabled: conn.config.disabled,
 				}));
 				return success(id, "get_mcp_servers", { servers });
