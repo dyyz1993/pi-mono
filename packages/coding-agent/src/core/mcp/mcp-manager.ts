@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport as McpTransport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import os from "node:os";
 import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import { McpConnectionError, McpError, McpTimeoutError, McpToolCallError } from "./errors.ts";
 import { McpLogger } from "./logger.ts";
@@ -23,6 +24,53 @@ interface CallSemaphore {
 interface ToolMapping {
 	serverName: string;
 	toolName: string;
+}
+
+/**
+ * npm config env-var prefixes to strip when spawning MCP servers.
+ *
+ * npm's `overrides` are resolved purely from the cwd's `package.json` (no
+ * `npm_config_overrides` env var exists), so isolating cwd is the primary
+ * fix. These env vars are scrubbed as defense-in-depth — they can otherwise
+ * carry project config into the spawned `npx` install.
+ */
+const NPM_CONFIG_ENV_PREFIXES = ["npm_config_", "NPM_CONFIG_"];
+
+/**
+ * Build the `StdioClientTransport` options for a stdio MCP server config.
+ *
+ * Two isolation measures vs. the old inline implementation:
+ *  1. `cwd` defaults to `os.tmpdir()` so `npx`'s upward `package.json` walk
+ *     finds no `overrides` field — fixes the `EOVERRIDE` failure when the
+ *     consuming project has yalc-linked deps + package overrides.
+ *     `config.cwd` (already declared on `McpStdioServerConfig`) now takes
+ *     effect when set.
+ *  2. When merging `process.env` with `config.env`, npm config vars
+ *     (`npm_config_*` / `NPM_CONFIG_*`) are dropped.
+ *
+ * Exported for unit testing.
+ */
+export function buildStdioTransportOptions(config: McpStdioServerConfig): {
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd: string;
+	stderr: "pipe";
+} {
+	const env = config.env
+		? (Object.fromEntries(
+				Object.entries({ ...process.env, ...config.env })
+					.filter(([k]) => !NPM_CONFIG_ENV_PREFIXES.some((p) => k.startsWith(p)))
+					.filter(([, v]) => v !== undefined),
+			) as Record<string, string>)
+		: undefined;
+	return {
+		command: config.command,
+		args: config.args,
+		env,
+		cwd: config.cwd ?? os.tmpdir(),
+		stderr: "pipe",
+	};
 }
 
 export class McpManager {
@@ -508,16 +556,7 @@ export class McpManager {
 
 	private async createTransport(config: McpServerConfig): Promise<unknown> {
 		if (this.isStdioConfig(config)) {
-			return new StdioClientTransport({
-				command: config.command,
-				args: config.args,
-				env: config.env
-					? (Object.fromEntries(
-							Object.entries({ ...process.env, ...config.env }).filter(([, v]) => v !== undefined),
-						) as UnknownRecord as Record<string, string>)
-					: undefined,
-				stderr: "pipe",
-			});
+			return new StdioClientTransport(buildStdioTransportOptions(config));
 		}
 
 		if (config.type === "sse") {
