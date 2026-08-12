@@ -24,7 +24,10 @@
  *   }
  */
 
-import type { ExtensionAPI, ExtensionContext, ContextEvent } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ContextEvent } from "@dyyz1993/pi-coding-agent";
+import { getGlobalDataDir } from "@dyyz1993/pi-coding-agent";
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from "fs";
+import { join } from "path";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import {
@@ -179,12 +182,75 @@ async function persistLoops(_pi: ExtensionAPI, _loops: LoopConfig[]): Promise<vo
 	// 返回最新的 loops 列表，前端负责 persist）。Extension 内部只管内存状态。
 }
 
+// ── 全局单例锁（保证只有一个 session 执行 cron 触发）──────────────
+
+const LOCK_TIMEOUT_MS = 120_000; // 锁 2 分钟过期（CLI 进程心跳更新）
+
+function getLockPath(): string {
+	const dir = getGlobalDataDir("loop-scheduler");
+	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+	return join(dir, "loop-scheduler.lock");
+}
+
+function tryAcquireLock(): boolean {
+	const lockPath = getLockPath();
+	const now = Date.now();
+	const myPid = process.pid;
+
+	// 检查现有锁
+	if (existsSync(lockPath)) {
+		try {
+			const raw = readFileSync(lockPath, "utf-8");
+			const lock = JSON.parse(raw) as { pid: number; ts: number };
+			if (now - lock.ts < LOCK_TIMEOUT_MS && lock.pid !== myPid) {
+				// 锁未过期且不是自己的 → 别人持有
+				return false;
+			}
+		} catch {
+			// 锁文件损坏 → 覆盖
+		}
+	}
+
+	// 获取锁
+	writeFileSync(lockPath, JSON.stringify({ pid: myPid, ts: now }));
+	return true;
+}
+
+function releaseLock(): void {
+	const lockPath = getLockPath();
+	try {
+		const raw = readFileSync(lockPath, "utf-8");
+		const lock = JSON.parse(raw) as { pid: number; ts: number };
+		if (lock.pid === process.pid) {
+			unlinkSync(lockPath);
+		}
+	} catch {
+		// 文件不存在或损坏，忽略
+	}
+}
+
 // ── 主扩展 ────────────────────────────────────────────────────────
 
 export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 	pi.setName("loop-scheduler");
 
 	const jobs = new Map<string, JobEntry>();
+	let isScheduler = false; // 当前 session 是否是 active scheduler
+	let lockHeartbeat: ReturnType<typeof setInterval> | null = null;
+
+	// 全局单例锁：extension 加载时就获取（不等 session_start，因为 RPC 模式可能不触发）
+	try {
+		isScheduler = tryAcquireLock();
+	} catch (err) {
+		console.error(`[loop-scheduler] tryAcquireLock error at init:`, err);
+		isScheduler = false;
+	}
+	// 心跳
+	if (isScheduler) {
+		lockHeartbeat = setInterval(() => {
+			try { writeFileSync(getLockPath(), JSON.stringify({ pid: process.pid, ts: Date.now() })); } catch { /* */ }
+		}, 30_000);
+	}
 	let channel: ReturnType<typeof createTypedChannel<LoopSchedulerChannelContract>>["server"] | null = null;
 
 	// ── Channel 注册 ──
@@ -202,7 +268,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 
 		const emitStatus = () => safeEmit("status", { type: "status", loops: buildStatus(jobs) });
 
-		channel.handle("list", () => ({ loops: Array.from(jobs.values()).map((j) => j.config) }));
+		channel.handle("list", () => ({ loops: Array.from(jobs.values()).map((j) => j.config), isScheduler } as { loops: LoopConfig[]; isScheduler: boolean }));
 		channel.handle("getStatus", () => ({ type: "status" as const, loops: buildStatus(jobs) }));
 
 		channel.handle("create", ({ name, cron, prompt, deliverAs }) => {
@@ -225,7 +291,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 				runCount: 0,
 				lastError: null,
 			});
-			startJob(pi, jobs, loop.id, emitStatus);
+			startJob(pi, jobs, loop.id, emitStatus, isScheduler);
 			persistLoops(pi, Array.from(jobs.values()).map((j) => j.config)).catch(() => {});
 			emitStatus();
 			return { ok: true, id: loop.id };
@@ -243,7 +309,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 			if (entry.task) {
 				entry.task.cancel();
 				entry.task = null;
-				startJob(pi, jobs, id, emitStatus);
+				startJob(pi, jobs, id, emitStatus, isScheduler);
 			}
 			persistLoops(pi, Array.from(jobs.values()).map((j) => j.config)).catch(() => {});
 			emitStatus();
@@ -255,7 +321,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 			if (!entry) return { ok: false, error: `Loop not found: ${id}` };
 			entry.config.enabled = enabled;
 			if (enabled && !entry.task) {
-				startJob(pi, jobs, id, emitStatus);
+				startJob(pi, jobs, id, emitStatus, isScheduler);
 			} else if (!enabled && entry.task) {
 				entry.task.cancel();
 				entry.task = null;
@@ -358,7 +424,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 							runCount: 0,
 							lastError: null,
 						});
-						startJob(pi, jobs, loop.id, emitStatus);
+						startJob(pi, jobs, loop.id, emitStatus, isScheduler);
 						persistLoops(pi, Array.from(jobs.values()).map((j) => j.config)).catch(() => {});
 						emitStatus();
 						return {
@@ -386,7 +452,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 						if (entry.task) {
 							entry.task.cancel();
 							entry.task = null;
-							startJob(pi, jobs, params.id, emitStatus);
+							startJob(pi, jobs, params.id, emitStatus, isScheduler);
 						}
 						persistLoops(pi, Array.from(jobs.values()).map((j) => j.config)).catch(() => {});
 						emitStatus();
@@ -405,7 +471,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 						}
 						entry.config.enabled = params.enabled;
 						if (params.enabled && !entry.task) {
-							startJob(pi, jobs, params.id, emitStatus);
+							startJob(pi, jobs, params.id, emitStatus, isScheduler);
 						} else if (!params.enabled && entry.task) {
 							entry.task.cancel();
 							entry.task = null;
@@ -477,8 +543,9 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 
 		// ── session 生命周期 ──
 		pi.on("session_start", () => {
-			// 从 settings 加载 loops
+			// 从 settings 加载 loops（所有 session 都加载配置，方便 channel CRUD）
 			const loops = readLoopsFromSettings(pi);
+
 			for (const loop of loops) {
 				jobs.set(loop.id, {
 					config: loop,
@@ -488,18 +555,28 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 					runCount: 0,
 					lastError: null,
 				});
-				if (loop.enabled) {
-					startJob(pi, jobs, loop.id, emitStatus);
+				// 只有 active scheduler 才启动 cron 触发
+				if (loop.enabled && isScheduler) {
+					startJob(pi, jobs, loop.id, emitStatus, isScheduler);
 				}
 			}
+
 			emitStatus();
 		});
 
 		pi.on("session_shutdown", () => {
+			// 停止所有 loop
 			for (const entry of jobs.values()) {
 				if (entry.task) entry.task.cancel();
 			}
 			jobs.clear();
+
+			// 释放锁（如果自己是 scheduler）
+			if (isScheduler) {
+				if (lockHeartbeat) clearInterval(lockHeartbeat);
+				releaseLock();
+				isScheduler = false;
+			}
 		});
 	} catch (err) {
 		console.error(`[loop-scheduler] init error: ${err instanceof Error ? err.message : String(err)}`);
@@ -513,9 +590,16 @@ function startJob(
 	jobs: Map<string, JobEntry>,
 	id: string,
 	emitStatus: () => void,
+	schedulerActive: boolean,
 ): void {
 	const entry = jobs.get(id);
 	if (!entry || !entry.config.enabled) return;
+
+	// 非活跃 scheduler 不启动 cron（但仍记录配置供 channel 查询）
+	if (!schedulerActive) {
+		emitStatus();
+		return;
+	}
 
 	const loop = entry.config;
 
