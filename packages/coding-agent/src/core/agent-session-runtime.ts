@@ -76,7 +76,7 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
  * caller. The caller is responsible for user-facing error handling.
  */
 export class AgentSessionRuntime {
-	private rebindSession?: (session: AgentSession) => Promise<void>;
+	private rebindSession?: (session: AgentSession, previousSession?: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
 	private _session: AgentSession;
 	private _services: AgentSessionServices;
@@ -118,7 +118,7 @@ export class AgentSessionRuntime {
 		return this._modelFallbackMessage;
 	}
 
-	setRebindSession(rebindSession?: (session: AgentSession) => Promise<void>): void {
+	setRebindSession(rebindSession?: (session: AgentSession, previousSession?: AgentSession) => Promise<void>): void {
 		this.rebindSession = rebindSession;
 	}
 
@@ -168,14 +168,22 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
-	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+	private async teardownCurrent(
+		reason: SessionShutdownEvent["reason"],
+		targetSessionFile?: string,
+		options?: { reuseServices?: boolean },
+	): Promise<void> {
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,
 			targetSessionFile,
 		});
 		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		// reuseServices (same-cwd switch): keep the shared ExtensionRuntime
+		// usable — only the per-session runner wrapper goes stale. The
+		// successor session reuses these services and the captured pi
+		// references must keep working.
+		this.session.dispose({ invalidateRuntime: !options?.reuseServices });
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -185,9 +193,12 @@ export class AgentSessionRuntime {
 		this._modelFallbackMessage = result.modelFallbackMessage;
 	}
 
-	private async finishSessionReplacement(withSession?: (ctx: ReplacedSessionContext) => Promise<void>): Promise<void> {
+	private async finishSessionReplacement(
+		withSession?: (ctx: ReplacedSessionContext) => Promise<void>,
+		previousSession?: AgentSession,
+	): Promise<void> {
 		if (this.rebindSession) {
-			await this.rebindSession(this.session);
+			await this.rebindSession(this.session, previousSession);
 		}
 		if (withSession) {
 			await withSession(this.session.createReplacedSessionContext());
@@ -210,10 +221,14 @@ export class AgentSessionRuntime {
 		const previousSessionFile = this.session.sessionFile;
 		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
+		// Same-cwd switches reuse services (fast path): keep the shared
+		// extension runtime valid across the teardown.
+		const reuseServices = sessionManager.getCwd() === this.cwd;
+		const previousSession = this.session;
+		await this.teardownCurrent("resume", sessionManager.getSessionFile(), { reuseServices });
 
 		const targetCwd = sessionManager.getCwd();
-		if (targetCwd === this.cwd) {
+		if (reuseServices) {
 			const created = await createAgentSessionFromServices({
 				services: this._services,
 				sessionManager,
@@ -239,7 +254,7 @@ export class AgentSessionRuntime {
 				}),
 			);
 		}
-		await this.finishSessionReplacement(options?.withSession);
+		await this.finishSessionReplacement(options?.withSession, reuseServices ? previousSession : undefined);
 		return { cancelled: false };
 	}
 

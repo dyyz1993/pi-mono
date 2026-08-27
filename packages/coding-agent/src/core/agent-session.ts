@@ -313,6 +313,12 @@ export interface ExtensionBindings {
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
 	registerChannel?: (name: string) => Channel;
+	/**
+	 * Same-cwd session switch: adopt this manager instead of reconnecting
+	 * all MCP servers. The previous session must hand over ownership (it no
+	 * longer disposes it).
+	 */
+	mcpManagerFrom?: AgentSession;
 }
 
 /** Options for AgentSession.prompt() */
@@ -1057,7 +1063,7 @@ export class AgentSession {
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
-	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+	private _handleAgentEvent = async (event: AgentEvent, signal: AbortSignal): Promise<void> => {
 		// When a queued user/custom message starts, remove it BEFORE emitting.
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && (event.message.role === "user" || event.message.role === "custom")) {
@@ -1086,7 +1092,7 @@ export class AgentSession {
 		}
 
 		// Emit to extensions first
-		await this._emitExtensionEvent(event);
+		await this._emitExtensionEvent(event, signal);
 
 		// Handle session persistence
 		let persistedEntryId: string | undefined;
@@ -1187,7 +1193,7 @@ export class AgentSession {
 	}
 
 	/** Emit extension events based on agent events */
-	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
+	private async _emitExtensionEvent(event: AgentEvent, signal?: AbortSignal): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start" });
@@ -1208,9 +1214,16 @@ export class AgentSession {
 				toolResults: event.toolResults,
 			};
 			await this._extensionRunner.emit(extensionEvent);
-			await this._fileSnapshotManager?.onTurnEndAsync(this._cwd, this._turnIndex, (type, data) =>
-				this.sessionManager.appendCustomEntry(type, data),
-			);
+			try {
+				await this._fileSnapshotManager?.onTurnEndAsync(
+					this._cwd,
+					this._turnIndex,
+					(type, data) => this.sessionManager.appendCustomEntry(type, data),
+					signal,
+				);
+			} catch (error) {
+				if (!signal?.aborted) throw error;
+			}
 			this._turnIndex++;
 			if (this._maxTurns !== undefined && this._turnIndex >= this._maxTurns) {
 				this.agent.abort();
@@ -1353,8 +1366,16 @@ export class AgentSession {
 	/**
 	 * Remove all listeners and disconnect from agent.
 	 * Call this when completely done with the session.
+	 *
+	 * @param options.invalidateRuntime When false (same-cwd session switch,
+	 * where a successor session reuses the same services), skip poisoning the
+	 * shared ExtensionRuntime: the runner wrapper is still marked stale so the
+	 * outgoing session's captured contexts fail fast, but the shared runtime —
+	 * and extension-captured `pi` references bound to it — stays usable for
+	 * the successor. Full teardown (quit, reload, cwd change) keeps the
+	 * default `invalidateRuntime: true`.
 	 */
-	dispose(): void {
+	dispose(options?: { invalidateRuntime?: boolean }): void {
 		try {
 			this.abortRetry();
 			this.abortCompaction();
@@ -1365,8 +1386,10 @@ export class AgentSession {
 			// Dispose must succeed even if an abort hook throws.
 		}
 
+		const invalidateRuntime = options?.invalidateRuntime ?? true;
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			{ shared: !invalidateRuntime },
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
@@ -3322,17 +3345,32 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
-		await this._initMcpServers();
+		await this._initMcpServers(bindings.mcpManagerFrom);
 	}
 
 	get mcpManager(): McpManager | undefined {
 		return this._mcpManager;
 	}
 
-	private async _initMcpServers(): Promise<void> {
+	private async _initMcpServers(reuseFrom?: AgentSession): Promise<void> {
 		// 子代理进程跳过 MCP 连接（环境变量 PI_SKIP_MCP=1）
 		// 避免 multiple CLI 进程竞争同一个 stdio MCP server 导致死锁
 		if (process.env.PI_SKIP_MCP === "1") return;
+
+		// Same-cwd session switch: adopt the previous session's manager as-is.
+		// Connections (stdio children, HTTP sessions) stay alive across the
+		// switch — full reconnect-all costs seconds per switch. Settings changes
+		// still go through reload (full rebuild path).
+		if (reuseFrom?.mcpManager) {
+			this._mcpManager = reuseFrom.mcpManager;
+			reuseFrom._mcpManager = undefined;
+			// Re-wire the connection-change listener to the new session
+			this._mcpManager.setOnConnectionChange((conn: McpConnection) => {
+				this._handleMcpConnectionChange(conn);
+			});
+			this._registerMcpTools();
+			return;
+		}
 
 		// Dispose any existing MCP manager (e.g., on reload)
 		if (this._mcpManager) {

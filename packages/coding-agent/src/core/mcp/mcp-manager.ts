@@ -1,7 +1,7 @@
+import os from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport as McpTransport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import os from "node:os";
 import { asRecord, type UnknownRecord } from "../../utils/type-helpers.ts";
 import { McpConnectionError, McpError, McpTimeoutError, McpToolCallError } from "./errors.ts";
 import { McpLogger } from "./logger.ts";
@@ -77,7 +77,7 @@ export class McpManager {
 	private connections = new Map<string, McpConnection>();
 	private toolMap = new Map<string, ToolMapping>();
 	private readonly logger: McpLogger;
-	private readonly events: McpManagerEvents;
+	private events: McpManagerEvents;
 	private readonly connectTimeoutMs: number;
 	private readonly callTimeoutMs: number;
 	private readonly maxReconnectAttempts: number;
@@ -141,6 +141,14 @@ export class McpManager {
 
 	private notifyChange(conn: McpConnection): void {
 		this.events.onConnectionChange?.(conn);
+	}
+
+	/**
+	 * Rebind the connection-change listener. Used when a session switch adopts
+	 * an existing manager: events must route to the successor session.
+	 */
+	setOnConnectionChange(listener: NonNullable<McpManagerEvents["onConnectionChange"]>): void {
+		this.events.onConnectionChange = listener;
 	}
 
 	async connectAll(servers: Record<string, McpServerConfig>): Promise<void> {
@@ -567,7 +575,7 @@ export class McpManager {
 			);
 		}
 
-		if (config.type === "streamable-http") {
+		if (config.type === "streamable-http" || config.type === "http") {
 			const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
 			return new StreamableHTTPClientTransport(
 				new URL(config.url),

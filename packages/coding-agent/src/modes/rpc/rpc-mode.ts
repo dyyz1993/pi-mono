@@ -18,6 +18,7 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { discoverAgents } from "../../core/agent-types.ts";
 import { generateSegmentSummary } from "../../core/compaction/branch-summarization.ts";
 import { ChannelManager } from "../../core/extensions/channel-manager.ts";
+import type { AgentSession } from "../../core/agent-session.ts";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.ts";
 import { createBranchSummaryMessage } from "../../core/messages.ts";
 import { resolveModelAlias } from "../../core/model-resolver.ts";
@@ -175,13 +176,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			theme,
 		});
 
-	runtimeHost.setRebindSession(async () => {
-		await rebindSession();
+	runtimeHost.setRebindSession(async (session, previousSession) => {
+		await rebindSession(previousSession);
 	});
 
-	const rebindSession = async (): Promise<void> => {
+	const rebindSession = async (previousSession?: AgentSession): Promise<void> => {
 		session = runtimeHost.session;
 		await session.bindExtensions({
+			mcpManagerFrom: previousSession,
 			uiContext: createExtensionUIContext(),
 			mode: "rpc",
 			commandContextActions: {
@@ -912,6 +914,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					commandNames: Array.from(extension.commands.keys()),
 					channelNames: Array.from(extension.channelNames),
 					eventNames: Array.from(extension.handlers.keys()),
+					permissionProviderNames: Array.from(extension.permissionProviderNames),
 				}));
 				return success(id, "get_extensions", { extensions: rpcExtensions });
 			}
@@ -1159,9 +1162,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						fullName: t.fullName,
 						description: t.description,
 					})),
-					scope: conn.name in (projectServers as Record<string, unknown>)
-						? "project"
-						: "global",
+					scope: conn.name in (projectServers as Record<string, unknown>) ? "project" : "global",
 					disabled: conn.config.disabled,
 				}));
 				return success(id, "get_mcp_servers", { servers });
