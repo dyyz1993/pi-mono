@@ -531,6 +531,9 @@ async function requestGoalApproval(
 		],
 		{
 			signal,
+			// Web (RPC) users review the contract in the Goal panel; a 60s default
+			// would auto-dismiss while they read. Give them 10 minutes.
+			timeout: 600_000,
 			title: kind === "contract" ? "Approve Goal contract" : kind === "authority_amendment" ? "Approve Goal authority amendment" : "Approve Goal pending risk",
 			message: detail,
 			permissionMeta: {
@@ -1714,6 +1717,49 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "authority_amendment_rejected" });
 			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "authority amendment rejected" });
 			return { rejected: true };
+		});
+	});
+
+	goalChannel.handle("getPendingContract", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { hasPending: false };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { hasPending: false };
+			if (state.status !== "awaiting_approval") return { hasPending: false, status: state.status };
+			return {
+				hasPending: true,
+				goalId: state.goalId,
+				generation: state.generation,
+				objective: redactText(state.outcome.current, 2_000).text,
+				criteria: state.criteria,
+				plan: state.plan.map((node) => ({ id: node.id, title: node.title, status: node.status, criterionIds: node.criterionIds ?? [] })),
+				verificationChecks: state.verificationChecks,
+				authorities: state.authorities,
+				constraints: state.constraints,
+				nonGoals: state.nonGoals,
+				workspaceRoots: state.workspaceRoots,
+			};
+		});
+	});
+
+	goalChannel.handle("refineContract", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { refined: false };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state || state.status !== "awaiting_approval") return { refined: false };
+			state.status = "setting_up";
+			state.phase = "setup";
+			state.generation += 1;
+			state.setupAwaitingUser = false;
+			resetSetupSubmissionTracking(state);
+			armFreshContinuation(state);
+			restoreSetupActions(state);
+			persist(ctx, "setup_refine", "contract returned for refinement via channel");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			triggerSetupConversation(state, "The user requested refinement via the web panel. Update the contract in this conversation, then submit a replacement.");
+			return { refined: true };
 		});
 	});
 

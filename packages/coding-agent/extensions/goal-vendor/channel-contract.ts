@@ -136,6 +136,27 @@ export interface GoalChannelContract extends ChannelContract {
 			params: { reason?: string };
 			return: { rejected: boolean };
 		};
+		getPendingContract: {
+			params: Record<string, never>;
+			return: {
+				hasPending: boolean;
+				status?: string;
+				goalId?: string;
+				generation?: number;
+				objective?: string;
+				criteria?: Array<Record<string, unknown>>;
+				plan?: Array<{ id: string; title: string; status: string; criterionIds?: string[] }>;
+				verificationChecks?: Array<Record<string, unknown>>;
+				authorities?: Array<Record<string, unknown>>;
+				constraints?: string[];
+				nonGoals?: string[];
+				workspaceRoots?: string[];
+			};
+		};
+		refineContract: {
+			params: Record<string, never>;
+			return: { refined: boolean };
+		};
 		clearGoal: {
 			params: { reason?: string };
 			return: { cleared: boolean };
