@@ -222,7 +222,10 @@ function tryAcquireLock(options?: { force?: boolean }): boolean {
  * scheduler), stand down — stop cron jobs and stop refreshing.
  * Returns true when still the scheduler.
  */
-function heartbeatLock(jobs: Map<string, JobEntry>): boolean {
+function heartbeatLock(
+	jobs: Map<string, JobEntry>,
+	onDemoted?: () => void,
+): boolean {
 	const lockPath = getLockPath();
 	try {
 		const raw = readFileSync(lockPath, "utf-8");
@@ -236,13 +239,12 @@ function heartbeatLock(jobs: Map<string, JobEntry>): boolean {
 		writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
 		return true;
 	}
-	// 锁被别的进程抢占 → 退位
+	// 锁被别的进程抢占 → 退位（清空 jobs；onDemoted 由调用方复位 isScheduler）
 	for (const entry of jobs.values()) {
 		if (entry.task) entry.task.cancel();
 	}
 	jobs.clear();
-	isSchedulerGlobal = false;
-	emitStatus();
+	onDemoted?.();
 	return false;
 }
 
@@ -288,7 +290,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 	if (isScheduler) {
 		isSchedulerGlobal = true;
 		lockHeartbeat = setInterval(() => {
-			if (!heartbeatLock(jobs)) {
+			if (!heartbeatLock(jobs, () => { isScheduler = false; })) {
 				if (lockHeartbeat) clearInterval(lockHeartbeat);
 				lockHeartbeat = null;
 			}
@@ -320,7 +322,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 			if (isScheduler) {
 				if (!lockHeartbeat) {
 					lockHeartbeat = setInterval(() => {
-						if (!heartbeatLock(jobs)) {
+						if (!heartbeatLock(jobs, () => { isScheduler = false; })) {
 							if (lockHeartbeat) clearInterval(lockHeartbeat);
 							lockHeartbeat = null;
 						}
@@ -618,7 +620,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 				isSchedulerGlobal = isScheduler;
 				if (isScheduler && !lockHeartbeat) {
 					lockHeartbeat = setInterval(() => {
-						if (!heartbeatLock(jobs)) {
+						if (!heartbeatLock(jobs, () => { isScheduler = false; })) {
 							if (lockHeartbeat) clearInterval(lockHeartbeat);
 							lockHeartbeat = null;
 						}
