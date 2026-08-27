@@ -128,6 +128,10 @@ export interface GoalChannelContract extends ChannelContract {
 			params: Record<string, never>;
 			return: { approved: boolean; count?: number; error?: string };
 		};
+		rejectAuthorityAmendment: {
+			params: { reason?: string };
+			return: { rejected: boolean; error?: string };
+		};
 		rejectContract: {
 			params: { reason?: string };
 			return: { rejected: boolean };

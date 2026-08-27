@@ -13,7 +13,10 @@ function makePermissionUi(choice: string): ExtensionUIContext {
 		select: async () => choice,
 		confirm: async () => false,
 		input: async () => undefined,
-		askUserQuestion: async () => undefined,
+		askUserQuestion: async (questions) => ({
+			action: "responded",
+			answers: { [questions[0]!.id]: { selected: [choice] } },
+		}),
 		notify: () => undefined,
 		onTerminalInput: () => () => undefined,
 		setStatus: () => undefined,

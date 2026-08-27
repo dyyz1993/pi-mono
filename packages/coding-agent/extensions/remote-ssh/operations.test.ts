@@ -10,12 +10,23 @@ import {
 	type SshRunner,
 } from "./operations.ts";
 
-function result(stdout = "", exitCode: number | null = 0, stderr = ""): SshRunResult {
+function result(stdout: string | Buffer = "", exitCode: number | null = 0, stderr = ""): SshRunResult {
 	return {
 		exitCode,
-		stdout: Buffer.from(stdout),
+		stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout),
 		stderr: Buffer.from(stderr),
 	};
+}
+
+function batchFrame(path: string, content: string | null): Buffer {
+	const pathBuffer = Buffer.from(path);
+	const contentBuffer = content === null ? null : Buffer.from(content);
+	return Buffer.concat([
+		Buffer.from(pathBuffer.length.toString(16).padStart(16, "0")),
+		pathBuffer,
+		Buffer.from(contentBuffer === null ? "ffffffffffffffff" : contentBuffer.length.toString(16).padStart(16, "0")),
+		...(contentBuffer === null ? [] : [contentBuffer]),
+	]);
 }
 
 function createFakeRunner(responses: SshRunResult[] = []) {
@@ -108,14 +119,17 @@ describe("remote-ssh operations", () => {
 	});
 
 	it("exposes a workspace fs capability routed through remote paths", async () => {
+		const batchOutput = Buffer.concat([
+			batchFrame("/Users/remote/project/a.txt", "batch a"),
+			batchFrame("/Users/remote/project/missing.txt", null),
+		]);
 		const fake = createFakeRunner([
 			result("remote text"),
 			result(),
 			result("file\t12\t1234\n"),
 			result("file\ta.txt\ndirectory\tsrc\nsymlink\tlink\n"),
 			result(),
-			result("batch a"),
-			result("", 1, "missing"),
+			result(batchOutput),
 		]);
 		const ops = createRemoteSshOperations(config, fake.runner);
 
@@ -137,7 +151,11 @@ describe("remote-ssh operations", () => {
 			ops.fs!.readBatch(["/Users/local/project/a.txt", "/Users/local/project/missing.txt"]),
 		).resolves.toEqual([
 			{ path: "/Users/local/project/a.txt", content: Buffer.from("batch a") },
-			{ path: "/Users/local/project/missing.txt", content: null, error: "missing" },
+			{
+				path: "/Users/local/project/missing.txt",
+				content: null,
+				error: "Remote file not found: /Users/remote/project/missing.txt",
+			},
 		]);
 
 		expect(fake.commands).toEqual([
@@ -146,10 +164,33 @@ describe("remote-ssh operations", () => {
 			"p='/Users/remote/project/a.txt'; if [ -L \"$p\" ]; then type=symlink; elif [ -d \"$p\" ]; then type=directory; elif [ -f \"$p\" ]; then type=file; else exit 1; fi; size=0; if [ -f \"$p\" ]; then size=$(wc -c < \"$p\" | tr -d ' '); fi; mtime=0; if command -v stat >/dev/null 2>&1; then mtime=$(stat -f %m \"$p\" 2>/dev/null || stat -c %Y \"$p\" 2>/dev/null || echo 0); fi; printf '%s\\t%s\\t%s000\\n' \"$type\" \"$size\" \"$mtime\"",
 			"find '/Users/remote/project' -maxdepth 1 -mindepth 1 -exec sh -c 'for p do if [ -L \"$p\" ]; then type=symlink; elif [ -d \"$p\" ]; then type=directory; elif [ -f \"$p\" ]; then type=file; else type=other; fi; printf \"%s\\t%s\\n\" \"$type\" \"$(basename \"$p\")\"; done' sh {} + | sort -k2",
 			"rm -rf -- '/Users/remote/project/sub/a.txt'",
-			"cat -- '/Users/remote/project/a.txt'",
-			"cat -- '/Users/remote/project/missing.txt'",
+			expect.stringContaining("while IFS= read -r -d"),
 		]);
 		expect(fake.stdin[1]).toBe("new");
+		expect(fake.stdin[5]).toEqual(
+			Buffer.from("/Users/remote/project/a.txt\0/Users/remote/project/missing.txt\0"),
+		);
+	});
+
+	it("walks a git workspace with one remote command and maps paths back to local", async () => {
+		const walkOutput = Buffer.concat([
+			Buffer.from("file\0"),
+			Buffer.from("12\0"),
+			Buffer.from("/Users/remote/project/src/a.ts\0"),
+			Buffer.from("file\0"),
+			Buffer.from("4\0"),
+			Buffer.from("/Users/remote/project/dist/ignored.js\0"),
+		]);
+		const fake = createFakeRunner([result(walkOutput)]);
+		const ops = createRemoteSshOperations(config, fake.runner);
+
+		await expect(ops.fs!.walk("/Users/local/project", { ignore: ["dist/"], maxFiles: 10 })).resolves.toEqual({
+			entries: [{ path: "/Users/local/project/src/a.ts", size: 12, type: "file" }],
+			limitReached: false,
+		});
+		expect(fake.commands).toHaveLength(1);
+		expect(fake.commands[0]).toContain("git -C");
+		expect(fake.commands[0]).toContain("ls-files -co --exclude-standard -z");
 	});
 
 	it("converts remote grep output to rg json lines", async () => {

@@ -231,6 +231,12 @@ export interface RpcExtension {
 	sourceInfo: SourceInfo;
 	toolNames: string[];
 	commandNames: string[];
+	/** Channel names registered by this extension (via pi.registerChannel). */
+	channelNames: string[];
+	/** Event names this extension listens to (via pi.on). */
+	eventNames: string[];
+	/** Permission provider names registered by this extension (via pi.permissions.registerProvider). */
+	permissionProviderNames: string[];
 }
 
 /** A registered extension tool */
@@ -703,6 +709,17 @@ export type RpcExtensionUIRequest =
 			questions: AskUserQuestion[];
 			timeout?: number;
 			toolCallId?: string;
+			hookMeta?: {
+				toolName?: string;
+				matcher?: string;
+				description?: string;
+				command?: string;
+				hookCommand?: string;
+				eventName?: string;
+				source?: string;
+				reason?: string;
+			};
+			permissionMeta?: ExtensionUIPermissionMeta;
 	  }
 	| {
 			type: "extension_ui_request";

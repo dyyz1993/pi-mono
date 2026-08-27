@@ -232,6 +232,13 @@ describe("goal-vendor channel", () => {
 		expect(response.approved).toBe(false);
 	});
 
+	it("rejectAuthorityAmendment fails when no amendment is pending", async () => {
+		const { manager, outputs } = await loadGoalVendor();
+		const response = await invokeChannelMethod(manager, outputs, "goal", "rejectAuthorityAmendment");
+		expect(response.rejected).toBe(false);
+		expect(response.error).toBeDefined();
+	});
+
 	it("submitContract records a validated channel contract for approval", async () => {
 		const { manager, outputs } = await loadGoalVendor();
 		const root = fs.realpathSync(tempDir);
@@ -281,6 +288,98 @@ describe("goal-vendor channel", () => {
 
 		const running = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
 		expect(running.state).toBe("running");
+	});
+
+	it("keeps safe tools available during authority approval and resolves rejection through the channel", async () => {
+		mockTools = [
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Goal\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Inspect and validate the workspace",
+			workspaceRoots: [root],
+			criteria: ["README exists"],
+			phases: [{ id: "P1", title: "Inspect workspace", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: [],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+		const running = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		const requestTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_request_authority_amendment");
+		expect(requestTool).toBeDefined();
+		await requestTool!.definition.execute(
+			"call-request-authority",
+			{
+				goalId: running.goalId,
+				generation: running.generation,
+				rationale: "Need the generated preview server for UI validation",
+				authorities: [
+					{
+						id: "AUTH_NODE_PREVIEW",
+						label: "Start exact preview server",
+						actionClass: "local_process",
+						toolName: "bash",
+						targets: [
+							{ path: "command.executable", equals: "node" },
+							{ path: "cwd", equals: root },
+						],
+						command: { executable: "node", argsPrefix: ["scripts/preview-server.mjs"], trailingArgs: "none" },
+						maxUses: 1,
+					},
+				],
+			} as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+
+		const readDecision = await runner.emitToolCall({
+			type: "tool_call",
+			toolCallId: "call-read",
+			toolName: "read",
+			input: { path: readmePath },
+		});
+		const questionDecision = await runner.emitToolCall({
+			type: "tool_call",
+			toolCallId: "call-question",
+			toolName: "ask-user-question",
+			input: { question: "Need clarification" },
+		});
+		const deniedDecision = await runner.emitToolCall({
+			type: "tool_call",
+			toolCallId: "call-node",
+			toolName: "bash",
+			input: { command: "node scripts/preview-server.mjs" },
+		});
+		expect(readDecision).toBeUndefined();
+		expect(questionDecision).toBeUndefined();
+		expect(deniedDecision?.block).toBe(true);
+
+		const rejection = await invokeChannelMethod(manager, outputs, "goal", "rejectAuthorityAmendment", {
+			reason: "Use the already generated file instead",
+		});
+		expect(rejection).toMatchObject({ rejected: true });
+		const resumed = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(resumed.rawStatus).toBe("running");
+		expect(resumed.interrupt).toBeUndefined();
 	});
 
 	it("keeps running after a synchronous tool result from a background-capable tool", async () => {

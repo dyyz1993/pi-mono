@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
@@ -222,8 +222,17 @@ export class AgentSessionRuntime {
 		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
 		// Same-cwd switches reuse services (fast path): keep the shared
-		// extension runtime valid across the teardown.
-		const reuseServices = sessionManager.getCwd() === this.cwd;
+		// extension runtime valid across the teardown. Compare realpaths —
+		// the spawn cwd and the session-recorded cwd may differ via symlinks
+		// (macOS /tmp → /private/tmp) or trailing-slash normalization.
+		const normalizeCwd = (cwd: string): string => {
+			try {
+				return realpathSync(cwd);
+			} catch {
+				return cwd;
+			}
+		};
+		const reuseServices = normalizeCwd(sessionManager.getCwd()) === normalizeCwd(this.cwd);
 		const previousSession = this.session;
 		await this.teardownCurrent("resume", sessionManager.getSessionFile(), { reuseServices });
 

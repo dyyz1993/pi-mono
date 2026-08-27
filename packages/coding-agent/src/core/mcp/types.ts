@@ -14,7 +14,11 @@ export interface McpSseServerConfig {
 }
 
 export interface McpStreamableHttpServerConfig {
-	type: "streamable-http";
+	/**
+	 * Transport type. "streamable-http" is the canonical MCP name.
+	 * "http" is accepted as an alias for convenience (matches zcode CLI's config format).
+	 */
+	type: "streamable-http" | "http";
 	url: string;
 	headers?: Record<string, string>;
 	disabled?: boolean;

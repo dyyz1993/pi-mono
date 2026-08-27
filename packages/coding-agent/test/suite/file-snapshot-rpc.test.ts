@@ -928,16 +928,20 @@ describe("session_tree event handler", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// turn_end event handler integration
+// Core turn_end snapshot ownership
 // ═══════════════════════════════════════════════════════════════════════
 
-describe("turn_end event handler", () => {
-	it("creates step-snapshot entry on turn_end with changes", async () => {
+describe("core turn_end snapshot ownership", () => {
+	it("does not register a duplicate extension turn_end snapshot handler", () => {
+		const fix = setupSnapshotFixture();
+		expect(fix.handlers.has("turn_end")).toBe(false);
+	});
+
+	it("creates step-snapshot entry on core turn_end with changes", async () => {
 		const fix = setupSnapshotFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		writeFileSync(join(fix.cwd, "new.txt"), "new");
-		await fix.handlers.get("turn_end")!({ turnIndex: 0 } as TurnEndEvent, fix.ctx);
+		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "new.txt"), "new"));
 
 		const snapEntries = fix.entries.filter((e) => e.type === "step-snapshot");
 		expect(snapEntries.length).toBeGreaterThanOrEqual(1);
@@ -947,23 +951,21 @@ describe("turn_end event handler", () => {
 		expect(data.diff.added).toContain("new.txt");
 	});
 
-	it("does not create step-snapshot on turn_end with no changes", async () => {
+	it("does not create step-snapshot on core turn_end with no changes", async () => {
 		const fix = setupSnapshotFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		await fix.handlers.get("turn_end")!({ turnIndex: 0 } as TurnEndEvent, fix.ctx);
+		await runTurn(fix, 0);
 
 		const snapEntries = fix.entries.filter((e) => e.type === "step-snapshot");
 		expect(snapEntries).toHaveLength(0);
 	});
 
-	it("snapshot.list reflects turn_end committed snapshots", async () => {
+	it("snapshot.list reflects core turn_end committed snapshots", async () => {
 		const fix = setupSnapshotFixture();
 		await fix.handlers.get("session_start")!({}, fix.ctx);
 
-		// Turn 0 via event handler
-		writeFileSync(join(fix.cwd, "a.txt"), "a");
-		await fix.handlers.get("turn_end")!({ turnIndex: 0 } as TurnEndEvent, fix.ctx);
+		await runTurn(fix, 0, () => writeFileSync(join(fix.cwd, "a.txt"), "a"));
 
 		const result = fix.channel._invokeDirect("snapshot.list", {}) as Array<{
 			path: string;

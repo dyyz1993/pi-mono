@@ -87,8 +87,9 @@ async function readFilteredWorkingDirAsync(
 	git: InternalGit,
 	cwd: string,
 	fs: FileSystemCapability,
+	signal?: AbortSignal,
 ): Promise<Map<string, string>> {
-	const all = await git.scanWorkingDirAsync(cwd, fs);
+	const all = await git.scanWorkingDirAsync(cwd, fs, signal);
 	const filtered = new Map<string, string>();
 	for (const [path, content] of all) {
 		if (content.length <= FILE_SIZE_LIMIT) {
@@ -150,6 +151,7 @@ export class FileSnapshotManager {
 	private snapshotIndex = new Map<string, SnapshotWithEntryId>();
 	private turnIndexMap = new Map<number, string>();
 	private initialized = false;
+	private pendingWorkingDirScan: { cwd: string; files: Map<string, string> } | null = null;
 	private treeCache = new Map<string, { tree: Map<string, string>; at: number }>();
 	private readonly MAX_CACHED_TREES = 10;
 
@@ -178,13 +180,18 @@ export class FileSnapshotManager {
 		this.turnIndex = 0;
 	}
 
-	async initializeAsync(cwd: string): Promise<void> {
+	async initializeAsync(cwd: string, signal?: AbortSignal): Promise<void> {
 		if (this.initialized || this.snapshotIndex.size > 0) return;
 		this.initialized = true;
-		const files = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs());
-		this.sessionStartTreeHash = files.size > 0 ? this.git.writeTree(files).treeHash : null;
-		this.lastCommittedTreeHash = null;
-		this.turnIndex = 0;
+		try {
+			const files = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs(), signal);
+			this.sessionStartTreeHash = files.size > 0 ? this.git.writeTree(files).treeHash : null;
+			this.lastCommittedTreeHash = null;
+			this.turnIndex = 0;
+		} catch (error) {
+			this.initialized = false;
+			throw error;
+		}
 	}
 
 	async reinitializeWorkspaceAsync(cwd: string): Promise<void> {
@@ -192,12 +199,13 @@ export class FileSnapshotManager {
 		this.initialized = false;
 		this.sessionStartTreeHash = null;
 		this.lastCommittedTreeHash = null;
+		this.pendingWorkingDirScan = null;
 		await this.initializeAsync(cwd);
 	}
 
-	private async ensureInitializedAsync(cwd: string): Promise<void> {
+	private async ensureInitializedAsync(cwd: string, signal?: AbortSignal): Promise<void> {
 		if (this.initialized || this.snapshotIndex.size > 0) return;
-		await this.initializeAsync(cwd);
+		await this.initializeAsync(cwd, signal);
 	}
 
 	getLiveChanges(cwd: string): LiveChange[] {
@@ -225,9 +233,10 @@ export class FileSnapshotManager {
 		return changes;
 	}
 
-	async getLiveChangesAsync(cwd: string): Promise<LiveChange[]> {
-		await this.ensureInitializedAsync(cwd);
-		const currentFiles = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs());
+	async getLiveChangesAsync(cwd: string, signal?: AbortSignal): Promise<LiveChange[]> {
+		await this.ensureInitializedAsync(cwd, signal);
+		const currentFiles = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs(), signal);
+		this.pendingWorkingDirScan = { cwd, files: currentFiles };
 		const baselineHash = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
 		const baselineFiles = this.readTree(baselineHash);
 
@@ -252,6 +261,7 @@ export class FileSnapshotManager {
 	}
 
 	onTurnEnd(cwd: string, turnIndex: number, appendEntry: (type: string, data: unknown) => string): void {
+		this.pendingWorkingDirScan = null;
 		const files = readFilteredWorkingDir(this.git, cwd);
 		const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
 		const compareTo = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
@@ -286,36 +296,46 @@ export class FileSnapshotManager {
 		cwd: string,
 		turnIndex: number,
 		appendEntry: (type: string, data: unknown) => string,
+		signal?: AbortSignal,
 	): Promise<void> {
-		await this.ensureInitializedAsync(cwd);
-		const files = await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs());
-		const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
-		const compareTo = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
-		const oldEntries = compareTo ? this.parseTreeEntriesFromHash(compareTo) : new Map<string, TreeEntry>();
-		const diff = this.git.computeDiff(oldEntries, newEntries);
-		const hasChanges = diff.added.length > 0 || diff.modified.length > 0 || diff.deleted.length > 0;
-		if (!hasChanges) {
-			this.turnIndex = turnIndex + 1;
-			return;
-		}
+		try {
+			await this.ensureInitializedAsync(cwd, signal);
+			signal?.throwIfAborted();
+			const files =
+				this.pendingWorkingDirScan?.cwd === cwd
+					? this.pendingWorkingDirScan.files
+					: await readFilteredWorkingDirAsync(this.git, cwd, this.getWorkspaceFs(), signal);
+			signal?.throwIfAborted();
+			const { treeHash: snapshotTreeHash, entries: newEntries } = this.git.writeTree(files);
+			const compareTo = this.lastCommittedTreeHash ?? this.sessionStartTreeHash;
+			const oldEntries = compareTo ? this.parseTreeEntriesFromHash(compareTo) : new Map<string, TreeEntry>();
+			const diff = this.git.computeDiff(oldEntries, newEntries);
+			const hasChanges = diff.added.length > 0 || diff.modified.length > 0 || diff.deleted.length > 0;
+			if (!hasChanges) {
+				this.turnIndex = turnIndex + 1;
+				return;
+			}
 
-		const entryId = appendEntry("step-snapshot", {
-			baselineTreeHash: compareTo,
-			snapshotTreeHash,
-			diff,
-			turnIndex,
-		});
-		this.snapshotIndex.set(entryId, {
-			baselineTreeHash: compareTo,
-			snapshotTreeHash,
-			diff,
-			turnIndex,
-			entryId,
-			timestamp: new Date().toISOString(),
-		});
-		this.turnIndexMap.set(turnIndex, entryId);
-		this.lastCommittedTreeHash = snapshotTreeHash;
-		this.turnIndex = turnIndex + 1;
+			const entryId = appendEntry("step-snapshot", {
+				baselineTreeHash: compareTo,
+				snapshotTreeHash,
+				diff,
+				turnIndex,
+			});
+			this.snapshotIndex.set(entryId, {
+				baselineTreeHash: compareTo,
+				snapshotTreeHash,
+				diff,
+				turnIndex,
+				entryId,
+				timestamp: new Date().toISOString(),
+			});
+			this.turnIndexMap.set(turnIndex, entryId);
+			this.lastCommittedTreeHash = snapshotTreeHash;
+			this.turnIndex = turnIndex + 1;
+		} finally {
+			this.pendingWorkingDirScan = null;
+		}
 	}
 
 	rebuildIndex(entries: SessionEntry[], leafId?: string | null): void {
@@ -325,6 +345,7 @@ export class FileSnapshotManager {
 		this.sessionStartTreeHash = null;
 		this.turnIndex = 0;
 		this.initialized = false;
+		this.pendingWorkingDirScan = null;
 
 		// Build a Set of all entry IDs on the path from leaf to root (O(n) instead of O(n²))
 		const pathIdSet = new Set<string>();

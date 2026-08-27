@@ -67,7 +67,7 @@ import type {
 	VerificationCheck,
 	VerificationResult,
 } from "./types.ts";
-import { authorityScopeText, showDetailOverlay, showSetupCard, showSetupTranscriptEditor, updateGoalUi } from "./ui.ts";
+import { authorityScopeText, showDetailOverlay, showSetupTranscriptEditor, updateGoalUi } from "./ui.ts";
 import { runAllChecks, runVerificationCheck } from "./verification.ts";
 
 const GOAL_TOOL_NAMES = new Set([
@@ -482,6 +482,80 @@ function buildRiskAuthority(state: GoalState): ActionAuthority | undefined {
 	};
 }
 
+type GoalApprovalAction = "approve" | "refine" | "reject";
+
+/**
+ * All Goal human decisions use the same structured UI contract as permission
+ * prompts. The Runner owns the request id, so RPC, local UI, and Message
+ * Bridge responders race on one request instead of maintaining separate
+ * approval buttons and state machines.
+ */
+async function requestGoalApproval(
+	ctx: ExtensionContext,
+	state: GoalState,
+	kind: "contract" | "authority_amendment" | "pending_risk",
+	signal?: AbortSignal,
+): Promise<GoalApprovalAction | undefined> {
+	const pendingAuthority = state.interrupt?.pendingAuthorityAmendment;
+	const pendingAction = state.interrupt?.pendingAction;
+	const detail = kind === "contract"
+		? [
+				`Goal objective: ${redactText(state.outcome.current, 1_000).text}`,
+				`Criteria: ${state.criteria.map((item) => `${item.id} ${item.text}`).join("; ") || "none"}`,
+				`Plan: ${state.plan.map((item) => item.title).join(" -> ") || "none"}`,
+				`Approved workspace roots: ${state.workspaceRoots.join(", ") || "none"}`,
+				`Declared authorities: ${state.authorities.map(authorityScopeText).join(" | ") || "none"}`,
+			].join("\n")
+		: kind === "authority_amendment"
+			? [
+					`Rationale: ${redactText(pendingAuthority?.rationale ?? state.interrupt?.message ?? "", 700).text}`,
+					`Exact authorities: ${pendingAuthority?.authorities.map(authorityScopeText).join(" | ") || "none"}`,
+				].join("\n")
+			: [
+					`Exact action: ${redactText(pendingAction?.label ?? state.interrupt?.message ?? "", 700).text}`,
+					`Tool: ${pendingAction?.toolName ?? "unknown"}`,
+				].join("\n");
+	const questionId = `goal-${kind}`;
+	const response = await ctx.ui.askUserQuestion(
+		[
+			{
+				id: questionId,
+				header: kind === "contract" ? "Goal contract" : kind === "authority_amendment" ? "Goal authority" : "Goal risk",
+				question: `${kind === "contract" ? "Approve this complete Goal contract?" : kind === "authority_amendment" ? "Approve this exact authority amendment?" : "Approve this exact pending action once?"}\n\n${detail}`,
+				options: [
+					{ label: "Approve", description: "Allow exactly the displayed Goal request." },
+					...(kind === "contract" ? [{ label: "Refine", description: "Return to the same conversation and submit a replacement contract." }] : []),
+					{ label: "Reject", description: "Do not grant this Goal request." },
+				],
+			},
+		],
+		{
+			signal,
+			title: kind === "contract" ? "Approve Goal contract" : kind === "authority_amendment" ? "Approve Goal authority amendment" : "Approve Goal pending risk",
+			message: detail,
+			permissionMeta: {
+				type: "goal_approval",
+				kind,
+				goalId: state.goalId,
+				generation: state.generation,
+				objective: redactText(state.outcome.current, 1_000).text,
+				rationale: kind === "authority_amendment" ? redactText(pendingAuthority?.rationale ?? "", 700).text : undefined,
+				authorities: (kind === "authority_amendment" ? pendingAuthority?.authorities : state.authorities)?.map((authority) => ({
+					id: authority.id,
+					label: authority.label,
+					actionClass: authority.actionClass,
+					toolName: authority.toolName,
+				})) ?? [],
+			},
+		},
+	);
+	const selected = response?.answers[questionId]?.selected[0];
+	if (selected === "Approve") return "approve";
+	if (selected === "Refine") return "refine";
+	if (selected === "Reject") return "reject";
+	return undefined;
+}
+
 function applyPendingAuthorityAmendment(state: GoalState): number {
 	const pending = state.interrupt?.pendingAuthorityAmendment;
 	if (!pending) return 0;
@@ -495,6 +569,20 @@ function applyPendingAuthorityAmendment(state: GoalState): number {
 	state.continuationSequence += 1;
 	state.lastContinuationKey = undefined;
 	return pending.authorities.length;
+}
+
+function rejectPendingAuthorityAmendment(state: GoalState): boolean {
+	const pending = state.interrupt?.pendingAuthorityAmendment;
+	if (!pending) return false;
+	state.interrupt = undefined;
+	state.deferredRisk = undefined;
+	state.status = "running";
+	state.phase = "recovering";
+	state.currentAction = "Authority amendment rejected";
+	state.nextAction = "Choose a safe in-envelope alternative; do not retry the rejected authority";
+	state.continuationSequence += 1;
+	state.lastContinuationKey = undefined;
+	return true;
 }
 
 function isActiveGoal(state: GoalState | undefined): state is GoalState {
@@ -1194,7 +1282,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (action === "approve_amendment") {
-			if (!await ctx.ui.confirm("Approve exact typed authority amendment?", "This adds only the displayed executable, argv, action-class, and cwd policies. Existing goal state is preserved.")) return;
+			const pending = load(ctx);
+			if (!pending?.interrupt?.pendingAuthorityAmendment || await requestGoalApproval(ctx, structuredClone(pending), "authority_amendment") !== "approve") return;
 			await mutex.run(() => {
 				const state = load(ctx); if (!state) return;
 				const count = applyPendingAuthorityAmendment(state); if (!count) return;
@@ -1204,7 +1293,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (action === "approve_risk") {
-			if (!await ctx.ui.confirm("Approve exact pending action once?", "This grants one use only. Pi/tool-native confirmation may still apply.")) return;
+			const pending = load(ctx);
+			if (!pending?.interrupt?.pendingAction || await requestGoalApproval(ctx, structuredClone(pending), "pending_risk") !== "approve") return;
 			await mutex.run(() => {
 				const state = load(ctx); if (!state) return;
 				const authority = buildRiskAuthority(state); if (!authority) return;
@@ -1236,7 +1326,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		let state = initial;
 		while (state.status === "awaiting_approval") {
 			const generation = state.generation;
-			const action = await showSetupCard(ctx, structuredClone(state));
+			const approval = await requestGoalApproval(ctx, structuredClone(state), "contract");
+			if (!approval) return;
 			let shouldReturn = false;
 			let cancelled = false;
 			await mutex.run(() => {
@@ -1247,13 +1338,13 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				state = live;
-				if (action === "cancel") {
+				if (approval === "reject") {
 					markGoalCancelled(ctx, state, "setup_cancelled", "user cancelled contract before approval");
 					cancelled = true;
 					shouldReturn = true;
 					return;
 				}
-				if (action === "refine") {
+				if (approval === "refine") {
 					state.status = "setting_up";
 					state.phase = "setup";
 					state.generation += 1;
@@ -1604,6 +1695,28 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		});
 	});
 
+	goalChannel.handle("rejectAuthorityAmendment", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { rejected: false, error: "no active session context" };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { rejected: false, error: "no active goal" };
+			if (!state.interrupt?.pendingAuthorityAmendment) {
+				return { rejected: false, error: "goal has no pending authority amendment" };
+			}
+			const reason = typeof params?.reason === "string" && params.reason.trim()
+				? params.reason.trim()
+				: "authority amendment rejected by user";
+			if (!rejectPendingAuthorityAmendment(state)) return { rejected: false, error: "no authority amendment was rejected" };
+			persist(ctx, "authority_amendment_rejected", reason);
+			triggerContinuation(state, "The user rejected the displayed authority amendment. Do not retry that authority; choose a safe alternative within the existing approved contract.");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "authority_amendment_rejected" });
+			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "authority amendment rejected" });
+			return { rejected: true };
+		});
+	});
+
 	goalChannel.handle("rejectContract", async (params) => {
 		const ctx = currentCtx;
 		if (!ctx) return { rejected: false };
@@ -1756,48 +1869,87 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			constraints: Type.Array(Type.String()),
 			nonGoals: Type.Array(Type.String()),
 		}),
-		execute: async (_id, params, _signal, _update, ctx) => mutex.run(() => {
-			const state = load(ctx);
-			if (!state || state.status !== "setting_up") throw new Error("No goal setup is awaiting a contract");
-			validGeneration(state, params.goalId, params.generation);
-			if (setupSubmissionBlocked(state)) throw new Error("Goal setup is waiting for new user input after repeated contract failures; do not submit another contract yet.");
-			let draft: GoalDraft;
-			try {
-				draft = normalizeDraft(params, state.outcome.original, ctx.cwd);
-				draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
-			} catch (error) {
-				return failSetupSubmission(ctx, state, "draft", error);
-			}
-			const postDraftErrors: Array<{ stage: Exclude<SetupSubmissionStage, "draft" | "contract">; message: string }> = [];
-			try { normalizeAuthorityToolNames(draft); }
-			catch (error) { postDraftErrors.push({ stage: "authority_tools", message: error instanceof Error ? error.message : String(error) }); }
-			try {
-				const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
-				if (commandAuthorityErrors.length) postDraftErrors.push({ stage: "command_authority", message: `Contract executable authority is incomplete: ${commandAuthorityErrors.join("; ")}` });
-			} catch (error) {
-				postDraftErrors.push({ stage: "command_authority", message: error instanceof Error ? error.message : String(error) });
-			}
-			let replacement: GoalState | undefined;
-			try { replacement = createGoalState(draft, ctx, state.outcome.original); }
-			catch (error) { postDraftErrors.push({ stage: "goal_state", message: error instanceof Error ? error.message : String(error) }); }
-			if (postDraftErrors.length) {
-				const stages = new Set(postDraftErrors.map((item) => item.stage));
-				const stage: SetupSubmissionStage = stages.size === 1 ? postDraftErrors[0]!.stage : "contract";
-				return failSetupSubmission(ctx, state, stage, new Error(`Contract validation failed: ${postDraftErrors.map((item) => `${item.stage}: ${item.message}`).join("; ")}`));
-			}
-			if (!replacement) return failSetupSubmission(ctx, state, "goal_state", new Error("Contract state could not be created"));
-			replacement.goalId = state.goalId;
-			replacement.createdAt = state.createdAt;
-			replacement.generation = state.generation + 1;
-			replacement.revision = state.revision;
-			replacement.continuationSequence = state.continuationSequence + 1;
-			replacement.lastContinuationKey = undefined;
-			replacement.setupAwaitingUser = false;
-			store.set(replacement);
-			persist(ctx, "setup_contract_submitted", "same-conversation agent submitted a validated contract for user approval");
-			ctx.ui.notify("Goal contract ready. Run bare /goal to review and approve it.", "info");
-			return toolResult("Validated contract recorded. Ask the user to run bare /goal to review, approve, refine, or cancel. No work may begin before approval.");
-		}),
+		execute: async (_id, params, _signal, _update, ctx) => {
+			let submitted: GoalState | undefined;
+			const result = await mutex.run(() => {
+				const state = load(ctx);
+				if (!state || state.status !== "setting_up") throw new Error("No goal setup is awaiting a contract");
+				validGeneration(state, params.goalId, params.generation);
+				if (setupSubmissionBlocked(state)) throw new Error("Goal setup is waiting for new user input after repeated contract failures; do not submit another contract yet.");
+				let draft: GoalDraft;
+				try {
+					draft = normalizeDraft(params, state.outcome.original, ctx.cwd);
+					draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
+				} catch (error) {
+					return failSetupSubmission(ctx, state, "draft", error);
+				}
+				const postDraftErrors: Array<{ stage: Exclude<SetupSubmissionStage, "draft" | "contract">; message: string }> = [];
+				try { normalizeAuthorityToolNames(draft); }
+				catch (error) { postDraftErrors.push({ stage: "authority_tools", message: error instanceof Error ? error.message : String(error) }); }
+				try {
+					const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
+					if (commandAuthorityErrors.length) postDraftErrors.push({ stage: "command_authority", message: `Contract executable authority is incomplete: ${commandAuthorityErrors.join("; ")}` });
+				} catch (error) {
+					postDraftErrors.push({ stage: "command_authority", message: error instanceof Error ? error.message : String(error) });
+				}
+				let replacement: GoalState | undefined;
+				try { replacement = createGoalState(draft, ctx, state.outcome.original); }
+				catch (error) { postDraftErrors.push({ stage: "goal_state", message: error instanceof Error ? error.message : String(error) }); }
+				if (postDraftErrors.length) {
+					const stages = new Set(postDraftErrors.map((item) => item.stage));
+					const stage: SetupSubmissionStage = stages.size === 1 ? postDraftErrors[0]!.stage : "contract";
+					return failSetupSubmission(ctx, state, stage, new Error(`Contract validation failed: ${postDraftErrors.map((item) => `${item.stage}: ${item.message}`).join("; ")}`));
+				}
+				if (!replacement) return failSetupSubmission(ctx, state, "goal_state", new Error("Contract state could not be created"));
+				replacement.goalId = state.goalId;
+				replacement.createdAt = state.createdAt;
+				replacement.generation = state.generation + 1;
+				replacement.revision = state.revision;
+				replacement.continuationSequence = state.continuationSequence + 1;
+				replacement.lastContinuationKey = undefined;
+				replacement.setupAwaitingUser = false;
+				store.set(replacement);
+				persist(ctx, "setup_contract_submitted", "same-conversation agent submitted a validated contract for user approval");
+				submitted = structuredClone(replacement);
+				return toolResult("Validated contract recorded. A unified Goal approval request is now waiting for the user. No work may begin before approval.");
+			});
+			if (!submitted) return result;
+
+			const action = await requestGoalApproval(ctx, submitted, "contract", _signal);
+			if (!action) return toolResult("Goal contract remains awaiting approval; no work was started.");
+			await mutex.run(() => {
+				const state = load(ctx);
+				if (!state || state.goalId !== submitted?.goalId || state.generation !== submitted?.generation || state.status !== "awaiting_approval") return;
+				if (action === "approve") {
+					state.status = "running";
+					state.phase = "executing";
+					state.approvedAt = now();
+					state.generation += 1;
+					state.continuationSequence += 1;
+					state.setupAwaitingUser = false;
+					const currentNodeRef = currentNode(state) ?? state.plan.find((node) => node.status === "pending");
+					state.currentAction = currentNodeRef?.title ?? "Begin goal";
+					state.nextAction = state.plan.find((node) => node.status === "pending")?.title ?? "Collect evidence";
+					persist(ctx, "setup_approved", "user approved the complete Goal contract through the unified UI approval request");
+					triggerContinuation(state, "The user approved the Goal contract and declared authority envelope. Work autonomously until independently verified complete.");
+				} else if (action === "refine") {
+					state.status = "setting_up";
+					state.phase = "setup";
+					state.generation += 1;
+					state.continuationSequence += 1;
+					state.lastContinuationKey = undefined;
+					state.setupAwaitingUser = false;
+					resetSetupSubmissionTracking(state);
+					state.currentAction = "Discussing contract refinement in this conversation";
+					state.nextAction = "Ask what should change, then submit a replacement contract";
+					persist(ctx, "setup_refinement_requested", "user returned Goal contract to the same conversation for refinement");
+					triggerSetupConversation(state, "The user chose Refine. Ask what should change in this conversation, then submit a complete replacement contract.");
+				} else {
+					markGoalCancelled(ctx, state, "setup_cancelled", "user rejected the Goal contract through the unified UI approval request");
+				}
+			});
+			return toolResult(action === "approve" ? "Goal contract approved. Execution has started." : action === "refine" ? "Goal contract returned for refinement; continue the setup conversation." : "Goal contract rejected. No work was started.");
+		},
 	});
 
 	pi.registerTool({
@@ -1826,30 +1978,52 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		label: "Request Goal Authority Amendment",
 		description: "Request one narrowly scoped human-approved authority amendment without replacing the goal, plan, criteria, evidence, or workspace.",
 		parameters: Type.Object({ ...Expected, rationale: Type.String(), authorities: Type.Array(AuthorityParameter, { minItems: 1 }) }),
-		execute: async (_id, params, _signal, _update, ctx) => mutex.run(() => {
-			const state = load(ctx); if (!state || state.status !== "running") throw new Error("No running goal"); validGeneration(state, params.goalId, params.generation);
-			const authorities = params.authorities.map((authority) => ({ ...authority, targets: [...authority.targets], command: authority.command ? { ...authority.command, argsPrefix: [...authority.command.argsPrefix] } : undefined }));
-			const shell: GoalDraft = { outcome: state.outcome.current, criteria: state.criteria.map((item) => item.text), phases: [], verificationChecks: [], authorities, constraints: [], nonGoals: [] };
-			normalizeAuthorityToolNames(shell);
-			const duplicate = authorities.find((authority) => state.authorities.some((existing) => existing.id === authority.id));
-			if (duplicate) throw new Error(`Authority amendment ID already exists: ${duplicate.id}`);
-			const errors = authorities.flatMap((authority) => validateCommandAuthorityDefinition(authority, state.cwd, state.workspaceRoots).map((error) => `${authority.id} ${JSON.stringify(authority.label)}: ${error}`));
-			if (errors.length) throw new Error(`Authority amendment is invalid: ${errors.join("; ")}`);
-			const rationale = redactText(params.rationale, 500).text;
-			const resumePhase = state.phase;
-			const resumeCurrentAction = state.currentAction;
-			const resumeNextAction = state.nextAction;
-			openInterrupt(state, {
-				class: "RISK",
-				message: `Narrow authority amendment requested: ${rationale}`,
-				attempts: state.recoveryEvidence.filter((item) => item.kind === "authority_denial" || item.kind === "check_failure").slice(-8).map((item) => item.summary),
-				need: "Human approval for only the displayed typed executable authorities.",
-				recommendation: "Review the exact executable, argv policy, action class, and cwd; approve or reject the amendment.",
-				pendingAuthorityAmendment: { authorities, rationale, requestedAt: now(), resumePhase, resumeCurrentAction, resumeNextAction },
+		execute: async (_id, params, _signal, _update, ctx) => {
+			let requested: GoalState | undefined;
+			const result = await mutex.run(() => {
+				const state = load(ctx); if (!state || state.status !== "running") throw new Error("No running goal"); validGeneration(state, params.goalId, params.generation);
+				const authorities = params.authorities.map((authority) => ({ ...authority, targets: [...authority.targets], command: authority.command ? { ...authority.command, argsPrefix: [...authority.command.argsPrefix] } : undefined }));
+				const shell: GoalDraft = { outcome: state.outcome.current, criteria: state.criteria.map((item) => item.text), phases: [], verificationChecks: [], authorities, constraints: [], nonGoals: [] };
+				normalizeAuthorityToolNames(shell);
+				const duplicate = authorities.find((authority) => state.authorities.some((existing) => existing.id === authority.id));
+				if (duplicate) throw new Error(`Authority amendment ID already exists: ${duplicate.id}`);
+				const errors = authorities.flatMap((authority) => validateCommandAuthorityDefinition(authority, state.cwd, state.workspaceRoots).map((error) => `${authority.id} ${JSON.stringify(authority.label)}: ${error}`));
+				if (errors.length) throw new Error(`Authority amendment is invalid: ${errors.join("; ")}`);
+				const rationale = redactText(params.rationale, 500).text;
+				const resumePhase = state.phase;
+				const resumeCurrentAction = state.currentAction;
+				const resumeNextAction = state.nextAction;
+				openInterrupt(state, {
+					class: "RISK",
+					message: `Narrow authority amendment requested: ${rationale}`,
+					attempts: state.recoveryEvidence.filter((item) => item.kind === "authority_denial" || item.kind === "check_failure").slice(-8).map((item) => item.summary),
+					need: "Human approval for only the displayed typed executable authorities.",
+					recommendation: "Review the exact executable, argv policy, action class, and cwd; approve or reject the amendment.",
+					pendingAuthorityAmendment: { authorities, rationale, requestedAt: now(), resumePhase, resumeCurrentAction, resumeNextAction },
+				});
+				persist(ctx, "authority_amendment_requested", rationale);
+				requested = structuredClone(state);
+				return toolResult("A unified Goal authority-approval request is now waiting for the user. No new authority is active yet.");
 			});
-			persist(ctx, "authority_amendment_requested", rationale);
-			return toolResult(`Authority amendment is awaiting exact human approval through bare /goal or the exact approval phrase. Displayed exact scope:\n${authorities.map(authorityScopeText).join("\n")}`);
-		}),
+			if (!requested) return result;
+			const action = await requestGoalApproval(ctx, requested, "authority_amendment", _signal);
+			if (!action) return toolResult("Goal authority amendment remains pending; no new authority was granted.");
+			await mutex.run(() => {
+				const state = load(ctx);
+				if (!state || state.goalId !== requested?.goalId || state.generation !== requested?.generation || !state.interrupt?.pendingAuthorityAmendment) return;
+				if (action === "approve") {
+					const count = applyPendingAuthorityAmendment(state);
+					if (!count) return;
+					persist(ctx, "authority_amendment_approved", `${count} exact typed authorities approved through the unified UI approval request`);
+					triggerContinuation(state, "The user approved the displayed typed authority amendment. Continue the same current step without broadening it.");
+				} else {
+					if (!rejectPendingAuthorityAmendment(state)) return;
+					persist(ctx, "authority_amendment_rejected", "user rejected the Goal authority amendment through the unified UI approval request");
+					triggerContinuation(state, "The user rejected the displayed authority amendment. Do not retry that authority; choose a safe alternative within the existing approved contract.");
+				}
+			});
+			return toolResult(action === "approve" ? "Goal authority amendment approved and applied." : "Goal authority amendment rejected; no new authority was granted.");
+		},
 	});
 
 	pi.registerTool({
@@ -2296,7 +2470,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		}
 		if (!isActiveGoal(state)) return;
 		if (GOAL_TOOL_NAMES.has(event.toolName)) return;
-		if (state.status === "paused" || state.status === "interrupted") return { block: true, reason: `Goal is ${state.status}; resolve it through bare /goal before more work.` };
+		if (state.status === "paused" || (state.status === "interrupted" && !state.interrupt?.pendingAuthorityAmendment)) {
+			return { block: true, reason: `Goal is ${state.status}; resolve it through bare /goal before more work.` };
+		}
 		const hash = inputHash(event.toolName, event.input);
 		state.repeatedToolCalls[hash] = Math.min((state.repeatedToolCalls[hash] ?? 0) + 1, 3);
 		if (state.repeatedToolCalls[hash] >= 3) {
