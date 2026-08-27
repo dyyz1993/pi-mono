@@ -238,12 +238,18 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 	let isScheduler = false; // 当前 session 是否是 active scheduler
 	let lockHeartbeat: ReturnType<typeof setInterval> | null = null;
 
-	// 全局单例锁：extension 加载时就获取（不等 session_start，因为 RPC 模式可能不触发）
-	try {
-		isScheduler = tryAcquireLock();
-	} catch (err) {
-		console.error(`[loop-scheduler] tryAcquireLock error at init:`, err);
-		isScheduler = false;
+	// 全局单例锁：extension 加载时就获取（不等 session_start，因为 RPC 模式可能不触发）。
+	// 例外：预热进程（PI_WARM_STANDBY=1，由 app 预热池 spawn）在初始启动时不参与锁竞争——
+	// 它还没绑定任何用户 session。等它被 adopt（switchSession 触发 reason="resume" 的
+	// session_start）时才正式拿锁，见下方 session_start 处理。
+	const warmStandby = process.env.PI_WARM_STANDBY === "1";
+	if (!warmStandby) {
+		try {
+			isScheduler = tryAcquireLock();
+		} catch (err) {
+			console.error(`[loop-scheduler] tryAcquireLock error at init:`, err);
+			isScheduler = false;
+		}
 	}
 	// 心跳
 	if (isScheduler) {
@@ -543,6 +549,21 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 
 		// ── session 生命周期 ──
 		pi.on("session_start", (_event, ctx) => {
+			// 预热进程被 adopt（switchSession → reason="resume"）：此刻它成为
+			// 真正的用户 session，正式参与单例锁竞争。
+			if (warmStandby && _event.reason === "resume" && !isScheduler) {
+				try {
+					isScheduler = tryAcquireLock();
+				} catch {
+					isScheduler = false;
+				}
+				if (isScheduler && !lockHeartbeat) {
+					lockHeartbeat = setInterval(() => {
+						try { writeFileSync(getLockPath(), JSON.stringify({ pid: process.pid, ts: Date.now() })); } catch { /* */ }
+					}, 30_000);
+				}
+			}
+
 			// 从 settings 加载 loops（所有 session 都加载配置，方便 channel CRUD）
 			const loops = readLoopsFromSettings(ctx);
 
