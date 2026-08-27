@@ -171,8 +171,8 @@ function buildStatus(jobs: Map<string, JobEntry>): LoopStatus[] {
 
 // ── settings 读写 ─────────────────────────────────────────────────
 
-function readLoopsFromSettings(pi: ExtensionAPI): LoopConfig[] {
-	const settings = pi.getSettings() as Record<string, unknown>;
+function readLoopsFromSettings(ctx: { getSettings: () => unknown }): LoopConfig[] {
+	const settings = (ctx.getSettings() ?? {}) as Record<string, unknown>;
 	const ls = settings.loopScheduler as { loops?: LoopConfig[] } | undefined;
 	return ls?.loops ?? [];
 }
@@ -542,9 +542,9 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 		});
 
 		// ── session 生命周期 ──
-		pi.on("session_start", () => {
+		pi.on("session_start", (_event, ctx) => {
 			// 从 settings 加载 loops（所有 session 都加载配置，方便 channel CRUD）
-			const loops = readLoopsFromSettings(pi);
+			const loops = readLoopsFromSettings(ctx);
 
 			for (const loop of loops) {
 				jobs.set(loop.id, {
