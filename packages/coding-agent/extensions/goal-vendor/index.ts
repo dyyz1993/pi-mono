@@ -2462,11 +2462,11 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const state = load(ctx); if (!state) return;
 		if (state.status === "setting_up") {
 			if (event.toolName === "pi_goal_submit_contract" || event.toolName === "pi_goal_status") return;
-			return { block: true, reason: "Goal setup is conversational and not approved. Local files, attachments/uploads, and screenshots cannot be inspected yet; ask the user to paste relevant text, or cancel setup, inspect normally, then restart /goal. Otherwise submit the complete contract." };
+			return { block: true, reason: "BLOCKED: goal setup is conversational — while the goal contract is being prepared, ALL other tools (todo, bash, read, write, etc.) are disabled. Do NOT retry this tool. Do the following instead: (1) discuss requirements with the user in plain text, (2) when target, scope, success criteria, verification commands, and needed authorities are all clear, call pi_goal_submit_contract with the complete contract JSON." };
 		}
 		if (state.status === "awaiting_approval") {
 			if (event.toolName === "pi_goal_status") return;
-			return { block: true, reason: "Goal contract awaits one user approval through bare /goal; no work may begin before approval." };
+			return { block: true, reason: "BLOCKED: the goal contract is awaiting user approval — ALL other tools (todo, bash, read, write, etc.) are disabled and retries will keep failing. Do NOT retry this tool. Wait for the user to approve or reject the contract via /goal. After approval, operational tools become available automatically." };
 		}
 		if (!isActiveGoal(state)) return;
 		if (GOAL_TOOL_NAMES.has(event.toolName)) return;
