@@ -74,4 +74,10 @@ export interface LoopSchedulerChannelContract {
 		request: void;
 		response: LoopSchedulerStatusEvent;
 	};
+
+	/** 用户切回本 session 时强制成为 active scheduler（lease 抢占） */
+	becomeScheduler: {
+		request: void;
+		response: { ok: boolean; already?: boolean };
+	};
 }

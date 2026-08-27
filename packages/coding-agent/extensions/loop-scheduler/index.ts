@@ -192,13 +192,13 @@ function getLockPath(): string {
 	return join(dir, "loop-scheduler.lock");
 }
 
-function tryAcquireLock(): boolean {
+function tryAcquireLock(options?: { force?: boolean }): boolean {
 	const lockPath = getLockPath();
 	const now = Date.now();
 	const myPid = process.pid;
 
-	// 检查现有锁
-	if (existsSync(lockPath)) {
+	// 检查现有锁（force 模式跳过占用检查：leader-lease 抢占）
+	if (!options?.force && existsSync(lockPath)) {
 		try {
 			const raw = readFileSync(lockPath, "utf-8");
 			const lock = JSON.parse(raw) as { pid: number; ts: number };
@@ -215,6 +215,39 @@ function tryAcquireLock(): boolean {
 	writeFileSync(lockPath, JSON.stringify({ pid: myPid, ts: now }));
 	return true;
 }
+
+/**
+ * Lease-mode heartbeat: refresh the lock if we still hold it. If another
+ * process force-preempted (a newly adopted session became the active
+ * scheduler), stand down — stop cron jobs and stop refreshing.
+ * Returns true when still the scheduler.
+ */
+function heartbeatLock(jobs: Map<string, JobEntry>): boolean {
+	const lockPath = getLockPath();
+	try {
+		const raw = readFileSync(lockPath, "utf-8");
+		const lock = JSON.parse(raw) as { pid: number; ts: number };
+		if (lock.pid === process.pid) {
+			writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+			return true;
+		}
+	} catch {
+		// 锁文件丢失/损坏 → 重新拿
+		writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+		return true;
+	}
+	// 锁被别的进程抢占 → 退位
+	for (const entry of jobs.values()) {
+		if (entry.task) entry.task.cancel();
+	}
+	jobs.clear();
+	isSchedulerGlobal = false;
+	emitStatus();
+	return false;
+}
+
+/** Module-level mirror of isScheduler for use inside standalone helpers. */
+let isSchedulerGlobal = false;
 
 function releaseLock(): void {
 	const lockPath = getLockPath();
@@ -251,10 +284,14 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 			isScheduler = false;
 		}
 	}
-	// 心跳
+	// 心跳（租约模式：被抢占时自动退位）
 	if (isScheduler) {
+		isSchedulerGlobal = true;
 		lockHeartbeat = setInterval(() => {
-			try { writeFileSync(getLockPath(), JSON.stringify({ pid: process.pid, ts: Date.now() })); } catch { /* */ }
+			if (!heartbeatLock(jobs)) {
+				if (lockHeartbeat) clearInterval(lockHeartbeat);
+				lockHeartbeat = null;
+			}
 		}, 30_000);
 	}
 	let channel: ReturnType<typeof createTypedChannel<LoopSchedulerChannelContract>>["server"] | null = null;
@@ -275,6 +312,30 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 		const emitStatus = () => safeEmit("status", { type: "status", loops: buildStatus(jobs) });
 
 		channel.handle("list", () => ({ loops: Array.from(jobs.values()).map((j) => j.config), isScheduler } as { loops: LoopConfig[]; isScheduler: boolean }));
+		// 用户切回本 session：强制成为 active scheduler（lease 抢占，旧持有者心跳退位）
+		channel.handle("becomeScheduler", () => {
+			if (isScheduler) return { ok: true, already: true };
+			isScheduler = tryAcquireLock({ force: true });
+			isSchedulerGlobal = isScheduler;
+			if (isScheduler) {
+				if (!lockHeartbeat) {
+					lockHeartbeat = setInterval(() => {
+						if (!heartbeatLock(jobs)) {
+							if (lockHeartbeat) clearInterval(lockHeartbeat);
+							lockHeartbeat = null;
+						}
+					}, 30_000);
+				}
+				// 重新启动本 session 的 enabled loops
+				for (const [id, entry] of jobs) {
+					if (entry.config.enabled && !entry.task) {
+						startJob(pi, jobs, id, emitStatus, isScheduler);
+					}
+				}
+			}
+			emitStatus();
+			return { ok: isScheduler };
+		});
 		channel.handle("getStatus", () => ({ type: "status" as const, loops: buildStatus(jobs) }));
 
 		channel.handle("create", ({ name, cron, prompt, deliverAs }) => {
@@ -552,14 +613,15 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 			// 预热进程被 adopt（switchSession → reason="resume"）：此刻它成为
 			// 真正的用户 session，正式参与单例锁竞争。
 			if (warmStandby && _event.reason === "resume" && !isScheduler) {
-				try {
-					isScheduler = tryAcquireLock();
-				} catch {
-					isScheduler = false;
-				}
+				// adopt：强制抢占锁（lease 模式——旧持有者会在下个心跳退位）
+				isScheduler = tryAcquireLock({ force: true });
+				isSchedulerGlobal = isScheduler;
 				if (isScheduler && !lockHeartbeat) {
 					lockHeartbeat = setInterval(() => {
-						try { writeFileSync(getLockPath(), JSON.stringify({ pid: process.pid, ts: Date.now() })); } catch { /* */ }
+						if (!heartbeatLock(jobs)) {
+							if (lockHeartbeat) clearInterval(lockHeartbeat);
+							lockHeartbeat = null;
+						}
 					}, 30_000);
 				}
 			}
@@ -597,6 +659,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 				if (lockHeartbeat) clearInterval(lockHeartbeat);
 				releaseLock();
 				isScheduler = false;
+				isSchedulerGlobal = false;
 			}
 		});
 	} catch (err) {
