@@ -60,3 +60,11 @@ export function getExtensionRuntimeResourcePolicy(): ExtensionRuntimeResourcePol
 		.getRuntimeResourcePolicy;
 	return typeof exported === "function" ? exported() : fallbackRuntimeResourcePolicy();
 }
+
+// Loader discovery treats every file in extensions/ as an extension and
+// requires a default factory. This module is a shared utility consumed by
+// other extensions (via jiti alias), so export a no-op factory to load
+// cleanly instead of producing a warning on every session start.
+export default function runtimePolicyExtension(): void {
+	// No-op: this module only provides getExtensionRuntimeResourcePolicy().
+}
