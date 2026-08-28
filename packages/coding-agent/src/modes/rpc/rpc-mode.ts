@@ -13,12 +13,11 @@
 
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@dyyz1993/pi-agent-core";
-import type { PermissionMode } from "../../core/agent-session.ts";
+import type { AgentSession, PermissionMode } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { discoverAgents } from "../../core/agent-types.ts";
 import { generateSegmentSummary } from "../../core/compaction/branch-summarization.ts";
 import { ChannelManager } from "../../core/extensions/channel-manager.ts";
-import type { AgentSession } from "../../core/agent-session.ts";
 import type { ChannelDataMessage } from "../../core/extensions/channel-types.ts";
 import { createBranchSummaryMessage } from "../../core/messages.ts";
 import { resolveModelAlias } from "../../core/model-resolver.ts";
@@ -176,7 +175,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			theme,
 		});
 
-	runtimeHost.setRebindSession(async (session, previousSession) => {
+	runtimeHost.setRebindSession(async (_session, previousSession) => {
 		await rebindSession(previousSession);
 	});
 

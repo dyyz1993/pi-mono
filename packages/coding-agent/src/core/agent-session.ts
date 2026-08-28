@@ -3361,7 +3361,9 @@ export class AgentSession {
 		// Connections (stdio children, HTTP sessions) stay alive across the
 		// switch — full reconnect-all costs seconds per switch. Settings changes
 		// still go through reload (full rebuild path).
-		console.error(`[mcp-reuse] reuseFrom=${!!reuseFrom} hasManager=${!!reuseFrom?.mcpManager} reuseFromIsSession=${reuseFrom instanceof AgentSession}`);
+		console.error(
+			`[mcp-reuse] reuseFrom=${!!reuseFrom} hasManager=${!!reuseFrom?.mcpManager} reuseFromIsSession=${reuseFrom instanceof AgentSession}`,
+		);
 		if (reuseFrom?.mcpManager) {
 			this._mcpManager = reuseFrom.mcpManager;
 			reuseFrom._mcpManager = undefined;
