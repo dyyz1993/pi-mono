@@ -1636,6 +1636,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 							: "";
 				if (!originalOutcome) return { submitted: false, error: "outcome is required" };
 				const setupState = existing?.status === "setting_up" ? existing : createGoalSetupState(originalOutcome, ctx);
+				const rawMismatch = outcomeMismatchReason(setupState.outcome.original, typeof params.outcome === "string" ? params.outcome : "");
+				if (rawMismatch) return { submitted: false, error: rawMismatch };
 				let draft = normalizeDraft(params, setupState.outcome.original, ctx.cwd);
 				draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
 				const outcomeMismatch = outcomeMismatchReason(setupState.outcome.original, draft.outcome);
@@ -1937,6 +1939,12 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				if (!state || state.status !== "setting_up") throw new Error("No goal setup is awaiting a contract");
 				validGeneration(state, params.goalId, params.generation);
 				if (setupSubmissionBlocked(state)) throw new Error("Goal setup is waiting for new user input after repeated contract failures; do not submit another contract yet.");
+				// Alignment check FIRST, on the raw submitted outcome. TypeBox schema
+				// errors (framework-level) and later validator stages would otherwise
+				// reject malformed hijacked contracts before this guardrail ever runs,
+				// letting a lucky well-formed old contract through to approval.
+				const rawMismatch = outcomeMismatchReason(state.outcome.original, typeof params.outcome === "string" ? params.outcome : "");
+				if (rawMismatch) return failSetupSubmission(ctx, state, "contract", new Error(rawMismatch));
 				let draft: GoalDraft;
 				try {
 					draft = normalizeDraft(params, state.outcome.original, ctx.cwd);
