@@ -3,6 +3,7 @@ import { classifyToolCall } from "../../extensions/goal-vendor/security.ts";
 import type { GoalState } from "../../extensions/goal-vendor/types.ts";
 
 function interruptedState(): GoalState {
+	// Partial fixture: only the fields classifyToolCall reads.
 	return {
 		goalId: "goal-1",
 		cwd: "/tmp/project",
@@ -43,7 +44,7 @@ function interruptedState(): GoalState {
 		activeToolCalls: {},
 		repeatedToolCalls: {},
 		repeatedBlockers: {},
-	} as GoalState;
+	} as unknown as GoalState;
 }
 
 describe("goal-vendor authority interruption recovery", () => {

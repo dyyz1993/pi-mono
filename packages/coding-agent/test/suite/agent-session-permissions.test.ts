@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "../../src/core/agent-types.ts";
 import type { ExtensionFactory, ExtensionUIContext } from "../../src/core/extensions/index.ts";
+import type { AskUserQuestion } from "../../src/core/extensions/types.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 const piHooksFactory: ExtensionFactory = (await import("../../extensions/pi-hooks/index.ts")).default;
@@ -52,7 +53,7 @@ function makePermissionUi(choice: string | undefined): ExtensionUIContext {
 		select: async () => choice,
 		confirm: async () => false,
 		input: async () => undefined,
-		askUserQuestion: async (questions) =>
+		askUserQuestion: async (questions: AskUserQuestion[]) =>
 			choice === undefined
 				? undefined
 				: { action: "responded", answers: { [questions[0]!.id]: { selected: [choice] } } },
