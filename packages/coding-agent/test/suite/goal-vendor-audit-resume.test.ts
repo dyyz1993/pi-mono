@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { sha256 } from "../../extensions/goal-vendor/state.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { ChannelManager } from "../../src/core/extensions/channel-manager.ts";
 import type { ChannelDataMessage, ChannelOutputFn } from "../../src/core/extensions/channel-types.ts";
@@ -22,7 +23,6 @@ import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-man
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
-import { sha256 } from "../../extensions/goal-vendor/state.ts";
 
 let mockTools: ToolInfo[] = [];
 
@@ -44,9 +44,8 @@ function findResponse(
 	channelName: string,
 	invokeId: string,
 ): Record<string, unknown> | undefined {
-	return outputs.find(
-		(m) => m.name === channelName && (m.data as Record<string, unknown>)?.invokeId === invokeId,
-	)?.data as Record<string, unknown> | undefined;
+	return outputs.find((m) => m.name === channelName && (m.data as Record<string, unknown>)?.invokeId === invokeId)
+		?.data as Record<string, unknown> | undefined;
 }
 
 async function invokeChannelMethod(
@@ -175,7 +174,9 @@ describe("goal-vendor auditing crash resume", () => {
 
 	async function driveToRunningGoal(): Promise<void> {
 		const first = await loadGoalVendor();
-		await invokeChannelMethod(first.manager, first.outputs, "goal", "startSetup", { objective: "create report.txt in the workspace" });
+		await invokeChannelMethod(first.manager, first.outputs, "goal", "startSetup", {
+			objective: "create report.txt in the workspace",
+		});
 		const submitted = await invokeChannelMethod(first.manager, first.outputs, "goal", "submitContract", {
 			outcome: "create report.txt in the workspace",
 			criteria: ["report.txt exists in the workspace"],

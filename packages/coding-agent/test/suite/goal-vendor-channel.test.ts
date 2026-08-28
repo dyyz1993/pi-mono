@@ -641,26 +641,42 @@ describe("goal-vendor channel", () => {
 		// on an authority that is otherwise a fully typed bash command policy.
 		// With combined target normalization this must submit, not burn a retry.
 		mockTools = [
-			{ name: "read", description: "Read a file from the workspace.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
-			{ name: "bash", description: "Run shell commands.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
 		];
 		const { manager, outputs } = await loadGoalVendor();
 		const root = fs.realpathSync(tempDir);
-		await invokeChannelMethod(manager, outputs, "goal", "startSetup", { objective: "verify report.txt with node --check" });
+		await invokeChannelMethod(manager, outputs, "goal", "startSetup", {
+			objective: "verify report.txt with node --check",
+		});
 		const submitted = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
 			outcome: "verify report.txt with node --check",
 			criteria: ["report.txt exists in the workspace and is valid"],
 			phases: [{ id: "P1", title: "verify the report", criterionIds: ["AC1"] }],
-			verificationChecks: [{ id: "V1", kind: "command_exit", label: "node check", command: "node --check report.txt" }],
-			authorities: [{
-				id: "A_NODE_CHECK",
-				label: "node check",
-				toolName: "node",
-				actionClass: "local_process",
-				targets: [{ path: root, equals: root }],
-				command: { executable: "node", argsPrefix: ["--check"], trailingArgs: "single_value" },
-				maxUses: 10,
-			}],
+			verificationChecks: [
+				{ id: "V1", kind: "command_exit", label: "node check", command: "node --check report.txt" },
+			],
+			authorities: [
+				{
+					id: "A_NODE_CHECK",
+					label: "node check",
+					toolName: "node",
+					actionClass: "local_process",
+					targets: [{ path: root, equals: root }],
+					command: { executable: "node", argsPrefix: ["--check"], trailingArgs: "single_value" },
+					maxUses: 10,
+				},
+			],
 		});
 		expect(submitted.submitted).toBe(true);
 		const pending = await invokeChannelMethod(manager, outputs, "goal", "getPendingContract");
@@ -673,28 +689,49 @@ describe("goal-vendor channel", () => {
 		// prepared contract. The submitted outcome then names a different project
 		// entirely — reject it instead of approving and running the wrong objective.
 		mockTools = [
-			{ name: "read", description: "Read a file from the workspace.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
-			{ name: "bash", description: "Run shell commands.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
 		];
 		const { manager, outputs } = await loadGoalVendor();
 		const root = fs.realpathSync(tempDir);
 		await invokeChannelMethod(manager, outputs, "goal", "startSetup", {
-			objective: "写一个 hello world 网页：goalweb/index.html 显示 Hello Goal Web，配套 script.js 内容含 console.log，用 node --check goalweb/script.js 验证语法通过。",
+			objective:
+				"写一个 hello world 网页：goalweb/index.html 显示 Hello Goal Web，配套 script.js 内容含 console.log，用 node --check goalweb/script.js 验证语法通过。",
 		});
 		const hijacked = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
-			outcome: "在 /tmp/replay-test/voxelcraft/ 交付一个零依赖、离线可玩的类 Minecraft 体素沙盒网页游戏：原生 WebGL 渲染程序化噪声地形，第一人称控制，程序化纹理",
+			outcome:
+				"在 /tmp/replay-test/voxelcraft/ 交付一个零依赖、离线可玩的类 Minecraft 体素沙盒网页游戏：原生 WebGL 渲染程序化噪声地形，第一人称控制，程序化纹理",
 			criteria: ["voxelcraft project structure is complete", "all modules pass node --check"],
 			phases: [{ id: "P1", title: "build the voxel engine", criterionIds: ["AC1", "AC2"] }],
-			verificationChecks: [{ id: "V1", kind: "file_exists", path: path.join(fs.realpathSync(tempDir), "voxelcraft/index.html"), label: "game page exists" }],
-			authorities: [{
-				id: "A_WRITE",
-				label: "write sources",
-				toolName: "bash",
-				actionClass: "workspace_write",
-				targets: [{ path: "cwd", equals: root }],
-				command: { executable: "node", argsPrefix: ["--check"], trailingArgs: "workspace_paths" },
-				maxUses: 10,
-			}],
+			verificationChecks: [
+				{
+					id: "V1",
+					kind: "file_exists",
+					path: path.join(fs.realpathSync(tempDir), "voxelcraft/index.html"),
+					label: "game page exists",
+				},
+			],
+			authorities: [
+				{
+					id: "A_WRITE",
+					label: "write sources",
+					toolName: "bash",
+					actionClass: "workspace_write",
+					targets: [{ path: "cwd", equals: root }],
+					command: { executable: "node", argsPrefix: ["--check"], trailingArgs: "workspace_paths" },
+					maxUses: 10,
+				},
+			],
 		});
 		expect(hijacked.submitted).toBe(false);
 		expect(String(hijacked.error)).toContain("does not restate the active objective");
@@ -704,19 +741,39 @@ describe("goal-vendor channel", () => {
 
 	it("accepts a faithful restatement of the active objective", async () => {
 		mockTools = [
-			{ name: "read", description: "Read a file from the workspace.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
-			{ name: "bash", description: "Run shell commands.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
 		];
 		const { manager, outputs } = await loadGoalVendor();
 		const root = fs.realpathSync(tempDir);
 		await invokeChannelMethod(manager, outputs, "goal", "startSetup", {
-			objective: "写一个 hello world 网页：goalweb/index.html 显示 Hello Goal Web，配套 script.js 内容含 console.log，用 node --check goalweb/script.js 验证语法通过。",
+			objective:
+				"写一个 hello world 网页：goalweb/index.html 显示 Hello Goal Web，配套 script.js 内容含 console.log，用 node --check goalweb/script.js 验证语法通过。",
 		});
 		const submitted = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
-			outcome: "创建 goalweb/index.html 页面，页面显示 Hello Goal Web，并包含 script.js（内容含 console.log），用 node --check goalweb/script.js 校验语法通过",
+			outcome:
+				"创建 goalweb/index.html 页面，页面显示 Hello Goal Web，并包含 script.js（内容含 console.log），用 node --check goalweb/script.js 校验语法通过",
 			criteria: ["goalweb/index.html 显示 Hello Goal Web", "node --check goalweb/script.js 通过"],
 			phases: [{ id: "P1", title: "create the page and script", criterionIds: ["AC1", "AC2"] }],
-			verificationChecks: [{ id: "V1", kind: "file_contains", path: path.join(root, "goalweb/index.html"), pattern: "Hello Goal Web", label: "page greets" }],
+			verificationChecks: [
+				{
+					id: "V1",
+					kind: "file_contains",
+					path: path.join(root, "goalweb/index.html"),
+					pattern: "Hello Goal Web",
+					label: "page greets",
+				},
+			],
 			authorities: [],
 		});
 		expect(submitted.submitted).toBe(true);
