@@ -121,7 +121,7 @@ export function validateVerificationCheckDefinition(check: VerificationCheck, wo
 		case "command_exit": {
 			if (!check.executable || /[\s;&|<>`$\n\r]/.test(check.executable)) throw new Error("verification executable is invalid");
 			const basename = check.executable.split(/[\\/]/).at(-1) ?? check.executable;
-			if (DENIED_EXECUTABLES.has(basename)) throw new Error(`verification executable is denied: ${basename}`);
+			if (DENIED_EXECUTABLES.has(basename)) throw new Error(`verification executable is denied: ${basename}. Verification checks cannot run a shell. Use a native check kind instead (file_exists, file_contains, json_equals, git_status, git_diff) or a command_exit check with a single allowlisted executable such as node or python3.`);
 			if (check.args.some((arg) => typeof arg !== "string" || /[\u0000\n\r]/.test(arg))) throw new Error("verification argv contains an invalid value");
 			if (["npm", "pnpm", "yarn"].includes(basename)) {
 				const operation = check.args[0] ?? "";
