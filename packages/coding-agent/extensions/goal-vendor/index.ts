@@ -37,6 +37,7 @@ import {
 	inputHash,
 	makeId,
 	now,
+	normalizeDraftAuthorityTargets,
 	normalizeWorkspaceRoots,
 	progressMarker,
 	reconcileCriterionEvidenceIds,
@@ -1627,6 +1628,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				let draft = normalizeDraft(params, setupState.outcome.original, ctx.cwd);
 				draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
 				normalizeAuthorityToolNames(draft);
+				normalizeDraftAuthorityTargets(draft);
 				const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
 				if (commandAuthorityErrors.length) {
 					return {
@@ -1930,7 +1932,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 					return failSetupSubmission(ctx, state, "draft", error);
 				}
 				const postDraftErrors: Array<{ stage: Exclude<SetupSubmissionStage, "draft" | "contract">; message: string }> = [];
-				try { normalizeAuthorityToolNames(draft); }
+				try { normalizeAuthorityToolNames(draft); normalizeDraftAuthorityTargets(draft); }
 				catch (error) { postDraftErrors.push({ stage: "authority_tools", message: error instanceof Error ? error.message : String(error) }); }
 				try {
 					const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);

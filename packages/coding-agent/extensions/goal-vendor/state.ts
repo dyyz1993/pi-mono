@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 import {
 	GOAL_SCHEMA_VERSION,
 	type ActionAuthority,
+	type AuthorityTarget,
 	type GoalDraft,
 	type GoalEventRecord,
 	type GoalNode,
@@ -238,13 +239,15 @@ function safeCanonical(path: string): string | undefined {
 	}
 }
 
-function normalizeAuthority(authority: Omit<ActionAuthority, "uses">, index: number, workspaceRoots?: string[]): ActionAuthority {
+export function normalizeAuthorityTargets(targets: AuthorityTarget[], workspaceRoots?: string[]): AuthorityTarget[] {
 	// Models frequently write targets as {path: "<absolute workspace path>", equals: "<same path>"}
 	// instead of the canonical {path: "cwd", equals: "<workspace root>"}. Both forms express
 	// "this authority applies inside the workspace root"; rewrite the absolute-path form so
-	// validateCommandAuthorityDefinition's cwd-target check accepts it.
+	// validateCommandAuthorityDefinition's cwd-target check accepts it. Must run before draft
+	// validation (normalizeDraftAuthorityTargets), not only in createGoalState, or the
+	// validator rejects the raw absolute-path form first and the goal gets capped.
 	const roots = workspaceRoots ?? [];
-	const targets = (authority.targets ?? []).map((target) => {
+	return targets.map((target) => {
 		const pathValue = typeof target.path === "string" ? target.path : undefined;
 		if (pathValue && pathValue !== "cwd") {
 			const equalsValue = typeof target.equals === "string" ? target.equals : pathValue;
@@ -263,6 +266,16 @@ function normalizeAuthority(authority: Omit<ActionAuthority, "uses">, index: num
 		}
 		return target;
 	});
+}
+
+export function normalizeDraftAuthorityTargets(draft: GoalDraft): void {
+	for (const authority of draft.authorities) {
+		authority.targets = normalizeAuthorityTargets(authority.targets ?? [], draft.workspaceRoots);
+	}
+}
+
+function normalizeAuthority(authority: Omit<ActionAuthority, "uses">, index: number, workspaceRoots?: string[]): ActionAuthority {
+	const targets = normalizeAuthorityTargets(authority.targets ?? [], workspaceRoots);
 	return {
 		...authority,
 		id: authority.id?.trim() || `A${index + 1}`,
