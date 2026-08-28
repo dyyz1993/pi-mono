@@ -635,4 +635,35 @@ describe("goal-vendor channel", () => {
 		const response = await invokeChannelMethod(manager, outputs, "goal", "forceContinue");
 		expect(response.triggered).toBe(false);
 	});
+
+	it("rewrites an executable-name toolName with a typed command policy into a bash authority", async () => {
+		// Models (GLM) sometimes fill toolName with the executable name ("node")
+		// on an authority that is otherwise a fully typed bash command policy.
+		// With combined target normalization this must submit, not burn a retry.
+		mockTools = [
+			{ name: "read", description: "Read a file from the workspace.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
+			{ name: "bash", description: "Run shell commands.", parameters: {}, sourceInfo: mockToolSourceInfo } as ToolInfo,
+		];
+		const { manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		await invokeChannelMethod(manager, outputs, "goal", "startSetup", { objective: "verify report.txt with node --check" });
+		const submitted = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "verify report.txt with node --check",
+			criteria: ["report.txt exists in the workspace and is valid"],
+			phases: [{ id: "P1", title: "verify the report", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "V1", kind: "command_exit", label: "node check", command: "node --check report.txt" }],
+			authorities: [{
+				id: "A_NODE_CHECK",
+				label: "node check",
+				toolName: "node",
+				actionClass: "local_process",
+				targets: [{ path: root, equals: root }],
+				command: { executable: "node", argsPrefix: ["--check"], trailingArgs: "single_value" },
+				maxUses: 10,
+			}],
+		});
+		expect(submitted.submitted).toBe(true);
+		const pending = await invokeChannelMethod(manager, outputs, "goal", "getPendingContract");
+		expect((pending.authorities as Array<{ toolName: string }>)[0]?.toolName).toBe("bash");
+	});
 });

@@ -320,6 +320,7 @@ Rules:
 - Current user messages and explicit corrections override older discussion.
 - Contract must preserve complete original request and define observable criteria, ordered phases, machine-readable phase commands, mechanical checks, constraints, non-goals, and all foreseeable typed authorities needed for fire-and-forget completion.
 - Every Bash authority must include exact cwd plus a command policy with exact executable, exact argsPrefix, and bounded trailingArgs. Provide every required action class: uv normally needs local_process and network_read; git push needs local_process and external_write. Labels/prose never grant authority.
+- Authority toolName must be the literal operational tool name, exactly "bash" for command authorities. The executable name goes in command.executable, never in toolName.
 - One later user approval covers contract plus declared authority envelope. Make envelope complete enough that routine work, tests, commits, pushes, requested external writes, and other foreseeable actions do not require mid-run approval.
 - Keep authorities scoped to approved goal. Never include credentials or secret values. Human-only credentials, tool-native confirmations, and genuinely irreversible actions cannot be silently bypassed.
 - Until approval, only pi_goal_submit_contract and pi_goal_status may be called.`;
@@ -756,11 +757,19 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			const raw = authority.toolName.trim();
 			const unwrapped = raw.replace(/^functions(?:[.:/]|__)+/i, "");
 			const resolved = [raw, unwrapped].find((name) => toolInfo.has(name));
-			if (!resolved || resolved.startsWith("pi_goal_")) {
-				errors.push(`authorities[${index}].toolName references unavailable operational tool: ${raw}`);
+			if (resolved && !resolved.startsWith("pi_goal_")) {
+				authority.toolName = resolved;
 				continue;
 			}
-			authority.toolName = resolved;
+			// Models sometimes fill toolName with the executable name ("node") on an
+			// authority that is otherwise a fully typed bash command policy. The
+			// validator only accepts toolName "bash", so reinterpret it instead of
+			// burning a bounded setup retry on a field the model cannot express.
+			if (!resolved && authority.command?.executable && toolInfo.has("bash")) {
+				authority.toolName = "bash";
+				continue;
+			}
+			errors.push(`authorities[${index}].toolName references unavailable operational tool: ${raw}`);
 		}
 		if (errors.length) throw new Error(errors.join("; "));
 	}
