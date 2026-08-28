@@ -39,6 +39,7 @@ import {
 	now,
 	normalizeDraftAuthorityTargets,
 	normalizeWorkspaceRoots,
+	outcomeMismatchReason,
 	progressMarker,
 	reconcileCriterionEvidenceIds,
 	redactText,
@@ -317,6 +318,7 @@ Rules:
 - Criteria receive deterministic IDs AC1, AC2, ... in array order. Phase criterionIds may use AC<n> or C<n>; unknown IDs are rejected.
 - For Git checks in another approved root, set check.cwd to that root. Do not use git -C in verifier argv.
 - When target, scope, success criteria, verification, and authority are clear, call pi_goal_submit_contract with the complete contract. Do not merely print contract JSON.
+- Draft a FRESH contract for the objective above only. If this conversation's history contains drafts, contracts, or plans for an earlier goal, ignore them completely; never resubmit or adapt them for the current objective.
 - Current user messages and explicit corrections override older discussion.
 - Contract must preserve complete original request and define observable criteria, ordered phases, machine-readable phase commands, mechanical checks, constraints, non-goals, and all foreseeable typed authorities needed for fire-and-forget completion.
 - Every Bash authority must include exact cwd plus a command policy with exact executable, exact argsPrefix, and bounded trailingArgs. Provide every required action class: uv normally needs local_process and network_read; git push needs local_process and external_write. Labels/prose never grant authority.
@@ -1636,6 +1638,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				const setupState = existing?.status === "setting_up" ? existing : createGoalSetupState(originalOutcome, ctx);
 				let draft = normalizeDraft(params, setupState.outcome.original, ctx.cwd);
 				draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
+				const outcomeMismatch = outcomeMismatchReason(setupState.outcome.original, draft.outcome);
+				if (outcomeMismatch) return { submitted: false, error: outcomeMismatch };
 				normalizeAuthorityToolNames(draft);
 				normalizeDraftAuthorityTargets(draft);
 				const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
@@ -1940,6 +1944,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				} catch (error) {
 					return failSetupSubmission(ctx, state, "draft", error);
 				}
+				const outcomeMismatch = outcomeMismatchReason(state.outcome.original, draft.outcome);
+				if (outcomeMismatch) return failSetupSubmission(ctx, state, "contract", new Error(outcomeMismatch));
 				const postDraftErrors: Array<{ stage: Exclude<SetupSubmissionStage, "draft" | "contract">; message: string }> = [];
 				try { normalizeAuthorityToolNames(draft); normalizeDraftAuthorityTargets(draft); }
 				catch (error) { postDraftErrors.push({ stage: "authority_tools", message: error instanceof Error ? error.message : String(error) }); }

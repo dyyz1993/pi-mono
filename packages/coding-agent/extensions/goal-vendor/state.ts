@@ -239,6 +239,39 @@ function safeCanonical(path: string): string | undefined {
 	}
 }
 
+const OUTCOME_ALIGNMENT_MIN_TOKENS = 6;
+const OUTCOME_ALIGNMENT_THRESHOLD = 0.2;
+
+function outcomeAlignmentTokens(text: string): Set<string> {
+	const tokens = new Set<string>();
+	for (const run of text.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+		if (run.length < 2) continue;
+		if (/[\u4e00-\u9fff]/.test(run)) {
+			// CJK runs do not space-segment; compare by character bigrams so faithful
+			// paraphrases still overlap while a different project's text does not.
+			for (let i = 0; i + 1 < run.length; i += 1) tokens.add(run.slice(i, i + 2));
+		} else {
+			tokens.add(run);
+		}
+	}
+	return tokens;
+}
+
+export function outcomeMismatchReason(originalOutcome: string, draftOutcome: string): string | undefined {
+	// When a session's history is dominated by an earlier (often cancelled) goal, models
+	// treat the new goal's setup continuation as a "user reply" and resubmit the old
+	// goal's prepared contract verbatim. The machinery then happily approves and runs the
+	// WRONG objective. Reject submissions whose outcome does not restate the active one.
+	const originalTokens = outcomeAlignmentTokens(originalOutcome);
+	if (originalTokens.size < OUTCOME_ALIGNMENT_MIN_TOKENS) return undefined;
+	const draftTokens = outcomeAlignmentTokens(draftOutcome);
+	if (!draftTokens.size) return undefined;
+	let hits = 0;
+	for (const token of originalTokens) if (draftTokens.has(token)) hits += 1;
+	if (hits / originalTokens.size >= OUTCOME_ALIGNMENT_THRESHOLD) return undefined;
+	return `Contract outcome does not restate the active objective (${hits}/${originalTokens.size} objective terms found). Draft a fresh contract for the current objective only; never resubmit or adapt a contract drafted for an earlier goal from this conversation history.`;
+}
+
 export function normalizeAuthorityTargets(targets: AuthorityTarget[], workspaceRoots?: string[]): AuthorityTarget[] {
 	// Models frequently write targets as {path: "<absolute workspace path>", equals: "<same path>"}
 	// instead of the canonical {path: "cwd", equals: "<workspace root>"}. Both forms express
