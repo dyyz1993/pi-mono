@@ -2355,6 +2355,16 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			await finishAudit(ctx, state.goalId, state.generation, state.continuationSequence);
 			return;
 		}
+		if (state?.status === "auditing" && !state.interrupt && !Object.keys(state.backgroundWork).length) {
+			// A process death during finishAudit (crash, kill, restart) leaves the
+			// state persisted as "auditing" while the in-flight audit chain is lost.
+			// Nothing else re-enters finishAudit from this state, and every run-phase
+			// tool rejects on non-"running" status, so the goal would stay stuck
+			// forever. finishAudit is idempotent per (goalId, generation, sequence);
+			// re-run it from the top.
+			await finishAudit(ctx, state.goalId, state.generation, state.continuationSequence);
+			return;
+		}
 		if (state?.status === "running") {
 			scheduleVerificationRecoveryTimeout(ctx, state);
 			queueFreshContinuation(ctx, state, "session_restored", `Resume active goal after ${event.reason}.`);
