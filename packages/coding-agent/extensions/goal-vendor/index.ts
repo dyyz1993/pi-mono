@@ -87,6 +87,8 @@ const TERMINAL_STATES = new Set(["completed", "complete", "failed", "error", "ca
 const ACTIVE_STATES = new Set(["queued", "pending", "running", "in_progress", "in-progress", "started", "watching"]);
 const CONTINUATION_CUSTOM_TYPE = "pi-goal-continuation-v1";
 const SETUP_CONTINUATION_CUSTOM_TYPE = "pi-goal-setup-continuation-v1";
+/** Consecutive provider-error turns to auto-resume before escalating to an interrupt. */
+const MAX_ERROR_TURN_RESUMES = 3;
 const MAX_IDENTICAL_VERIFICATION_FAILURES = 2;
 const MAX_VERIFICATION_RECOVERY_MS = 10 * 60 * 1_000;
 
@@ -745,6 +747,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	let currentCtx: ExtensionContext | undefined;
 	let evaluatorInFlight = false;
 	let shutdown = false;
+	let errorTurnResumeCount = 0;
 	let verificationRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
 	let unsubscribeBackgroundStart: (() => void) | undefined;
 	let unsubscribeBackgroundEnd: (() => void) | undefined;
@@ -2352,6 +2355,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		shutdown = false;
+		errorTurnResumeCount = 0;
 		refreshToolInfo();
 		const state = load(ctx);
 		subscribeBackgroundEvents();
@@ -2660,16 +2664,57 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	subscribeBackgroundEvents();
 
 	// NOTE: upstream uses "agent_settled" (0.82+); this fork (0.78) uses "agent_end".
-	pi.on("agent_end", async (_event, ctx) => {
-		let setupSettled = false;
+	pi.on("agent_end", async (event, ctx) => {
+		// A turn that ends with a provider/transport error (e.g. a transient 400
+		// from the model API) kills the in-flight turn and leaves an executing
+		// goal stalled forever: nothing re-arms a continuation until user input
+		// or a process restart. Re-arm automatically, bounded, and escalate to a
+		// BLOCKER interrupt when the error turns out to be persistent.
+		const lastAssistant = [...(event.messages || [])].reverse().find((message) => (message as { role?: string }).role === "assistant") as { stopReason?: string; errorMessage?: string } | undefined;
+		const turnErrored = lastAssistant?.stopReason === "error";
+		let skipSettled = false;
 		await mutex.run(() => {
 			const state = load(ctx);
-			if (state?.status !== "setting_up") return;
+			if (!state) return;
+			if (!turnErrored) errorTurnResumeCount = 0;
+			if (turnErrored && (state.status === "running" || state.status === "setting_up") && !state.interrupt && Object.keys(state.backgroundWork).length === 0) {
+				errorTurnResumeCount += 1;
+				const scope = state.status === "running" ? "goal execution" : "goal setup";
+				if (errorTurnResumeCount > MAX_ERROR_TURN_RESUMES) {
+					if (!state.interrupt) {
+						openInterrupt(state, {
+							class: "BLOCKER",
+							message: `The last ${MAX_ERROR_TURN_RESUMES} turns ended with provider errors; automatic resume stopped.`,
+							attempts: [String(lastAssistant?.errorMessage || "unknown provider error").slice(0, 300)],
+							need: "Check the model provider status, then send any message to resume manually.",
+							recommendation: "Retry after the provider recovers; completed progress is preserved.",
+						});
+						persist(ctx, "error_resume_capped", `auto-resume stopped after ${errorTurnResumeCount - 1} consecutive provider-error turns in ${scope}`);
+					}
+					skipSettled = true;
+					return;
+				}
+				const detail = String(lastAssistant?.errorMessage || "unknown provider error").slice(0, 160);
+				if (state.status === "running") {
+					// The turn is over, so nothing can be in flight; stale
+					// activeToolCalls from the aborted turn would block
+					// canResumeAutonomy (same rationale as the finishAudit cleanup).
+					if (Object.keys(state.activeToolCalls).length) state.activeToolCalls = {};
+					queueFreshContinuation(ctx, state, "error_turn_resume", `The previous turn ended with a provider error (${detail}). Resume goal execution from the last progress; do not redo completed work.`);
+				} else {
+					armFreshContinuation(state);
+					persist(ctx, "error_turn_resume", `auto-resume ${scope} ${errorTurnResumeCount}/${MAX_ERROR_TURN_RESUMES} after provider error`);
+					triggerSetupConversation(state, `The previous turn ended with a provider error (${detail}). Continue goal setup from the last progress; do not repeat resolved questions.`);
+				}
+				skipSettled = true;
+				return;
+			}
+			if (state.status !== "setting_up") return;
 			state.setupAwaitingUser = true;
 			persist(ctx, "setup_agent_settled", "same-conversation setup is awaiting the user's next reply");
-			setupSettled = true;
+			skipSettled = true;
 		});
-		if (!setupSettled) await evaluateSettled(ctx);
+		if (!skipSettled) await evaluateSettled(ctx);
 	});
 	pi.on("session_compact", (event, ctx) => {
 		const state = load(ctx); if (!isActiveGoal(state)) return;

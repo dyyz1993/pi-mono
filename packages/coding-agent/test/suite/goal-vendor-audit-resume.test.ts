@@ -219,3 +219,141 @@ describe("goal-vendor auditing crash resume", () => {
 		expect(status.rawStatus).toBe("running");
 	});
 });
+
+describe("goal-vendor provider-error turn resume", () => {
+	let tempDir: string;
+	let sessionManager: SessionManager;
+	let modelRegistry: ModelRegistry;
+	let previousAgentDir: string | undefined;
+
+	beforeEach(() => {
+		tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-goal-err-resume-")));
+		mockTools = [];
+		sessionManager = SessionManager.inMemory();
+		const authStorage = AuthStorage.create(path.join(tempDir, "auth.json"));
+		modelRegistry = ModelRegistry.create(authStorage);
+		previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = tempDir;
+	});
+
+	afterEach(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	async function loadGoalVendor(): Promise<{
+		runner: ExtensionRunner;
+		manager: ChannelManager;
+		outputs: ChannelDataMessage[];
+		sent: Array<Record<string, unknown>>;
+	}> {
+		const result = await discoverAndLoadExtensions([goalVendorSourcePath()], tempDir, tempDir);
+		expect(result.errors).toEqual([]);
+
+		const sent: Array<Record<string, unknown>> = [];
+		(extensionActions as { sendMessage: unknown }).sendMessage = (message: Record<string, unknown>) => {
+			sent.push(message);
+		};
+
+		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+		runner.bindCore(extensionActions, extensionContextActions);
+
+		const { manager, outputs } = createCapturingChannelManager();
+		runner.flushPendingChannels((name) => manager.register(name));
+		runner.updateRegisterChannel((name) => manager.register(name));
+
+		const storeDir = path.join(tempDir, ".pi-snapshot-store");
+		fs.mkdirSync(storeDir, { recursive: true });
+		const git = new InternalGit(storeDir);
+		const snapshotManager = new FileSnapshotManager(git);
+		snapshotManager.initialize(tempDir);
+		runner.setFileSnapshotManagerFn(() => snapshotManager);
+		runner.setContextDirFns({
+			getProjectRoot: () => tempDir,
+			getSessionDataDir: () => tempDir,
+			getProjectDataDir: () => tempDir,
+			getCwdDataDir: () => tempDir,
+			getGlobalDataDir: () => tempDir,
+		});
+
+		await runner.emit({ type: "session_start", reason: "startup" });
+		return { runner, manager, outputs, sent };
+	}
+
+	function errorTurn(): { type: "agent_end"; messages: unknown[] } {
+		return {
+			type: "agent_end",
+			messages: [
+				{ role: "assistant", stopReason: "error", errorMessage: "HTTP 400: messages parameter is illegal" },
+			],
+		};
+	}
+
+	async function driveToRunningGoal(): Promise<{
+		runner: ExtensionRunner;
+		manager: ChannelManager;
+		outputs: ChannelDataMessage[];
+		sent: Array<Record<string, unknown>>;
+	}> {
+		const loaded = await loadGoalVendor();
+		await invokeChannelMethod(loaded.manager, loaded.outputs, "goal", "startSetup", {
+			objective: "create report.txt in the workspace",
+		});
+		const submitted = await invokeChannelMethod(loaded.manager, loaded.outputs, "goal", "submitContract", {
+			outcome: "create report.txt in the workspace",
+			criteria: ["report.txt exists in the workspace"],
+			phases: [{ id: "P1", title: "create the report", criterionIds: ["AC1"] }],
+			verificationChecks: [
+				{
+					id: "V1",
+					kind: "file_exists",
+					path: path.join(fs.realpathSync(tempDir), "report.txt"),
+					label: "report exists",
+				},
+			],
+			authorities: [],
+		});
+		expect(submitted.submitted).toBe(true);
+		const approved = await invokeChannelMethod(loaded.manager, loaded.outputs, "goal", "approveContract");
+		expect(approved.approved).toBe(true);
+		loaded.sent.length = 0;
+		return loaded;
+	}
+
+	it("auto-resumes a running goal when the turn ends with a provider error", async () => {
+		const { runner, manager, outputs, sent } = await driveToRunningGoal();
+		await runner.emit(errorTurn() as never);
+		const continuations = sent.filter((m) => m.customType === "pi-goal-continuation-v1");
+		expect(continuations.length).toBe(1);
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.rawStatus).toBe("running");
+		expect(status.interrupt).toBeUndefined();
+	});
+
+	it("resets the consecutive-error counter after a clean turn", async () => {
+		const { runner, manager, outputs, sent } = await driveToRunningGoal();
+		await runner.emit(errorTurn() as never);
+		await runner.emit(errorTurn() as never);
+		// clean turn resets the bounded counter
+		await runner.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "toolUse" }] } as never);
+		await runner.emit(errorTurn() as never);
+		await runner.emit(errorTurn() as never);
+		// only 2 consecutive since the reset: still auto-resuming, no interrupt
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.rawStatus).toBe("running");
+		expect(status.interrupt).toBeUndefined();
+		void runner;
+	});
+
+	it("escalates to a BLOCKER interrupt after more than three consecutive error turns", async () => {
+		const { runner, manager, outputs, sent } = await driveToRunningGoal();
+		for (let i = 0; i < 4; i++) await runner.emit(errorTurn() as never);
+		// 3 resumes + 1 capping turn
+		const continuations = sent.filter((m) => m.customType === "pi-goal-continuation-v1");
+		expect(continuations.length).toBe(3);
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.rawStatus).toBe("interrupted");
+		expect((status.interrupt as { class?: string } | undefined)?.class).toBe("BLOCKER");
+	});
+});
