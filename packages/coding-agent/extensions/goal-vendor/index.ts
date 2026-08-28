@@ -1038,6 +1038,17 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		return true;
 	}
 
+	// The audit pipeline and tool-side transitions mutate state inside mutex.run
+	// blocks without going through the channel handlers, so their goal.statusChanged
+	// broadcasts must be emitted explicitly or the web panel keeps the last
+	// setup-era status forever (field-verified: panel stuck on "setting_up" after
+	// completion).
+	function emitStatusChanged(ctx: ExtensionContext): void {
+		const state = load(ctx);
+		goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+		if (state) goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "audit_pipeline" });
+	}
+
 	async function finishAudit(ctx: ExtensionContext, goalId: string, generation: number, sequence: number): Promise<void> {
 		let snapshot: GoalState | undefined;
 		let inputFingerprint: string | undefined;
@@ -1062,6 +1073,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			snapshot = structuredClone(state);
 		});
 		if (!snapshot) return;
+		emitStatusChanged(ctx);
 
 		let checks: VerificationResult[];
 		try { checks = await runAllChecks(snapshot); }
@@ -1082,6 +1094,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				if (!state || state.goalId !== goalId || state.generation !== generation || state.continuationSequence !== sequence) return;
 				transitionVerificationFailure(ctx, state, checks, "runtime");
 			});
+			emitStatusChanged(ctx);
 			return;
 		}
 		await mutex.run(() => {
@@ -1112,6 +1125,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				state.nextAction = diagnostic.suggestedAction;
 				if (state.auditExecutionRepeatCount >= 2 || state.auditFailureCount >= 3) openInterrupt(state, { class: "BLOCKER", message: "The isolated auditor repeated the same execution failure after bounded recovery.", attempts: [`${diagnostic.code} at ${diagnostic.stage}: ${diagnostic.message}`], need: diagnostic.suggestedAction, recommendation: "Inspect the structured audit execution diagnostic; do not retry unchanged." });
 				persist(ctx, "audit_error", `${diagnostic.code} ${diagnostic.stage} ${diagnostic.fingerprint.slice(0, 12)} elapsedMs=${diagnostic.elapsedMs}`);
+				emitStatusChanged(ctx);
 				if (state.status === "running") triggerContinuation(state, "The independent audit could not complete. Preserve evidence and retry through a different recovery path.");
 			});
 			return;
@@ -1143,6 +1157,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				state.nextAction = "No further action";
 				state.plan.forEach((node) => { if (["pending", "in_progress"].includes(node.status)) node.status = "done"; });
 				persist(ctx, "goal_completed", "isolated auditor passed all criteria");
+				emitStatusChanged(ctx);
 				pi.sendMessage({ customType: "pi-goal-complete", content: textContent(`Goal complete and independently verified.\n\n${state.outcome.current}\n\nAudit: ${redactText(audit.reason, 600).text}`), display: true }, { triggerTurn: false });
 				updateGoalUi(ctx, undefined);
 			} else {
@@ -1165,6 +1180,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 					});
 				}
 				persist(ctx, "audit_rejected", `${diagnostic!.code}: ${diagnostic!.message}`);
+				emitStatusChanged(ctx);
 				if (state.status === "running") triggerContinuation(state, `Audit rejection ${diagnostic!.fingerprint.slice(0, 12)}. ${diagnostic!.suggestedAction} Resubmit only after material evidence or check results change.`);
 			}
 		});
@@ -2023,6 +2039,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 					markGoalCancelled(ctx, state, "setup_cancelled", "user rejected the Goal contract through the unified UI approval request");
 				}
 			});
+			emitStatusChanged(ctx);
 			return toolResult(action === "approve" ? "Goal contract approved. Execution has started." : action === "refine" ? "Goal contract returned for refinement; continue the setup conversation." : "Goal contract rejected. No work was started.");
 		},
 	});
