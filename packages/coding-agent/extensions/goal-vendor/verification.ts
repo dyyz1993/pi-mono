@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { isSensitivePath, redactText, resolvedPathWithinWorkspaces, safeEvidencePath, workspaceRootForCwd } from "./state.ts";
 import type { GoalState, VerificationCheck, VerificationResult } from "./types.ts";
 
@@ -118,6 +119,20 @@ export function validateVerificationCheckDefinition(check: VerificationCheck, wo
 			}
 			if (check.kind === "json_equals" && check.pointer !== "" && !check.pointer.startsWith("/")) throw new Error("verification JSON pointer is invalid");
 			return;
+		case "browser_check": {
+			if (!check.url || typeof check.url !== "string") throw new Error("browser_check requires url");
+			if (check.url.startsWith("file://")) {
+				checkedPath(workspace, fileURLToPath(check.url), workspaceRoots);
+			} else {
+				const parsed = new URL(check.url);
+				if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`browser_check url scheme must be file: or http(s): — got ${parsed.protocol}`);
+				const host = parsed.hostname;
+				if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]") throw new Error("browser_check http(s) url must target localhost/127.0.0.1 (external network is denied)");
+			}
+			if (check.waitMs !== undefined && (check.waitMs < 0 || check.waitMs > 15000)) throw new Error("browser_check waitMs must be within 0..15000");
+			if (check.maxConsoleErrors !== undefined && check.maxConsoleErrors < 0) throw new Error("browser_check maxConsoleErrors must be >= 0");
+			return;
+		}
 		case "command_exit": {
 			if (!check.executable || /[\s;&|<>`$\n\r]/.test(check.executable)) throw new Error("verification executable is invalid");
 			const basename = check.executable.split(/[\\/]/).at(-1) ?? check.executable;
@@ -154,7 +169,82 @@ function validateExecutable(check: Extract<VerificationCheck, { kind: "command_e
 	return { executable, cwd };
 }
 
-export async function runVerificationCheck(check: VerificationCheck, workspace: string, signal?: AbortSignal, workspaceRoots: string[] = [workspace]): Promise<VerificationResult> {
+	const BROWSER_CHECK_TIMEOUT_MS = 60_000;
+
+	/**
+	 * Executes a browser_check: drives the xbrowser CLI through an isolated
+	 * session to load the page, settle, and probe the rendered DOM. All argv
+	 * are fixed strings (no shell interpolation) — the script itself travels
+	 * base64url-encoded through the router's --script-b64 channel.
+	 */
+	async function runBrowserCheck(
+		check: Extract<VerificationCheck, { kind: "browser_check" }>,
+		workspace: string,
+		workspaceRoots: string[],
+		started: number,
+		signal?: AbortSignal,
+	): Promise<VerificationResult> {
+		const waitMs = check.waitMs ?? 3000;
+		const maxErrors = check.maxConsoleErrors ?? 0;
+		const session = `goal-bc-${Date.now().toString(36)}`;
+
+		const finish = (passed: boolean, summary: string): VerificationResult => ({
+			checkId: check.id,
+			passed,
+			summary,
+			durationMs: Date.now() - started,
+		});
+
+		const xb = async (args: string[], timeoutMs: number) => {
+			const run = await runProcess("xbrowser", ["--session", session, ...args], workspace, timeoutMs, signal);
+			if (run.exitCode !== 0) throw new Error(`xbrowser ${args[0]} exited ${run.exitCode}: ${(run.stderr || run.stdout).slice(0, 200)}`);
+			return run;
+		};
+
+		try {
+			// 1. console-error collector injected BEFORE the page loads
+			const initScript = "window.addEventListener('error',function(e){(window.__bcE=window.__bcE||[]).push(String(e.message||e.type))})";
+			await xb(["addinitscript", "--script", initScript], 15_000);
+
+			// 2. load the page and let it settle
+			await xb(["open", check.url], 30_000);
+			await xb(["waitForTimeout", String(waitMs)], waitMs + 20_000);
+
+			// 3. probe the rendered DOM — base64url keeps the script intact
+			//    through chain parsing (semicolons/newlines would otherwise
+			//    be treated as chain separators)
+			const expectJson = JSON.stringify(check.expectTextContains ?? "");
+			const probe = `(() => { const t = (document.body && document.body.innerText) || ""; const errs = window.__bcE || []; return JSON.stringify({ bodyLen: t.length, errors: errs, hasText: t.includes(${expectJson}) }); })()`;
+			const probeB64 = Buffer.from(probe, "utf8").toString("base64url");
+			const probeRun = await xb(["eval", "--script-b64", probeB64], 20_000);
+
+			// 4. screenshot evidence (best effort)
+			let shotPath = "";
+			try {
+				const shot = await xb(["screenshot"], 15_000);
+				const m = /output:\s*(\S+\.png)/.exec(shot.stdout.replace(/\x1b\[[0-9;]*m/g, ""));
+				if (m) shotPath = m[1]!;
+			} catch { /* evidence is optional */ }
+
+			// 5. parse the probe result (strip ANSI, take the result line)
+			const clean = probeRun.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+			const resultLine = clean.split("\n").reverse().find((line) => line.trim().startsWith("result:"));
+			if (!resultLine) return finish(false, "browser_check probe produced no result (page did not render?)");
+			const parsed = JSON.parse(resultLine.trim().slice("result:".length).trim()) as { bodyLen: number; errors: string[]; hasText: boolean };
+			const consoleErrors = parsed.errors || [];
+			const passed = parsed.bodyLen > 0 && parsed.hasText && consoleErrors.length <= maxErrors;
+			const bits = [`bodyLen=${parsed.bodyLen}`, `hasText=${parsed.hasText}`, `consoleErrors=${consoleErrors.length}/${maxErrors}`];
+			if (shotPath) bits.push(`screenshot=${shotPath}`);
+			return finish(passed, passed ? `browser check passed (${bits.join(", ")})` : `browser check failed: ${bits.join(", ")}`);
+		} catch (error) {
+			// best-effort session cleanup on any failure path
+			try { await runProcess("xbrowser", ["--session", session, "session", "close", "--session", session], workspace, 10_000, undefined); } catch { /* ignore */ }
+			const message = error instanceof Error ? error.message : String(error);
+			return finish(false, `browser check could not run: ${message.slice(0, 300)}`);
+		}
+	}
+
+	export async function runVerificationCheck(check: VerificationCheck, workspace: string, signal?: AbortSignal, workspaceRoots: string[] = [workspace]): Promise<VerificationResult> {
 	const started = Date.now();
 	try {
 		switch (check.kind) {
@@ -198,6 +288,9 @@ export async function runVerificationCheck(check: VerificationCheck, workspace: 
 						outputRedacted: safeStdout.redacted || safeStderr.redacted || undefined,
 					} : {}),
 				};
+			}
+			case "browser_check": {
+				return runBrowserCheck(check, workspace, workspaceRoots, started, signal);
 			}
 			case "git_status": {
 				const gitCwd = check.cwd ? workspaceRootForCwd(workspace, workspaceRoots, check.cwd) : workspaceRootForCwd(workspace, workspaceRoots, workspace);

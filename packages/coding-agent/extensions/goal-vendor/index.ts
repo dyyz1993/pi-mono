@@ -1912,6 +1912,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		Type.Object({ id: Type.String(), kind: Type.Literal("command_exit"), label: Type.String(), executable: Type.String(), args: Type.Array(Type.String()), cwd: Type.Optional(Type.String()), expectedExitCode: Type.Optional(Type.Integer()), timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })) }),
 		Type.Object({ id: Type.String(), kind: Type.Literal("git_status"), label: Type.String(), cwd: Type.Optional(Type.String()), clean: Type.Optional(Type.Boolean()) }),
 		Type.Object({ id: Type.String(), kind: Type.Literal("git_diff"), label: Type.String(), cwd: Type.Optional(Type.String()), empty: Type.Optional(Type.Boolean()), paths: Type.Optional(Type.Array(Type.String())) }),
+		Type.Object({ id: Type.String(), kind: Type.Literal("browser_check"), label: Type.String(), url: Type.String(), waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 15000 })), expectTextContains: Type.Optional(Type.String()), maxConsoleErrors: Type.Optional(Type.Integer({ minimum: 0 })) }),
 	]);
 	const ActionClassParameter = Type.Union([Type.Literal("workspace_read"), Type.Literal("workspace_write"), Type.Literal("local_process"), Type.Literal("network_read"), Type.Literal("external_write"), Type.Literal("publication"), Type.Literal("destructive")]);
 	const CommandPolicyParameter = Type.Object({

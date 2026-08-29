@@ -135,6 +135,17 @@ function normalizeCheck(value: unknown, index: number): VerificationCheck | unde
 		};
 	}
 	if (kind === "git_status") return { id, label, kind: "git_status", cwd: typeof item.cwd === "string" ? item.cwd : undefined, clean: item.clean !== false };
+	if (kind === "browser_check" && typeof item.url === "string") {
+		return {
+			id,
+			label,
+			kind: "browser_check",
+			url: item.url,
+			waitMs: typeof item.waitMs === "number" ? item.waitMs : undefined,
+			expectTextContains: typeof item.expectTextContains === "string" ? item.expectTextContains : undefined,
+			maxConsoleErrors: typeof item.maxConsoleErrors === "number" ? item.maxConsoleErrors : undefined,
+		};
+	}
 	if (kind === "git_diff") return { id, label, kind: "git_diff", cwd: typeof item.cwd === "string" ? item.cwd : undefined, empty: item.empty !== false, paths: Array.isArray(item.paths) ? item.paths.filter((path): path is string => typeof path === "string") : undefined };
 	return undefined;
 }
