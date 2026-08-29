@@ -331,6 +331,8 @@ export function describeVerificationCheck(check: VerificationCheck, workspace: s
 		}
 		case "git_status":
 			return `workspace=${JSON.stringify(check.cwd ? safeEvidencePath(workspace, check.cwd, workspaceRoots) : safeEvidencePath(workspace, ".", workspaceRoots))}`;
+		case "browser_check":
+			return `url=${JSON.stringify(check.url)} waitMs=${check.waitMs ?? 0} expect=${JSON.stringify(redactText(check.expectTextContains ?? "", 200).text)}`;
 		case "git_diff":
 			return `workspace=${JSON.stringify(check.cwd ? safeEvidencePath(workspace, check.cwd, workspaceRoots) : safeEvidencePath(workspace, ".", workspaceRoots))} paths=${redactText(JSON.stringify((check.paths ?? []).map((path) => safeEvidencePath(check.cwd ?? workspace, path, check.cwd ? [check.cwd] : workspaceRoots))), 500).text}`;
 	}

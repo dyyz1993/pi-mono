@@ -272,6 +272,37 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 	const jobs = new Map<string, JobEntry>();
 	let isScheduler = false; // 当前 session 是否是 active scheduler
 	let lockHeartbeat: ReturnType<typeof setInterval> | null = null;
+	// session_start 时缓存的 settings 读取器（live getter，指向当前合并视图）。
+	// channel handler 没有 ctx 参数，becomeScheduler 同步 settings 时用它。
+	let settingsReader: (() => unknown) | null = null;
+
+	// 把 settings 里有、本进程 jobs 里没有的 loop 补进 jobs（只增不删）。
+	// 场景：预热进程 adopt（session_start）早于前端 setSettings persist，
+	// 或 reload 换运行时实例后 jobs 空账——成为 scheduler 时以持久化状态收敛。
+	const syncJobsFromSettings = (): number => {
+		if (!settingsReader) return 0;
+		try {
+			const loops = readLoopsFromSettings({ getSettings: settingsReader });
+			let added = 0;
+			for (const loop of loops) {
+				if (!jobs.has(loop.id)) {
+					jobs.set(loop.id, {
+						config: loop,
+						task: null,
+						lastRun: null,
+						nextRun: null,
+						runCount: 0,
+						lastError: null,
+					});
+					added++;
+				}
+			}
+			return added;
+		} catch {
+			// settings 读取失败不阻塞调度接管
+			return -1;
+		}
+	};
 
 	// 全局单例锁：extension 加载时就获取（不等 session_start，因为 RPC 模式可能不触发）。
 	// 例外：预热进程（PI_WARM_STANDBY=1，由 app 预热池 spawn）在初始启动时不参与锁竞争——
@@ -319,6 +350,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 			if (isScheduler) return { ok: true, already: true };
 			isScheduler = tryAcquireLock({ force: true });
 			isSchedulerGlobal = isScheduler;
+			let synced: number | undefined;
 			if (isScheduler) {
 				if (!lockHeartbeat) {
 					lockHeartbeat = setInterval(() => {
@@ -328,6 +360,8 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 						}
 					}, 30_000);
 				}
+				// 先从 settings 补齐缺失的 loop（本进程可能从未见过 persist 后的状态）
+				synced = syncJobsFromSettings();
 				// 重新启动本 session 的 enabled loops
 				for (const [id, entry] of jobs) {
 					if (entry.config.enabled && !entry.task) {
@@ -336,7 +370,7 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 				}
 			}
 			emitStatus();
-			return { ok: isScheduler };
+			return { ok: isScheduler, synced };
 		});
 		channel.handle("getStatus", () => ({ type: "status" as const, loops: buildStatus(jobs) }));
 
@@ -612,6 +646,8 @@ export default function loopSchedulerExtension(pi: ExtensionAPI): void {
 
 		// ── session 生命周期 ──
 		pi.on("session_start", (_event, ctx) => {
+			// 缓存 settings 读取器供 channel handler（becomeScheduler 同步）使用
+			settingsReader = ctx.getSettings;
 			// 预热进程被 adopt（switchSession → reason="resume"）：此刻它成为
 			// 真正的用户 session，正式参与单例锁竞争。
 			if (warmStandby && _event.reason === "resume" && !isScheduler) {

@@ -75,9 +75,10 @@ export interface LoopSchedulerChannelContract {
 		response: LoopSchedulerStatusEvent;
 	};
 
-	/** 用户切回本 session 时强制成为 active scheduler（lease 抢占） */
+	/** 用户切回本 session 时强制成为 active scheduler（lease 抢占）。
+	 *  synced = 拿锁后从 settings 补齐进 jobs 的 loop 数（诊断用）。 */
 	becomeScheduler: {
 		request: void;
-		response: { ok: boolean; already?: boolean };
+		response: { ok: boolean; already?: boolean; synced?: number };
 	};
 }
