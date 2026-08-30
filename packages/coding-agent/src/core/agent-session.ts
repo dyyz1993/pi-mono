@@ -188,7 +188,7 @@ function textFromAssistantMessage(message: AssistantMessage): string {
 
 function toCallLlmMessages(messages: CallLLMOptions["messages"], model: Model<any>): Message[] {
 	return messages.map((message) => {
-		const content: TextContent[] = [{ type: "text", text: message.content }];
+		const content = callLlmContentToBlocks(message.content);
 		if (message.role === "user") {
 			return {
 				role: "user",
@@ -198,7 +198,8 @@ function toCallLlmMessages(messages: CallLLMOptions["messages"], model: Model<an
 		}
 		return {
 			role: "assistant",
-			content,
+			// Assistant messages in this API are text-only; image blocks (if any) are dropped.
+			content: content.filter((block): block is TextContent => block.type === "text"),
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
@@ -207,6 +208,19 @@ function toCallLlmMessages(messages: CallLLMOptions["messages"], model: Model<an
 			timestamp: Date.now(),
 		};
 	});
+}
+
+/** Normalize a callLLM message content (string or blocks) into provider content
+ *  blocks; strings become a single text block, image blocks pass through. */
+function callLlmContentToBlocks(
+	content: CallLLMOptions["messages"][number]["content"],
+): (TextContent | ImageContent)[] {
+	if (typeof content === "string") return [{ type: "text", text: content }];
+	return content.map((block) =>
+		block.type === "text"
+			? { type: "text" as const, text: block.text }
+			: { type: "image" as const, data: block.data, mimeType: block.mimeType },
+	);
 }
 
 /** Parsed skill block from a user message */
@@ -313,6 +327,12 @@ export interface ExtensionBindings {
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
 	registerChannel?: (name: string) => Channel;
+	/**
+	 * Same-cwd session switch: adopt this manager instead of reconnecting
+	 * all MCP servers. The previous session must hand over ownership (it no
+	 * longer disposes it).
+	 */
+	mcpManagerFrom?: AgentSession;
 }
 
 /** Options for AgentSession.prompt() */
@@ -1057,7 +1077,7 @@ export class AgentSession {
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
-	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+	private _handleAgentEvent = async (event: AgentEvent, signal: AbortSignal): Promise<void> => {
 		// When a queued user/custom message starts, remove it BEFORE emitting.
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && (event.message.role === "user" || event.message.role === "custom")) {
@@ -1086,7 +1106,7 @@ export class AgentSession {
 		}
 
 		// Emit to extensions first
-		await this._emitExtensionEvent(event);
+		await this._emitExtensionEvent(event, signal);
 
 		// Handle session persistence
 		let persistedEntryId: string | undefined;
@@ -1187,7 +1207,7 @@ export class AgentSession {
 	}
 
 	/** Emit extension events based on agent events */
-	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
+	private async _emitExtensionEvent(event: AgentEvent, signal?: AbortSignal): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start" });
@@ -1208,9 +1228,16 @@ export class AgentSession {
 				toolResults: event.toolResults,
 			};
 			await this._extensionRunner.emit(extensionEvent);
-			await this._fileSnapshotManager?.onTurnEndAsync(this._cwd, this._turnIndex, (type, data) =>
-				this.sessionManager.appendCustomEntry(type, data),
-			);
+			try {
+				await this._fileSnapshotManager?.onTurnEndAsync(
+					this._cwd,
+					this._turnIndex,
+					(type, data) => this.sessionManager.appendCustomEntry(type, data),
+					signal,
+				);
+			} catch (error) {
+				if (!signal?.aborted) throw error;
+			}
 			this._turnIndex++;
 			if (this._maxTurns !== undefined && this._turnIndex >= this._maxTurns) {
 				this.agent.abort();
@@ -1353,8 +1380,16 @@ export class AgentSession {
 	/**
 	 * Remove all listeners and disconnect from agent.
 	 * Call this when completely done with the session.
+	 *
+	 * @param options.invalidateRuntime When false (same-cwd session switch,
+	 * where a successor session reuses the same services), skip poisoning the
+	 * shared ExtensionRuntime: the runner wrapper is still marked stale so the
+	 * outgoing session's captured contexts fail fast, but the shared runtime —
+	 * and extension-captured `pi` references bound to it — stays usable for
+	 * the successor. Full teardown (quit, reload, cwd change) keeps the
+	 * default `invalidateRuntime: true`.
 	 */
-	dispose(): void {
+	dispose(options?: { invalidateRuntime?: boolean }): void {
 		try {
 			this.abortRetry();
 			this.abortCompaction();
@@ -1365,8 +1400,10 @@ export class AgentSession {
 			// Dispose must succeed even if an abort hook throws.
 		}
 
+		const invalidateRuntime = options?.invalidateRuntime ?? true;
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			{ shared: invalidateRuntime },
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
@@ -3322,17 +3359,35 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
-		await this._initMcpServers();
+		await this._initMcpServers(bindings.mcpManagerFrom);
 	}
 
 	get mcpManager(): McpManager | undefined {
 		return this._mcpManager;
 	}
 
-	private async _initMcpServers(): Promise<void> {
+	private async _initMcpServers(reuseFrom?: AgentSession): Promise<void> {
 		// 子代理进程跳过 MCP 连接（环境变量 PI_SKIP_MCP=1）
 		// 避免 multiple CLI 进程竞争同一个 stdio MCP server 导致死锁
 		if (process.env.PI_SKIP_MCP === "1") return;
+
+		// Same-cwd session switch: adopt the previous session's manager as-is.
+		// Connections (stdio children, HTTP sessions) stay alive across the
+		// switch — full reconnect-all costs seconds per switch. Settings changes
+		// still go through reload (full rebuild path).
+		console.error(
+			`[mcp-reuse] reuseFrom=${!!reuseFrom} hasManager=${!!reuseFrom?.mcpManager} reuseFromIsSession=${reuseFrom instanceof AgentSession}`,
+		);
+		if (reuseFrom?.mcpManager) {
+			this._mcpManager = reuseFrom.mcpManager;
+			reuseFrom._mcpManager = undefined;
+			// Re-wire the connection-change listener to the new session
+			this._mcpManager.setOnConnectionChange((conn: McpConnection) => {
+				this._handleMcpConnectionChange(conn);
+			});
+			this._registerMcpTools();
+			return;
+		}
 
 		// Dispose any existing MCP manager (e.g., on reload)
 		if (this._mcpManager) {
@@ -3682,7 +3737,15 @@ export class AgentSession {
 		});
 
 		try {
-			await agent.prompt(options.messages[0]?.content ?? "");
+			const first = options.messages[0]?.content;
+			const promptText =
+				typeof first === "string"
+					? first
+					: (first ?? [])
+							.filter((block) => block.type === "text")
+							.map((block) => (block as { text: string }).text)
+							.join("\n");
+			await agent.prompt(promptText);
 		} finally {
 			unsubscribe();
 			options.signal?.removeEventListener("abort", abort);

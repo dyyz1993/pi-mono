@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@dyyz1993/pi-coding-agent";
 import {
 	GOAL_SCHEMA_VERSION,
 	type ActionAuthority,
+	type AuthorityTarget,
 	type GoalDraft,
 	type GoalEventRecord,
 	type GoalNode,
@@ -230,14 +231,91 @@ export function canonicalCriterionIds(ids: string[], validIds: Iterable<string>)
 	return normalized;
 }
 
-function normalizeAuthority(authority: Omit<ActionAuthority, "uses">, index: number): ActionAuthority {
+function safeCanonical(path: string): string | undefined {
+	try {
+		return canonicalContextPath(path);
+	} catch {
+		return undefined;
+	}
+}
+
+const OUTCOME_ALIGNMENT_MIN_TOKENS = 6;
+const OUTCOME_ALIGNMENT_THRESHOLD = 0.2;
+
+function outcomeAlignmentTokens(text: string): Set<string> {
+	const tokens = new Set<string>();
+	for (const run of text.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+		if (run.length < 2) continue;
+		if (/[\u4e00-\u9fff]/.test(run)) {
+			// CJK runs do not space-segment; compare by character bigrams so faithful
+			// paraphrases still overlap while a different project's text does not.
+			for (let i = 0; i + 1 < run.length; i += 1) tokens.add(run.slice(i, i + 2));
+		} else {
+			tokens.add(run);
+		}
+	}
+	return tokens;
+}
+
+export function outcomeMismatchReason(originalOutcome: string, draftOutcome: string): string | undefined {
+	// When a session's history is dominated by an earlier (often cancelled) goal, models
+	// treat the new goal's setup continuation as a "user reply" and resubmit the old
+	// goal's prepared contract verbatim. The machinery then happily approves and runs the
+	// WRONG objective. Reject submissions whose outcome does not restate the active one.
+	const originalTokens = outcomeAlignmentTokens(originalOutcome);
+	if (originalTokens.size < OUTCOME_ALIGNMENT_MIN_TOKENS) return undefined;
+	const draftTokens = outcomeAlignmentTokens(draftOutcome);
+	if (!draftTokens.size) return undefined;
+	let hits = 0;
+	for (const token of originalTokens) if (draftTokens.has(token)) hits += 1;
+	if (hits / originalTokens.size >= OUTCOME_ALIGNMENT_THRESHOLD) return undefined;
+	return `Contract outcome does not restate the active objective (${hits}/${originalTokens.size} objective terms found). Draft a fresh contract for the current objective only; never resubmit or adapt a contract drafted for an earlier goal from this conversation history.`;
+}
+
+export function normalizeAuthorityTargets(targets: AuthorityTarget[], workspaceRoots?: string[]): AuthorityTarget[] {
+	// Models frequently write targets as {path: "<absolute workspace path>", equals: "<same path>"}
+	// instead of the canonical {path: "cwd", equals: "<workspace root>"}. Both forms express
+	// "this authority applies inside the workspace root"; rewrite the absolute-path form so
+	// validateCommandAuthorityDefinition's cwd-target check accepts it. Must run before draft
+	// validation (normalizeDraftAuthorityTargets), not only in createGoalState, or the
+	// validator rejects the raw absolute-path form first and the goal gets capped.
+	const roots = workspaceRoots ?? [];
+	return targets.map((target) => {
+		const pathValue = typeof target.path === "string" ? target.path : undefined;
+		if (pathValue && pathValue !== "cwd") {
+			const equalsValue = typeof target.equals === "string" ? target.equals : pathValue;
+			// Match through canonicalContextPath so symlinked spellings (/tmp vs
+			// /private/tmp) also normalize to the approved root.
+			const equalsCanonical = safeCanonical(equalsValue);
+			const pathCanonical = safeCanonical(pathValue);
+			if (roots.includes(equalsValue) || roots.includes(pathValue) || (equalsCanonical && roots.includes(equalsCanonical)) || (pathCanonical && roots.includes(pathCanonical))) {
+				const matchedRoot =
+					roots.includes(equalsValue) ? equalsValue :
+					roots.includes(pathValue) ? pathValue :
+					equalsCanonical && roots.includes(equalsCanonical) ? equalsCanonical :
+					pathCanonical!;
+				return { ...target, path: "cwd", equals: matchedRoot };
+			}
+		}
+		return target;
+	});
+}
+
+export function normalizeDraftAuthorityTargets(draft: GoalDraft): void {
+	for (const authority of draft.authorities) {
+		authority.targets = normalizeAuthorityTargets(authority.targets ?? [], draft.workspaceRoots);
+	}
+}
+
+function normalizeAuthority(authority: Omit<ActionAuthority, "uses">, index: number, workspaceRoots?: string[]): ActionAuthority {
+	const targets = normalizeAuthorityTargets(authority.targets ?? [], workspaceRoots);
 	return {
 		...authority,
 		id: authority.id?.trim() || `A${index + 1}`,
 		label: authority.label?.trim() || `${authority.actionClass}: ${authority.toolName}`,
 		uses: 0,
 		maxUses: Math.max(1, Math.min(100, authority.maxUses || 1)),
-		targets: authority.targets ?? [],
+		targets,
 		command: authority.command ? { ...authority.command, argsPrefix: [...authority.command.argsPrefix] } : undefined,
 	};
 }
@@ -292,6 +370,7 @@ export function createGoalSetupState(outcome: string, ctx: ExtensionContext): Go
 
 export function createGoalState(draft: GoalDraft, ctx: ExtensionContext, originalOutcome: string = draft.outcome): GoalState {
 	const at = now();
+	const workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
 	const criteria = draft.criteria.map((text, index) => ({
 		id: `AC${index + 1}`,
 		text: redactText(text, 500).text,
@@ -318,7 +397,7 @@ export function createGoalState(draft: GoalDraft, ctx: ExtensionContext, origina
 		goalId: makeId("goal"),
 		sessionId: ctx.sessionManager.getSessionId(),
 		cwd: ctx.cwd,
-		workspaceRoots: normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots),
+		workspaceRoots,
 		status: "awaiting_approval",
 		phase: "setup",
 		generation: 1,
@@ -333,7 +412,7 @@ export function createGoalState(draft: GoalDraft, ctx: ExtensionContext, origina
 		criteria,
 		plan: nodes,
 		verificationChecks: draft.verificationChecks.map(normalizeCheck),
-		authorities: draft.authorities.map(normalizeAuthority),
+		authorities: draft.authorities.map((authority, index) => normalizeAuthority(authority, index, workspaceRoots)),
 		constraints: draft.constraints.map((item) => redactText(item, 500).text),
 		nonGoals: draft.nonGoals.map((item) => redactText(item, 500).text),
 		evidence: [],

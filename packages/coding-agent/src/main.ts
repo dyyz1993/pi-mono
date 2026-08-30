@@ -17,7 +17,6 @@ import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { handleRpcCommand } from "./cli/rpc-command.ts";
-import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
 import { ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
@@ -29,7 +28,6 @@ import {
 import type { AgentConfig } from "./core/agent-types.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
-import { exportFromFile } from "./core/export-html/index.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { discoverAgents } from "./core/index.ts";
@@ -50,8 +48,12 @@ import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { handleHooksCommand } from "./hooks-cli.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
-import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
-import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
+// Mode runners are lazy-loaded so the rpc/print entry path does not pay the
+// interactive-mode module graph at startup (RPC mode is spawned per session by
+// the web app; import cost is the dominant agent.start latency there).
+import type { InteractiveMode as InteractiveModeType } from "./modes/interactive/interactive-mode.ts";
+// theme 模块只在 interactive/print/resume 显示路径需要；RPC 模式跳过以减少启动模块图
+
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { parseFrontmatter } from "./utils/frontmatter.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
@@ -317,8 +319,10 @@ async function createSessionManager(
 	}
 
 	if (parsed.resume) {
+		const { initTheme, stopThemeWatcher } = await import("./modes/interactive/theme/theme.ts");
 		initTheme(settingsManager.getTheme(), true);
 		try {
+			const { selectSession } = await import("./cli/session-picker.ts");
 			const selectedPath = await selectSession(
 				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
 				(onProgress) => SessionManager.listAll(sessionDir, onProgress),
@@ -516,6 +520,7 @@ export async function main(args: string[], options?: MainOptions) {
 		let result: string;
 		try {
 			const outputPath = parsed.messages.length > 0 ? parsed.messages[0] : undefined;
+			const { exportFromFile } = await import("./core/export-html/index.ts");
 			result = await exportFromFile(parsed.export, outputPath);
 		} catch (error: unknown) {
 			const message = error instanceof Error ? error.message : "Failed to export session";
@@ -807,7 +812,10 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent,
 	);
 	time("prepareInitialMessage");
-	initTheme(settingsManager.getTheme(), appMode === "interactive");
+	if (appMode !== "rpc") {
+		const { initTheme } = await import("./modes/interactive/theme/theme.ts");
+		initTheme(settingsManager.getTheme(), appMode === "interactive");
+	}
 	time("initTheme");
 
 	// Show deprecation warnings in interactive mode
@@ -835,9 +843,11 @@ export async function main(args: string[], options?: MainOptions) {
 
 	if (appMode === "rpc") {
 		printTimings();
+		const { runRpcMode } = await import("./modes/rpc/rpc-mode.ts");
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
-		const interactiveMode = new InteractiveMode(runtime, {
+		const { InteractiveMode } = await import("./modes/interactive/interactive-mode.ts");
+		const interactiveMode: InteractiveModeType = new InteractiveMode(runtime, {
 			migratedProviders,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
@@ -851,7 +861,7 @@ export async function main(args: string[], options?: MainOptions) {
 			time("interactiveMode.init");
 			printTimings();
 			interactiveMode.stop();
-			stopThemeWatcher();
+			(await import("./modes/interactive/theme/theme.ts")).stopThemeWatcher();
 			if (process.stdout.writableLength > 0) {
 				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
 			}
@@ -865,6 +875,7 @@ export async function main(args: string[], options?: MainOptions) {
 		await interactiveMode.run();
 	} else {
 		printTimings();
+		const { runPrintMode } = await import("./modes/print-mode.ts");
 		const exitCode = await runPrintMode(runtime, {
 			mode: toPrintOutputMode(appMode),
 			messages: parsed.messages,
@@ -872,7 +883,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialImages,
 			outputSchema: parsed.outputSchema ? resolveSchema(parsed.outputSchema) : undefined,
 		});
-		stopThemeWatcher();
+		(await import("./modes/interactive/theme/theme.ts")).stopThemeWatcher();
 		restoreStdout();
 		if (exitCode !== 0) {
 			process.exitCode = exitCode;

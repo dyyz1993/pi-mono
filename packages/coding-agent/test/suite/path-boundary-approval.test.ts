@@ -6,6 +6,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@dyyz1993/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionUIContext } from "../../src/core/extensions/index.ts";
+import type { AskUserQuestion } from "../../src/core/extensions/types.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 function makePermissionUi(choice: string): ExtensionUIContext {
@@ -13,7 +14,10 @@ function makePermissionUi(choice: string): ExtensionUIContext {
 		select: async () => choice,
 		confirm: async () => false,
 		input: async () => undefined,
-		askUserQuestion: async () => undefined,
+		askUserQuestion: async (questions: AskUserQuestion[]) => ({
+			action: "responded",
+			answers: { [questions[0]!.id]: { selected: [choice] } },
+		}),
 		notify: () => undefined,
 		onTerminalInput: () => () => undefined,
 		setStatus: () => undefined,

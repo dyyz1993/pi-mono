@@ -37,7 +37,9 @@ import {
 	inputHash,
 	makeId,
 	now,
+	normalizeDraftAuthorityTargets,
 	normalizeWorkspaceRoots,
+	outcomeMismatchReason,
 	progressMarker,
 	reconcileCriterionEvidenceIds,
 	redactText,
@@ -63,11 +65,12 @@ import type {
 	RecoveryEvidence,
 	InterruptClass,
 	SetupSubmissionStage,
+	ToolObservation,
 	VerificationCheck,
 	VerificationResult,
 } from "./types.ts";
-import { authorityScopeText, showDetailOverlay, showSetupCard, showSetupTranscriptEditor, updateGoalUi } from "./ui.ts";
-import { runAllChecks, runVerificationCheck } from "./verification.ts";
+import { authorityScopeText, showDetailOverlay, showSetupTranscriptEditor, updateGoalUi } from "./ui.ts";
+import { createCallLLMVisionJudge, runAllChecks, runVerificationCheck, type VerificationDeps } from "./verification.ts";
 
 const GOAL_TOOL_NAMES = new Set([
 	"pi_goal_submit_contract",
@@ -84,6 +87,8 @@ const TERMINAL_STATES = new Set(["completed", "complete", "failed", "error", "ca
 const ACTIVE_STATES = new Set(["queued", "pending", "running", "in_progress", "in-progress", "started", "watching"]);
 const CONTINUATION_CUSTOM_TYPE = "pi-goal-continuation-v1";
 const SETUP_CONTINUATION_CUSTOM_TYPE = "pi-goal-setup-continuation-v1";
+/** Consecutive provider-error turns to auto-resume before escalating to an interrupt. */
+const MAX_ERROR_TURN_RESUMES = 3;
 const MAX_IDENTICAL_VERIFICATION_FAILURES = 2;
 const MAX_VERIFICATION_RECOVERY_MS = 10 * 60 * 1_000;
 
@@ -315,9 +320,12 @@ Rules:
 - Criteria receive deterministic IDs AC1, AC2, ... in array order. Phase criterionIds may use AC<n> or C<n>; unknown IDs are rejected.
 - For Git checks in another approved root, set check.cwd to that root. Do not use git -C in verifier argv.
 - When target, scope, success criteria, verification, and authority are clear, call pi_goal_submit_contract with the complete contract. Do not merely print contract JSON.
+- Draft a FRESH contract for the objective above only. If this conversation's history contains drafts, contracts, or plans for an earlier goal, ignore them completely; never resubmit or adapt them for the current objective.
 - Current user messages and explicit corrections override older discussion.
 - Contract must preserve complete original request and define observable criteria, ordered phases, machine-readable phase commands, mechanical checks, constraints, non-goals, and all foreseeable typed authorities needed for fire-and-forget completion.
 - Every Bash authority must include exact cwd plus a command policy with exact executable, exact argsPrefix, and bounded trailingArgs. Provide every required action class: uv normally needs local_process and network_read; git push needs local_process and external_write. Labels/prose never grant authority.
+- Authority toolName must be the literal operational tool name, exactly "bash" for command authorities. The executable name goes in command.executable, never in toolName.
+- verificationChecks only accept these kinds: file_exists{path}, file_contains{path,pattern}, json_equals{path,pointer,value}, git_status{cwd,clean}, git_diff{cwd,empty,paths}, command_exit{executable,args,cwd}, browser_check{url,waitMs,expectTextContains,maxConsoleErrors,expectVisual}. A command_exit executable must be a single allowlisted program (node, python3, git read-only ops, npm test/check/lint/build); NEVER bash/sh/curl — express file or dependency checks with the native kinds instead, e.g. {kind:"file_exists",path:"index.html"}. browser_check loads a file:// page inside the workspace (or localhost http) headlessly, asserts page text and console errors, and captures a screenshot; an optional expectVisual (≤300 chars) additionally has a vision model judge the screenshot against that expectation — use it when rendering/layout quality matters, e.g. {kind:"browser_check",url:"file://<workspace>/index.html",expectTextContains:"Snake",expectVisual:"grid canvas with snake segments, a food dot, and a score HUD are visibly rendered"}.
 - One later user approval covers contract plus declared authority envelope. Make envelope complete enough that routine work, tests, commits, pushes, requested external writes, and other foreseeable actions do not require mid-run approval.
 - Keep authorities scoped to approved goal. Never include credentials or secret values. Human-only credentials, tool-native confirmations, and genuinely irreversible actions cannot be silently bypassed.
 - Until approval, only pi_goal_submit_contract and pi_goal_status may be called.`;
@@ -379,16 +387,27 @@ function findBackgroundMetadata(value: unknown): { id?: string; state?: string; 
 	let foundId: string | undefined;
 	let foundState: string | undefined;
 	let foundLabel: string | undefined;
+	const idKey = /^(?:background_?)?(?:job|task|report|workflow|execution)_?id$/i;
+	const scopedStateKey = /^(?:background_?)?(?:job|task|report|workflow|execution)_?(?:state|status)$|^processing_status$/i;
+	const genericStateKey = /^(?:state|status)$/i;
 	function walk(current: unknown, depth = 0): void {
 		if (!current || typeof current !== "object" || depth > 6 || seen.has(current as object)) return;
 		seen.add(current as object);
 		if (Array.isArray(current)) { current.forEach((item) => walk(item, depth + 1)); return; }
+		let localId: string | undefined;
+		let localState: string | undefined;
+		let localScopedState: string | undefined;
+		let localLabel: string | undefined;
 		for (const [key, item] of Object.entries(current as Record<string, unknown>)) {
-			if (!foundId && typeof item === "string" && /^(?:job|task|report|workflow|execution)_?id$/i.test(key)) foundId = item;
-			if (!foundState && typeof item === "string" && /^(?:state|status|processing_status)$/i.test(key)) foundState = item.toLowerCase();
-			if (!foundLabel && typeof item === "string" && /^(?:label|name|title)$/i.test(key)) foundLabel = item;
+			if (typeof item === "string" && idKey.test(key)) localId = item;
+			if (typeof item === "string" && genericStateKey.test(key)) localState = item.toLowerCase();
+			if (typeof item === "string" && scopedStateKey.test(key)) localScopedState = item.toLowerCase();
+			if (typeof item === "string" && /^(?:label|name|title)$/i.test(key)) localLabel = item;
 			walk(item, depth + 1);
 		}
+		if (!foundId && localId) foundId = localId;
+		if (!foundState && (localScopedState || (localId ? localState : undefined))) foundState = localScopedState || localState;
+		if (!foundLabel && (localId || localScopedState) && localLabel) foundLabel = localLabel;
 	}
 	walk(value);
 	return { id: foundId, state: foundState, label: foundLabel };
@@ -470,6 +489,83 @@ function buildRiskAuthority(state: GoalState): ActionAuthority | undefined {
 	};
 }
 
+type GoalApprovalAction = "approve" | "refine" | "reject";
+
+/**
+ * All Goal human decisions use the same structured UI contract as permission
+ * prompts. The Runner owns the request id, so RPC, local UI, and Message
+ * Bridge responders race on one request instead of maintaining separate
+ * approval buttons and state machines.
+ */
+async function requestGoalApproval(
+	ctx: ExtensionContext,
+	state: GoalState,
+	kind: "contract" | "authority_amendment" | "pending_risk",
+	signal?: AbortSignal,
+): Promise<GoalApprovalAction | undefined> {
+	const pendingAuthority = state.interrupt?.pendingAuthorityAmendment;
+	const pendingAction = state.interrupt?.pendingAction;
+	const detail = kind === "contract"
+		? [
+				`Goal objective: ${redactText(state.outcome.current, 1_000).text}`,
+				`Criteria: ${state.criteria.map((item) => `${item.id} ${item.text}`).join("; ") || "none"}`,
+				`Plan: ${state.plan.map((item) => item.title).join(" -> ") || "none"}`,
+				`Approved workspace roots: ${state.workspaceRoots.join(", ") || "none"}`,
+				`Declared authorities: ${state.authorities.map(authorityScopeText).join(" | ") || "none"}`,
+			].join("\n")
+		: kind === "authority_amendment"
+			? [
+					`Rationale: ${redactText(pendingAuthority?.rationale ?? state.interrupt?.message ?? "", 700).text}`,
+					`Exact authorities: ${pendingAuthority?.authorities.map(authorityScopeText).join(" | ") || "none"}`,
+				].join("\n")
+			: [
+					`Exact action: ${redactText(pendingAction?.label ?? state.interrupt?.message ?? "", 700).text}`,
+					`Tool: ${pendingAction?.toolName ?? "unknown"}`,
+				].join("\n");
+	const questionId = `goal-${kind}`;
+	const response = await ctx.ui.askUserQuestion(
+		[
+			{
+				id: questionId,
+				header: kind === "contract" ? "Goal contract" : kind === "authority_amendment" ? "Goal authority" : "Goal risk",
+				question: `${kind === "contract" ? "Approve this complete Goal contract?" : kind === "authority_amendment" ? "Approve this exact authority amendment?" : "Approve this exact pending action once?"}\n\n${detail}`,
+				options: [
+					{ label: "Approve", description: "Allow exactly the displayed Goal request." },
+					...(kind === "contract" ? [{ label: "Refine", description: "Return to the same conversation and submit a replacement contract." }] : []),
+					{ label: "Reject", description: "Do not grant this Goal request." },
+				],
+			},
+		],
+		{
+			signal,
+			// Web (RPC) users review the contract in the Goal panel; a 60s default
+			// would auto-dismiss while they read. Give them 10 minutes.
+			timeout: 600_000,
+			title: kind === "contract" ? "Approve Goal contract" : kind === "authority_amendment" ? "Approve Goal authority amendment" : "Approve Goal pending risk",
+			message: detail,
+			permissionMeta: {
+				type: "goal_approval",
+				kind,
+				goalId: state.goalId,
+				generation: state.generation,
+				objective: redactText(state.outcome.current, 1_000).text,
+				rationale: kind === "authority_amendment" ? redactText(pendingAuthority?.rationale ?? "", 700).text : undefined,
+				authorities: (kind === "authority_amendment" ? pendingAuthority?.authorities : state.authorities)?.map((authority) => ({
+					id: authority.id,
+					label: authority.label,
+					actionClass: authority.actionClass,
+					toolName: authority.toolName,
+				})) ?? [],
+			},
+		},
+	);
+	const selected = response?.answers[questionId]?.selected[0];
+	if (selected === "Approve") return "approve";
+	if (selected === "Refine") return "refine";
+	if (selected === "Reject") return "reject";
+	return undefined;
+}
+
 function applyPendingAuthorityAmendment(state: GoalState): number {
 	const pending = state.interrupt?.pendingAuthorityAmendment;
 	if (!pending) return 0;
@@ -483,6 +579,20 @@ function applyPendingAuthorityAmendment(state: GoalState): number {
 	state.continuationSequence += 1;
 	state.lastContinuationKey = undefined;
 	return pending.authorities.length;
+}
+
+function rejectPendingAuthorityAmendment(state: GoalState): boolean {
+	const pending = state.interrupt?.pendingAuthorityAmendment;
+	if (!pending) return false;
+	state.interrupt = undefined;
+	state.deferredRisk = undefined;
+	state.status = "running";
+	state.phase = "recovering";
+	state.currentAction = "Authority amendment rejected";
+	state.nextAction = "Choose a safe in-envelope alternative; do not retry the rejected authority";
+	state.continuationSequence += 1;
+	state.lastContinuationKey = undefined;
+	return true;
 }
 
 function isActiveGoal(state: GoalState | undefined): state is GoalState {
@@ -633,10 +743,16 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	const store = new GoalStore(pi, agentDir);
 	const mutex = new AsyncMutex();
 	const isolated = new IsolatedModelRunner(agentDir);
+	// Vision judge for browser_check expectVisual — uses the stale-safe LLM
+	// call so background audit-pipeline checks survive ctx invalidation.
+	const verificationDeps: VerificationDeps = {
+		visionJudge: createCallLLMVisionJudge((options) => pi.callLLMSafe(options)),
+	};
 	const toolInfo = new Map<string, ToolInfo>();
 	let currentCtx: ExtensionContext | undefined;
 	let evaluatorInFlight = false;
 	let shutdown = false;
+	let errorTurnResumeCount = 0;
 	let verificationRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
 	let unsubscribeBackgroundStart: (() => void) | undefined;
 	let unsubscribeBackgroundEnd: (() => void) | undefined;
@@ -652,11 +768,19 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			const raw = authority.toolName.trim();
 			const unwrapped = raw.replace(/^functions(?:[.:/]|__)+/i, "");
 			const resolved = [raw, unwrapped].find((name) => toolInfo.has(name));
-			if (!resolved || resolved.startsWith("pi_goal_")) {
-				errors.push(`authorities[${index}].toolName references unavailable operational tool: ${raw}`);
+			if (resolved && !resolved.startsWith("pi_goal_")) {
+				authority.toolName = resolved;
 				continue;
 			}
-			authority.toolName = resolved;
+			// Models sometimes fill toolName with the executable name ("node") on an
+			// authority that is otherwise a fully typed bash command policy. The
+			// validator only accepts toolName "bash", so reinterpret it instead of
+			// burning a bounded setup retry on a field the model cannot express.
+			if (!resolved && authority.command?.executable && toolInfo.has("bash")) {
+				authority.toolName = "bash";
+				continue;
+			}
+			errors.push(`authorities[${index}].toolName references unavailable operational tool: ${raw}`);
 		}
 		if (errors.length) throw new Error(errors.join("; "));
 	}
@@ -919,6 +1043,17 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		return true;
 	}
 
+	// The audit pipeline and tool-side transitions mutate state inside mutex.run
+	// blocks without going through the channel handlers, so their goal.statusChanged
+	// broadcasts must be emitted explicitly or the web panel keeps the last
+	// setup-era status forever (field-verified: panel stuck on "setting_up" after
+	// completion).
+	function emitStatusChanged(ctx: ExtensionContext): void {
+		const state = load(ctx);
+		goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+		if (state) goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "audit_pipeline" });
+	}
+
 	async function finishAudit(ctx: ExtensionContext, goalId: string, generation: number, sequence: number): Promise<void> {
 		let snapshot: GoalState | undefined;
 		let inputFingerprint: string | undefined;
@@ -926,6 +1061,15 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			const state = load(ctx);
 			if (!state || state.goalId !== goalId || state.generation !== generation || state.continuationSequence !== sequence || shutdown) return;
 			if (Object.keys(state.backgroundWork).length || state.interrupt) return;
+			// Clear stale activeToolCalls. The tool_result handler normally removes
+			// these, but we've seen cases where tool_execution_end / tool_result
+			// events don't fire (model returns empty response right after a tool
+			// call) and the entry gets stuck, which then blocks evaluateSettled's
+			// idle check on subsequent turns. By the time we run the audit, every
+			// tool call must be settled anyway, so clearing here is safe.
+			if (Object.keys(state.activeToolCalls).length) {
+				state.activeToolCalls = {};
+			}
 			state.status = "auditing";
 			state.phase = "auditing";
 			state.currentAction = "Running approved verification checks";
@@ -934,9 +1078,10 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			snapshot = structuredClone(state);
 		});
 		if (!snapshot) return;
+		emitStatusChanged(ctx);
 
 		let checks: VerificationResult[];
-		try { checks = await runAllChecks(snapshot); }
+		try { checks = await runAllChecks(snapshot, undefined, verificationDeps); }
 		catch (error) { checks = [{ checkId: "runner", passed: false, summary: error instanceof Error ? error.message : String(error), durationMs: 0 }]; }
 		await mutex.run(() => {
 			const state = load(ctx);
@@ -954,6 +1099,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				if (!state || state.goalId !== goalId || state.generation !== generation || state.continuationSequence !== sequence) return;
 				transitionVerificationFailure(ctx, state, checks, "runtime");
 			});
+			emitStatusChanged(ctx);
 			return;
 		}
 		await mutex.run(() => {
@@ -984,6 +1130,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				state.nextAction = diagnostic.suggestedAction;
 				if (state.auditExecutionRepeatCount >= 2 || state.auditFailureCount >= 3) openInterrupt(state, { class: "BLOCKER", message: "The isolated auditor repeated the same execution failure after bounded recovery.", attempts: [`${diagnostic.code} at ${diagnostic.stage}: ${diagnostic.message}`], need: diagnostic.suggestedAction, recommendation: "Inspect the structured audit execution diagnostic; do not retry unchanged." });
 				persist(ctx, "audit_error", `${diagnostic.code} ${diagnostic.stage} ${diagnostic.fingerprint.slice(0, 12)} elapsedMs=${diagnostic.elapsedMs}`);
+				emitStatusChanged(ctx);
 				if (state.status === "running") triggerContinuation(state, "The independent audit could not complete. Preserve evidence and retry through a different recovery path.");
 			});
 			return;
@@ -1015,6 +1162,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				state.nextAction = "No further action";
 				state.plan.forEach((node) => { if (["pending", "in_progress"].includes(node.status)) node.status = "done"; });
 				persist(ctx, "goal_completed", "isolated auditor passed all criteria");
+				emitStatusChanged(ctx);
 				pi.sendMessage({ customType: "pi-goal-complete", content: textContent(`Goal complete and independently verified.\n\n${state.outcome.current}\n\nAudit: ${redactText(audit.reason, 600).text}`), display: true }, { triggerTurn: false });
 				updateGoalUi(ctx, undefined);
 			} else {
@@ -1037,6 +1185,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 					});
 				}
 				persist(ctx, "audit_rejected", `${diagnostic!.code}: ${diagnostic!.message}`);
+				emitStatusChanged(ctx);
 				if (state.status === "running") triggerContinuation(state, `Audit rejection ${diagnostic!.fingerprint.slice(0, 12)}. ${diagnostic!.suggestedAction} Resubmit only after material evidence or check results change.`);
 			}
 		});
@@ -1173,7 +1322,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (action === "approve_amendment") {
-			if (!await ctx.ui.confirm("Approve exact typed authority amendment?", "This adds only the displayed executable, argv, action-class, and cwd policies. Existing goal state is preserved.")) return;
+			const pending = load(ctx);
+			if (!pending?.interrupt?.pendingAuthorityAmendment || await requestGoalApproval(ctx, structuredClone(pending), "authority_amendment") !== "approve") return;
 			await mutex.run(() => {
 				const state = load(ctx); if (!state) return;
 				const count = applyPendingAuthorityAmendment(state); if (!count) return;
@@ -1183,7 +1333,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (action === "approve_risk") {
-			if (!await ctx.ui.confirm("Approve exact pending action once?", "This grants one use only. Pi/tool-native confirmation may still apply.")) return;
+			const pending = load(ctx);
+			if (!pending?.interrupt?.pendingAction || await requestGoalApproval(ctx, structuredClone(pending), "pending_risk") !== "approve") return;
 			await mutex.run(() => {
 				const state = load(ctx); if (!state) return;
 				const authority = buildRiskAuthority(state); if (!authority) return;
@@ -1215,7 +1366,8 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		let state = initial;
 		while (state.status === "awaiting_approval") {
 			const generation = state.generation;
-			const action = await showSetupCard(ctx, structuredClone(state));
+			const approval = await requestGoalApproval(ctx, structuredClone(state), "contract");
+			if (!approval) return;
 			let shouldReturn = false;
 			let cancelled = false;
 			await mutex.run(() => {
@@ -1226,13 +1378,13 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				state = live;
-				if (action === "cancel") {
+				if (approval === "reject") {
 					markGoalCancelled(ctx, state, "setup_cancelled", "user cancelled contract before approval");
 					cancelled = true;
 					shouldReturn = true;
 					return;
 				}
-				if (action === "refine") {
+				if (approval === "refine") {
 					state.status = "setting_up";
 					state.phase = "setup";
 					state.generation += 1;
@@ -1336,6 +1488,41 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 
 	let goalEnabled = true;
 
+	function projectInterrupt(state: GoalState | undefined): GoalVendorStatus["interrupt"] {
+		const interrupt = state?.interrupt;
+		if (!interrupt) return undefined;
+		const pending = interrupt.pendingAuthorityAmendment;
+		return {
+			class: interrupt.class,
+			message: interrupt.message,
+			attempts: [...interrupt.attempts],
+			need: interrupt.need,
+			recommendation: interrupt.recommendation,
+			createdAt: interrupt.createdAt,
+			pendingAuthorityAmendment: pending
+				? {
+						rationale: pending.rationale,
+						requestedAt: pending.requestedAt,
+						authorities: pending.authorities.map((authority) => ({
+							id: authority.id,
+							label: authority.label,
+							actionClass: authority.actionClass,
+							toolName: authority.toolName,
+							command: authority.command
+								? {
+										executable: authority.command.executable,
+										argsPrefix: [...authority.command.argsPrefix],
+										trailingArgs: authority.command.trailingArgs,
+									}
+								: undefined,
+							maxUses: authority.maxUses,
+							expiresAt: authority.expiresAt,
+						})),
+					}
+				: undefined,
+		};
+	}
+
 	function projectState(state: GoalState | undefined, ctx?: ExtensionContext): GoalVendorStatus {
 		if (!state) {
 			return { enabled: goalEnabled, state: goalEnabled ? "idle" : "disabled", rawStatus: "none", rawPhase: "none", continuationSequence: 0, turnCount: 0 };
@@ -1374,6 +1561,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			objective: redactText(state.outcome.current, 500).text,
 			goalId: state.goalId,
 			generation: state.generation,
+			interrupt: projectInterrupt(state),
 		};
 	}
 
@@ -1386,6 +1574,29 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			hasEvidence: criterion.evidenceIds.length > 0,
 		}));
 		return { tasks };
+	}
+
+	function resolveEvidenceObservations(state: GoalState, refs: string[] | undefined, used: Set<string>): ToolObservation[] {
+		const successful = state.observations.filter((item) => !item.isError);
+		if (!refs?.length) return successful.filter((item) => !used.has(item.toolCallId)).slice(-5);
+
+		const selected: ToolObservation[] = [];
+		const selectedIds = new Set<string>();
+		for (const ref of refs) {
+			const exact = state.observations.find((item) => item.toolCallId === ref);
+			if (exact) {
+				selected.push(exact);
+				selectedIds.add(exact.toolCallId);
+				continue;
+			}
+
+			let byToolName = [...successful].reverse().find((item) => item.toolName === ref && !used.has(item.toolCallId) && !selectedIds.has(item.toolCallId));
+			byToolName ??= [...successful].reverse().find((item) => item.toolName === ref && !selectedIds.has(item.toolCallId));
+			if (!byToolName) throw new Error(`No successful tool observation found for evidence ref "${ref}". Use exact toolCallIds or omit toolCallIds to infer recent successful observations.`);
+			selected.push(byToolName);
+			selectedIds.add(byToolName.toolCallId);
+		}
+		return selected;
 	}
 
 	function projectTriggerHistory(ctx: ExtensionContext, limit?: number): { triggers: GoalVendorTriggerRecord[] } {
@@ -1407,7 +1618,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	goalChannel.handle("getStatus", async () => {
 		const ctx = currentCtx;
 		if (!ctx) return projectState(undefined);
-		return projectState(store.get(), ctx);
+		return projectState(load(ctx), ctx);
 	});
 
 	goalChannel.handle("startSetup", async (params) => {
@@ -1416,7 +1627,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const outcome = params.objective?.trim();
 		if (!outcome) return { started: false, error: "objective is required" };
 		return await mutex.run(() => {
-			const existing = store.get();
+			const existing = load(ctx);
 			if (existing && existing.status !== "completed" && existing.status !== "cancelled") {
 				return { started: false, error: `session already has an active goal (${existing.goalId}, status=${existing.status})` };
 			}
@@ -1429,6 +1640,58 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
 			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "setup_started" });
 			return { started: true, goalId: state.goalId };
+		});
+	});
+
+	goalChannel.handle("submitContract", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { submitted: false, error: "no active session context" };
+		return await mutex.run(() => {
+			try {
+				refreshToolInfo();
+				const existing = load(ctx);
+				if (existing && existing.status !== "setting_up" && existing.status !== "completed" && existing.status !== "cancelled") {
+					return { submitted: false, error: `session already has an active goal (${existing.goalId}, status=${existing.status})` };
+				}
+				const originalOutcome =
+					existing?.status === "setting_up"
+						? existing.outcome.original
+						: typeof params.outcome === "string" && params.outcome.trim()
+							? params.outcome.trim()
+							: "";
+				if (!originalOutcome) return { submitted: false, error: "outcome is required" };
+				const setupState = existing?.status === "setting_up" ? existing : createGoalSetupState(originalOutcome, ctx);
+				const rawMismatch = outcomeMismatchReason(setupState.outcome.original, typeof params.outcome === "string" ? params.outcome : "");
+				if (rawMismatch) return { submitted: false, error: rawMismatch };
+				let draft = normalizeDraft(params, setupState.outcome.original, ctx.cwd);
+				draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
+				const outcomeMismatch = outcomeMismatchReason(setupState.outcome.original, draft.outcome);
+				if (outcomeMismatch) return { submitted: false, error: outcomeMismatch };
+				normalizeAuthorityToolNames(draft);
+				normalizeDraftAuthorityTargets(draft);
+				const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
+				if (commandAuthorityErrors.length) {
+					return {
+						submitted: false,
+						error: `Contract executable authority is incomplete: ${commandAuthorityErrors.join("; ")}`,
+					};
+				}
+				const replacement = createGoalState(draft, ctx, setupState.outcome.original);
+				replacement.goalId = setupState.goalId;
+				replacement.createdAt = setupState.createdAt;
+				replacement.generation = setupState.generation + 1;
+				replacement.revision = setupState.revision;
+				replacement.continuationSequence = setupState.continuationSequence + 1;
+				replacement.lastContinuationKey = undefined;
+				replacement.setupAwaitingUser = false;
+				store.set(replacement);
+				persist(ctx, "setup_contract_submitted", "channel submitted a validated contract for approval");
+				goalChannel.emit("goal.statusChanged", projectState(replacement, ctx));
+				goalChannel.emit("goal.goalChanged", { goalId: replacement.goalId, status: replacement.status, reason: "setup_contract_submitted" });
+				return { submitted: true, goalId: replacement.goalId, status: replacement.status };
+			} catch (error) {
+				return { submitted: false, error: error instanceof Error ? error.message : String(error) };
+			}
 		});
 	});
 
@@ -1454,6 +1717,91 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "setup_approved" });
 			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "contract approved" });
 			return { approved: true };
+		});
+	});
+
+	goalChannel.handle("approveAuthorityAmendment", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { approved: false, error: "no active session context" };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { approved: false, error: "no active goal" };
+			if (!state.interrupt?.pendingAuthorityAmendment) {
+				return { approved: false, error: "goal has no pending authority amendment" };
+			}
+			const count = applyPendingAuthorityAmendment(state);
+			if (!count) return { approved: false, error: "no authority amendment was applied" };
+			persist(ctx, "authority_amendment_approved", `${count} exact typed authorities approved via channel`);
+			triggerContinuation(state, "The user approved the displayed typed authority amendment. Continue the same current step without broadening it.");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "authority_amendment_approved" });
+			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "authority amendment approved" });
+			return { approved: true, count };
+		});
+	});
+
+	goalChannel.handle("rejectAuthorityAmendment", async (params) => {
+		const ctx = currentCtx;
+		if (!ctx) return { rejected: false, error: "no active session context" };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { rejected: false, error: "no active goal" };
+			if (!state.interrupt?.pendingAuthorityAmendment) {
+				return { rejected: false, error: "goal has no pending authority amendment" };
+			}
+			const reason = typeof params?.reason === "string" && params.reason.trim()
+				? params.reason.trim()
+				: "authority amendment rejected by user";
+			if (!rejectPendingAuthorityAmendment(state)) return { rejected: false, error: "no authority amendment was rejected" };
+			persist(ctx, "authority_amendment_rejected", reason);
+			triggerContinuation(state, "The user rejected the displayed authority amendment. Do not retry that authority; choose a safe alternative within the existing approved contract.");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			goalChannel.emit("goal.goalChanged", { goalId: state.goalId, status: state.status, reason: "authority_amendment_rejected" });
+			goalChannel.emit("goal.continueTriggered", { goalId: state.goalId, reason: "authority amendment rejected" });
+			return { rejected: true };
+		});
+	});
+
+	goalChannel.handle("getPendingContract", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { hasPending: false };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state) return { hasPending: false };
+			if (state.status !== "awaiting_approval") return { hasPending: false, status: state.status };
+			return {
+				hasPending: true,
+				goalId: state.goalId,
+				generation: state.generation,
+				objective: redactText(state.outcome.current, 2_000).text,
+				criteria: state.criteria,
+				plan: state.plan.map((node) => ({ id: node.id, title: node.title, status: node.status, criterionIds: node.criterionIds ?? [] })),
+				verificationChecks: state.verificationChecks,
+				authorities: state.authorities,
+				constraints: state.constraints,
+				nonGoals: state.nonGoals,
+				workspaceRoots: state.workspaceRoots,
+			};
+		});
+	});
+
+	goalChannel.handle("refineContract", async () => {
+		const ctx = currentCtx;
+		if (!ctx) return { refined: false };
+		return await mutex.run(() => {
+			const state = load(ctx);
+			if (!state || state.status !== "awaiting_approval") return { refined: false };
+			state.status = "setting_up";
+			state.phase = "setup";
+			state.generation += 1;
+			state.setupAwaitingUser = false;
+			resetSetupSubmissionTracking(state);
+			armFreshContinuation(state);
+			restoreSetupActions(state);
+			persist(ctx, "setup_refine", "contract returned for refinement via channel");
+			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
+			triggerSetupConversation(state, "The user requested refinement via the web panel. Update the contract in this conversation, then submit a replacement.");
+			return { refined: true };
 		});
 	});
 
@@ -1502,7 +1850,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		goalEnabled = false;
 		const ctx = currentCtx;
 		if (ctx) {
-			const state = store.get();
+			const state = load(ctx);
 			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
 		}
 		return { disabled: true };
@@ -1512,7 +1860,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		goalEnabled = true;
 		const ctx = currentCtx;
 		if (ctx) {
-			const state = store.get();
+			const state = load(ctx);
 			goalChannel.emit("goal.statusChanged", projectState(state, ctx));
 		}
 		return { enabled: true };
@@ -1521,7 +1869,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	goalChannel.handle("getTaskReport", async () => {
 		const ctx = currentCtx;
 		if (!ctx) return { tasks: [] };
-		return projectTaskReport(store.get());
+		return projectTaskReport(load(ctx));
 	});
 
 	goalChannel.handle("getTriggerHistory", async (params) => {
@@ -1569,6 +1917,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		Type.Object({ id: Type.String(), kind: Type.Literal("command_exit"), label: Type.String(), executable: Type.String(), args: Type.Array(Type.String()), cwd: Type.Optional(Type.String()), expectedExitCode: Type.Optional(Type.Integer()), timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })) }),
 		Type.Object({ id: Type.String(), kind: Type.Literal("git_status"), label: Type.String(), cwd: Type.Optional(Type.String()), clean: Type.Optional(Type.Boolean()) }),
 		Type.Object({ id: Type.String(), kind: Type.Literal("git_diff"), label: Type.String(), cwd: Type.Optional(Type.String()), empty: Type.Optional(Type.Boolean()), paths: Type.Optional(Type.Array(Type.String())) }),
+		Type.Object({ id: Type.String(), kind: Type.Literal("browser_check"), label: Type.String(), url: Type.String(), waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 15000 })), expectTextContains: Type.Optional(Type.String()), maxConsoleErrors: Type.Optional(Type.Integer({ minimum: 0 })), expectVisual: Type.Optional(Type.String({ description: "Optional visual assertion (≤300 chars): a vision model judges the captured screenshot against this expectation. Requires a vision-capable session model.", maxLength: 300 })) }),
 	]);
 	const ActionClassParameter = Type.Union([Type.Literal("workspace_read"), Type.Literal("workspace_write"), Type.Literal("local_process"), Type.Literal("network_read"), Type.Literal("external_write"), Type.Literal("publication"), Type.Literal("destructive")]);
 	const CommandPolicyParameter = Type.Object({
@@ -1609,48 +1958,96 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			constraints: Type.Array(Type.String()),
 			nonGoals: Type.Array(Type.String()),
 		}),
-		execute: async (_id, params, _signal, _update, ctx) => mutex.run(() => {
-			const state = load(ctx);
-			if (!state || state.status !== "setting_up") throw new Error("No goal setup is awaiting a contract");
-			validGeneration(state, params.goalId, params.generation);
-			if (setupSubmissionBlocked(state)) throw new Error("Goal setup is waiting for new user input after repeated contract failures; do not submit another contract yet.");
-			let draft: GoalDraft;
-			try {
-				draft = normalizeDraft(params, state.outcome.original, ctx.cwd);
-				draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
-			} catch (error) {
-				return failSetupSubmission(ctx, state, "draft", error);
-			}
-			const postDraftErrors: Array<{ stage: Exclude<SetupSubmissionStage, "draft" | "contract">; message: string }> = [];
-			try { normalizeAuthorityToolNames(draft); }
-			catch (error) { postDraftErrors.push({ stage: "authority_tools", message: error instanceof Error ? error.message : String(error) }); }
-			try {
-				const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
-				if (commandAuthorityErrors.length) postDraftErrors.push({ stage: "command_authority", message: `Contract executable authority is incomplete: ${commandAuthorityErrors.join("; ")}` });
-			} catch (error) {
-				postDraftErrors.push({ stage: "command_authority", message: error instanceof Error ? error.message : String(error) });
-			}
-			let replacement: GoalState | undefined;
-			try { replacement = createGoalState(draft, ctx, state.outcome.original); }
-			catch (error) { postDraftErrors.push({ stage: "goal_state", message: error instanceof Error ? error.message : String(error) }); }
-			if (postDraftErrors.length) {
-				const stages = new Set(postDraftErrors.map((item) => item.stage));
-				const stage: SetupSubmissionStage = stages.size === 1 ? postDraftErrors[0]!.stage : "contract";
-				return failSetupSubmission(ctx, state, stage, new Error(`Contract validation failed: ${postDraftErrors.map((item) => `${item.stage}: ${item.message}`).join("; ")}`));
-			}
-			if (!replacement) return failSetupSubmission(ctx, state, "goal_state", new Error("Contract state could not be created"));
-			replacement.goalId = state.goalId;
-			replacement.createdAt = state.createdAt;
-			replacement.generation = state.generation + 1;
-			replacement.revision = state.revision;
-			replacement.continuationSequence = state.continuationSequence + 1;
-			replacement.lastContinuationKey = undefined;
-			replacement.setupAwaitingUser = false;
-			store.set(replacement);
-			persist(ctx, "setup_contract_submitted", "same-conversation agent submitted a validated contract for user approval");
-			ctx.ui.notify("Goal contract ready. Run bare /goal to review and approve it.", "info");
-			return toolResult("Validated contract recorded. Ask the user to run bare /goal to review, approve, refine, or cancel. No work may begin before approval.");
-		}),
+		execute: async (_id, params, _signal, _update, ctx) => {
+			let submitted: GoalState | undefined;
+			const result = await mutex.run(() => {
+				const state = load(ctx);
+				if (!state || state.status !== "setting_up") throw new Error("No goal setup is awaiting a contract");
+				validGeneration(state, params.goalId, params.generation);
+				if (setupSubmissionBlocked(state)) throw new Error("Goal setup is waiting for new user input after repeated contract failures; do not submit another contract yet.");
+				// Alignment check FIRST, on the raw submitted outcome. TypeBox schema
+				// errors (framework-level) and later validator stages would otherwise
+				// reject malformed hijacked contracts before this guardrail ever runs,
+				// letting a lucky well-formed old contract through to approval.
+				const rawMismatch = outcomeMismatchReason(state.outcome.original, typeof params.outcome === "string" ? params.outcome : "");
+				if (rawMismatch) return failSetupSubmission(ctx, state, "contract", new Error(rawMismatch));
+				let draft: GoalDraft;
+				try {
+					draft = normalizeDraft(params, state.outcome.original, ctx.cwd);
+					draft.workspaceRoots = normalizeWorkspaceRoots(ctx.cwd, draft.workspaceRoots);
+				} catch (error) {
+					return failSetupSubmission(ctx, state, "draft", error);
+				}
+				const outcomeMismatch = outcomeMismatchReason(state.outcome.original, draft.outcome);
+				if (outcomeMismatch) return failSetupSubmission(ctx, state, "contract", new Error(outcomeMismatch));
+				const postDraftErrors: Array<{ stage: Exclude<SetupSubmissionStage, "draft" | "contract">; message: string }> = [];
+				try { normalizeAuthorityToolNames(draft); normalizeDraftAuthorityTargets(draft); }
+				catch (error) { postDraftErrors.push({ stage: "authority_tools", message: error instanceof Error ? error.message : String(error) }); }
+				try {
+					const commandAuthorityErrors = validateDraftCommandAuthorities(draft, ctx.cwd, draft.workspaceRoots);
+					if (commandAuthorityErrors.length) postDraftErrors.push({ stage: "command_authority", message: `Contract executable authority is incomplete: ${commandAuthorityErrors.join("; ")}` });
+				} catch (error) {
+					postDraftErrors.push({ stage: "command_authority", message: error instanceof Error ? error.message : String(error) });
+				}
+				let replacement: GoalState | undefined;
+				try { replacement = createGoalState(draft, ctx, state.outcome.original); }
+				catch (error) { postDraftErrors.push({ stage: "goal_state", message: error instanceof Error ? error.message : String(error) }); }
+				if (postDraftErrors.length) {
+					const stages = new Set(postDraftErrors.map((item) => item.stage));
+					const stage: SetupSubmissionStage = stages.size === 1 ? postDraftErrors[0]!.stage : "contract";
+					return failSetupSubmission(ctx, state, stage, new Error(`Contract validation failed: ${postDraftErrors.map((item) => `${item.stage}: ${item.message}`).join("; ")}`));
+				}
+				if (!replacement) return failSetupSubmission(ctx, state, "goal_state", new Error("Contract state could not be created"));
+				replacement.goalId = state.goalId;
+				replacement.createdAt = state.createdAt;
+				replacement.generation = state.generation + 1;
+				replacement.revision = state.revision;
+				replacement.continuationSequence = state.continuationSequence + 1;
+				replacement.lastContinuationKey = undefined;
+				replacement.setupAwaitingUser = false;
+				store.set(replacement);
+				persist(ctx, "setup_contract_submitted", "same-conversation agent submitted a validated contract for user approval");
+				submitted = structuredClone(replacement);
+				return toolResult("Validated contract recorded. A unified Goal approval request is now waiting for the user. No work may begin before approval.");
+			});
+			if (!submitted) return result;
+
+			const action = await requestGoalApproval(ctx, submitted, "contract", _signal);
+			if (!action) return toolResult("Goal contract remains awaiting approval; no work was started.");
+			await mutex.run(() => {
+				const state = load(ctx);
+				if (!state || state.goalId !== submitted?.goalId || state.generation !== submitted?.generation || state.status !== "awaiting_approval") return;
+				if (action === "approve") {
+					state.status = "running";
+					state.phase = "executing";
+					state.approvedAt = now();
+					state.generation += 1;
+					state.continuationSequence += 1;
+					state.setupAwaitingUser = false;
+					const currentNodeRef = currentNode(state) ?? state.plan.find((node) => node.status === "pending");
+					state.currentAction = currentNodeRef?.title ?? "Begin goal";
+					state.nextAction = state.plan.find((node) => node.status === "pending")?.title ?? "Collect evidence";
+					persist(ctx, "setup_approved", "user approved the complete Goal contract through the unified UI approval request");
+					triggerContinuation(state, "The user approved the Goal contract and declared authority envelope. Work autonomously until independently verified complete.");
+				} else if (action === "refine") {
+					state.status = "setting_up";
+					state.phase = "setup";
+					state.generation += 1;
+					state.continuationSequence += 1;
+					state.lastContinuationKey = undefined;
+					state.setupAwaitingUser = false;
+					resetSetupSubmissionTracking(state);
+					state.currentAction = "Discussing contract refinement in this conversation";
+					state.nextAction = "Ask what should change, then submit a replacement contract";
+					persist(ctx, "setup_refinement_requested", "user returned Goal contract to the same conversation for refinement");
+					triggerSetupConversation(state, "The user chose Refine. Ask what should change in this conversation, then submit a complete replacement contract.");
+				} else {
+					markGoalCancelled(ctx, state, "setup_cancelled", "user rejected the Goal contract through the unified UI approval request");
+				}
+			});
+			emitStatusChanged(ctx);
+			return toolResult(action === "approve" ? "Goal contract approved. Execution has started." : action === "refine" ? "Goal contract returned for refinement; continue the setup conversation." : "Goal contract rejected. No work was started.");
+		},
 	});
 
 	pi.registerTool({
@@ -1679,30 +2076,52 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		label: "Request Goal Authority Amendment",
 		description: "Request one narrowly scoped human-approved authority amendment without replacing the goal, plan, criteria, evidence, or workspace.",
 		parameters: Type.Object({ ...Expected, rationale: Type.String(), authorities: Type.Array(AuthorityParameter, { minItems: 1 }) }),
-		execute: async (_id, params, _signal, _update, ctx) => mutex.run(() => {
-			const state = load(ctx); if (!state || state.status !== "running") throw new Error("No running goal"); validGeneration(state, params.goalId, params.generation);
-			const authorities = params.authorities.map((authority) => ({ ...authority, targets: [...authority.targets], command: authority.command ? { ...authority.command, argsPrefix: [...authority.command.argsPrefix] } : undefined }));
-			const shell: GoalDraft = { outcome: state.outcome.current, criteria: state.criteria.map((item) => item.text), phases: [], verificationChecks: [], authorities, constraints: [], nonGoals: [] };
-			normalizeAuthorityToolNames(shell);
-			const duplicate = authorities.find((authority) => state.authorities.some((existing) => existing.id === authority.id));
-			if (duplicate) throw new Error(`Authority amendment ID already exists: ${duplicate.id}`);
-			const errors = authorities.flatMap((authority) => validateCommandAuthorityDefinition(authority, state.cwd, state.workspaceRoots).map((error) => `${authority.id} ${JSON.stringify(authority.label)}: ${error}`));
-			if (errors.length) throw new Error(`Authority amendment is invalid: ${errors.join("; ")}`);
-			const rationale = redactText(params.rationale, 500).text;
-			const resumePhase = state.phase;
-			const resumeCurrentAction = state.currentAction;
-			const resumeNextAction = state.nextAction;
-			openInterrupt(state, {
-				class: "RISK",
-				message: `Narrow authority amendment requested: ${rationale}`,
-				attempts: state.recoveryEvidence.filter((item) => item.kind === "authority_denial" || item.kind === "check_failure").slice(-8).map((item) => item.summary),
-				need: "Human approval for only the displayed typed executable authorities.",
-				recommendation: "Review the exact executable, argv policy, action class, and cwd; approve or reject the amendment.",
-				pendingAuthorityAmendment: { authorities, rationale, requestedAt: now(), resumePhase, resumeCurrentAction, resumeNextAction },
+		execute: async (_id, params, _signal, _update, ctx) => {
+			let requested: GoalState | undefined;
+			const result = await mutex.run(() => {
+				const state = load(ctx); if (!state || state.status !== "running") throw new Error("No running goal"); validGeneration(state, params.goalId, params.generation);
+				const authorities = params.authorities.map((authority) => ({ ...authority, targets: [...authority.targets], command: authority.command ? { ...authority.command, argsPrefix: [...authority.command.argsPrefix] } : undefined }));
+				const shell: GoalDraft = { outcome: state.outcome.current, criteria: state.criteria.map((item) => item.text), phases: [], verificationChecks: [], authorities, constraints: [], nonGoals: [] };
+				normalizeAuthorityToolNames(shell);
+				const duplicate = authorities.find((authority) => state.authorities.some((existing) => existing.id === authority.id));
+				if (duplicate) throw new Error(`Authority amendment ID already exists: ${duplicate.id}`);
+				const errors = authorities.flatMap((authority) => validateCommandAuthorityDefinition(authority, state.cwd, state.workspaceRoots).map((error) => `${authority.id} ${JSON.stringify(authority.label)}: ${error}`));
+				if (errors.length) throw new Error(`Authority amendment is invalid: ${errors.join("; ")}`);
+				const rationale = redactText(params.rationale, 500).text;
+				const resumePhase = state.phase;
+				const resumeCurrentAction = state.currentAction;
+				const resumeNextAction = state.nextAction;
+				openInterrupt(state, {
+					class: "RISK",
+					message: `Narrow authority amendment requested: ${rationale}`,
+					attempts: state.recoveryEvidence.filter((item) => item.kind === "authority_denial" || item.kind === "check_failure").slice(-8).map((item) => item.summary),
+					need: "Human approval for only the displayed typed executable authorities.",
+					recommendation: "Review the exact executable, argv policy, action class, and cwd; approve or reject the amendment.",
+					pendingAuthorityAmendment: { authorities, rationale, requestedAt: now(), resumePhase, resumeCurrentAction, resumeNextAction },
+				});
+				persist(ctx, "authority_amendment_requested", rationale);
+				requested = structuredClone(state);
+				return toolResult("A unified Goal authority-approval request is now waiting for the user. No new authority is active yet.");
 			});
-			persist(ctx, "authority_amendment_requested", rationale);
-			return toolResult(`Authority amendment is awaiting exact human approval through bare /goal or the exact approval phrase. Displayed exact scope:\n${authorities.map(authorityScopeText).join("\n")}`);
-		}),
+			if (!requested) return result;
+			const action = await requestGoalApproval(ctx, requested, "authority_amendment", _signal);
+			if (!action) return toolResult("Goal authority amendment remains pending; no new authority was granted.");
+			await mutex.run(() => {
+				const state = load(ctx);
+				if (!state || state.goalId !== requested?.goalId || state.generation !== requested?.generation || !state.interrupt?.pendingAuthorityAmendment) return;
+				if (action === "approve") {
+					const count = applyPendingAuthorityAmendment(state);
+					if (!count) return;
+					persist(ctx, "authority_amendment_approved", `${count} exact typed authorities approved through the unified UI approval request`);
+					triggerContinuation(state, "The user approved the displayed typed authority amendment. Continue the same current step without broadening it.");
+				} else {
+					if (!rejectPendingAuthorityAmendment(state)) return;
+					persist(ctx, "authority_amendment_rejected", "user rejected the Goal authority amendment through the unified UI approval request");
+					triggerContinuation(state, "The user rejected the displayed authority amendment. Do not retry that authority; choose a safe alternative within the existing approved contract.");
+				}
+			});
+			return toolResult(action === "approve" ? "Goal authority amendment approved and applied." : "Goal authority amendment rejected; no new authority was granted.");
+		},
 	});
 
 	pi.registerTool({
@@ -1727,12 +2146,10 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				if (pending.length) throw new Error(`Cannot complete ${node.id}; pending dependencies: ${pending.join(", ")}`);
 			}
 			const used = new Set(state.evidence.flatMap((item) => item.toolCallId?.split(",").filter(Boolean) ?? []));
-			const observations = params.toolCallIds?.length
-				? params.toolCallIds.map((id) => state.observations.find((item) => item.toolCallId === id))
-				: state.observations.filter((item) => !item.isError && !used.has(item.toolCallId)).slice(-5);
-			if (!observations.length || observations.some((item) => !item || item.isError)) throw new Error("No recent unused successful tool observations are available for evidence");
+			const observations = resolveEvidenceObservations(state, params.toolCallIds, used);
+			if (!observations.length || observations.some((item) => item.isError)) throw new Error("No recent unused successful tool observations are available for evidence");
 			const cleaned = redactText(params.summary, 500);
-			const evidence: EvidenceRecord = { id: makeId("evidence"), kind: params.kind === "test_result" ? "test_result" : "tool_result", summary: cleaned.text, criterionIds, nodeId: node?.id, toolCallId: observations.map((item) => item!.toolCallId).join(","), toolName: observations.map((item) => item!.toolName).join(","), paths: [...new Set(observations.flatMap((item) => item!.paths))], isError: false, redacted: cleaned.redacted, createdAt: now() };
+			const evidence: EvidenceRecord = { id: makeId("evidence"), kind: params.kind === "test_result" ? "test_result" : "tool_result", summary: cleaned.text, criterionIds, nodeId: node?.id, toolCallId: observations.map((item) => item.toolCallId).join(","), toolName: observations.map((item) => item.toolName).join(","), paths: [...new Set(observations.flatMap((item) => item.paths))], isError: false, redacted: cleaned.redacted, createdAt: now() };
 			state.evidence.push(evidence); reconcileCriterionEvidenceIds(state); state.repeatedToolCalls = {}; state.noProgressCount = 0; state.deferredRisk = undefined;
 			if (state.phase === "recovering" && !state.interrupt && !state.verificationFailureSignature) state.phase = "executing";
 			if (node) {
@@ -1819,7 +2236,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				snapshot = structuredClone(state);
 			});
 			let checks: VerificationResult[];
-			try { checks = await runAllChecks(snapshot!, signal); }
+			try { checks = await runAllChecks(snapshot!, signal, verificationDeps); }
 			catch (error) { checks = [{ checkId: "runner", passed: false, summary: error instanceof Error ? error.message : String(error), durationMs: 0 }]; }
 			return mutex.run(() => {
 				const state = load(ctx);
@@ -1863,8 +2280,22 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				clearVerificationFailure(state);
 				state.deferredRisk = undefined;
 				state.completionCandidate = true; state.phase = "verifying"; state.currentAction = "Awaiting independent completion audit"; state.nextAction = "Run approved checks";
+				const auditGoalId = state.goalId;
+				const auditGeneration = state.generation;
+				const auditSequence = sequence;
 				persist(ctx, "completion_candidate", params.summary);
-				return toolResult("Approved checks passed. Completion candidate recorded; the isolated auditor runs after settlement.", { checks });
+				// Kick off the auditor asynchronously. Previously this waited for
+				// the next agent_end → evaluateSettled cycle, but when the model
+				// stalls after submitting (no further message, no agent_end),
+				// the audit never ran and the goal sat in "verifying" forever.
+				// finishAudit is mutex-guarded and idempotent against stale
+				// generation/sequence, so this is safe to schedule directly.
+				setTimeout(() => {
+					void finishAudit(ctx, auditGoalId, auditGeneration, auditSequence).catch((error) => {
+						persist(ctx, "completion_audit_dispatch_error", error instanceof Error ? error.message : String(error));
+					});
+				}, 0);
+				return toolResult("Approved checks passed. Completion candidate recorded; the isolated auditor has been dispatched.", { checks });
 			});
 		},
 	});
@@ -1886,7 +2317,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				sequence = state.continuationSequence;
 			});
 			const active = load(ctx)!;
-			const result = await runVerificationCheck(check!, active.cwd, signal, active.workspaceRoots);
+			const result = await runVerificationCheck(check!, active.cwd, signal, active.workspaceRoots, verificationDeps);
 			let diagnostic: string | undefined;
 			await mutex.run(() => {
 				const state = load(ctx);
@@ -1945,8 +2376,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("session_start", (event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		shutdown = false;
+		errorTurnResumeCount = 0;
 		refreshToolInfo();
 		const state = load(ctx);
 		subscribeBackgroundEvents();
@@ -1968,6 +2400,20 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 			persist(ctx, "legacy_doom_loop_interrupt_recovered", `removed obsolete duplicate-call interruption during ${event.reason}`);
 			ctx.ui.notify("Recovered obsolete duplicate-call interruption; goal is resuming automatically.", "info");
 			queueFreshContinuation(ctx, state, "legacy_doom_loop_continued", "Resume automatically after removing obsolete duplicate-call interruption.");
+			return;
+		}
+		if (state?.status === "running" && state.completionCandidate && !state.interrupt && !Object.keys(state.backgroundWork).length) {
+			await finishAudit(ctx, state.goalId, state.generation, state.continuationSequence);
+			return;
+		}
+		if (state?.status === "auditing" && !state.interrupt && !Object.keys(state.backgroundWork).length) {
+			// A process death during finishAudit (crash, kill, restart) leaves the
+			// state persisted as "auditing" while the in-flight audit chain is lost.
+			// Nothing else re-enters finishAudit from this state, and every run-phase
+			// tool rejects on non-"running" status, so the goal would stay stuck
+			// forever. finishAudit is idempotent per (goalId, generation, sequence);
+			// re-run it from the top.
+			await finishAudit(ctx, state.goalId, state.generation, state.continuationSequence);
 			return;
 		}
 		if (state?.status === "running") {
@@ -2125,15 +2571,17 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const state = load(ctx); if (!state) return;
 		if (state.status === "setting_up") {
 			if (event.toolName === "pi_goal_submit_contract" || event.toolName === "pi_goal_status") return;
-			return { block: true, reason: "Goal setup is conversational and not approved. Local files, attachments/uploads, and screenshots cannot be inspected yet; ask the user to paste relevant text, or cancel setup, inspect normally, then restart /goal. Otherwise submit the complete contract." };
+			return { block: true, reason: "BLOCKED: goal setup is conversational — while the goal contract is being prepared, ALL other tools (todo, bash, read, write, etc.) are disabled. Do NOT retry this tool. Do the following instead: (1) discuss requirements with the user in plain text, (2) when target, scope, success criteria, verification commands, and needed authorities are all clear, call pi_goal_submit_contract with the complete contract JSON." };
 		}
 		if (state.status === "awaiting_approval") {
 			if (event.toolName === "pi_goal_status") return;
-			return { block: true, reason: "Goal contract awaits one user approval through bare /goal; no work may begin before approval." };
+			return { block: true, reason: "BLOCKED: the goal contract is awaiting user approval — ALL other tools (todo, bash, read, write, etc.) are disabled and retries will keep failing. Do NOT retry this tool. Wait for the user to approve or reject the contract via /goal. After approval, operational tools become available automatically." };
 		}
 		if (!isActiveGoal(state)) return;
 		if (GOAL_TOOL_NAMES.has(event.toolName)) return;
-		if (state.status === "paused" || state.status === "interrupted") return { block: true, reason: `Goal is ${state.status}; resolve it through bare /goal before more work.` };
+		if (state.status === "paused" || (state.status === "interrupted" && !state.interrupt?.pendingAuthorityAmendment)) {
+			return { block: true, reason: `Goal is ${state.status}; resolve it through bare /goal before more work.` };
+		}
 		const hash = inputHash(event.toolName, event.input);
 		state.repeatedToolCalls[hash] = Math.min((state.repeatedToolCalls[hash] ?? 0) + 1, 3);
 		if (state.repeatedToolCalls[hash] >= 3) {
@@ -2185,8 +2633,9 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	pi.on("tool_execution_end", async (event, ctx) => mutex.run(() => { const state = load(ctx); if (!isActiveGoal(state)) return; delete state.activeToolCalls[event.toolCallId]; }));
 
 	pi.on("tool_result", async (event, ctx) => mutex.run(() => {
-		const state = load(ctx); if (!isActiveGoal(state) || GOAL_TOOL_NAMES.has(event.toolName)) return;
+		const state = load(ctx); if (!isActiveGoal(state)) return;
 		delete state.activeToolCalls[event.toolCallId];
+		if (GOAL_TOOL_NAMES.has(event.toolName)) return;
 		const paths = extractPaths(event.input).map((path) => safeEvidencePath(state.cwd, path, state.workspaceRoots));
 		const observedHash = inputHash(event.toolName, event.input);
 		// A successful result proves the identical call completed; only unresolved
@@ -2205,7 +2654,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		const declaresBackground = toolDeclaresBackground(toolInfo.get(event.toolName));
 		if (background.id && ((background.state && ACTIVE_STATES.has(background.state)) || (!background.state && declaresBackground))) state.backgroundWork[background.id] = { id: background.id, label: redactText(background.label ?? event.toolName, 200).text, toolName: event.toolName, startedAt: now(), updatedAt: now() };
 		else if (background.id && background.state && TERMINAL_STATES.has(background.state)) markBackgroundTerminal(ctx, state, background.id, background.state);
-		else if (declaresBackground && !event.isError && !background.id) openInterrupt(state, { class: "BLOCKER", message: `${event.toolName} declares background work but returned no trackable job identity.`, attempts: ["Inspected tool-result metadata"], need: "A tool result with a job ID and terminal completion signal.", recommendation: "Use a trackable synchronous path or fix the background tool contract." });
+		else if (declaresBackground && background.state && !event.isError && !background.id) openInterrupt(state, { class: "BLOCKER", message: `${event.toolName} declares background work but returned no trackable job identity.`, attempts: ["Inspected tool-result metadata"], need: "A tool result with a job ID and terminal completion signal.", recommendation: "Use a trackable synchronous path or fix the background tool contract." });
 		persist(ctx, "tool_observed", `${event.toolName} ${event.isError ? "failed" : "succeeded"}`);
 	}));
 
@@ -2238,16 +2687,57 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	subscribeBackgroundEvents();
 
 	// NOTE: upstream uses "agent_settled" (0.82+); this fork (0.78) uses "agent_end".
-	pi.on("agent_end", async (_event, ctx) => {
-		let setupSettled = false;
+	pi.on("agent_end", async (event, ctx) => {
+		// A turn that ends with a provider/transport error (e.g. a transient 400
+		// from the model API) kills the in-flight turn and leaves an executing
+		// goal stalled forever: nothing re-arms a continuation until user input
+		// or a process restart. Re-arm automatically, bounded, and escalate to a
+		// BLOCKER interrupt when the error turns out to be persistent.
+		const lastAssistant = [...(event.messages || [])].reverse().find((message) => (message as { role?: string }).role === "assistant") as { stopReason?: string; errorMessage?: string } | undefined;
+		const turnErrored = lastAssistant?.stopReason === "error";
+		let skipSettled = false;
 		await mutex.run(() => {
 			const state = load(ctx);
-			if (state?.status !== "setting_up") return;
+			if (!state) return;
+			if (!turnErrored) errorTurnResumeCount = 0;
+			if (turnErrored && (state.status === "running" || state.status === "setting_up") && !state.interrupt && Object.keys(state.backgroundWork).length === 0) {
+				errorTurnResumeCount += 1;
+				const scope = state.status === "running" ? "goal execution" : "goal setup";
+				if (errorTurnResumeCount > MAX_ERROR_TURN_RESUMES) {
+					if (!state.interrupt) {
+						openInterrupt(state, {
+							class: "BLOCKER",
+							message: `The last ${MAX_ERROR_TURN_RESUMES} turns ended with provider errors; automatic resume stopped.`,
+							attempts: [String(lastAssistant?.errorMessage || "unknown provider error").slice(0, 300)],
+							need: "Check the model provider status, then send any message to resume manually.",
+							recommendation: "Retry after the provider recovers; completed progress is preserved.",
+						});
+						persist(ctx, "error_resume_capped", `auto-resume stopped after ${errorTurnResumeCount - 1} consecutive provider-error turns in ${scope}`);
+					}
+					skipSettled = true;
+					return;
+				}
+				const detail = String(lastAssistant?.errorMessage || "unknown provider error").slice(0, 160);
+				if (state.status === "running") {
+					// The turn is over, so nothing can be in flight; stale
+					// activeToolCalls from the aborted turn would block
+					// canResumeAutonomy (same rationale as the finishAudit cleanup).
+					if (Object.keys(state.activeToolCalls).length) state.activeToolCalls = {};
+					queueFreshContinuation(ctx, state, "error_turn_resume", `The previous turn ended with a provider error (${detail}). Resume goal execution from the last progress; do not redo completed work.`);
+				} else {
+					armFreshContinuation(state);
+					persist(ctx, "error_turn_resume", `auto-resume ${scope} ${errorTurnResumeCount}/${MAX_ERROR_TURN_RESUMES} after provider error`);
+					triggerSetupConversation(state, `The previous turn ended with a provider error (${detail}). Continue goal setup from the last progress; do not repeat resolved questions.`);
+				}
+				skipSettled = true;
+				return;
+			}
+			if (state.status !== "setting_up") return;
 			state.setupAwaitingUser = true;
 			persist(ctx, "setup_agent_settled", "same-conversation setup is awaiting the user's next reply");
-			setupSettled = true;
+			skipSettled = true;
 		});
-		if (!setupSettled) await evaluateSettled(ctx);
+		if (!skipSettled) await evaluateSettled(ctx);
 	});
 	pi.on("session_compact", (event, ctx) => {
 		const state = load(ctx); if (!isActiveGoal(state)) return;

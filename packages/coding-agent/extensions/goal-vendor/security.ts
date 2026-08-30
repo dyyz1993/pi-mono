@@ -22,6 +22,10 @@ const SECRET_KEY = /(?:secret|token|password|credential|private.?key|api.?key|au
 const SAFE_LOCAL_COMMANDS = new Set(["pwd", "ls", "cat", "head", "tail", "wc", "stat", "file", "sha256sum", "md5sum", "grep", "rg", "fd", "find", "sort", "uniq", "cut", "tr", "diff", "cmp", "test", "printf", "echo", "date", "uname", "which", "realpath", "readlink", "pi"]);
 const WORKSPACE_MUTATORS = new Set(["mkdir", "touch", "cp", "mv", "chmod", "truncate", "ln"]);
 const ARBITRARY_RUNTIMES = new Set(["node", "nodejs", "python", "python3", "perl", "ruby", "php", "deno", "bun", "npx", "tsx", "ts-node"]);
+// These extensions only ask the user for information or show a notification.
+// They do not expand the Goal authority envelope and must remain usable while
+// a separate tool is waiting for structured authority approval.
+const USER_INTERACTION_TOOLS = new Set(["ask-user-question", "ask-notify"]);
 
 export function toolDeclaresBackground(info: ToolInfo | undefined): boolean {
 	return !!info && BACKGROUND_DESCRIPTION.test(`${info.name} ${info.description ?? ""}`);
@@ -238,6 +242,7 @@ export function classifyToolCall(
 	agentDir?: string,
 ): SafetyDecision {
 	if (toolName.startsWith("pi_goal_")) return { allow: true };
+	if (USER_INTERACTION_TOOLS.has(toolName)) return { allow: true, actionClass: "workspace_read" };
 	if (inputContainsSecretField(input)) return { allow: false, reason: "tool input contains a credential-like field; goal mode blocked it without storing or forwarding the value", actionClass: "external_write", recoverable: true };
 	const paths = extractPaths(input);
 	if (paths.some(isSensitivePath)) return { allow: false, reason: "secret/auth/key paths are outside goal evidence authority", actionClass: "workspace_read", recoverable: true };

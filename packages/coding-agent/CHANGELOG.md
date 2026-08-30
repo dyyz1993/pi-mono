@@ -4,7 +4,7 @@
 
 ### Added
 
-- Vendored `misunders2d/pi-goal` as a new `goal-vendor` extension (`extensions/goal-vendor/`). Contract-based goal mode with machine-executable verification (`file_contains`/`command_exit`/`git_status`/`git_diff` via `spawn(shell:false)` + deny list), an isolated tool-free auditor, typed authority envelope, and a slim `"goal"` channel (12 methods + 4 events) adapted from the legacy `session-supervisor` channel. The old `session-supervisor` extension remains for coexistence; `goal-vendor` is intended to replace it.
+- Vendored `misunders2d/pi-goal` as a new `goal-vendor` extension (`extensions/goal-vendor/`), replacing the legacy `session-supervisor` extension. Contract-based goal mode with machine-executable verification (`file_contains`/`command_exit`/`git_status`/`git_diff` via `spawn(shell:false)` + deny list), an isolated tool-free auditor, typed authority envelope, and a `"goal"` channel (12 methods + 4 events).
 - CLI RPC client: `pi rpc`, `pi channel`, `pi subscribe` subcommands for invoking RPC commands, calling extension channel methods, and streaming session events from the command line without writing Node.js scripts ([#53](https://github.com/dyyz1993/pi-mono/issues/53), implemented via `src/cli/rpc-command.ts`, `rpc-cli.ts`, `channel-cli.ts`, `subscribe-cli.ts`).
 - Added public `RpcClient.rawSend(command)` method to expose the private `send()` channel so the CLI can invoke arbitrary RPC methods without a typed wrapper.
 

@@ -480,6 +480,14 @@ export class ExtensionRunner {
 		}
 		this.runtime.pendingPermissionProviderRegistrations = [];
 
+		// Permission providers live on the SHARED runtime so they survive
+		// ExtensionRunner swaps during same-cwd session switches (factory-scope
+		// registrations are drained once and must not vanish with runner #1).
+		if (!this.runtime.permissionProviders) {
+			this.runtime.permissionProviders = this.permissionProviders;
+		}
+		this.permissionProviders = this.runtime.permissionProviders;
+
 		this.runtime.registerPermissionProvider = (provider) => {
 			this.permissionProviders.set(provider.name, provider);
 		};
@@ -643,9 +651,16 @@ export class ExtensionRunner {
 
 	invalidate(
 		message = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+		options?: { shared?: boolean },
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			// shared:false marks only this runner stale — the shared runtime
+			// (and captured pi references from extensions) stays valid because
+			// a same-cwd successor session will reuse these services.
+			if (options?.shared === false) {
+				return;
+			}
 			this.runtime.invalidate(message);
 		}
 	}
@@ -864,8 +879,11 @@ export class ExtensionRunner {
 				id,
 				method: "askUserQuestion",
 				title: opts?.title ?? "Question",
+				message: opts?.message,
 				questions,
 				toolCallId: opts?.toolCallId,
+				hookMeta: opts?.hookMeta,
+				permissionMeta: opts?.permissionMeta,
 				signal: opts?.signal,
 				timeout: opts?.timeout,
 			};
