@@ -70,7 +70,7 @@ import type {
 	VerificationResult,
 } from "./types.ts";
 import { authorityScopeText, showDetailOverlay, showSetupTranscriptEditor, updateGoalUi } from "./ui.ts";
-import { runAllChecks, runVerificationCheck } from "./verification.ts";
+import { createCallLLMVisionJudge, runAllChecks, runVerificationCheck, type VerificationDeps } from "./verification.ts";
 
 const GOAL_TOOL_NAMES = new Set([
 	"pi_goal_submit_contract",
@@ -325,7 +325,7 @@ Rules:
 - Contract must preserve complete original request and define observable criteria, ordered phases, machine-readable phase commands, mechanical checks, constraints, non-goals, and all foreseeable typed authorities needed for fire-and-forget completion.
 - Every Bash authority must include exact cwd plus a command policy with exact executable, exact argsPrefix, and bounded trailingArgs. Provide every required action class: uv normally needs local_process and network_read; git push needs local_process and external_write. Labels/prose never grant authority.
 - Authority toolName must be the literal operational tool name, exactly "bash" for command authorities. The executable name goes in command.executable, never in toolName.
-- verificationChecks only accept these kinds: file_exists{path}, file_contains{path,pattern}, json_equals{path,pointer,value}, git_status{cwd,clean}, git_diff{cwd,empty,paths}, command_exit{executable,args,cwd}. A command_exit executable must be a single allowlisted program (node, python3, git read-only ops, npm test/check/lint/build); NEVER bash/sh/curl — express file or dependency checks with the native kinds instead, e.g. {kind:"file_exists",path:"index.html"}.
+- verificationChecks only accept these kinds: file_exists{path}, file_contains{path,pattern}, json_equals{path,pointer,value}, git_status{cwd,clean}, git_diff{cwd,empty,paths}, command_exit{executable,args,cwd}, browser_check{url,waitMs,expectTextContains,maxConsoleErrors,expectVisual}. A command_exit executable must be a single allowlisted program (node, python3, git read-only ops, npm test/check/lint/build); NEVER bash/sh/curl — express file or dependency checks with the native kinds instead, e.g. {kind:"file_exists",path:"index.html"}. browser_check loads a file:// page inside the workspace (or localhost http) headlessly, asserts page text and console errors, and captures a screenshot; an optional expectVisual (≤300 chars) additionally has a vision model judge the screenshot against that expectation — use it when rendering/layout quality matters, e.g. {kind:"browser_check",url:"file://<workspace>/index.html",expectTextContains:"Snake",expectVisual:"grid canvas with snake segments, a food dot, and a score HUD are visibly rendered"}.
 - One later user approval covers contract plus declared authority envelope. Make envelope complete enough that routine work, tests, commits, pushes, requested external writes, and other foreseeable actions do not require mid-run approval.
 - Keep authorities scoped to approved goal. Never include credentials or secret values. Human-only credentials, tool-native confirmations, and genuinely irreversible actions cannot be silently bypassed.
 - Until approval, only pi_goal_submit_contract and pi_goal_status may be called.`;
@@ -743,6 +743,11 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 	const store = new GoalStore(pi, agentDir);
 	const mutex = new AsyncMutex();
 	const isolated = new IsolatedModelRunner(agentDir);
+	// Vision judge for browser_check expectVisual — uses the stale-safe LLM
+	// call so background audit-pipeline checks survive ctx invalidation.
+	const verificationDeps: VerificationDeps = {
+		visionJudge: createCallLLMVisionJudge((options) => pi.callLLMSafe(options)),
+	};
 	const toolInfo = new Map<string, ToolInfo>();
 	let currentCtx: ExtensionContext | undefined;
 	let evaluatorInFlight = false;
@@ -1076,7 +1081,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		emitStatusChanged(ctx);
 
 		let checks: VerificationResult[];
-		try { checks = await runAllChecks(snapshot); }
+		try { checks = await runAllChecks(snapshot, undefined, verificationDeps); }
 		catch (error) { checks = [{ checkId: "runner", passed: false, summary: error instanceof Error ? error.message : String(error), durationMs: 0 }]; }
 		await mutex.run(() => {
 			const state = load(ctx);
@@ -1912,7 +1917,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 		Type.Object({ id: Type.String(), kind: Type.Literal("command_exit"), label: Type.String(), executable: Type.String(), args: Type.Array(Type.String()), cwd: Type.Optional(Type.String()), expectedExitCode: Type.Optional(Type.Integer()), timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })) }),
 		Type.Object({ id: Type.String(), kind: Type.Literal("git_status"), label: Type.String(), cwd: Type.Optional(Type.String()), clean: Type.Optional(Type.Boolean()) }),
 		Type.Object({ id: Type.String(), kind: Type.Literal("git_diff"), label: Type.String(), cwd: Type.Optional(Type.String()), empty: Type.Optional(Type.Boolean()), paths: Type.Optional(Type.Array(Type.String())) }),
-		Type.Object({ id: Type.String(), kind: Type.Literal("browser_check"), label: Type.String(), url: Type.String(), waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 15000 })), expectTextContains: Type.Optional(Type.String()), maxConsoleErrors: Type.Optional(Type.Integer({ minimum: 0 })) }),
+		Type.Object({ id: Type.String(), kind: Type.Literal("browser_check"), label: Type.String(), url: Type.String(), waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 15000 })), expectTextContains: Type.Optional(Type.String()), maxConsoleErrors: Type.Optional(Type.Integer({ minimum: 0 })), expectVisual: Type.Optional(Type.String({ description: "Optional visual assertion (≤300 chars): a vision model judges the captured screenshot against this expectation. Requires a vision-capable session model.", maxLength: 300 })) }),
 	]);
 	const ActionClassParameter = Type.Union([Type.Literal("workspace_read"), Type.Literal("workspace_write"), Type.Literal("local_process"), Type.Literal("network_read"), Type.Literal("external_write"), Type.Literal("publication"), Type.Literal("destructive")]);
 	const CommandPolicyParameter = Type.Object({
@@ -2231,7 +2236,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				snapshot = structuredClone(state);
 			});
 			let checks: VerificationResult[];
-			try { checks = await runAllChecks(snapshot!, signal); }
+			try { checks = await runAllChecks(snapshot!, signal, verificationDeps); }
 			catch (error) { checks = [{ checkId: "runner", passed: false, summary: error instanceof Error ? error.message : String(error), durationMs: 0 }]; }
 			return mutex.run(() => {
 				const state = load(ctx);
@@ -2312,7 +2317,7 @@ export default function piGoalExtension(pi: ExtensionAPI): void {
 				sequence = state.continuationSequence;
 			});
 			const active = load(ctx)!;
-			const result = await runVerificationCheck(check!, active.cwd, signal, active.workspaceRoots);
+			const result = await runVerificationCheck(check!, active.cwd, signal, active.workspaceRoots, verificationDeps);
 			let diagnostic: string | undefined;
 			await mutex.run(() => {
 				const state = load(ctx);

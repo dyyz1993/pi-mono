@@ -1885,9 +1885,14 @@ export type RegisterChannelHandler = (name: string) => Channel;
 // callLLM
 // ============================================================================
 
+/** One content block for callLLM messages: plain text or an inline image. */
+export type CallLLMContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
 export interface CallLLMOptions {
 	systemPrompt?: string;
-	messages: Array<{ role: "user" | "assistant"; content: string }>;
+	/** Content may be a plain string or mixed text/image blocks (vision input,
+	 *  requires a model whose provider accepts image content). */
+	messages: Array<{ role: "user" | "assistant"; content: string | CallLLMContentBlock[] }>;
 	tools?: string[];
 	maxTurns?: number;
 	maxTokens?: number;

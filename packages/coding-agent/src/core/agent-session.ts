@@ -188,7 +188,7 @@ function textFromAssistantMessage(message: AssistantMessage): string {
 
 function toCallLlmMessages(messages: CallLLMOptions["messages"], model: Model<any>): Message[] {
 	return messages.map((message) => {
-		const content: TextContent[] = [{ type: "text", text: message.content }];
+		const content = callLlmContentToBlocks(message.content);
 		if (message.role === "user") {
 			return {
 				role: "user",
@@ -198,7 +198,8 @@ function toCallLlmMessages(messages: CallLLMOptions["messages"], model: Model<an
 		}
 		return {
 			role: "assistant",
-			content,
+			// Assistant messages in this API are text-only; image blocks (if any) are dropped.
+			content: content.filter((block): block is TextContent => block.type === "text"),
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
@@ -207,6 +208,19 @@ function toCallLlmMessages(messages: CallLLMOptions["messages"], model: Model<an
 			timestamp: Date.now(),
 		};
 	});
+}
+
+/** Normalize a callLLM message content (string or blocks) into provider content
+ *  blocks; strings become a single text block, image blocks pass through. */
+function callLlmContentToBlocks(
+	content: CallLLMOptions["messages"][number]["content"],
+): (TextContent | ImageContent)[] {
+	if (typeof content === "string") return [{ type: "text", text: content }];
+	return content.map((block) =>
+		block.type === "text"
+			? { type: "text" as const, text: block.text }
+			: { type: "image" as const, data: block.data, mimeType: block.mimeType },
+	);
 }
 
 /** Parsed skill block from a user message */
@@ -3723,7 +3737,15 @@ export class AgentSession {
 		});
 
 		try {
-			await agent.prompt(options.messages[0]?.content ?? "");
+			const first = options.messages[0]?.content;
+			const promptText =
+				typeof first === "string"
+					? first
+					: (first ?? [])
+							.filter((block) => block.type === "text")
+							.map((block) => (block as { text: string }).text)
+							.join("\n");
+			await agent.prompt(promptText);
 		} finally {
 			unsubscribe();
 			options.signal?.removeEventListener("abort", abort);

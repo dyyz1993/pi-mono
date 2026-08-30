@@ -131,6 +131,7 @@ export function validateVerificationCheckDefinition(check: VerificationCheck, wo
 			}
 			if (check.waitMs !== undefined && (check.waitMs < 0 || check.waitMs > 15000)) throw new Error("browser_check waitMs must be within 0..15000");
 			if (check.maxConsoleErrors !== undefined && check.maxConsoleErrors < 0) throw new Error("browser_check maxConsoleErrors must be >= 0");
+			if (check.expectVisual !== undefined && (typeof check.expectVisual !== "string" || check.expectVisual.trim().length < 1 || check.expectVisual.length > 300)) throw new Error("browser_check expectVisual must be a non-empty string of at most 300 characters");
 			return;
 		}
 		case "command_exit": {
@@ -171,6 +172,68 @@ function validateExecutable(check: Extract<VerificationCheck, { kind: "command_e
 
 	const BROWSER_CHECK_TIMEOUT_MS = 60_000;
 
+	// ── Visual assertion (browser_check.expectVisual) ────────────────────
+
+	export interface VisionJudgeVerdict {
+		passed: boolean;
+		reason: string;
+	}
+
+	/** Judges a captured screenshot against a natural-language expectation.
+	 *  Injected as a dependency so tests can mock it; production wires it to
+	 *  the session's model via pi.callLLMSafe (image content blocks). */
+	export type VisionJudge = (imagePath: string, expectation: string, signal?: AbortSignal) => Promise<VisionJudgeVerdict>;
+
+	export interface VerificationDeps {
+		visionJudge?: VisionJudge;
+	}
+
+	const VISION_JUDGE_SYSTEM_PROMPT =
+		"You are a strict visual acceptance judge for a rendered web page screenshot. " +
+		"Compare the screenshot against the stated visual expectation. Judge only what is visibly rendered — " +
+		"do not speculate about code or behavior. Reply with ONE minified JSON object and nothing else: " +
+		'{"passed":boolean,"reason":"short factual justification"}';
+
+	function parseVisionVerdict(response: string): VisionJudgeVerdict | null {
+		const cleaned = response.replace(/```(?:json)?/g, "").trim();
+		const match = /\{[^{}]*"passed"[^{}]*\}/.exec(cleaned);
+		if (!match) return null;
+		try {
+			const parsed = JSON.parse(match[0]) as { passed?: unknown; reason?: unknown };
+			return { passed: parsed.passed === true, reason: String(parsed.reason ?? "").slice(0, 200) };
+		} catch {
+			return null;
+		}
+	}
+
+	export function createCallLLMVisionJudge(
+		callLLM: (options: {
+			systemPrompt?: string;
+			messages: Array<{ role: "user" | "assistant"; content: string | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> }>;
+			maxTokens?: number;
+			signal?: AbortSignal;
+		}) => Promise<string>,
+	): VisionJudge {
+		return async (imagePath, expectation, signal) => {
+			const data = readFileSync(imagePath).toString("base64");
+			const response = await callLLM({
+				systemPrompt: VISION_JUDGE_SYSTEM_PROMPT,
+				messages: [{
+					role: "user",
+					content: [
+						{ type: "image", data, mimeType: "image/png" },
+						{ type: "text", text: `Visual expectation:\n${expectation}\n\nJudge the screenshot against it. Reply only the JSON verdict.` },
+					],
+				}],
+				maxTokens: 300,
+				signal,
+			});
+			const verdict = parseVisionVerdict(response);
+			if (!verdict) return { passed: false, reason: `visual judge returned unparseable output: ${response.slice(0, 120)}` };
+			return verdict;
+		};
+	}
+
 	/**
 	 * Executes a browser_check: drives the xbrowser CLI through an isolated
 	 * session to load the page, settle, and probe the rendered DOM. All argv
@@ -183,6 +246,7 @@ function validateExecutable(check: Extract<VerificationCheck, { kind: "command_e
 		workspaceRoots: string[],
 		started: number,
 		signal?: AbortSignal,
+		deps?: VerificationDeps,
 	): Promise<VerificationResult> {
 		const waitMs = check.waitMs ?? 3000;
 		const maxErrors = check.maxConsoleErrors ?? 0;
@@ -232,9 +296,28 @@ function validateExecutable(check: Extract<VerificationCheck, { kind: "command_e
 			if (!resultLine) return finish(false, "browser_check probe produced no result (page did not render?)");
 			const parsed = JSON.parse(resultLine.trim().slice("result:".length).trim()) as { bodyLen: number; errors: string[]; hasText: boolean };
 			const consoleErrors = parsed.errors || [];
-			const passed = parsed.bodyLen > 0 && parsed.hasText && consoleErrors.length <= maxErrors;
+			let passed = parsed.bodyLen > 0 && parsed.hasText && consoleErrors.length <= maxErrors;
 			const bits = [`bodyLen=${parsed.bodyLen}`, `hasText=${parsed.hasText}`, `consoleErrors=${consoleErrors.length}/${maxErrors}`];
 			if (shotPath) bits.push(`screenshot=${shotPath}`);
+
+			// 6. optional visual assertion — judge the screenshot with a vision model
+			if (check.expectVisual) {
+				if (!shotPath) {
+					return finish(false, `browser check visual assertion failed: no screenshot was captured for judging (expectation: ${redactText(check.expectVisual, 120).text})`);
+				}
+				if (!deps?.visionJudge) {
+					return finish(false, "browser check visual assertion failed: vision judge unavailable in this runtime");
+				}
+				try {
+					const verdict = await deps.visionJudge(shotPath, check.expectVisual, signal);
+					bits.push(`visual=${verdict.passed}`);
+					if (verdict.reason) bits.push(`visualReason=${verdict.reason}`);
+					passed = passed && verdict.passed;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return finish(false, `browser check visual assertion could not run: ${message.slice(0, 240)}`);
+				}
+			}
 			return finish(passed, passed ? `browser check passed (${bits.join(", ")})` : `browser check failed: ${bits.join(", ")}`);
 		} catch (error) {
 			// best-effort session cleanup on any failure path
@@ -244,7 +327,7 @@ function validateExecutable(check: Extract<VerificationCheck, { kind: "command_e
 		}
 	}
 
-	export async function runVerificationCheck(check: VerificationCheck, workspace: string, signal?: AbortSignal, workspaceRoots: string[] = [workspace]): Promise<VerificationResult> {
+	export async function runVerificationCheck(check: VerificationCheck, workspace: string, signal?: AbortSignal, workspaceRoots: string[] = [workspace], deps?: VerificationDeps): Promise<VerificationResult> {
 	const started = Date.now();
 	try {
 		switch (check.kind) {
@@ -290,7 +373,7 @@ function validateExecutable(check: Extract<VerificationCheck, { kind: "command_e
 				};
 			}
 			case "browser_check": {
-				return runBrowserCheck(check, workspace, workspaceRoots, started, signal);
+				return runBrowserCheck(check, workspace, workspaceRoots, started, signal, deps);
 			}
 			case "git_status": {
 				const gitCwd = check.cwd ? workspaceRootForCwd(workspace, workspaceRoots, check.cwd) : workspaceRootForCwd(workspace, workspaceRoots, workspace);
@@ -332,7 +415,7 @@ export function describeVerificationCheck(check: VerificationCheck, workspace: s
 		case "git_status":
 			return `workspace=${JSON.stringify(check.cwd ? safeEvidencePath(workspace, check.cwd, workspaceRoots) : safeEvidencePath(workspace, ".", workspaceRoots))}`;
 		case "browser_check":
-			return `url=${JSON.stringify(check.url)} waitMs=${check.waitMs ?? 0} expect=${JSON.stringify(redactText(check.expectTextContains ?? "", 200).text)}`;
+			return `url=${JSON.stringify(check.url)} waitMs=${check.waitMs ?? 0} expect=${JSON.stringify(redactText(check.expectTextContains ?? "", 200).text)}${check.expectVisual ? ` expectVisual=${JSON.stringify(redactText(check.expectVisual, 120).text)}` : ""}`;
 		case "git_diff":
 			return `workspace=${JSON.stringify(check.cwd ? safeEvidencePath(workspace, check.cwd, workspaceRoots) : safeEvidencePath(workspace, ".", workspaceRoots))} paths=${redactText(JSON.stringify((check.paths ?? []).map((path) => safeEvidencePath(check.cwd ?? workspace, path, check.cwd ? [check.cwd] : workspaceRoots))), 500).text}`;
 	}
@@ -343,8 +426,8 @@ function labelApprovedCheckResult(check: VerificationCheck, result: Verification
 	return { ...result, summary: `setup-approved check ${check.id} ${label} (${describeVerificationCheck(check, workspace, workspaceRoots)}): ${result.summary}` };
 }
 
-export async function runAllChecks(state: GoalState, signal?: AbortSignal): Promise<VerificationResult[]> {
+export async function runAllChecks(state: GoalState, signal?: AbortSignal, deps?: VerificationDeps): Promise<VerificationResult[]> {
 	const results: VerificationResult[] = [];
-	for (const check of state.verificationChecks) results.push(labelApprovedCheckResult(check, await runVerificationCheck(check, state.cwd, signal, state.workspaceRoots), state.cwd, state.workspaceRoots));
+	for (const check of state.verificationChecks) results.push(labelApprovedCheckResult(check, await runVerificationCheck(check, state.cwd, signal, state.workspaceRoots, deps), state.cwd, state.workspaceRoots));
 	return results;
 }

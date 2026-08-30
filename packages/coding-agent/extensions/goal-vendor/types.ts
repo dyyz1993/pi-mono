@@ -77,6 +77,10 @@ export type VerificationCheck =
 			waitMs?: number;
 			expectTextContains?: string;
 			maxConsoleErrors?: number;
+			/** Optional visual assertion: after the mechanical probe, the captured
+			 *  screenshot is judged by a vision model against this expectation
+			 *  (1-300 chars). Requires the session model to accept image input. */
+			expectVisual?: string;
 	  };
 
 export type ActionClass =

@@ -144,6 +144,7 @@ function normalizeCheck(value: unknown, index: number): VerificationCheck | unde
 			waitMs: typeof item.waitMs === "number" ? item.waitMs : undefined,
 			expectTextContains: typeof item.expectTextContains === "string" ? item.expectTextContains : undefined,
 			maxConsoleErrors: typeof item.maxConsoleErrors === "number" ? item.maxConsoleErrors : undefined,
+			expectVisual: typeof item.expectVisual === "string" && item.expectVisual.trim().length >= 1 ? item.expectVisual : undefined,
 		};
 	}
 	if (kind === "git_diff") return { id, label, kind: "git_diff", cwd: typeof item.cwd === "string" ? item.cwd : undefined, empty: item.empty !== false, paths: Array.isArray(item.paths) ? item.paths.filter((path): path is string => typeof path === "string") : undefined };
