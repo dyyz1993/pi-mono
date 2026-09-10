@@ -812,10 +812,11 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent,
 	);
 	time("prepareInitialMessage");
-	if (appMode !== "rpc") {
-		const { initTheme } = await import("./modes/interactive/theme/theme.ts");
-		initTheme(settingsManager.getTheme(), appMode === "interactive");
-	}
+	// RPC mode hands the global theme proxy to the extension UI context
+	// (rpc-mode.ts createExtensionUIContext), so it must be initialized in every
+	// mode; the file watcher stays interactive-only.
+	const { initTheme } = await import("./modes/interactive/theme/theme.ts");
+	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 
 	// Show deprecation warnings in interactive mode
