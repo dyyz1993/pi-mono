@@ -313,6 +313,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "new_session": {
 				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 				const result = await runtimeHost.newSession(options);
+				// 同 switch_session：新 session 的事件订阅必须重建
+				await rebindSession();
 				return success(id, "new_session", result);
 			}
 
@@ -484,6 +486,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const result = await runtimeHost.switchSession(command.sessionPath);
 				if (!result.cancelled) {
 					session = runtimeHost.session;
+					// 重新订阅新 session 的事件——否则回合事件（流式增量、
+					// agent_start/end）永远到不了 RPC stdout，前端看不到实时输出
+					await rebindSession();
 				}
 				return success(id, "switch_session", result);
 			}
