@@ -443,6 +443,8 @@ export interface OpenAIResponsesCompat {
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
 	supportsLongCacheRetention?: boolean;
+	/** Whether the provider supports `reasoning_effort`. Default: true. */
+	supportsReasoningEffort?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */

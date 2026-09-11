@@ -88,7 +88,7 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	// Cloudflare AI Gateway
 	{
 		provider: "cloudflare-ai-gateway",
-		model: "workers-ai/@cf/moonshotai/kimi-k2.6",
+		model: "gpt-5.1",
 		label: "cloudflare-gateway-kimi-k2.6",
 	},
 	{
@@ -110,7 +110,7 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	// Together AI
 	{ provider: "together", model: "moonshotai/Kimi-K2.6", label: "together-kimi-k2.6" },
 	// Kimi For Coding
-	{ provider: "kimi-coding", model: "kimi-k2-thinking", label: "kimi-coding-k2-thinking" },
+	{ provider: "kimi-coding", model: "kimi-for-coding", label: "kimi-coding-k2-thinking" },
 	// Mistral
 	{ provider: "mistral", model: "devstral-medium-latest", label: "mistral-devstral-medium" },
 	// MiniMax
