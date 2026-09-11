@@ -74,6 +74,44 @@ describe("SessionManager append and tree traversal", () => {
 			expect(entries.at(-1)?.parentId).toBe(systemEntry?.id);
 		});
 
+		it("appendModelChange records previous model and source", () => {
+			const session = SessionManager.inMemory();
+
+			session.appendMessage(userMsg("hello"));
+			const switchId = session.appendModelChange(
+				"anthropic",
+				"claude-opus-4-6",
+				{ provider: "openai", modelId: "gpt-4" },
+				"cycle",
+			);
+			const initId = session.appendModelChange("google", "gemini-2.5-pro", undefined, "init");
+
+			const entries = session.getEntries();
+			const switchEntry = entries.find((e) => e.id === switchId);
+			const initEntry = entries.find((e) => e.id === initId);
+			if (switchEntry?.type === "model_change") {
+				expect(switchEntry.previousProvider).toBe("openai");
+				expect(switchEntry.previousModelId).toBe("gpt-4");
+				expect(switchEntry.source).toBe("cycle");
+			} else {
+				expect.unreachable("expected a model_change entry");
+			}
+			if (initEntry?.type === "model_change") {
+				expect(initEntry.previousProvider).toBeUndefined();
+				expect(initEntry.source).toBe("init");
+			} else {
+				expect.unreachable("expected a model_change entry");
+			}
+			const systemEvents = entries.filter((e) => e.type === "system_event") as SystemEventEntry[];
+			expect(systemEvents[0]?.data).toMatchObject({
+				provider: "anthropic",
+				modelId: "claude-opus-4-6",
+				previousProvider: "openai",
+				previousModelId: "gpt-4",
+				source: "cycle",
+			});
+		});
+
 		it("appendSystemEvent integrates into tree", () => {
 			const session = SessionManager.inMemory();
 

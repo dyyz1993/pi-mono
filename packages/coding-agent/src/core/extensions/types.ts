@@ -153,6 +153,20 @@ export type AskUserQuestionOptions = ExtensionUIDialogOptions & {
 	message?: string;
 };
 
+/** Semantic kind of a Goal human-authorization request. */
+export type GoalApprovalKind = "contract" | "authority_amendment" | "pending_risk";
+
+/** Metadata carried by the unified UI/Message Bridge approval request for Goal. */
+export interface GoalApprovalMeta {
+	type: "goal_approval";
+	kind: GoalApprovalKind;
+	goalId: string;
+	generation: number;
+	objective?: string;
+	rationale?: string;
+	authorities?: Array<Record<string, unknown>>;
+}
+
 export type ExtensionUIPermissionMeta =
 	| {
 			type: "path_boundary";
@@ -171,7 +185,8 @@ export type ExtensionUIPermissionMeta =
 			rememberOptions?: PermissionRequest["rememberOptions"];
 			toolCallId?: string;
 			metadata?: Record<string, unknown>;
-	  };
+	  }
+	| GoalApprovalMeta;
 
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
@@ -1870,9 +1885,14 @@ export type RegisterChannelHandler = (name: string) => Channel;
 // callLLM
 // ============================================================================
 
+/** One content block for callLLM messages: plain text or an inline image. */
+export type CallLLMContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
 export interface CallLLMOptions {
 	systemPrompt?: string;
-	messages: Array<{ role: "user" | "assistant"; content: string }>;
+	/** Content may be a plain string or mixed text/image blocks (vision input,
+	 *  requires a model whose provider accepts image content). */
+	messages: Array<{ role: "user" | "assistant"; content: string | CallLLMContentBlock[] }>;
 	tools?: string[];
 	maxTurns?: number;
 	maxTokens?: number;
@@ -1898,10 +1918,23 @@ export interface ExtensionRuntimeState {
 		reject: (error: Error) => void;
 	}>;
 	resolvedChannels: Map<string, Channel>;
+	/**
+	 * Permission providers resolved at bind time. Lives on the shared runtime
+	 * so factory-scope registrations survive ExtensionRunner swaps during
+	 * same-cwd session switches (bindCore aliases the runner's map to this).
+	 */
+	permissionProviders?: Map<string, PermissionProvider>;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
 	invalidate: (message?: string) => void;
+	/**
+	 * Clears the stale flag. Used by same-cwd session switches, where the
+	 * successor session reuses the same services (and this runtime), so
+	 * captured pi references must become valid again. Full teardown keeps
+	 * the stale flag permanent.
+	 */
+	resetStale: () => void;
 	/**
 	 * Register or unregister a provider.
 	 *
@@ -2009,6 +2042,10 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	/** Channel names registered by this extension via pi.registerChannel(). */
+	channelNames: Set<string>;
+	/** Permission provider names registered by this extension via pi.permissions.registerProvider(). */
+	permissionProviderNames: Set<string>;
 }
 
 /** Result of loading extensions. */

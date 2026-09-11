@@ -1,6 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getModel } from "../src/models.ts";
 import { streamSimple } from "../src/stream.ts";
+import type { Model } from "../src/types.ts";
+
+// The workers-ai segment was retired from the upstream Cloudflare Gateway
+// catalog, so it no longer resolves via getModel(). The inline definition
+// keeps the /compat and session-affinity provider behaviors covered.
+const workersAiKimiModel = {
+	id: "gpt-5.1",
+	name: "Kimi K2.6",
+	api: "openai-completions",
+	provider: "cloudflare-ai-gateway",
+	baseUrl: "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/compat",
+	compat: { sendSessionAffinityHeaders: true },
+	reasoning: true,
+	input: ["text", "image"],
+	cost: { input: 0.95, output: 4, cacheRead: 0.16, cacheWrite: 0 },
+	contextWindow: 256000,
+	maxTokens: 256000,
+} satisfies Model<"openai-completions">;
 
 // Empty tools arrays must NOT be serialized as `tools: []` — some OpenAI-compatible
 // backends (e.g. DashScope / Aliyun Qwen via compatible-mode) reject the request with
@@ -130,7 +148,7 @@ describe("openai-completions empty tools handling", () => {
 	it("uses conservative OpenAI-compatible fields for Cloudflare AI Gateway /compat models", async () => {
 		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+		const model = workersAiKimiModel;
 
 		await streamSimple(
 			model,
@@ -184,7 +202,7 @@ describe("openai-completions empty tools handling", () => {
 	it("sends session affinity headers for Workers AI through Cloudflare AI Gateway", async () => {
 		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const workersModel = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+		const workersModel = workersAiKimiModel;
 
 		await streamSimple(
 			workersModel,

@@ -6,6 +6,14 @@ pi-coding-agent 的扩展系统支持 `ui` 事件拦截机制。Message Bridge �
 
 旧的 `confirm` / `select` / `input` / `editor` 不在 bridge 层做兼容转换。需要远程裁决的问题应在上游统一构造成 `askUserQuestion`。
 
+权限审批、钩子审批和 Goal 人工授权共用这一条交互传输链路，但保留不同的语义元数据：
+
+- `permissionMeta.type = "permission_runtime"`：普通工具权限或钩子触发的权限裁决。
+- `permissionMeta.type = "path_boundary"`：项目边界之外的路径访问裁决。
+- `permissionMeta.type = "goal_approval"`：Goal 合同、权限范围变更或一次性风险动作的人工授权；通过 `kind` 区分 `contract`、`authority_amendment`、`pending_risk`。
+
+Goal 审批不是普通的单次工具权限，但它属于同一类“需要人确认的交互请求”，因此必须走同一个 `askUserQuestion`、请求 ID 和 `respondUI` 生命周期。这样本地 UI 与远程 Message Bridge 的第一个有效回复会竞争同一个请求，完成后所有客户端都能收到关闭事件。
+
 本插件提供两类能力：
 
 1. `askUserQuestion`：推送结构化问题，等待远程结构化回复，并通过 `ctx.respondUI()` 注入结果。
@@ -41,8 +49,16 @@ API 端点：
     "id": "ui-request-id",
     "method": "askUserQuestion",
     "title": "Review deployment plan",
+    "message": "请确认这次操作范围",
     "timeout": 60000,
     "toolCallId": "tool-call-id",
+    "permissionMeta": {
+      "type": "goal_approval",
+      "kind": "contract",
+      "goalId": "goal-123",
+      "generation": 2,
+      "objective": "验证部署计划"
+    },
     "questions": [
       {
         "id": "scope",

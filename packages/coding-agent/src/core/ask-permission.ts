@@ -51,13 +51,23 @@ export async function askPermission(options: AskPermissionOptions): Promise<Perm
 		return { type: "deny", reason: `Permission request "${options.request.title}" cannot be shown without UI.` };
 	}
 
-	const selected = await options.uiContext.select(
-		options.request.message,
-		choices.map((choice) => choice.label),
+	const response = await options.uiContext.askUserQuestion(
+		[
+			{
+				id: "permission",
+				header: "Permission",
+				question: options.request.message,
+				options: choices.map((choice) => ({ label: choice.label })),
+			},
+		],
 		{
+			title: options.request.title,
+			message: options.request.message,
+			toolCallId: options.request.toolCallId,
 			permissionMeta: buildPermissionMeta(options.request),
 		},
 	);
+	const selected = response?.answers.permission?.selected[0];
 	const choice = choices.find((entry) => entry.label === selected || entry.label.startsWith(`${selected}:`));
 	if (!choice) {
 		return { type: "deny", reason: `User denied permission request "${options.request.title}".` };

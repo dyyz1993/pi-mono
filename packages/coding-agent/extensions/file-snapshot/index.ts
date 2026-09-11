@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, SessionTreeEvent, TurnEndEvent, GCResult } from "@dyyz1993/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionTreeEvent, GCResult } from "@dyyz1993/pi-coding-agent";
 import { createTypedChannel } from "@dyyz1993/pi-coding-agent";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -218,14 +218,6 @@ export default function fileSnapshot(pi: ExtensionAPI) {
     const mgr = ctx.fileSnapshotManager;
     if (!mgr) return;
     await mgr.initializeAsync(ctx.cwd);
-  });
-
-  pi.on("turn_end", async (event: TurnEndEvent, _ctx: ExtensionContext) => {
-    const mgr = _ctx.fileSnapshotManager;
-    if (!mgr) return;
-    await mgr.onTurnEndAsync(_ctx.cwd, event.turnIndex, (type, data) => {
-      return pi.appendEntry(type, data, { display: false }) ?? "";
-    });
   });
 
   (pi as unknown as DynamicEventEmitter).on("session_tree", async (event: unknown, _ctx: ExtensionContext) => {

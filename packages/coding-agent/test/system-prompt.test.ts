@@ -275,7 +275,7 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("ordinary subtask/subagent/child task");
 			expect(prompt).toContain("子任务/子代理");
 			expect(prompt).toContain(
-				"Use `session_delegate` only for explicit asynchronous delegation/dispatch/background work",
+				"Use `session_delegate` for asynchronous delegation/dispatch/background work where the parent should not wait",
 			);
 			expect(prompt).toContain('Default agent is "build"');
 			expect(prompt).not.toContain("private-planner");

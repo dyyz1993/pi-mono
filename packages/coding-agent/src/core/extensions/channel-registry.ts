@@ -16,7 +16,6 @@ import type { LearningChannelContract } from "../../../extensions/learning/contr
 import type { LspChannelContract } from "../../../extensions/lsp/contract.ts";
 import type { RemoteSshChannelContract } from "../../../extensions/remote-ssh/contract.ts";
 import type { RulesChannelContract } from "../../../extensions/rules-engine/types.ts";
-import type { SupervisorChannelContract } from "../../../extensions/session-supervisor/types.ts";
 import type { SubagentV2ChannelContract } from "../../../extensions/subagent-v2/contract.ts";
 import type { TodoChannelContract } from "../../../extensions/todo-ext/contract.ts";
 
@@ -28,7 +27,6 @@ export interface ChannelTypeRegistry {
 	subagent: SubagentV2ChannelContract;
 	coordinator: CoordinatorChannelContract;
 	"rules-engine": RulesChannelContract;
-	supervisor: SupervisorChannelContract;
 	goal: GoalChannelContract;
 	"remote-ssh": RemoteSshChannelContract;
 }

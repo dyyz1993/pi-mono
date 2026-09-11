@@ -5,6 +5,51 @@ import { convertMessages } from "../src/providers/openai-completions.ts";
 import { stream, streamSimple } from "../src/stream.ts";
 import type { AssistantMessage, Model, Tool, ToolResultMessage } from "../src/types.ts";
 
+// The upstream z.ai / groq catalogs retired these models, so they no longer
+// resolve via getModel(). The inline definitions keep the provider-behavior
+// tests independent of the live generated catalog.
+const groqQwen3Model = {
+	id: "qwen/qwen3-32b",
+	name: "Qwen3-32B",
+	api: "openai-completions",
+	provider: "groq",
+	baseUrl: "https://api.groq.com/openai/v1",
+	reasoning: true,
+	thinkingLevelMap: { minimal: null, low: null, medium: null, high: "default" },
+	input: ["text"],
+	cost: { input: 0.29, output: 0.59, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 131072,
+	maxTokens: 40960,
+} satisfies Model<"openai-completions">;
+
+const zaiGlm51Model = {
+	id: "glm-5.1",
+	name: "GLM-5.1",
+	api: "openai-completions",
+	provider: "zai",
+	baseUrl: "https://api.z.ai/api/coding/paas/v4",
+	compat: { supportsDeveloperRole: false, thinkingFormat: "zai", zaiToolStream: true },
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200000,
+	maxTokens: 131072,
+} satisfies Model<"openai-completions">;
+
+const zaiGlm45AirModel = {
+	id: "glm-4.5-air",
+	name: "GLM-4.5-Air",
+	api: "openai-completions",
+	provider: "zai",
+	baseUrl: "https://api.z.ai/api/coding/paas/v4",
+	compat: { supportsDeveloperRole: false, thinkingFormat: "zai" },
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 131072,
+	maxTokens: 98304,
+} satisfies Model<"openai-completions">;
+
 const mockState = vi.hoisted(() => ({
 	lastParams: undefined as unknown,
 	chunks: undefined as
@@ -157,7 +202,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("maps groq qwen3 reasoning levels to default reasoning_effort", async () => {
-		const model = getModel("groq", "qwen/qwen3-32b")!;
+		const model = groqQwen3Model;
 		let payload: unknown;
 
 		await streamSimple(
@@ -213,7 +258,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("enables tool_stream for supported z.ai models with tools", async () => {
-		const model = getModel("zai", "glm-5.1")!;
+		const model = zaiGlm51Model;
 		const tools: Tool[] = [
 			{
 				name: "ping",
@@ -250,15 +295,13 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("stores z.ai tool_stream support in model compat metadata", () => {
-		expect(getModel("zai", "glm-5.1")?.compat?.zaiToolStream).toBe(true);
-		expect(getModel("zai", "glm-4.7")?.compat?.zaiToolStream).toBe(true);
 		expect(getModel("zai", "glm-4.7")?.compat?.zaiToolStream).toBe(true);
 		expect(getModel("zai", "glm-5-turbo")?.compat?.zaiToolStream).toBe(true);
-		expect(getModel("zai", "glm-4.5-air")?.compat?.zaiToolStream).toBeUndefined();
+		expect(getModel("zai", "glm-5.3-flash")?.compat?.zaiToolStream).toBe(true);
 	});
 
 	it("omits tool_stream for unsupported z.ai models", async () => {
-		const model = getModel("zai", "glm-4.5-air")!;
+		const model = zaiGlm45AirModel;
 		const tools: Tool[] = [
 			{
 				name: "ping",
@@ -295,7 +338,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("respects explicit z.ai tool_stream compat override", async () => {
-		const baseModel = getModel("zai", "glm-4.5-air")!;
+		const baseModel = zaiGlm45AirModel;
 		const model = {
 			...baseModel,
 			compat: {
@@ -339,7 +382,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("omits tool_stream when no tools are provided", async () => {
-		const model = getModel("zai", "glm-5.1")!;
+		const model = zaiGlm51Model;
 		let payload: unknown;
 
 		await streamSimple(
@@ -381,7 +424,7 @@ describe("openai-completions tool_choice", () => {
 			},
 		];
 
-		const model = getModel("zai", "glm-5.1")!;
+		const model = zaiGlm51Model;
 		const response = await streamSimple(
 			model,
 			{
@@ -1121,7 +1164,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends max_tokens for OpenCode completions models", async () => {
-		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "grok-build-0.1")!] as const;
+		const cases = [getModel("opencode-go", "glm-5.1")!, getModel("opencode", "glm-5.1")!] as const;
 
 		for (const model of cases) {
 			let payload: unknown;

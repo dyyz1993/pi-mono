@@ -2,7 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { constants } from "node:fs";
 import { access as fsAccess, mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import ignore from "ignore";
 import type {
 	BashOperations,
 	EditOperations,
@@ -293,48 +294,78 @@ export function createRemoteSshOperations(config: RemoteSshConfig, runner = crea
 		readdir: async (path) => [...(await ls.readdir(path))],
 		readdirWithTypes,
 		async walk(path, options) {
-			const maxDepth = Math.max(1, options?.maxDepth ?? 16);
-			const command =
-				`find ${shellQuote(toRemotePath(path))} -mindepth 1 -maxdepth ${maxDepth} -exec sh -c ` +
-				shellQuote(
-					`for p do if [ -L "$p" ]; then type=symlink; elif [ -d "$p" ]; then type=directory; elif [ -f "$p" ]; then type=file; else continue; fi; size=0; if [ -f "$p" ]; then size=$(wc -c < "$p" | tr -d ' '); fi; printf "%s\\t%s\\t%s\\n" "$type" "$size" "$p"; done`,
-				) +
-				" sh {} + | sort -k3";
-			const result = await runner.run(command);
+			options?.signal?.throwIfAborted();
+			const remoteRoot = toRemotePath(path);
+			const requestedDepth = options?.maxDepth ?? 16;
+			const maxDepth = Number.isFinite(requestedDepth) ? Math.max(1, requestedDepth) : 64;
+			const script = [
+				"root=$1;",
+				"emit_path() {",
+					"p=$1;",
+					"if [ -L \"$p\" ]; then type=symlink; elif [ -d \"$p\" ]; then type=directory; elif [ -f \"$p\" ]; then type=file; else return; fi;",
+					"size=0; if [ -f \"$p\" ]; then size=$(wc -c < \"$p\" | tr -d '[:space:]'); fi;",
+					"printf '%s\\0%s\\0%s\\0' \"$type\" \"$size\" \"$p\";",
+				"};",
+				"if git -C \"$root\" rev-parse --is-inside-work-tree >/dev/null 2>&1; then",
+					"while IFS= read -r -d '' rel; do emit_path \"$root/$rel\"; done < <(git -C \"$root\" ls-files -co --exclude-standard -z);",
+				"else",
+					`while IFS= read -r -d '' p; do emit_path "$p"; done < <(find "$root" -mindepth 1 -maxdepth ${maxDepth} \\( -name .git -o -name node_modules -o -name .pi -o -name dist -o -name build \\) -prune -o -print0);`,
+				"fi",
+			].join(" ");
+			const command = `${shellQuote(config.shell)} -c ${shellQuote(script)} -- ${shellQuote(remoteRoot)}`;
+			const result = await runner.run(command, { signal: options?.signal });
+			options?.signal?.throwIfAborted();
 			assertOk(result, `Failed to walk remote path: ${path}`);
-			const ignored = options?.ignore ?? [];
+			const ignored = ignore().add(options?.ignore ?? []);
 			const maxFiles = options?.maxFiles ?? Infinity;
 			const maxSize = options?.maxSize ?? Infinity;
 			const entries: FileSystemWalkEntry[] = [];
 			let fileCount = 0;
 			let totalSize = 0;
 			let limitReached = false;
-			for (const line of result.stdout.toString("utf-8").split("\n").filter(Boolean)) {
-				const [type, sizeText, remotePath] = line.split("\t");
-				if (!remotePath || ignored.some((pattern) => remotePath.includes(pattern))) continue;
+			const fields = result.stdout.toString("utf-8").split("\0");
+			for (let index = 0; index + 2 < fields.length; index += 3) {
+				options?.signal?.throwIfAborted();
+				const type = fields[index];
+				const sizeText = fields[index + 1];
+				const remotePath = fields[index + 2];
+				if (!remotePath) continue;
+				const localPath = toLocalPath(remotePath);
+				const relPath = relative(resolve(path), resolve(localPath));
+				const isDirectory = type === "directory";
+				if (!relPath || relPath.startsWith("..") || ignored.ignores(isDirectory ? `${relPath}/` : relPath)) continue;
 				const size = Number(sizeText);
 				const entryType = type === "directory" || type === "symlink" ? type : "file";
 				const entrySize = Number.isFinite(size) ? size : 0;
 				if (entryType === "file") {
-					fileCount += 1;
-					totalSize += entrySize;
-					if (fileCount > maxFiles || totalSize > maxSize) {
+					if (fileCount >= maxFiles || totalSize + entrySize > maxSize) {
 						limitReached = true;
 						break;
 					}
+					fileCount += 1;
+					totalSize += entrySize;
 				}
-				entries.push({ path: toLocalPath(remotePath), size: entrySize, type: entryType });
+				entries.push({ path: localPath, size: entrySize, type: entryType });
 			}
 			return { entries, limitReached };
 		},
-		async readBatch(paths) {
-			return Promise.all(
-				paths.map(async (path) => {
-					const result = await runner.run(`cat -- ${shellQuote(toRemotePath(path))}`);
-					if (result.exitCode === 0) return { path, content: result.stdout };
-					return { path, content: null, error: formatRemoteError(result) };
-				}),
-			);
+		async readBatch(paths, options) {
+			if (paths.length === 0) return [];
+			options?.signal?.throwIfAborted();
+			const remotePaths = paths.map(toRemotePath);
+			const stdin = Buffer.from(`${remotePaths.join("\0")}\0`);
+			const script = [
+				"while IFS= read -r -d '' p; do",
+					"LC_ALL=C printf '%016x' \"${#p}\"; printf '%s' \"$p\";",
+					"if [ -f \"$p\" ]; then size=$(wc -c < \"$p\" | tr -d '[:space:]'); LC_ALL=C printf '%016x' \"$size\"; cat -- \"$p\";",
+					"else printf 'ffffffffffffffff'; fi;",
+				"done",
+			].join(" ");
+			const command = `${shellQuote(config.shell)} -c ${shellQuote(script)}`;
+			const result = await runner.run(command, { stdin, signal: options?.signal });
+			options?.signal?.throwIfAborted();
+			assertOk(result, "Failed to read remote files");
+			return parseReadBatchFrames(result.stdout, paths, remotePaths);
 		},
 	};
 	const find: FindOperations = {
@@ -400,6 +431,43 @@ function statFromType(type: string, size: number, mtimeMs: number): FileSystemSt
 		isDirectory: () => type === "directory",
 		isSymbolicLink: () => type === "symlink",
 	};
+}
+
+function parseReadBatchFrames(
+	buffer: Buffer,
+	localPaths: readonly string[],
+	remotePaths: readonly string[],
+): Array<{ path: string; content: Buffer | null; error?: string }> {
+	const localByRemote = new Map(remotePaths.map((path, index) => [path, localPaths[index]!]));
+	const parsed = new Map<string, { content: Buffer | null; error?: string }>();
+	let offset = 0;
+	while (offset < buffer.length) {
+		if (offset + 16 > buffer.length) throw new Error("Invalid remote readBatch path header");
+		const pathLength = Number.parseInt(buffer.subarray(offset, offset + 16).toString("ascii"), 16);
+		offset += 16;
+		if (!Number.isFinite(pathLength) || offset + pathLength + 16 > buffer.length) {
+			throw new Error("Invalid remote readBatch path frame");
+		}
+		const remotePath = buffer.subarray(offset, offset + pathLength).toString("utf-8");
+		offset += pathLength;
+		const sizeHeader = buffer.subarray(offset, offset + 16).toString("ascii");
+		offset += 16;
+		if (sizeHeader === "ffffffffffffffff") {
+			parsed.set(remotePath, { content: null, error: `Remote file not found: ${remotePath}` });
+			continue;
+		}
+		const contentLength = Number.parseInt(sizeHeader, 16);
+		if (!Number.isFinite(contentLength) || offset + contentLength > buffer.length) {
+			throw new Error("Invalid remote readBatch content frame");
+		}
+		parsed.set(remotePath, { content: buffer.subarray(offset, offset + contentLength) });
+		offset += contentLength;
+	}
+
+	return remotePaths.map((remotePath, index) => ({
+		path: localByRemote.get(remotePath) ?? localPaths[index]!,
+		...(parsed.get(remotePath) ?? { content: null, error: `Remote file missing from batch response: ${remotePath}` }),
+	}));
 }
 
 function grepLineToRgJson(line: string, toLocalPath: (path: string) => string): string | undefined {

@@ -91,8 +91,11 @@ export function createRpcExtensionUIContext(options: {
 				{
 					method: "askUserQuestion",
 					title: opts?.title ?? "Question",
+					message: opts?.message,
 					questions,
 					toolCallId: opts?.toolCallId,
+					hookMeta: opts?.hookMeta,
+					permissionMeta: opts?.permissionMeta,
 				},
 				(response) =>
 					"action" in response && response.action === "responded" && "answers" in response

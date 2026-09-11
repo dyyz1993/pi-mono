@@ -832,6 +832,43 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// Curated z.ai additions: models z.ai still serves but models.dev no
+		// longer lists in zai-coding-plan. Production model tiers depend on
+		// them (e.g. fast = glm-4.5-air), so keep them registered even when
+		// the upstream catalog drops them. Skipped if upstream re-adds them.
+		const zaiCuratedModels = [
+			{
+				id: "glm-4.5-air",
+				name: "GLM-4.5-Air",
+				reasoning: true,
+				input: ["text"] as ("text" | "image")[],
+				contextWindow: 131072,
+				maxTokens: 98304,
+			},
+		];
+		for (const { provider, baseUrl } of zaiCodingPlanVariants) {
+			const existing = new Set(models.filter((m) => m.provider === provider).map((m) => m.id));
+			for (const curated of zaiCuratedModels) {
+				if (existing.has(curated.id)) continue;
+				models.push({
+					id: curated.id,
+					name: curated.name,
+					api: "openai-completions",
+					provider,
+					baseUrl,
+					reasoning: curated.reasoning,
+					input: curated.input,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					compat: {
+						supportsDeveloperRole: false,
+						thinkingFormat: "zai",
+					},
+					contextWindow: curated.contextWindow,
+					maxTokens: curated.maxTokens,
+				});
+			}
+		}
+
 		// Process Mistral models
 		if (data.mistral?.models) {
 			for (const [modelId, model] of Object.entries(data.mistral.models)) {

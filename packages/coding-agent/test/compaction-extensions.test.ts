@@ -94,6 +94,8 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			channelNames: new Set(),
+			permissionProviderNames: new Set(),
 		};
 	}
 
@@ -295,6 +297,8 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			channelNames: new Set(),
+			permissionProviderNames: new Set(),
 		};
 
 		createSession([throwingExtension]);
@@ -347,6 +351,8 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			channelNames: new Set(),
+			permissionProviderNames: new Set(),
 		};
 
 		const extension2: Extension = {
@@ -378,6 +384,8 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
+			channelNames: new Set(),
+			permissionProviderNames: new Set(),
 		};
 
 		createSession([extension1, extension2]);

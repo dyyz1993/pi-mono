@@ -42,7 +42,11 @@ function makeUi(choice: string | undefined): ExtensionUIContext {
 		select: vi.fn(async () => choice),
 		confirm: vi.fn(),
 		input: vi.fn(),
-		askUserQuestion: vi.fn(),
+		askUserQuestion: vi.fn(async (questions: Array<{ id: string }>) =>
+			choice === undefined
+				? undefined
+				: { action: "responded" as const, answers: { [questions[0]!.id]: { selected: [choice] } } },
+		),
 		notify: vi.fn(),
 		onTerminalInput: vi.fn(() => () => undefined),
 		setStatus: vi.fn(),
@@ -95,11 +99,11 @@ describe("askPermission", () => {
 			type: "allow",
 			reason: 'User selected "Allow once".',
 		});
-		expect(ui.select).toHaveBeenCalledWith("Run flagged command?", expect.any(Array), expect.any(Object));
-		expect(ui.select).toHaveBeenCalledWith(
-			"Run flagged command?",
+		expect(ui.askUserQuestion).toHaveBeenCalledWith(
 			expect.any(Array),
 			expect.objectContaining({
+				title: "Confirm command",
+				message: "Run flagged command?",
 				permissionMeta: expect.objectContaining({
 					type: "permission_runtime",
 					actions: ["allow_once", "always_allow_project", "deny_once", "always_deny_project"],
@@ -142,7 +146,7 @@ describe("askPermission", () => {
 			reason: "Allowed by stored permission rule perm-stored",
 		});
 		expect(emit).not.toHaveBeenCalled();
-		expect(ui.select).not.toHaveBeenCalled();
+		expect(ui.askUserQuestion).not.toHaveBeenCalled();
 	});
 
 	it("persists project remember choices", async () => {

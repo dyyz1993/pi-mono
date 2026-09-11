@@ -67,7 +67,21 @@ export type VerificationCheck =
 			timeoutMs?: number;
 	  }
 	| { id: string; kind: "git_status"; label: string; cwd?: string; clean?: boolean }
-	| { id: string; kind: "git_diff"; label: string; cwd?: string; empty?: boolean; paths?: string[] };
+	| { id: string; kind: "git_diff"; label: string; cwd?: string; empty?: boolean; paths?: string[] }
+	| {
+			id: string;
+			kind: "browser_check";
+			label: string;
+			/** file:// URL inside the workspace, or http(s)://localhost/127.0.0.1. */
+			url: string;
+			waitMs?: number;
+			expectTextContains?: string;
+			maxConsoleErrors?: number;
+			/** Optional visual assertion: after the mechanical probe, the captured
+			 *  screenshot is judged by a vision model against this expectation
+			 *  (1-300 chars). Requires the session model to accept image input. */
+			expectVisual?: string;
+	  };
 
 export type ActionClass =
 	| "workspace_read"

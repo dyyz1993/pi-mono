@@ -1,5 +1,6 @@
 import { stat as fsStat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, relative } from "node:path";
+import ignore from "ignore";
 
 export interface FileSystemDirent {
 	name: string;
@@ -27,6 +28,11 @@ export interface FileSystemWalkOptions {
 	ignore?: readonly string[];
 	maxFiles?: number;
 	maxSize?: number;
+	signal?: AbortSignal;
+}
+
+export interface FileSystemReadBatchOptions {
+	signal?: AbortSignal;
 }
 
 export interface FileSystemWalkEntry {
@@ -57,7 +63,7 @@ export interface FileSystemCapability {
 	readdir(path: string): Promise<string[]>;
 	readdirWithTypes(path: string): Promise<FileSystemDirent[]>;
 	walk(path: string, options?: FileSystemWalkOptions): Promise<FileSystemWalkResult>;
-	readBatch(paths: readonly string[]): Promise<FileSystemReadBatchResult[]>;
+	readBatch(paths: readonly string[], options?: FileSystemReadBatchOptions): Promise<FileSystemReadBatchResult[]>;
 }
 
 export function createLocalFileSystemCapability(): FileSystemCapability {
@@ -84,14 +90,19 @@ export function createLocalFileSystemCapability(): FileSystemCapability {
 		async walk(path, options) {
 			const entries: FileSystemWalkEntry[] = [];
 			let totalSize = 0;
+			let fileCount = 0;
 			let limitReached = false;
 			const maxDepth = options?.maxDepth ?? Infinity;
 			const maxFiles = options?.maxFiles ?? Infinity;
 			const maxSize = options?.maxSize ?? Infinity;
-			const ignored = options?.ignore ?? [];
+			const ignored = ignore().add(options?.ignore ?? []);
 
-			const isIgnored = (entryPath: string) => ignored.some((pattern) => entryPath.includes(pattern));
+			const isIgnored = (entryPath: string, isDirectory: boolean) => {
+				const relPath = relative(path, entryPath);
+				return ignored.ignores(isDirectory ? `${relPath}/` : relPath);
+			};
 			const visit = async (currentPath: string, depth: number): Promise<void> => {
+				options?.signal?.throwIfAborted();
 				if (limitReached || depth > maxDepth) return;
 				let dirents: FileSystemDirent[];
 				try {
@@ -101,16 +112,18 @@ export function createLocalFileSystemCapability(): FileSystemCapability {
 				}
 
 				for (const dirent of dirents) {
+					options?.signal?.throwIfAborted();
 					if (limitReached) return;
 					const childPath = `${currentPath.replace(/\/$/, "")}/${dirent.name}`;
-					if (isIgnored(childPath)) continue;
+					if (isIgnored(childPath, dirent.isDirectory())) continue;
 					const childStat = await fsStat(childPath).catch(() => null);
 					const size = childStat?.size ?? 0;
 					const type = dirent.isSymbolicLink() ? "symlink" : dirent.isDirectory() ? "directory" : "file";
 					entries.push({ path: childPath, size, type });
 					if (dirent.isFile()) {
+						fileCount++;
 						totalSize += size;
-						if (entries.filter((entry) => entry.type === "file").length >= maxFiles || totalSize >= maxSize) {
+						if (fileCount >= maxFiles || totalSize >= maxSize) {
 							limitReached = true;
 							return;
 						}
@@ -124,11 +137,12 @@ export function createLocalFileSystemCapability(): FileSystemCapability {
 			await visit(path, 0);
 			return { entries, limitReached };
 		},
-		async readBatch(paths) {
+		async readBatch(paths, options) {
 			return Promise.all(
 				paths.map(async (path) => {
 					try {
-						return { path, content: await readFile(path) };
+						options?.signal?.throwIfAborted();
+						return { path, content: await readFile(path, { signal: options?.signal }) };
 					} catch (error) {
 						return { path, content: null, error: error instanceof Error ? error.message : String(error) };
 					}

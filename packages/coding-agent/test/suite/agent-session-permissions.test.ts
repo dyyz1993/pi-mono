@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "../../src/core/agent-types.ts";
 import type { ExtensionFactory, ExtensionUIContext } from "../../src/core/extensions/index.ts";
+import type { AskUserQuestion } from "../../src/core/extensions/types.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 const piHooksFactory: ExtensionFactory = (await import("../../extensions/pi-hooks/index.ts")).default;
@@ -52,7 +53,10 @@ function makePermissionUi(choice: string | undefined): ExtensionUIContext {
 		select: async () => choice,
 		confirm: async () => false,
 		input: async () => undefined,
-		askUserQuestion: async () => undefined,
+		askUserQuestion: async (questions: AskUserQuestion[]) =>
+			choice === undefined
+				? undefined
+				: { action: "responded", answers: { [questions[0]!.id]: { selected: [choice] } } },
 		notify: () => undefined,
 		onTerminalInput: () => () => undefined,
 		setStatus: () => undefined,
@@ -384,14 +388,17 @@ describe("core permission enforcement in beforeToolCall", () => {
 			extensionFactories: [piHooksFactory],
 		});
 		harnesses.push(harness);
-		const select = vi
-			.fn<ExtensionUIContext["select"]>()
-			.mockResolvedValueOnce("3. Always allow: This hook rule")
+		const askUserQuestion = vi
+			.fn<ExtensionUIContext["askUserQuestion"]>()
+			.mockResolvedValueOnce({
+				action: "responded",
+				answers: { permission: { selected: ["3. Always allow: This hook rule"] } },
+			})
 			.mockResolvedValue(undefined);
 		await harness.session.bindExtensions({
 			uiContext: {
 				...makePermissionUi(undefined),
-				select,
+				askUserQuestion,
 			} as ExtensionUIContext,
 			mode: "rpc",
 		});
@@ -417,7 +424,7 @@ describe("core permission enforcement in beforeToolCall", () => {
 		await harness.session.prompt("run second");
 
 		expect(records).toHaveLength(2);
-		expect(select).toHaveBeenCalledTimes(1);
+		expect(askUserQuestion).toHaveBeenCalledTimes(1);
 		expect(harness.settingsManager.getProjectSettings().permissions).toMatchObject({
 			rules: [
 				expect.objectContaining({

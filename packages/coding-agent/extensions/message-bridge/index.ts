@@ -116,9 +116,12 @@ function buildAskUserQuestionRequest(event: UIEvent): Record<string, unknown> {
 		id: event.id,
 		method: "askUserQuestion",
 		title: event.title,
+		message: event.message,
 		questions: event.questions ?? [],
 		timeout: event.timeout,
 		toolCallId: event.toolCallId,
+		hookMeta: event.hookMeta,
+		permissionMeta: event.permissionMeta,
 	};
 }
 

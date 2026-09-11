@@ -84,6 +84,7 @@ function createAskEvent(overrides: Partial<UIEvent> = {}): UIEvent {
 		id: "ask-request-1",
 		method: "askUserQuestion",
 		title: "Test Ask",
+		message: "审批前请确认范围",
 		questions: [
 			{
 				id: "scope",
@@ -107,6 +108,13 @@ function createAskEvent(overrides: Partial<UIEvent> = {}): UIEvent {
 		],
 		timeout: 60000,
 		toolCallId: "tool-ask",
+		permissionMeta: {
+			type: "goal_approval",
+			kind: "contract",
+			goalId: "goal-1",
+			generation: 2,
+			objective: "验证 Message Bridge 审批",
+		},
 		...overrides,
 	};
 }
@@ -169,9 +177,11 @@ describe("message-bridge extension", () => {
 				id: event.id,
 				method: "askUserQuestion",
 				title: event.title,
+				message: event.message,
 				questions: event.questions,
 				timeout: 60000,
 				toolCallId: "tool-ask",
+				permissionMeta: event.permissionMeta,
 			},
 			request_id: event.id,
 		});

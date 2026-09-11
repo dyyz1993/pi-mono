@@ -16,13 +16,20 @@ import { ChannelManager } from "../../src/core/extensions/channel-manager.ts";
 import type { ChannelDataMessage, ChannelOutputFn } from "../../src/core/extensions/channel-types.ts";
 import { discoverAndLoadExtensions } from "../../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../../src/core/extensions/runner.ts";
-import type { ExtensionActions, ExtensionContextActions } from "../../src/core/extensions/types.ts";
+import type { ExtensionActions, ExtensionContextActions, ToolInfo } from "../../src/core/extensions/types.ts";
 import { FileSnapshotManager } from "../../src/core/file-store/file-snapshot-manager.ts";
 import { InternalGit } from "../../src/core/file-store/internal-git.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let mockTools: ToolInfo[] = [];
+const mockToolSourceInfo = {
+	path: "builtin:test",
+	source: "builtin",
+	scope: "temporary",
+	origin: "top-level",
+} satisfies ToolInfo["sourceInfo"];
 
 function goalVendorSourcePath(): string {
 	return path.resolve(__dirname, "../../extensions/goal-vendor/index.ts");
@@ -78,7 +85,7 @@ const extensionActions: ExtensionActions = {
 	getSessionName: () => undefined,
 	setLabel: () => {},
 	getActiveTools: () => [],
-	getAllTools: () => [],
+	getAllTools: () => mockTools,
 	setActiveTools: () => {},
 	refreshTools: () => {},
 	setToolOperationsProvider: () => {},
@@ -118,6 +125,7 @@ describe("goal-vendor channel", () => {
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-goal-vendor-channel-"));
+		mockTools = [];
 		sessionManager = SessionManager.inMemory();
 		const authStorage = AuthStorage.create(path.join(tempDir, "auth.json"));
 		modelRegistry = ModelRegistry.create(authStorage);
@@ -224,6 +232,398 @@ describe("goal-vendor channel", () => {
 		expect(response.approved).toBe(false);
 	});
 
+	it("rejectAuthorityAmendment fails when no amendment is pending", async () => {
+		const { manager, outputs } = await loadGoalVendor();
+		const response = await invokeChannelMethod(manager, outputs, "goal", "rejectAuthorityAmendment");
+		expect(response.rejected).toBe(false);
+		expect(response.error).toBeDefined();
+	});
+
+	it("submitContract records a validated channel contract for approval", async () => {
+		const { manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		fs.writeFileSync(path.join(root, "README.md"), "# Tetris\n");
+		fs.writeFileSync(path.join(root, "QUICK_CREATE_DELIVERY.md"), "# Delivery\n");
+		const response = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: [
+				"Playable dependency-free Tetris page exists",
+				"Validation packet records automated and manual checks",
+			],
+			phases: [
+				{
+					id: "P1",
+					title: "Implement game",
+					criterionIds: ["AC1"],
+				},
+				{
+					id: "P2",
+					title: "Validate delivery",
+					dependsOn: ["P1"],
+					criterionIds: ["AC2"],
+				},
+			],
+			verificationChecks: [
+				{ id: "VC1", kind: "file_exists", label: "README exists", path: path.join(root, "README.md") },
+				{
+					id: "VC2",
+					kind: "file_exists",
+					label: "Quick-create delivery protocol exists",
+					path: path.join(root, "QUICK_CREATE_DELIVERY.md"),
+				},
+			],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: ["Publishing or deployment"],
+		});
+		expect(response).toMatchObject({ submitted: true });
+		expect(response.status).toBe("awaiting_approval");
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.rawStatus).toBe("awaiting_approval");
+
+		const approval = await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+		expect(approval.approved).toBe(true);
+
+		const running = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(running.state).toBe("running");
+	});
+
+	it("keeps safe tools available during authority approval and resolves rejection through the channel", async () => {
+		mockTools = [
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Goal\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Inspect and validate the workspace",
+			workspaceRoots: [root],
+			criteria: ["README exists"],
+			phases: [{ id: "P1", title: "Inspect workspace", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: [],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+		const running = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		const requestTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_request_authority_amendment");
+		expect(requestTool).toBeDefined();
+		await requestTool!.definition.execute(
+			"call-request-authority",
+			{
+				goalId: running.goalId,
+				generation: running.generation,
+				rationale: "Need the generated preview server for UI validation",
+				authorities: [
+					{
+						id: "AUTH_NODE_PREVIEW",
+						label: "Start exact preview server",
+						actionClass: "local_process",
+						toolName: "bash",
+						targets: [
+							{ path: "command.executable", equals: "node" },
+							{ path: "cwd", equals: root },
+						],
+						command: { executable: "node", argsPrefix: ["scripts/preview-server.mjs"], trailingArgs: "none" },
+						maxUses: 1,
+					},
+				],
+			} as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+
+		const readDecision = await runner.emitToolCall({
+			type: "tool_call",
+			toolCallId: "call-read",
+			toolName: "read",
+			input: { path: readmePath },
+		});
+		const questionDecision = await runner.emitToolCall({
+			type: "tool_call",
+			toolCallId: "call-question",
+			toolName: "ask-user-question",
+			input: { question: "Need clarification" },
+		});
+		const deniedDecision = await runner.emitToolCall({
+			type: "tool_call",
+			toolCallId: "call-node",
+			toolName: "bash",
+			input: { command: "node scripts/preview-server.mjs" },
+		});
+		expect(readDecision).toBeUndefined();
+		expect(questionDecision).toBeUndefined();
+		expect(deniedDecision?.block).toBe(true);
+
+		const rejection = await invokeChannelMethod(manager, outputs, "goal", "rejectAuthorityAmendment", {
+			reason: "Use the already generated file instead",
+		});
+		expect(rejection).toMatchObject({ rejected: true });
+		const resumed = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(resumed.rawStatus).toBe("running");
+		expect(resumed.interrupt).toBeUndefined();
+	});
+
+	it("keeps running after a synchronous tool result from a background-capable tool", async () => {
+		mockTools = [
+			{
+				name: "bash",
+				description: "Run shell commands and optionally manage background jobs.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		fs.writeFileSync(path.join(root, "README.md"), "# Tetris\n");
+		fs.writeFileSync(path.join(root, "QUICK_CREATE_DELIVERY.md"), "# Delivery\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [
+				{ id: "VC1", kind: "file_exists", label: "README exists", path: path.join(root, "README.md") },
+			],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-bash-sync",
+			toolName: "bash",
+			input: { command: "ls -la" },
+			content: [{ type: "text", text: "total 0" }],
+			details: { exitCode: 0 },
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.state).toBe("running");
+		expect(status.rawStatus).toBe("running");
+	});
+
+	it("does not treat nested rule status metadata as background work", async () => {
+		mockTools = [
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		fs.writeFileSync(path.join(root, "README.md"), "# Tetris\n");
+		fs.writeFileSync(path.join(root, "QUICK_CREATE_DELIVERY.md"), "# Delivery\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [
+				{ id: "VC1", kind: "file_exists", label: "README exists", path: path.join(root, "README.md") },
+			],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-read-rules",
+			toolName: "read",
+			input: { path: path.join(root, "README.md") },
+			content: [{ type: "text", text: "# Tetris" }],
+			details: {
+				rulesMatched: [{ name: "documentation-standard", severity: "medium", status: "loaded" }],
+			},
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.state).toBe("running");
+		expect(status.rawStatus).toBe("running");
+	});
+
+	it("records evidence when toolCallIds contains a tool name alias", async () => {
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Tetris\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-read-latest",
+			toolName: "read",
+			input: { path: readmePath },
+			content: [{ type: "text", text: "# Tetris" }],
+			details: {},
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		const recordTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_record_evidence");
+		expect(recordTool).toBeDefined();
+		await recordTool!.definition.execute(
+			"call-record-evidence",
+			{
+				goalId: status.goalId,
+				generation: status.generation,
+				summary: "README was read successfully",
+				toolCallIds: ["read"],
+				criterionIds: ["AC1"],
+				nodeId: "P1",
+			} as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+
+		const report = await invokeChannelMethod(manager, outputs, "goal", "getTaskReport");
+		expect(report.tasks).toEqual([expect.objectContaining({ id: "AC1", hasEvidence: true })]);
+	});
+
+	it("settles after a goal tool result clears its active tool marker", async () => {
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Tetris\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+
+		await runner.emit({
+			type: "tool_execution_start",
+			toolCallId: "call-goal-status",
+			toolName: "pi_goal_status",
+			args: {},
+			timestamp: Date.now(),
+		});
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-goal-status",
+			toolName: "pi_goal_status",
+			input: {},
+			content: [{ type: "text", text: "status" }],
+			details: {},
+			isError: false,
+		});
+		await runner.emit({ type: "agent_end", messages: [] });
+
+		const history = await invokeChannelMethod(manager, outputs, "goal", "getTriggerHistory");
+		const eventTypes = (history.triggers as Array<{ eventType: string }>).map((trigger) => trigger.eventType);
+		expect(eventTypes).toContain("evaluation_started");
+	});
+
+	it("resumes a pending completion audit on session_start", async () => {
+		const { runner, manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		const readmePath = path.join(root, "README.md");
+		fs.writeFileSync(readmePath, "# Tetris\n");
+		await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "Create a dependency-free Tetris game",
+			workspaceRoots: [root],
+			criteria: ["Playable dependency-free Tetris page exists"],
+			phases: [{ id: "P1", title: "Implement game", criterionIds: ["AC1"] }],
+			verificationChecks: [{ id: "VC1", kind: "file_exists", label: "README exists", path: readmePath }],
+			authorities: [],
+			constraints: ["Do not require dependency installation"],
+			nonGoals: [],
+		});
+		await invokeChannelMethod(manager, outputs, "goal", "approveContract");
+		await runner.emitToolResult({
+			type: "tool_result",
+			toolCallId: "call-read-latest",
+			toolName: "read",
+			input: { path: readmePath },
+			content: [{ type: "text", text: "# Tetris" }],
+			details: {},
+			isError: false,
+		});
+
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		const recordTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_record_evidence");
+		const submitTool = runner
+			.getAllRegisteredTools()
+			.find((tool) => tool.definition.name === "pi_goal_submit_completion_candidate");
+		expect(recordTool).toBeDefined();
+		expect(submitTool).toBeDefined();
+		await recordTool!.definition.execute(
+			"call-record-evidence",
+			{
+				goalId: status.goalId,
+				generation: status.generation,
+				summary: "README proves the deliverable exists",
+				toolCallIds: ["read"],
+				criterionIds: ["AC1"],
+				nodeId: "P1",
+			} as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+		await submitTool!.definition.execute(
+			"call-submit-completion",
+			{ goalId: status.goalId, generation: status.generation, summary: "Ready for final audit" } as never,
+			undefined,
+			undefined,
+			runner.createContext(),
+		);
+
+		await runner.emit({ type: "session_start", reason: "startup" });
+
+		const history = await invokeChannelMethod(manager, outputs, "goal", "getTriggerHistory");
+		const eventTypes = (history.triggers as Array<{ eventType: string }>).map((trigger) => trigger.eventType);
+		expect(eventTypes).toContain("audit_started");
+		expect(eventTypes).toContain("audit_error");
+	});
+
 	it("clearGoal returns cleared=false when no goal exists", async () => {
 		const { manager, outputs } = await loadGoalVendor();
 		const response = await invokeChannelMethod(manager, outputs, "goal", "clearGoal");
@@ -234,5 +634,148 @@ describe("goal-vendor channel", () => {
 		const { manager, outputs } = await loadGoalVendor();
 		const response = await invokeChannelMethod(manager, outputs, "goal", "forceContinue");
 		expect(response.triggered).toBe(false);
+	});
+
+	it("rewrites an executable-name toolName with a typed command policy into a bash authority", async () => {
+		// Models (GLM) sometimes fill toolName with the executable name ("node")
+		// on an authority that is otherwise a fully typed bash command policy.
+		// With combined target normalization this must submit, not burn a retry.
+		mockTools = [
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		await invokeChannelMethod(manager, outputs, "goal", "startSetup", {
+			objective: "verify report.txt with node --check",
+		});
+		const submitted = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome: "verify report.txt with node --check",
+			criteria: ["report.txt exists in the workspace and is valid"],
+			phases: [{ id: "P1", title: "verify the report", criterionIds: ["AC1"] }],
+			verificationChecks: [
+				{ id: "V1", kind: "command_exit", label: "node check", command: "node --check report.txt" },
+			],
+			authorities: [
+				{
+					id: "A_NODE_CHECK",
+					label: "node check",
+					toolName: "node",
+					actionClass: "local_process",
+					targets: [{ path: root, equals: root }],
+					command: { executable: "node", argsPrefix: ["--check"], trailingArgs: "single_value" },
+					maxUses: 10,
+				},
+			],
+		});
+		expect(submitted.submitted).toBe(true);
+		const pending = await invokeChannelMethod(manager, outputs, "goal", "getPendingContract");
+		expect((pending.authorities as Array<{ toolName: string }>)[0]?.toolName).toBe("bash");
+	});
+
+	it("rejects a contract that restates an earlier goal's outcome instead of the active objective", async () => {
+		// Session histories dominated by a cancelled goal make models treat the new
+		// goal's setup continuation as a "user reply" and resubmit the old goal's
+		// prepared contract. The submitted outcome then names a different project
+		// entirely — reject it instead of approving and running the wrong objective.
+		mockTools = [
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		await invokeChannelMethod(manager, outputs, "goal", "startSetup", {
+			objective:
+				"写一个 hello world 网页：goalweb/index.html 显示 Hello Goal Web，配套 script.js 内容含 console.log，用 node --check goalweb/script.js 验证语法通过。",
+		});
+		const hijacked = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome:
+				"在 /tmp/replay-test/voxelcraft/ 交付一个零依赖、离线可玩的类 Minecraft 体素沙盒网页游戏：原生 WebGL 渲染程序化噪声地形，第一人称控制，程序化纹理",
+			criteria: ["voxelcraft project structure is complete", "all modules pass node --check"],
+			phases: [{ id: "P1", title: "build the voxel engine", criterionIds: ["AC1", "AC2"] }],
+			verificationChecks: [
+				{
+					id: "V1",
+					kind: "file_exists",
+					path: path.join(fs.realpathSync(tempDir), "voxelcraft/index.html"),
+					label: "game page exists",
+				},
+			],
+			authorities: [
+				{
+					id: "A_WRITE",
+					label: "write sources",
+					toolName: "bash",
+					actionClass: "workspace_write",
+					targets: [{ path: "cwd", equals: root }],
+					command: { executable: "node", argsPrefix: ["--check"], trailingArgs: "workspace_paths" },
+					maxUses: 10,
+				},
+			],
+		});
+		expect(hijacked.submitted).toBe(false);
+		expect(String(hijacked.error)).toContain("does not restate the active objective");
+		const status = await invokeChannelMethod(manager, outputs, "goal", "getStatus");
+		expect(status.rawStatus).toBe("setting_up");
+	});
+
+	it("accepts a faithful restatement of the active objective", async () => {
+		mockTools = [
+			{
+				name: "read",
+				description: "Read a file from the workspace.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+			{
+				name: "bash",
+				description: "Run shell commands.",
+				parameters: {},
+				sourceInfo: mockToolSourceInfo,
+			} as ToolInfo,
+		];
+		const { manager, outputs } = await loadGoalVendor();
+		const root = fs.realpathSync(tempDir);
+		await invokeChannelMethod(manager, outputs, "goal", "startSetup", {
+			objective:
+				"写一个 hello world 网页：goalweb/index.html 显示 Hello Goal Web，配套 script.js 内容含 console.log，用 node --check goalweb/script.js 验证语法通过。",
+		});
+		const submitted = await invokeChannelMethod(manager, outputs, "goal", "submitContract", {
+			outcome:
+				"创建 goalweb/index.html 页面，页面显示 Hello Goal Web，并包含 script.js（内容含 console.log），用 node --check goalweb/script.js 校验语法通过",
+			criteria: ["goalweb/index.html 显示 Hello Goal Web", "node --check goalweb/script.js 通过"],
+			phases: [{ id: "P1", title: "create the page and script", criterionIds: ["AC1", "AC2"] }],
+			verificationChecks: [
+				{
+					id: "V1",
+					kind: "file_contains",
+					path: path.join(root, "goalweb/index.html"),
+					pattern: "Hello Goal Web",
+					label: "page greets",
+				},
+			],
+			authorities: [],
+		});
+		expect(submitted.submitted).toBe(true);
 	});
 });

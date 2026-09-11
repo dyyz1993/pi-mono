@@ -696,16 +696,30 @@ export default function fileReview(pi: ExtensionAPI) {
 		ctx = _ctx;
 		const mgr = _ctx.fileSnapshotManager;
 		if (!mgr) return;
-		currentTurnChanges = await mgr.getLiveChangesAsync(_ctx.cwd);
+		try {
+			currentTurnChanges = await mgr.getLiveChangesAsync(_ctx.cwd, _ctx.signal);
+		} catch (error) {
+			if (_ctx.signal?.aborted) return;
+			throw error;
+		}
 	});
 
 	pi.on("turn_end", async (event: TurnEndEvent, _ctx: ExtensionContext) => {
 		ctx = _ctx;
 
 		currentTurnIndex = event.turnIndex;
-		const changes = currentTurnChanges.length > 0
-			? currentTurnChanges
-			: (await _ctx.fileSnapshotManager?.getLiveChangesAsync(_ctx.cwd) ?? []);
+		let changes = currentTurnChanges;
+		if (changes.length === 0) {
+			try {
+				changes = await _ctx.fileSnapshotManager?.getLiveChangesAsync(_ctx.cwd, _ctx.signal) ?? [];
+			} catch (error) {
+				if (_ctx.signal?.aborted) {
+					currentTurnChanges = [];
+					return;
+				}
+				throw error;
+			}
+		}
 		if (changes.length > 0) {
 			const timestamp = Date.now();
 			turnLog.push({

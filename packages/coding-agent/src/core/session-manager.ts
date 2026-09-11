@@ -65,6 +65,9 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
 	modelId: string;
+	previousProvider?: string;
+	previousModelId?: string;
+	source?: "set" | "cycle" | "init";
 }
 
 export interface TierModelsChangeEntry extends SessionEntryBase {
@@ -1351,7 +1354,12 @@ export class SessionManager {
 	}
 
 	/** Append a model change as child of current leaf, then advance leaf. Returns entry id. */
-	appendModelChange(provider: string, modelId: string): string {
+	appendModelChange(
+		provider: string,
+		modelId: string,
+		previous?: { provider: string; modelId: string },
+		source: "set" | "cycle" | "init" = "set",
+	): string {
 		const entry: ModelChangeEntry = {
 			type: "model_change",
 			id: generateId(this.byId),
@@ -1359,9 +1367,20 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			provider,
 			modelId,
+			source,
 		};
+		if (previous) {
+			entry.previousProvider = previous.provider;
+			entry.previousModelId = previous.modelId;
+		}
 		this._appendEntry(entry);
-		this.appendSystemEvent("model_changed", `Model changed to ${provider}/${modelId}`, { provider, modelId });
+		this.appendSystemEvent("model_changed", `Model changed to ${provider}/${modelId}`, {
+			provider,
+			modelId,
+			previousProvider: previous?.provider,
+			previousModelId: previous?.modelId,
+			source,
+		});
 		return entry.id;
 	}
 
