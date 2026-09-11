@@ -510,8 +510,8 @@
 			}
 		},
 		"node_modules/@dyyz1993/pi-ai": {
-			"version": "0.78.5",
-			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-ai/-/pi-ai-0.78.5.tgz",
+			"version": "0.78.6",
+			"resolved": "https://registry.npmjs.org/@dyyz1993/pi-ai/-/pi-ai-0.78.6.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.91.1",
