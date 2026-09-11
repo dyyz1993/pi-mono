@@ -2550,6 +2550,32 @@ export class AgentSession {
 	}
 
 	/**
+	 * Persist a model_change entry carrying the previous model (for UI switch
+	 * notices) and emit a custom_entry event so live clients can render it
+	 * without re-reading the JSONL.
+	 */
+	private _recordModelChange(
+		nextModel: Model<any>,
+		previousModel: Model<any> | undefined,
+		source: "set" | "cycle",
+	): void {
+		const previous = previousModel ? { provider: previousModel.provider, modelId: previousModel.id } : undefined;
+		const entryId = this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, previous, source);
+		this._emit({
+			type: "custom_entry",
+			customType: "model_changed",
+			data: {
+				provider: nextModel.provider,
+				modelId: nextModel.id,
+				previousProvider: previous?.provider,
+				previousModelId: previous?.modelId,
+				source,
+			},
+			id: entryId,
+		});
+	}
+
+	/**
 	 * Set model directly.
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
@@ -2562,7 +2588,7 @@ export class AgentSession {
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = model;
-		this.sessionManager.appendModelChange(model.provider, model.id);
+		this._recordModelChange(model, previousModel, "set");
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
 		// Re-clamp thinking level for new model's capabilities
@@ -2599,7 +2625,7 @@ export class AgentSession {
 
 		// Apply model
 		this.agent.state.model = next.model;
-		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
+		this._recordModelChange(next.model, currentModel, "cycle");
 		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
 		// Apply thinking level.
@@ -2627,7 +2653,7 @@ export class AgentSession {
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = nextModel;
-		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		this._recordModelChange(nextModel, currentModel, "cycle");
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Re-clamp thinking level for new model's capabilities

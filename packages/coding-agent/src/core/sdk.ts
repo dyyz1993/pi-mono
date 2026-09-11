@@ -570,7 +570,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	} else {
 		// Save initial model and thinking level for new sessions so they can be restored on resume
 		if (model) {
-			sessionManager.appendModelChange(model.provider, model.id);
+			sessionManager.appendModelChange(model.provider, model.id, undefined, "init");
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
